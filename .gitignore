@@ -1,0 +1,50 @@
+# --- Go 构建产物 ---
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/agent-worker
+/autocode
+
+# --- 运行时数据 (SQLite: 任务/会话/记忆) ---
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+/data/
+
+# --- 配置与密钥 (跟踪 config.example.yaml, 忽略真实配置) ---
+config.yaml
+config.local.yaml
+*.local.yaml
+.env
+*.env
+secrets/
+
+# --- 日志 ---
+*.log
+/logs/
+
+# --- Web 前端 ---
+node_modules/
+web/dist/
+web/node_modules/
+
+# --- IDE / 编辑器 ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- 操作系统 ---
+.DS_Store
+Thumbs.db
+desktop.ini
