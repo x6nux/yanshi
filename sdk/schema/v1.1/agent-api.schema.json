@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yanshi.dev/schema/agent-api/v1.1/agent-api.schema.json",
+  "title": "Yanshi Agent API v1.1 additive compatibility fixture",
+  "description": "Fixture-only v1.1 schema. D1 currently emits only 'v1'; this document lets SDK tests prove forward compatibility with a future minor version that adds fields without changing required ones. Not served by D1.",
+  "type": "object",
+  "additionalProperties": true,
+  "allOf": [
+    { "$ref": "../v1/agent-api.schema.json" }
+  ],
+  "properties": {
+    "futureRubric": { "type": "string" }
+  },
+  "$defs": {
+    "Item": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "reasoningTokens": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

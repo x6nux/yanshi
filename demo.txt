@@ -1,0 +1,13 @@
+Agent() status
+Text
+
+Agent() 1 tools 10k 1m9s
+Read(xxx) status(这个工具的status)
+List(xxx) status(这个工具的status)
+
+WorkFlow() status
+Text
+
+WorkFlow() 100/10 agents 10k 1m9s
+Agent(Read) 这个工具的status
+Agent(Thinking...) 这个工具的status

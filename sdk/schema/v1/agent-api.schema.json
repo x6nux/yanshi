@@ -1,0 +1,252 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yanshi.dev/schema/agent-api/v1/agent-api.schema.json",
+  "title": "Yanshi Agent API v1",
+  "description": "Provisional v1 contract mirror of internal/api/v1/types.go. D1 serves the canonical schema at GET /api/v1/schema/agent-v1.json; this document is the SDK-handoff copy that adds D2-provisional IDE-context extensions (ContextItem, FileChange). Replace this file when D1 publishes the canonical schema.",
+  "type": "object",
+  "additionalProperties": true,
+  "$defs": {
+    "Version": { "type": "string", "const": "v1", "description": "D1 currently emits exactly 'v1'; clients remain tolerant of future 'v1.x' minors." },
+    "ThreadStatus": { "type": "string", "enum": ["active", "archived"] },
+    "TurnStatus": { "type": "string", "enum": ["inProgress", "completed", "interrupted", "failed"] },
+    "ItemType": {
+      "type": "string",
+      "enum": [
+        "turn.started",
+        "message.delta",
+        "reasoning.delta",
+        "tool.call",
+        "tool.result",
+        "tool.progress",
+        "structured.result",
+        "turn.error",
+        "turn.completed"
+      ],
+      "description": "D1 known item types. Unknown server values arrive as 'event.<legacyType>'; SDK normalizes them to 'unknown' but preserves the original type string alongside."
+    },
+    "Range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": { "type": "integer", "minimum": 0 },
+        "end": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "ContextItem": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["kind", "path", "content", "range"],
+          "properties": {
+            "kind": { "const": "selection" },
+            "path": { "type": "string", "minLength": 1 },
+            "content": { "type": "string" },
+            "range": { "$ref": "#/$defs/Range" },
+            "truncated": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["kind", "path", "content"],
+          "properties": {
+            "kind": { "const": "openFile" },
+            "path": { "type": "string", "minLength": 1 },
+            "content": { "type": "string" },
+            "truncated": { "type": "boolean" }
+          }
+        }
+      ],
+      "description": "D2-provisional IDE context. Not yet emitted by D1; the SDK accepts it on turn/start and forwards as context."
+    },
+    "FileChange": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "before": { "type": "string" },
+        "after": { "type": "string" },
+        "unifiedDiff": { "type": "string" }
+      },
+      "description": "D2-provisional. D1 does not yet emit fileChange items; the IDE diff renderer degrades gracefully when this field is absent."
+    },
+    "Thread": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["version", "id", "status", "createdAt", "updatedAt"],
+      "properties": {
+        "version": { "$ref": "#/$defs/Version" },
+        "id": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/ThreadStatus" },
+        "title": { "type": "string" },
+        "createdAt": { "type": "integer", "minimum": 0, "description": "Unix seconds." },
+        "updatedAt": { "type": "integer", "minimum": 0 },
+        "model": { "type": "string" },
+        "thinking": { "type": "string" },
+        "turns": { "type": "array", "items": { "$ref": "#/$defs/Turn" } }
+      }
+    },
+    "Turn": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["version", "id", "threadId", "status", "input", "startedAt"],
+      "properties": {
+        "version": { "$ref": "#/$defs/Version" },
+        "id": { "type": "string", "minLength": 1 },
+        "threadId": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/TurnStatus" },
+        "input": { "type": "string" },
+        "startedAt": { "type": "integer", "minimum": 0 },
+        "completedAt": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "Item": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["version", "id", "sequence", "threadId", "turnId", "type"],
+      "properties": {
+        "version": { "$ref": "#/$defs/Version" },
+        "id": { "type": "string", "minLength": 1 },
+        "sequence": { "type": "integer", "minimum": 1, "description": "Monotonic per-thread counter starting at 1. Used for reconnect replay and de-duplication." },
+        "threadId": { "type": "string", "minLength": 1 },
+        "turnId": { "type": "string", "minLength": 1 },
+        "type": { "type": "string", "minLength": 1 },
+        "text": { "type": "string" },
+        "toolName": { "type": "string" },
+        "toolArgs": { "type": "string" },
+        "status": { "type": "string" },
+        "error": { "type": "string" },
+        "structuredResult": {},
+        "fileChange": { "$ref": "#/$defs/FileChange" }
+      }
+    },
+    "ApiErrorBody": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["message"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string", "minLength": 1 },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    "ThreadStartParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "version": { "$ref": "#/$defs/Version" },
+        "title": { "type": "string" },
+        "model": { "type": "string" },
+        "thinking": { "type": "string" }
+      }
+    },
+    "ThreadStartResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["version", "thread"],
+      "properties": {
+        "version": { "$ref": "#/$defs/Version" },
+        "thread": { "$ref": "#/$defs/Thread" }
+      }
+    },
+    "ThreadResumeParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["threadId"],
+      "properties": {
+        "version": { "$ref": "#/$defs/Version" },
+        "threadId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "ThreadResumeResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["version", "thread"],
+      "properties": {
+        "version": { "$ref": "#/$defs/Version" },
+        "thread": { "$ref": "#/$defs/Thread" },
+        "items": { "type": "array", "items": { "$ref": "#/$defs/Item" } }
+      }
+    },
+    "ThreadInterruptParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["threadId"],
+      "properties": {
+        "version": { "$ref": "#/$defs/Version" },
+        "threadId": { "type": "string", "minLength": 1 },
+        "turnId": { "type": "string" }
+      }
+    },
+    "InterruptResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["version", "ok", "threadId"],
+      "properties": {
+        "version": { "$ref": "#/$defs/Version" },
+        "ok": { "type": "boolean" },
+        "threadId": { "type": "string", "minLength": 1 },
+        "turnId": { "type": "string" }
+      }
+    },
+    "ImageAttach": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string" },
+        "source": { "type": "string" },
+        "fmt": { "type": "string" },
+        "w": { "type": "integer", "minimum": 0 },
+        "h": { "type": "integer", "minimum": 0 },
+        "dataB64": { "type": "string" }
+      }
+    },
+    "TurnStartParams": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["threadId", "input"],
+      "properties": {
+        "version": { "$ref": "#/$defs/Version" },
+        "threadId": { "type": "string", "minLength": 1 },
+        "input": { "type": "string", "minLength": 1 },
+        "model": { "type": "string" },
+        "thinking": { "type": "string" },
+        "outputSchema": {},
+        "images": { "type": "array", "items": { "$ref": "#/$defs/ImageAttach" } },
+        "context": { "type": "array", "items": { "$ref": "#/$defs/ContextItem" }, "maxItems": 16 }
+      }
+    },
+    "TurnStartResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["version", "turn"],
+      "properties": {
+        "version": { "$ref": "#/$defs/Version" },
+        "turn": { "$ref": "#/$defs/Turn" }
+      }
+    },
+    "Capabilities": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["version", "methods", "itemTypes", "unknownFields", "stream"],
+      "properties": {
+        "version": { "$ref": "#/$defs/Version" },
+        "methods": { "type": "array", "items": { "type": "string" } },
+        "itemTypes": { "type": "array", "items": { "type": "string" } },
+        "unknownFields": { "const": "ignored" },
+        "stream": { "const": "item/updated" }
+      }
+    }
+  },
+  "anyOf": [
+    { "$ref": "#/$defs/ThreadStartResponse" },
+    { "$ref": "#/$defs/ThreadResumeResponse" },
+    { "$ref": "#/$defs/TurnStartResponse" },
+    { "$ref": "#/$defs/InterruptResponse" },
+    { "$ref": "#/$defs/Item" },
+    { "$ref": "#/$defs/Capabilities" }
+  ]
+}

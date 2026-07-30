@@ -1,0 +1,57 @@
+# Release on tag push. git-cliff generates notes from Conventional Commits
+# (cliff.toml, tag_pattern v[0-9]*), then goreleaser builds four nokeyring
+# targets, attaches checksums.txt, and publishes the GitHub Release.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git-cliff needs full history to group by tag
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # git-cliff is a CI-only external binary (not in go.mod). Pin a version.
+      - name: install git-cliff
+        shell: bash
+        run: |
+          curl -sSL https://github.com/orhun/git-cliff/releases/download/v2.6.1/git-cliff-2.6.1-x86_64-unknown-linux-gnu.tar.gz \
+            | tar -xz -C /tmp
+          echo "/tmp/git-cliff-2.6.1" >> "$GITHUB_PATH"
+
+      - name: generate release notes
+        shell: bash
+        run: git-cliff --config cliff.toml --latest --output RELEASE_NOTES.md
+
+      - name: update CHANGELOG.md
+        shell: bash
+        run: git-cliff --config cliff.toml --latest --output CHANGELOG.md
+
+      - name: commit changelog
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "chore(release): update changelog for v${GITHUB_REF_NAME#v}" || echo "no changelog changes"
+          git push origin HEAD:main
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean --release-notes RELEASE_NOTES.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

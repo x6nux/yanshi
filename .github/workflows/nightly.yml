@@ -1,0 +1,75 @@
+# Nightly slow path: long fuzz, benchmarks, full multi-platform race. Does NOT
+# block merge (no required checks here). Bench is trend-only (no hard gate).
+name: nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"   # 03:17 UTC daily (off-the-hour to ease runner load)
+  workflow_dispatch:
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  fuzz-long:
+    name: fuzz-long (E2 FUZ1)
+    runs-on: ubuntu-latest
+    continue-on-error: true   # soft until E2 fuzz targets land
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: long fuzz if target present
+        shell: bash
+        run: |
+          set -e
+          if ! go test -list 'Fuzz.*' ./internal/guard/... 2>/dev/null | grep -q '^Fuzz'; then
+            echo "no Fuzz target yet (E2 pending); soft-pass"
+            exit 0
+          fi
+          go test -fuzz=FuzzMatchGlob -fuzztime=10m ./internal/guard/...
+
+  bench:
+    name: bench (F2)
+    runs-on: ubuntu-latest
+    continue-on-error: true   # soft until F2 bench targets land; trend-only even then
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: bench if targets present
+        shell: bash
+        run: |
+          set -e
+          if ! go test -list 'Benchmark.*' ./... 2>/dev/null | grep -q '^Benchmark'; then
+            echo "no Benchmark target yet (F2 pending); soft-pass"
+            exit 0
+          fi
+          go test -bench=. -benchmem ./... | tee bench-results.txt
+      - name: upload bench results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: bench-results.txt
+          if-no-files-found: ignore
+
+  race-full:
+    name: race-full (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu, windows, macos]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -race ./...

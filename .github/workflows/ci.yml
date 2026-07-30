@@ -1,0 +1,131 @@
+# PR / push-to-main gate. Fast path: must pass and blocks merge (set the four
+# hard jobs — test, vet, race, build — as required in GitHub branch protection).
+# Windows runs only test + build (race/vet are ubuntu-only to control cost).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu, windows, macos]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # e2e_real build tag is off by default -> codex/claudecode CLIs are not
+      # needed. eino/bootstrap t.Skip on missing providers is expected, not a fail.
+      - run: go test ./...
+
+  vet:
+    name: vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+
+  # race is a compiler flag, not a test asset — it works on any Go code, so it
+  # is a HARD gate (no soft-enable on E2/RAC1).
+  race:
+    name: race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -race ./...
+
+  build:
+    name: build (${{ matrix.os }}, ${{ matrix.tags }})
+    runs-on: ${{ matrix.os }}-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu, windows, macos]
+        tags: [default, nokeyring]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: build
+        env:
+          CGO_ENABLED: "0"
+        shell: bash
+        run: |
+          tag_flag=""
+          if [ "${{ matrix.tags }}" = "nokeyring" ]; then tag_flag="-tags=nokeyring"; fi
+          go build $tag_flag ./cmd/yanshi
+      - name: smoke -h
+        # fork compiles in (replace => ./third_party/bubbletea is tracked); the
+        # binary must at least print usage and exit 0.
+        shell: bash
+        run: ${{ matrix.os == 'windows' && './yanshi.exe -h' || './yanshi -h' }}
+
+  # --- soft-gated jobs: E3 (governance) and E2 (fuzz/property) -----------------
+  # Each job soft-passes (exit 0) until its batch's test assets exist, and has
+  # continue-on-error as a safety net. Flip to a hard required check when the
+  # batch lands: tighten the guard, drop continue-on-error.
+
+  governance:
+    name: governance (E3 GOV1/GOV2/GOV3)
+    runs-on: ubuntu-latest
+    continue-on-error: true   # soft until E3 governance tests land
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: run governance tests if present
+        shell: bash
+        run: |
+          set -e
+          # Guard: E3 ships GOV1/GOV2/GOV3 tests under internal/archtest.
+          # Until then, soft-pass. Drop continue-on-error once E3 is stable.
+          if [ ! -d internal/archtest ]; then
+            echo "no governance tests yet (E3 pending); soft-pass"
+            exit 0
+          fi
+          go test ./internal/archtest
+
+  fuzz-seed:
+    name: fuzz-seed (E2 FUZ1/PROP1)
+    runs-on: ubuntu-latest
+    continue-on-error: true   # soft until E2 fuzz/property tests land
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: run fuzz seeds + property tests if present
+        shell: bash
+        run: |
+          set -e
+          # Guard: E2 ships FUZ1 seed corpora + PROP1 property tests in guard/ctxcompact.
+          if ! go test -list 'Fuzz.*|TestProperty.*' ./internal/guard/... ./internal/ctxcompact/... 2>/dev/null | grep -Eq 'Fuzz|TestProperty'; then
+            echo "no fuzz/property targets yet (E2 pending); soft-pass"
+            exit 0
+          fi
+          go test -run 'Fuzz|TestProperty' -count=1 ./internal/guard/... ./internal/ctxcompact/...

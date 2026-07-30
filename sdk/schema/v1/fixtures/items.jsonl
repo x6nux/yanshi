@@ -1,0 +1,7 @@
+{"version":"v1","id":"item-1","sequence":1,"threadId":"thread-001","turnId":"thread-001-turn-1","type":"turn.started"}
+{"version":"v1","id":"item-2","sequence":2,"threadId":"thread-001","turnId":"thread-001-turn-1","type":"message.delta","text":"hello"}
+{"version":"v1","id":"item-3","sequence":3,"threadId":"thread-001","turnId":"thread-001-turn-1","type":"message.delta","text":" world"}
+{"version":"v1","id":"item-4","sequence":4,"threadId":"thread-001","turnId":"thread-001-turn-1","type":"tool.call","toolName":"fs_read","toolArgs":"{\"path\":\"main.go\"}"}
+{"version":"v1","id":"item-5","sequence":5,"threadId":"thread-001","turnId":"thread-001-turn-1","type":"tool.result","toolName":"fs_read","text":"package main\n"}
+{"version":"v1","id":"item-6","sequence":6,"threadId":"thread-001","turnId":"thread-001-turn-1","type":"structured.result","structuredResult":{"ok":true,"summary":"done","artifacts":["main.go"]}}
+{"version":"v1","id":"item-7","sequence":7,"threadId":"thread-001","turnId":"thread-001-turn-1","type":"turn.completed","status":"completed"}

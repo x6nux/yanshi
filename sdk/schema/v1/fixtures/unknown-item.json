@@ -1,0 +1,9 @@
+{
+  "version": "v1",
+  "id": "item-99",
+  "sequence": 99,
+  "threadId": "thread-001",
+  "turnId": "thread-001-turn-1",
+  "type": "event.future_telemetry",
+  "futurePayload": { "preserveSequence": true }
+}

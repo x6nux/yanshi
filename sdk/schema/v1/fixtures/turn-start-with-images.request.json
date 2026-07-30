@@ -1,0 +1,8 @@
+{
+  "version": "v1",
+  "threadId": "thread-001",
+  "input": "describe this",
+  "images": [
+    { "id": "img-1", "source": "paste", "fmt": "png", "w": 2, "h": 2, "dataB64": "iVBORw0KGgo=" }
+  ]
+}

@@ -1,0 +1,63 @@
+# goreleaser v2 config for yanshi. Four targets, all CGO_ENABLED=0 + nokeyring
+# (keyring variant deferred past v1; see docs/superpowers/specs/...h1...md §5).
+# Version is injected via ldflags (version.Version is a var since VER1).
+# bubbletea fork resolves via go.mod replace => ./third_party/bubbletea (tracked).
+version: 2
+
+project_name: yanshi
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: yanshi
+    main: ./cmd/yanshi
+    binary: yanshi
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -tags=nokeyring
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/x6nux/yanshi/internal/version.Version={{.Version}}
+      - -X github.com/x6nux/yanshi/internal/version.BuildStamp={{.Date}}
+    goos: [linux, windows, darwin]
+    goarch: [amd64, arm64]
+    # Ship exactly four targets: windows/amd64, linux/amd64, linux/arm64, darwin/arm64.
+    ignore:
+      - goos: windows
+        goarch: arm64
+      - goos: darwin
+        goarch: amd64
+
+archives:
+  - id: default
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_
+      {{- if eq .Os "darwin" }}macos{{ else }}{{ .Os }}{{ end }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - config.example.yaml
+      - src: README.md
+        dst: README.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-dev"
+
+# git-cliff generates the release notes (release.yml runs it and feeds the file
+# via --release-notes). Disable goreleaser's built-in changelog to avoid a dupe.
+changelog:
+  skip: true
+
+release:
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"

@@ -1,0 +1,105 @@
+# Docs gate: keeps generated doc snippets, examples, ADR links, archive links,
+# config struct parity, and cross-doc relative links honest. Runs the same
+# checks as the local rehearsal block in docs/superpowers/plans/
+# 2026-07-22-h2-docs-examples-contrib.md (Task 15).
+#
+# COORD (CIG1): this is the standalone fallback. When the CIG1 CI matrix lands
+# a docs-gate job, prefer folding these steps into it and deleting this file.
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'examples/**'
+      - 'cmd/api-schema/**'
+      - 'cmd/gendocs/**'
+      - 'internal/docgen/**'
+      - 'internal/config/**'
+      - 'internal/api/v1/**'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'examples/**'
+      - 'cmd/api-schema/**'
+      - 'cmd/gendocs/**'
+      - 'internal/docgen/**'
+      - 'internal/config/**'
+      - 'internal/api/v1/**'
+      - '.github/workflows/docs.yml'
+
+jobs:
+  docs-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build
+        run: |
+          go build -o yanshi ./cmd/yanshi
+          go build ./examples/custom-tool
+
+      - name: Generated snippet gate
+        run: |
+          go run ./cmd/api-schema -markdown docs/api/schema.md
+          go run ./cmd/api-schema -markdown docs/api/resources.md
+          go run ./cmd/gendocs -config docs/user-guide/configuration.md
+          go run ./cmd/gendocs -help-all docs/user-guide/tui.md docs/user-guide/entrypoints.md
+          git diff --exit-code docs/api/ docs/user-guide/
+
+      - name: ADR code-path reachability
+        run: |
+          grep -rhoE 'internal/[a-z0-9/_-]+(/[a-z0-9_-]+\.go)?' docs/adr/ | sort -u | while read p; do
+            [ -e "$p" ] || [ -n "$(ls "${p%/}"* 2>/dev/null)" ] || { echo "MISSING ADR link: $p"; exit 1; }
+          done
+
+      - name: Archive no dead path refs (user-facing docs)
+        run: |
+          ! grep -rE 'docs/(synthesis-final|synthesis-report|synthesis-report-v2|analysis-report|feature-comparison-with-codex|feature-roadmap-codex-deepseek)\.md' \
+            --include='*.md' . | grep -vE '^\./docs/(archive|superpowers)/'
+
+      - name: Cross-doc relative links reachable
+        run: |
+          find . -name '*.md' \
+            -not -path './.git/*' \
+            -not -path './node_modules/*' \
+            -not -path './sdk/ts/node_modules/*' \
+            -not -path './docs/archive/*' | while read md; do
+            dir=$(dirname "$md")
+            grep -oE '\]\(([^)#]+\.md)(#[^)]*)?\)' "$md" | \
+              sed -E 's/^\]\(//; s/\)$//' | sed -E 's/#.*$//' | sort -u | while read ref; do
+                [ -z "$ref" ] && continue
+                [ -f "$dir/$ref" ] || { echo "broken link in $md: $ref"; exit 1; }
+              done
+          done
+
+      - name: Config struct <-> skeleton parity
+        run: go test ./cmd/gendocs -run TestConfigSkeletonFieldsMatchStruct
+
+      - name: Headless smoke
+        run: |
+          printf 'server:\n  http_addr: "127.0.0.1:0"\nstorage:\n  sqlite_path: ":memory:"\n' > config.yaml
+          out=$(./yanshi exec --fake-model -p "hi"); [ -n "$out" ]
+          ./yanshi exec --fake-model --input jsonl --file examples/headless-batch/sample.jsonl >/dev/null
+
+      - name: TS typecheck (SDK + example)
+        run: |
+          npm --prefix sdk/ts install --no-audit --no-fund
+          ( cd sdk/ts && npx tsc -p tsconfig.json --noEmit )
+          ( cd sdk/ts && npx tsc --noEmit --project ../../examples/sdk-typescript/tsconfig.json )
+
+      - name: Python parse + import
+        run: |
+          python -m py_compile examples/sdk-python/main.py
+          PYTHONPATH=sdk/python/src python -c "import yanshi_sdk"

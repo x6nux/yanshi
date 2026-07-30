@@ -1,0 +1,11 @@
+{
+  "version": "v1",
+  "thread": {
+    "version": "v1",
+    "id": "thread-001",
+    "status": "active",
+    "title": "New thread",
+    "createdAt": 1721540400,
+    "updatedAt": 1721540400
+  }
+}
