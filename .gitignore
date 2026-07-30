@@ -10,6 +10,7 @@
 *.out
 /agent-worker
 /autocode
+/yanshi
 
 # --- 运行时数据 (SQLite: 任务/会话/记忆) ---
 *.db
@@ -26,7 +27,8 @@ config.local.yaml
 *.local.yaml
 .env
 *.env
-secrets/
+/secrets/
+/secrets.enc
 
 # --- 日志 ---
 *.log
@@ -48,3 +50,26 @@ web/node_modules/
 .DS_Store
 Thumbs.db
 desktop.ini
+# Local reference checkouts and generated analysis material.
+reference/
+
+# local dev worktrees (subagent-driven execution)
+.worktrees/
+
+# runtime scratch dir (spillover temp files, etc.)
+.yanshi/
+
+# --- 覆盖率/分析产物（勿入库）---
+cov2.html
+pkglist.tmp
+_analyze_cov.go
+
+# Python cache (H2 SDK examples)
+__pycache__/
+*.pyc
+
+# Dev analysis scratch (depsanalyze/codelines byproducts)
+_covstats.py
+_tmp_analyze_cov.py
+deps_raw.txt
+*.tmp

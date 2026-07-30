@@ -1,0 +1,196 @@
+# schema_version is the config schema generation. Omit on existing configs to
+# keep them forward-compatible (treated as the current version). yanshi rejects
+# a value higher than it supports — upgrade yanshi first. See
+# docs/upgrade-guide.md.
+schema_version: 1
+server:
+  http_addr: "127.0.0.1:8080"
+  task_addr: "127.0.0.1:8081"
+storage:
+  sqlite_path: "yanshi.db"
+  wal_max_open_conns: 4       # F1: read pool size (1=legacy serial, 4+ for concurrent reads)
+  busy_timeout_ms: 5000       # F1: cross-process lock retry window (ms)
+  wal_auto_checkpoint: 1000   # F1: WAL auto-checkpoint page threshold
+token: "change-me"
+llm:
+  providers:
+    - name: "openai"
+      kind: "openai"
+      model: "gpt-4o"
+      api_key: "${OPENAI_API_KEY}"
+      context_window: 128000      # this model's token window; compaction sizes against it
+      # multimodal: true          # native image input; auto-selects as vision auxiliary (Tier G)
+    - name: "claude"
+      kind: "anthropic"
+      model: "claude-opus-4-8"
+      api_key: "${ANTHROPIC_API_KEY}"
+      context_window: 200000
+      multimodal: true            # native image input (Tier G)
+agents:
+  - name: "orchestrator"
+    type: "local"
+    chain: ["openai", "claude"]
+    profile: "orchestrator"
+    capabilities: []
+skills:
+  builtin_dir: ./skills
+  user_dir: ~/.yanshi/skills
+  plugin_dir: ~/.yanshi/plugins
+vcs:
+  ignore: ["coverage", ".cache"]          # extra ignore patterns (merged with defaults)
+  worktree_dir: "~/.yanshi/worktrees"   # where worktree working dirs live
+compaction:
+  threshold: 0.8        # compact when est. tokens >= threshold * context_window
+  keep_recent: 4        # trailing user/assistant pairs kept verbatim
+  context_window: 256000 # fallback window when a provider has no context_window
+  model: ""             # optional fast summary model; empty = active session model
+  chunk_threshold: 0.9  # carry-style chunking when summary input >= chunk_threshold * window
+  cooldown_fraction: 0.05    # token-growth cooldown: 5% of window
+  cooldown_duration: ""      # time-based cooldown (optional, e.g. "3s"); "" disables
+  hard_force_fraction: 0.95  # force-compact near window edge even inside cooldown
+profiles:
+  orchestrator:
+    fs: { read: ["**"], write: [] }
+    tools: { allow: ["*"] }
+    # Empty or absent mcp.allow denies every mcp_<server>_<tool>, even though
+    # tools.allow contains "*". Opt in per trusted server/tool.
+    mcp: { allow: [] }
+    shell: { policy: "deny" }
+    net: { allow: false }
+  # A coding agent: all tools, read/write the repo, an allowlisted shell, and
+  # outbound network. Reference this profile by setting an agent's `profile`
+  # field to "coding".
+  coding:
+    tools: { allow: ["*"] }
+    # Example: permit only tools discovered from server "github".
+    mcp:   { allow: ["mcp_github_*"] }
+    fs:    { read: ["**"], write: ["**"] }
+    shell: { policy: "allowlist", patterns: ["git *", "go test", "go test *", "cargo test", "cargo test *", "npm test", "npm test *"] }
+    net:   { allow: true, hosts: ["*"] }
+
+# Security (A1). Sandbox / network / shell posture. Defaults (applied when the
+# block is absent): sandbox on + read-only tier + network default-deny + shell
+# 1 MiB output cap + 30 min idle timeout. Override per deployment below.
+security:
+  sandbox:
+    enabled: true              # *bool semantics: omit = default (true); false = opt-out
+    tier: read-only            # read-only | workspace-write | full-access
+    network_deny: true         # Phase 0 hint for the future OS-isolation backend
+  network:
+    default: deny              # deny-wins posture
+    allow: []                  # glob host patterns admitted (e.g. "*.github.com")
+    deny: []                   # glob host patterns always rejected (deny wins)
+    allow_private: false       # admit loopback / RFC1918 / link-local (SSRF risk)
+  shell:
+    max_output_bytes: 1048576  # ring buffer cap per session (1 MiB)
+    idle_timeout: 30m          # session reaped after this idle window
+
+# Batch C1: RLM fan-out, automation scheduling, and agent batch jobs.
+# RLM needs a cheap provider (cost_class: cheap) for rlm_query fan-out.
+batch:
+  rlm_model: cheap-provider         # provider name (must have cost_class: cheap)
+  rlm_max_concurrency: 16           # <= 16, clamped otherwise
+  automation_tick_seconds: 60       # scheduler interval, default 60s if <= 0
+
+# B2-LSP1: post-edit diagnostics. When enabled, yanshi queries language servers
+# after fs_write/fs_edit/apply_patch and feeds the diagnostics back to the model.
+# Servers not found in PATH are silently skipped (soft-degrade).
+lsp:
+  enabled: true            # edit后自动查语言服务器诊断回喂模型;false 关闭
+  diag_timeout: "800ms"    # 单文件诊断等待上限
+  languages: {}            # 覆盖/扩展语言表;空 = 用内置 {go: gopls, python: pyright-langserver}
+
+# MCP (A3): MCP server connections. Tools are registered as
+# mcp_<server>_<tool> and are deny-by-default (see profiles.mcp.allow).
+# Transport can be "http" (streamable HTTP) or "stdio" (subprocess).
+mcp:
+  servers: {}
+  # my-tools:
+  #   enabled: true
+  #   transport: http
+  #   url: "http://localhost:3000/mcp"
+  #   bearer: "${MCP_BEARER_TOKEN}"
+  #   timeout: 30s
+
+# MEM1 用户 memory:跨会话偏好笔记,启动时作为独立 suffix 注入 system prompt。
+# 默认关闭;显式 enabled: true 后才会加载与注入。
+# memory:
+#   enabled: true
+#   user_path: ~/.yanshi/memory.md      # 默认值
+#   project_path: .yanshi/memory.md     # 默认值,相对工作区根
+#   max_size: 32768                     # 32 KiB,0 = 默认
+
+# C4 可观测性:结构化日志 + OpenTelemetry。日志默认 info/json 走 stderr;OTel
+# 默认关闭,开启时 sample_ratio 缺省 1.0(全量采样)。
+observability:
+  log:
+    level: info              # debug | info | warn | error
+    format: json             # json | text
+    # file: "/var/log/yanshi.log"  # 固定日志文件路径;空 = stderr(或 TUI 模式下的默认文件)
+    # TUI 启动时默认把日志重定向到 ~/.yanshi/logs/yanshi.log,避免污染 alt-screen 渲染。
+    # stderr_in_tui: true          # 调试 TUI 时设为 true,让日志留在 stderr
+  otel:
+    enabled: false
+    endpoint: "http://127.0.0.1:4318"  # OTLP/HTTP
+    service_name: yanshi
+    sample_ratio: 1.0
+
+# OBS3 特性注册表。Strict=true 时未知 flag 名直接 error(防拼写);overrides
+# 是 operator 种子值,覆盖 registry 内置 default。
+features:
+  strict: false
+  overrides: {}
+
+# COST1 模型单价表覆盖。键为模型名,值为 USD per million tokens。
+# bootstrap 把这些转成 einollm.ModelPricing 注入价格表;未知模型走 N/A。
+pricing:
+  overrides: {}
+
+# D3-S10 安全凭据存储。auto = 优先 OS keyring (zalando/go-keyring),失败软降级
+# 到加密文件 (Argon2id + AES-256-GCM);keyring = 强制 OS keyring;file = 强制
+# 加密文件;none = 关闭密钥存储(secret:// 引用解析失败)。
+# file_path 为空 => os.UserConfigDir()/yanshi/secrets.enc
+# passphrase_env 为空且 backend=auto 时,fileStore 被跳过(env/legacy 仍可用)。
+secrets:
+  backend: auto
+  file_path: ""
+  passphrase_env: YANSHI_PASSPHRASE
+
+# D3-O03 provider-neutral 认证。legacy_insecure=true 时接受配置里的明文 API key
+# (默认 false,fail-closed)。device 块配置 RFC 8628 device authorization;启用
+# 前必须用 HTTPS-only 的 device_url/token_url(loopback HTTP 仅供 e2e 测试)。
+auth:
+  # LegacyInsecure accepts raw literal API keys in config.yaml.
+  # This bypasses S10's fail-closed threat model — only enable temporarily
+  # during migration.
+  legacy_insecure: false
+
+  # AutoMigrate automatically stores raw literal API keys into the secrets
+  # backend and rewrites config.yaml with secret:// references on first boot.
+  # The rewrite is best-effort: if config.yaml is unwritable, boot proceeds
+  # with the ref in memory but prints a warning. Default: false.
+  auto_migrate: false
+
+  device:
+    device_auth_enabled: false
+    client_id: ""
+    providers: []
+
+# D3-I18N1 国际化。ui_locale=auto 时每次启动按 LC_ALL > LANG 重算(不持久化);
+# output_language 独立控制模型回复语言,空字符串表示不注入 system-prompt 指令。
+i18n:
+  ui_locale: auto
+  output_language: ""
+
+# D3-C15 TUI 键位/主题偏好。bindings 的方向固定为 key: action(与 keymap
+# 内置 builder 一致);/keymap reset 会写入 KeymapReset tombstone 屏蔽低优先级
+# project bindings。vim/high_contrast 为 *bool:省略 = 跟随 preferences.json,
+# 显式 false = 强制关闭。
+tui:
+  keymap: default
+  theme: default
+  vim: false
+  high_contrast: false
+  bindings:
+    enter: send
+    ctrl+enter: newline

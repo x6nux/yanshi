@@ -1,0 +1,7 @@
+# Golden test fixtures are byte-significant: test code compares them with
+# string(want) != got (see update_golden_test.go, sse golden test). With
+# core.autocrlf=true on Windows, git would convert LF<->CRLF on checkout and
+# break those byte-exact comparisons. Mark these -text (no EOL conversion) so
+# the checked-out bytes always equal the committed canonical bytes.
+internal/cli/tui/testdata/*.txt -text
+internal/proto/testdata/*.txt -text

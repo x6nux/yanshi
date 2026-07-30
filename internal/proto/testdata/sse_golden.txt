@@ -1,0 +1,105 @@
+event: agent_chunk
+data: {"type":"agent_chunk","text":"hi"}
+
+event: thinking
+data: {"type":"thinking","text":"..."}
+
+event: tool_call
+data: {"type":"tool_call","tool_name":"fs_search","tool_args":"{}","status":"running"}
+
+event: tool_result
+data: {"type":"tool_result","text":"ok","tool_name":"fs_search","status":"ok"}
+
+event: tool_progress
+data: {"type":"tool_progress","text":"1","tool_name":"fs_search"}
+
+event: error
+data: {"type":"error","text":"boom"}
+
+event: done
+data: {"type":"done"}
+
+event: retry
+data: {"type":"retry","text":"transient error","retry_attempt":1,"retry_max":3,"retry_delay_ms":500}
+
+event: models
+data: {"type":"models","names":["a"]}
+
+event: status
+data: {"type":"status","model":"m","thinking":"low","tokens_in":1,"tokens_out":2,"turns":3,"context_window":4}
+
+event: status
+data: {"type":"status","model":"m","thinking":"low","perm_mode":"default","tokens_in":1,"tokens_out":2,"turns":3,"context_window":4}
+
+event: compact_chunk
+data: {"type":"compact_chunk","text":"summary"}
+
+event: history_replaced
+data: {"type":"history_replaced"}
+
+event: sessions
+data: {"type":"sessions"}
+
+event: session_restored
+data: {"type":"session_restored","model":"model","thinking":"off","tokens_in":10,"tokens_out":20,"turns":3,"session_id":"s1"}
+
+event: session_ack
+data: {"type":"session_ack","text":"t","session_id":"s1","action":"renamed"}
+
+event: session_forked
+data: {"type":"session_forked","session_id":"fork-id-123"}
+
+event: structured_result
+data: {"type":"structured_result","structured_result":{}}
+
+event: subagent_event
+data: {"type":"subagent_event","text":"x","agent_id":"ag-1","agent_role":"explore","event":"started","agent_status":"running"}
+
+event: mcp_list
+data: {"type":"mcp_list","servers":["s"]}
+
+event: mcp_status
+data: {"type":"mcp_status"}
+
+event: skills_list
+data: {"type":"skills_list"}
+
+event: skill_ack
+data: {"type":"skill_ack","skill":{"name":"hi","enabled":false,"trusted":false},"action":"installed"}
+
+event: jobs
+data: {"type":"jobs"}
+
+event: job_event
+data: {"type":"job_event","text":"data","status":"running","id":"j1"}
+
+event: plan_update
+data: {"type":"plan_update","task_id":"wt-1","checklist":{"items":null}}
+
+event: checklist_update
+data: {"type":"checklist_update","task_id":"wt-1","checklist":{"items":null}}
+
+event: 
+data: {"type":""}
+
+event: side_state
+data: {"type":"side_state","side_depth":1}
+
+event: seams
+data: {"type":"seams"}
+
+event: seam_restored
+data: {"type":"seam_restored","text":"reverted","id":"s1","commit_short":"abc123","head":"fullhead"}
+
+event: features
+data: {"type":"features"}
+
+event: permission_rule_hit
+data: {"type":"permission_rule_hit","text":"scope","tool_name":"shell_run","status":"hit","id":"r1"}
+
+event: permissions
+data: {"type":"permissions"}
+
+event: permission_request
+data: {"type":"permission_request","tool_name":"t","tool_args":"{}","id":"id","reason":"r"}
+
