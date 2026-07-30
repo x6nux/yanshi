@@ -1,0 +1,102 @@
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/x6nux/yanshi/internal/lsp"
+	"github.com/x6nux/yanshi/internal/secproc"
+)
+
+type stubLSPManager struct {
+	enabled bool
+	byPath  map[string][]lsp.Diagnostic
+}
+
+func (s stubLSPManager) Enabled() bool { return s.enabled }
+func (s stubLSPManager) Diagnostics(path string, _ time.Duration) []lsp.Diagnostic {
+	return s.byPath[path]
+}
+func (s stubLSPManager) DidChange(path, content string) {}
+
+func TestDiagnosticsAggregatesIndependentProbes(t *testing.T) {
+	src := stubLSPManager{enabled: true, byPath: map[string][]lsp.Diagnostic{"a.go": {{Severity: lsp.SeverityError, Message: "bad"}}}}
+	diagLSPSourceOverride = src
+	t.Cleanup(func() { diagLSPSourceOverride = nil })
+
+	factory := newScriptedFactory(t, func(spec secproc.SecureProcessSpec) cannedResult {
+		if spec.Program == "go" {
+			return cannedResult{Stdout: "go version go1.26.4 linux/amd64\n"}
+		}
+		return cannedResult{Stdout: ""}
+	})
+	ctx := WithWorkRoot(secureTestContext(t, factory), t.TempDir())
+	out, err := runTool(ctx, NewDiagnosticsTool(diagTestProbe{files: []string{"a.go"}}), `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res struct {
+		Git       struct {
+			Available bool `json:"available"`
+		} `json:"git"`
+		Toolchain struct {
+			Go string `json:"go"`
+		} `json:"toolchain"`
+		LSP struct {
+			Available            bool `json:"available"`
+			OpenDiagnosticsCount int  `json:"open_diagnostics_count"`
+		} `json:"lsp"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if !res.Git.Available || !strings.Contains(res.Toolchain.Go, "go1.26") {
+		t.Fatalf("toolchain=%s", res.Toolchain.Go)
+	}
+	if !res.LSP.Available || res.LSP.OpenDiagnosticsCount != 1 {
+		t.Fatalf("lsp=%+v", res.LSP)
+	}
+}
+
+func TestDiagnosticsLSPUnavailableIsLocalDegradation(t *testing.T) {
+	diagLSPSourceOverride = stubLSPManager{enabled: false}
+	t.Cleanup(func() { diagLSPSourceOverride = nil })
+	factory := newScriptedFactory(t, func(secproc.SecureProcessSpec) cannedResult { return cannedResult{} })
+	ctx := WithWorkRoot(secureTestContext(t, factory), t.TempDir())
+	out, err := runTool(ctx, NewDiagnosticsTool(diagTestProbe{files: nil}), `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"lsp":{"available":false,"open_diagnostics_count":0}`) {
+		t.Fatalf("out=%s", out)
+	}
+}
+
+func TestDiagnosticsGitFailureDoesNotHideOthers(t *testing.T) {
+	diagLSPSourceOverride = stubLSPManager{enabled: false}
+	t.Cleanup(func() { diagLSPSourceOverride = nil })
+	factory := newScriptedFactory(t, func(spec secproc.SecureProcessSpec) cannedResult {
+		if spec.Program == "git" {
+			return cannedResult{ExitCode: 128, Stderr: "not a repo"}
+		}
+		return cannedResult{Stdout: "go version go1.26.4\n"}
+	})
+	ctx := WithWorkRoot(secureTestContext(t, factory), t.TempDir())
+	out, err := runTool(ctx, NewDiagnosticsTool(diagTestProbe{files: nil}), `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"go":"go version go1.26.4"`) {
+		t.Fatalf("out=%s", out)
+	}
+	if !strings.Contains(out, `"git":{"available":false`) {
+		t.Fatalf("out=%s", out)
+	}
+}
+
+type diagTestProbe struct{ files []string }
+
+func (d diagTestProbe) recentFiles(ctx context.Context, root string) []string { return d.files }

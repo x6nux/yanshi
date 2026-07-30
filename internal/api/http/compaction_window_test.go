@@ -1,0 +1,52 @@
+package http
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
+
+// TestContextWindowFor_UsesRegistryKey locks in the C1 fix:
+// ProviderWindows is keyed by the REGISTRY key (p.Model, e.g. "gpt-4o"), not
+// p.Name ("openai"). A config with Name != Model — the typical production
+// shape — must still hit the per-model window when queried by the registry
+// key, because that is what the WS / SSE handlers pass (cs.model / req.Model,
+// which is the model id selected via /model or sent by the client). The
+// historical bug was bootstrap rebuilding the windows map by p.Name, which
+// never matched the registry's model-id keys and silently disabled the
+// per-model window feature (always fell back to ContextWindow).
+func TestContextWindowFor_UsesRegistryKey(t *testing.T) {
+	cc := CompactionConfig{
+		ContextWindow:   999,                              // fallback — must NOT be returned for keyed models
+		ProviderWindows: map[string]int{"gpt-4o": 128000}, // keyed by Model id
+	}
+	assert.Equal(t, 128000, contextWindowFor("gpt-4o", cc),
+		"registry key (Model id) hits per-model window")
+	assert.Equal(t, 999, contextWindowFor("openai", cc),
+		"provider Name does NOT hit (keyed by Model)")
+	assert.Equal(t, 999, contextWindowFor("unknown", cc),
+		"unknown model falls back to ContextWindow")
+}
+
+// TestContextWindowFor_EmptyMapFallback locks the fallback behavior so the
+// FakeModel / no-providers path (providerWindows == nil) keeps compaction
+// working with the global ContextWindow.
+func TestContextWindowFor_EmptyMapFallback(t *testing.T) {
+	cc := CompactionConfig{
+		ContextWindow:   256000,
+		ProviderWindows: nil,
+	}
+	assert.Equal(t, 256000, contextWindowFor("gpt-4o", cc))
+	assert.Equal(t, 256000, contextWindowFor("anything", cc))
+}
+
+// TestContextWindowFor_ZeroEntryIgnored ensures a zero (mis-configured) entry
+// does not shadow the fallback — contextWindowFor must skip it and fall through.
+func TestContextWindowFor_ZeroEntryIgnored(t *testing.T) {
+	cc := CompactionConfig{
+		ContextWindow:   1000,
+		ProviderWindows: map[string]int{"bad": 0},
+	}
+	assert.Equal(t, 1000, contextWindowFor("bad", cc),
+		"a zero ProviderWindows entry must NOT shadow the fallback")
+}

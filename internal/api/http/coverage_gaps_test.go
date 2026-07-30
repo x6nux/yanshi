@@ -1,0 +1,725 @@
+// Package http — coverage gap tests for uncounted branches across the WS/SSE
+// handler functions. Each test targets a specific uncovered branch identified
+// by go tool cover -func, so we can push the package to 99%+.
+package http
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/cloudwego/eino/components/model"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/x6nux/yanshi/internal/agent/orchestrator"
+	"github.com/x6nux/yanshi/internal/approval"
+	"github.com/x6nux/yanshi/internal/features"
+	"github.com/x6nux/yanshi/internal/guard"
+	einollm "github.com/x6nux/yanshi/internal/llm/eino"
+	"github.com/x6nux/yanshi/internal/proto"
+	"github.com/x6nux/yanshi/internal/shell"
+	"github.com/x6nux/yanshi/internal/skills"
+	"github.com/x6nux/yanshi/internal/store"
+	"github.com/x6nux/yanshi/internal/tools"
+	"github.com/x6nux/yanshi/internal/vcs"
+)
+
+// ---------------------------------------------------------------------------
+// resolvePermissionMode — uncovered mode-auto-resolution branches
+// ---------------------------------------------------------------------------
+
+func TestResolvePermissionMode_AllowEditsDeniesNonEditTool(t *testing.T) {
+	cs := &connSession{perm: &permModeState{}}
+	cs.perm.set(guard.ModeAllowEdits, 0)
+	d, ok := resolvePermissionMode(context.Background(), cs, nil, tools.PermissionRequest{
+		Tool: "shell_run", Args: `{"command":"echo hi"}`,
+	})
+	assert.False(t, ok, "non-edit tool in allow-edits must not auto-resolve")
+	assert.Equal(t, tools.PermissionDeny, d)
+}
+
+func TestResolvePermissionMode_AutoBelowThreshold(t *testing.T) {
+	fm := einollm.NewFakeModel([]string{"score: 3"}, nil)
+	models := map[string]model.BaseChatModel{"default": fm}
+	cs := &connSession{perm: &permModeState{}, defaultModel: "default"}
+	cs.perm.set(guard.ModeAuto, 5)
+	d, ok := resolvePermissionMode(context.Background(), cs, models, tools.PermissionRequest{
+		Tool: "fs_write", Args: `{"path":"test.txt"}`,
+	})
+	assert.True(t, ok, "score=3 <= threshold=5 must auto-allow")
+	assert.Equal(t, tools.PermissionAllow, d)
+}
+
+func TestResolvePermissionMode_AutoAboveThreshold(t *testing.T) {
+	fm := einollm.NewFakeModel([]string{"score: 9"}, nil)
+	models := map[string]model.BaseChatModel{"default": fm}
+	cs := &connSession{perm: &permModeState{}, defaultModel: "default"}
+	cs.perm.set(guard.ModeAuto, 5)
+	d, ok := resolvePermissionMode(context.Background(), cs, models, tools.PermissionRequest{
+		Tool: "fs_write", Args: `{"path":"test.txt"}`,
+	})
+	assert.False(t, ok, "score=9 > threshold=5 must not auto-resolve")
+	assert.Equal(t, tools.PermissionDeny, d)
+}
+
+func TestResolvePermissionMode_DefaultReturnsNotResolved(t *testing.T) {
+	cs := &connSession{perm: &permModeState{}}
+	d, ok := resolvePermissionMode(context.Background(), cs, nil, tools.PermissionRequest{
+		Tool: "fs_write", Args: `{}`,
+	})
+	assert.False(t, ok, "default mode must not auto-resolve")
+	assert.Equal(t, tools.PermissionDeny, d)
+}
+
+func TestResolvePermissionMode_ForcePromptNotAutoResolved(t *testing.T) {
+	for _, mode := range []guard.PermissionMode{guard.ModeYOLO, guard.ModeAuto} {
+		t.Run(string(mode), func(t *testing.T) {
+			cs := &connSession{perm: &permModeState{}}
+			cs.perm.set(mode, 10)
+			d, ok := resolvePermissionMode(context.Background(), cs, nil, tools.PermissionRequest{
+				Tool: "dangerous_tool", ForcePrompt: true,
+			})
+			assert.False(t, ok, "ForcePrompt tool must not auto-resolve in mode %s", mode)
+			assert.Equal(t, tools.PermissionDeny, d)
+		})
+	}
+}
+
+func TestResolvePermissionMode_ApprovalRequiredNotAutoResolved(t *testing.T) {
+	cs := &connSession{perm: &permModeState{}}
+	cs.perm.set(guard.ModeYOLO, 0)
+	d, ok := resolvePermissionMode(context.Background(), cs, nil, tools.PermissionRequest{
+		Tool: "github_push", ApprovalRequired: true,
+	})
+	assert.False(t, ok, "ApprovalRequired tool must not auto-resolve in YOLO mode")
+	assert.Equal(t, tools.PermissionDeny, d)
+}
+
+func TestResolvePermissionMode_AutoNoModelFallsThrough(t *testing.T) {
+	cs := &connSession{perm: &permModeState{}}
+	cs.perm.set(guard.ModeAuto, 5)
+	d, ok := resolvePermissionMode(context.Background(), cs, nil, tools.PermissionRequest{
+		Tool: "fs_write", Args: `{}`,
+	})
+	assert.False(t, ok, "auto mode with no model must fall through to prompt")
+	assert.Equal(t, tools.PermissionDeny, d)
+}
+
+func TestAssessRisk_ModelErrorFallback(t *testing.T) {
+	fm := einollm.NewFakeModel(nil, errors.New("model error"))
+	models := map[string]model.BaseChatModel{"default": fm}
+	cs := &connSession{perm: &permModeState{}, defaultModel: "default"}
+	score, ok := assessRisk(context.Background(), models, cs, tools.PermissionRequest{
+		Tool: "fs_write", Args: `{}`,
+	})
+	assert.False(t, ok)
+	assert.Equal(t, 0, score)
+}
+
+func TestAssessRisk_NoFallbackModel(t *testing.T) {
+	cs := &connSession{perm: &permModeState{}}
+	score, ok := assessRisk(context.Background(), nil, cs, tools.PermissionRequest{Tool: "fs_write"})
+	assert.False(t, ok)
+	assert.Equal(t, 0, score)
+}
+
+// ---------------------------------------------------------------------------
+// ConnSession helper unit tests
+// ---------------------------------------------------------------------------
+
+func TestConnSession_RecordingSuppressedTrue(t *testing.T) {
+	cs := &connSession{perm: &permModeState{}}
+	assert.False(t, cs.recordingSuppressed())
+	cs.sideStack = append(cs.sideStack, sideSnapshot{})
+	assert.True(t, cs.recordingSuppressed())
+}
+
+func TestConnSession_DisplayModel(t *testing.T) {
+	cs := &connSession{perm: &permModeState{}, defaultModel: "default", model: ""}
+	assert.Equal(t, "default", cs.displayModel())
+	cs.model = "selected"
+	assert.Equal(t, "selected", cs.displayModel())
+}
+
+func TestConnSession_SelectModel(t *testing.T) {
+	cs := &connSession{perm: &permModeState{}}
+	assert.Nil(t, cs.selectModel(nil))
+	assert.Nil(t, cs.selectModel(map[string]model.BaseChatModel{}))
+	cs.model = "absent"
+	assert.Nil(t, cs.selectModel(map[string]model.BaseChatModel{}))
+	fm := einollm.NewFakeModel(nil, nil)
+	cs.model = "present"
+	assert.NotNil(t, cs.selectModel(map[string]model.BaseChatModel{"present": fm}))
+}
+
+func TestConnSession_StatusFrame_Defaults(t *testing.T) {
+	cs := &connSession{perm: &permModeState{}, startedAt: time.Now()}
+	srv := New(Config{})
+	st := cs.statusFrame(srv)
+	assert.Equal(t, "status", st.Type)
+	assert.Zero(t, st.TokensIn)
+	assert.Zero(t, st.TokensOut)
+}
+
+func TestConnSession_EnterSideMaxDepth(t *testing.T) {
+	cs := &connSession{perm: &permModeState{}}
+	for i := 0; i < maxSideDepth; i++ {
+		assert.NoError(t, cs.enterSide(), "enterSide at depth %d must succeed", i)
+	}
+	err := cs.enterSide()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "side depth limit")
+}
+
+func TestConnSession_ExitSideEmpty(t *testing.T) {
+	cs := &connSession{perm: &permModeState{}, startedAt: time.Now()}
+	cs.exitSide() // must not panic
+}
+
+// ---------------------------------------------------------------------------
+// WS end-to-end tests for ChatWS control frames
+// ---------------------------------------------------------------------------
+
+func TestChatWS_FeaturesSetError(t *testing.T) {
+	reg := features.NewRegistry(true)
+	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
+	require.NoError(t, err)
+	srv := New(Config{Token: "t", FeaturesReg: reg})
+	srv.ChatWS(o, nil, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.NewFeaturesSet("", true)))
+	f := readFrame(t, c)
+	assert.Equal(t, "error", f.Type)
+}
+
+func TestChatWS_FeaturesSetNilPayload(t *testing.T) {
+	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
+	require.NoError(t, err)
+	srv := New(Config{Token: "t"})
+	srv.ChatWS(o, nil, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.ClientFrame{Type: "features_set"}))
+	f := readFrame(t, c)
+	assert.Equal(t, "error", f.Type)
+}
+
+func TestChatWS_JobsListNoManager(t *testing.T) {
+	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
+	require.NoError(t, err)
+	srv := New(Config{Token: "t"})
+	srv.ChatWS(o, nil, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.NewJobsList()))
+	f := readFrame(t, c)
+	assert.Equal(t, "jobs", f.Type)
+	assert.Empty(t, f.Jobs)
+}
+
+func TestChatWS_JobsListWithManager(t *testing.T) {
+	sm := shell.NewManager(shell.Config{})
+	o, err := orchestrator.New(orchestrator.Config{
+		Model:   einollm.NewFakeModel([]string{"x"}, nil),
+		Profile: guard.PermissionProfile{Tools: guard.ToolsPerm{Allow: []string{"*"}}},
+	})
+	require.NoError(t, err)
+	srv := New(Config{Token: "t", ShellManager: sm})
+	srv.ChatWS(o, nil, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.NewJobsList()))
+	f := readFrame(t, c)
+	assert.Equal(t, "jobs", f.Type)
+	assert.Empty(t, f.Jobs)
+}
+
+func TestChatWS_JobReadNoManager(t *testing.T) {
+	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
+	require.NoError(t, err)
+	srv := New(Config{Token: "t"})
+	srv.ChatWS(o, nil, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.ClientFrame{Type: "job_read", ID: "j1"}))
+	f := readFrame(t, c)
+	assert.Equal(t, "error", f.Type)
+}
+
+func TestChatWS_JobWriteNoManager(t *testing.T) {
+	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
+	require.NoError(t, err)
+	srv := New(Config{Token: "t"})
+	srv.ChatWS(o, nil, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.ClientFrame{Type: "job_write", ID: "j1", Text: "input"}))
+	f := readFrame(t, c)
+	assert.Equal(t, "error", f.Type)
+}
+
+func TestChatWS_JobCancelNoManager(t *testing.T) {
+	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
+	require.NoError(t, err)
+	srv := New(Config{Token: "t"})
+	srv.ChatWS(o, nil, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.ClientFrame{Type: "job_cancel", ID: "j1"}))
+	f := readFrame(t, c)
+	assert.Equal(t, "error", f.Type)
+}
+
+func TestChatWS_EnterSideMaxDepth(t *testing.T) {
+	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
+	require.NoError(t, err)
+	srv := New(Config{Token: "t"})
+	srv.ChatWS(o, nil, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	for i := 0; i < maxSideDepth+1; i++ {
+		require.NoError(t, c.WriteJSON(proto.NewEnterSide()))
+		f := readFrame(t, c)
+		if i < maxSideDepth {
+			assert.Equal(t, "side_state", f.Type)
+			assert.Equal(t, i+1, f.SideDepth)
+		} else {
+			assert.Equal(t, "error", f.Type)
+		}
+	}
+}
+
+func TestChatWS_ExitSideEmptyStack(t *testing.T) {
+	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
+	require.NoError(t, err)
+	srv := New(Config{Token: "t"})
+	srv.ChatWS(o, nil, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.NewExitSide()))
+	f := readFrame(t, c)
+	assert.Equal(t, "side_state", f.Type)
+	assert.Equal(t, 0, f.SideDepth)
+}
+
+func TestChatWS_MCPActionEnableDisable(t *testing.T) {
+	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
+	require.NoError(t, err)
+	srv := New(Config{Token: "t"})
+	srv.ChatWS(o, nil, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.ClientFrame{Type: "mcp_action", MCPServer: "test", MCPAction: "enable"}))
+	f := readFrame(t, c)
+	assert.Equal(t, "mcp_status", f.Type)
+}
+
+func TestChatWS_SessionListWithStore(t *testing.T) {
+	st, err := store.Open(":memory:")
+	require.NoError(t, err)
+	defer st.Close()
+	sid, err := st.CreateSession("test-session")
+	require.NoError(t, err)
+
+	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
+	require.NoError(t, err)
+	srv := New(Config{Token: "t", Store: st})
+	srv.ChatWS(o, nil, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.NewSessionList()))
+	f := readFrame(t, c)
+	assert.Equal(t, "sessions", f.Type)
+	assert.NotEmpty(t, f.Sessions)
+	assert.Equal(t, sid, f.Sessions[0].ID)
+}
+
+func TestChatWS_SessionListStoreError(t *testing.T) {
+	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
+	require.NoError(t, err)
+	srv := New(Config{Token: "t"})
+	srv.ChatWS(o, nil, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.NewSessionList()))
+	f := readFrame(t, c)
+	assert.Equal(t, "sessions", f.Type)
+	assert.Empty(t, f.Sessions)
+}
+
+// ---------------------------------------------------------------------------
+// ensureSession / persistMessages — uncovered error branches
+// ---------------------------------------------------------------------------
+
+func TestEnsureSession_NilStore(t *testing.T) {
+	srv := &Server{}
+	cs := &connSession{perm: &permModeState{}}
+	cs.ensureSession(srv, "test")
+}
+
+func TestEnsureSession_AlreadyExists(t *testing.T) {
+	st, err := store.Open(":memory:")
+	require.NoError(t, err)
+	defer st.Close()
+	cs := &connSession{perm: &permModeState{}, sessionID: "existing"}
+	srv := &Server{store: st}
+	cs.ensureSession(srv, "should-not-create")
+	assert.Equal(t, "existing", cs.sessionID)
+}
+
+func TestEnsureSession_CreateSessionError(t *testing.T) {
+	cs := &connSession{perm: &permModeState{}}
+	cs.ensureSession(&Server{}, "test-title")
+	assert.Empty(t, cs.sessionID)
+}
+
+func TestPersistMessages_NilStore(t *testing.T) {
+	cs := &connSession{perm: &permModeState{}}
+	cs.persistMessages(&Server{}, "user msg", "assistant msg")
+}
+
+func TestPersistMessages_RecordingSuppressed(t *testing.T) {
+	cs := &connSession{perm: &permModeState{}, sessionID: "s1"}
+	cs.sideStack = []sideSnapshot{{}}
+	cs.persistMessages(&Server{}, "user", "assistant")
+}
+
+func TestPersistMessages_AppendError(t *testing.T) {
+	cs := &connSession{perm: &permModeState{}, sessionID: "nonexistent"}
+	cs.persistMessages(&Server{}, "user", "assistant")
+}
+
+// ---------------------------------------------------------------------------
+// loadSession — uncovered error branches
+// ---------------------------------------------------------------------------
+
+func TestLoadSession_NilStore(t *testing.T) {
+	cs := &connSession{perm: &permModeState{}}
+	err := cs.loadSession(&Server{}, "some-id")
+	assert.NoError(t, err)
+}
+
+func TestLoadSession_GetSessionError(t *testing.T) {
+	cs := &connSession{perm: &permModeState{}}
+	err := cs.loadSession(&Server{}, "some-id")
+	assert.NoError(t, err) // nil store is no-op
+}
+
+// ---------------------------------------------------------------------------
+// isLoopback — SplitHostPort error path
+// ---------------------------------------------------------------------------
+
+func TestIsLoopback_BadAddr(t *testing.T) {
+	assert.False(t, isLoopback("not-a-valid-addr"))
+	assert.False(t, isLoopback(""))
+}
+
+// ---------------------------------------------------------------------------
+// authorizeControlAction — approval manager path
+// ---------------------------------------------------------------------------
+
+func TestAuthorizeControlAction_WithApprovals(t *testing.T) {
+	o, err := orchestrator.New(orchestrator.Config{
+		Model:   einollm.NewFakeModel([]string{"x"}, nil),
+		Profile: guard.PermissionProfile{Tools: guard.ToolsPerm{Allow: []string{"*"}}},
+	})
+	require.NoError(t, err)
+	am, err := approval.New(nil, "test-conn", nil)
+	require.NoError(t, err)
+	srv := New(Config{Token: "t", Approvals: am})
+	srv.ChatWS(o, nil, nil)
+
+	err = srv.authorizeControlAction(context.Background(), "test-session", nil, "task_shell_stdin")
+	assert.NoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// scopeJSON
+// ---------------------------------------------------------------------------
+
+func TestScopeJSON_Normal(t *testing.T) {
+	s := scopeJSON(approval.Scope{Tool: "fs_write"})
+	assert.Contains(t, s, "fs_write")
+}
+
+// ---------------------------------------------------------------------------
+// compileSchema
+// ---------------------------------------------------------------------------
+
+func TestCompileSchema_InvalidDocument(t *testing.T) {
+	_, err := compileSchema(json.RawMessage(`not valid json`))
+	assert.Error(t, err)
+}
+
+func TestCompileSchema_ValidDocument(t *testing.T) {
+	doc := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}}}`)
+	sch1, err := compileSchema(doc)
+	require.NoError(t, err)
+	require.NotNil(t, sch1)
+
+	sch2, err := compileSchema(doc)
+	require.NoError(t, err)
+	assert.Same(t, sch1, sch2)
+}
+
+// ---------------------------------------------------------------------------
+// Sessions — uncovered error branches
+// ---------------------------------------------------------------------------
+
+func TestSessions_GetNotFound(t *testing.T) {
+	st, err := store.Open(":memory:")
+	require.NoError(t, err)
+	defer st.Close()
+
+	s := New(Config{Token: "tok"})
+	s.Sessions(st)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	resp, err := ts.Client().Do(doAuthed(t, "GET", ts.URL+"/api/v1/sessions/nonexistent", "tok"))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// ---------------------------------------------------------------------------
+// Job read error path via WS
+// ---------------------------------------------------------------------------
+
+func TestJobRead_NotFound(t *testing.T) {
+	sm := shell.NewManager(shell.Config{})
+	o, err := orchestrator.New(orchestrator.Config{
+		Model:   einollm.NewFakeModel([]string{"x"}, nil),
+		Profile: guard.PermissionProfile{Tools: guard.ToolsPerm{Allow: []string{"*"}}},
+	})
+	require.NoError(t, err)
+	srv := New(Config{Token: "t", ShellManager: sm})
+	srv.ChatWS(o, nil, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.ClientFrame{Type: "job_read", ID: "nonexistent", Text: "100"}))
+	f := readFrame(t, c)
+	assert.Equal(t, "error", f.Type)
+}
+
+// ---------------------------------------------------------------------------
+// HandleRestoreSession with a real store but missing session
+// ---------------------------------------------------------------------------
+
+func TestHandleRestoreSession_MissingSession(t *testing.T) {
+	st, err := store.Open(":memory:")
+	require.NoError(t, err)
+	defer st.Close()
+
+	srv := New(Config{Store: st})
+	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
+	require.NoError(t, err)
+	srv.ChatWS(o, nil, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.NewRestoreSession("nonexistent")))
+	f := readFrame(t, c)
+	assert.Equal(t, "error", f.Type)
+}
+
+// ---------------------------------------------------------------------------
+// Skill mutation test via WS
+// ---------------------------------------------------------------------------
+
+func TestHandleSkillMutation_NilRegistryWS(t *testing.T) {
+	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
+	require.NoError(t, err)
+	srv := New(Config{Token: "t"})
+	srv.ChatWS(o, nil, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.NewEnableSkill("test")))
+	f := readFrame(t, c)
+	assert.Equal(t, "skill_ack", f.Type)
+	assert.NotEmpty(t, f.Text)
+}
+
+// ---------------------------------------------------------------------------
+// Uninstall non-user skill via WS
+// ---------------------------------------------------------------------------
+
+func TestUninstallNonUserSkillWS(t *testing.T) {
+	builtinRoot := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(builtinRoot, "built"), 0o755)
+	_ = os.WriteFile(filepath.Join(builtinRoot, "built", "SKILL.md"),
+		[]byte("---\nname: built\nsource: builtin\n---\n# x"), 0o644)
+
+	loader := skills.NewLoader(skills.Builtin(builtinRoot))
+	reg, err := loader.Load()
+	require.NoError(t, err)
+
+	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"ok"}, nil)})
+	require.NoError(t, err)
+
+	srv := New(Config{
+		Token:          "t",
+		SkillsRegistry: reg,
+		SkillsLoader:   loader,
+		SkillsDstRoot:  t.TempDir(),
+	})
+	srv.ChatWS(o, nil, reg)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.NewUninstallSkill("built")))
+	f := readFrame(t, c)
+	assert.Equal(t, "skill_ack", f.Type)
+	assert.Equal(t, "uninstalled", f.Action)
+	assert.NotEmpty(t, f.Text)
+}
+
+// ---------------------------------------------------------------------------
+// Enable non-existent skill via WS
+// ---------------------------------------------------------------------------
+
+func TestEnableNonexistentSkillWS(t *testing.T) {
+	builtinRoot := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(builtinRoot, "known"), 0o755)
+	_ = os.WriteFile(filepath.Join(builtinRoot, "known", "SKILL.md"),
+		[]byte("---\nname: known\n---\n# x"), 0o644)
+
+	loader := skills.NewLoader(skills.Builtin(builtinRoot))
+	reg, err := loader.Load()
+	require.NoError(t, err)
+
+	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"ok"}, nil)})
+	require.NoError(t, err)
+
+	srv := New(Config{Token: "t", SkillsRegistry: reg})
+	srv.ChatWS(o, nil, reg)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.NewEnableSkill("nonexistent")))
+	f := readFrame(t, c)
+	assert.Equal(t, "skill_ack", f.Type)
+	assert.NotEmpty(t, f.Text)
+}
+
+// ---------------------------------------------------------------------------
+// ListSeams with empty session (VCS configured, no messages yet)
+// ---------------------------------------------------------------------------
+
+func TestListSeamsEmptySessionWS(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "repo")
+	require.NoError(t, os.MkdirAll(root, 0o755))
+	st, err := store.Open(filepath.Join(base, "test.db"))
+	require.NoError(t, err)
+	defer st.Close()
+	v := vcs.New(st, filepath.Join(base, "worktrees"))
+	repoID, err := v.InitRepo(root)
+	require.NoError(t, err)
+	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"ok"}, nil)})
+	require.NoError(t, err)
+	srv := New(Config{Store: st, VCS: v, RepoID: repoID})
+	srv.ChatWS(o, nil, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.NewListSeams()))
+	f := readFrame(t, c)
+	assert.Equal(t, "seams", f.Type)
+}
+
+// ---------------------------------------------------------------------------
+// CompactNow via WS end-to-end
+// ---------------------------------------------------------------------------
+
+func TestCompactNow_WithCompaction(t *testing.T) {
+	fm := einollm.NewFakeModel([]string{"COMPACT_SUMMARY"}, nil)
+	models := map[string]model.BaseChatModel{"fm": fm}
+	o, err := orchestrator.New(orchestrator.Config{Model: fm})
+	require.NoError(t, err)
+	srv := New(Config{Token: "t", Compaction: CompactionConfig{Model: "fm", KeepRecent: 1}})
+	srv.ChatWS(o, models, nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	long := strings.Repeat("x", 100)
+	require.NoError(t, c.WriteJSON(proto.NewUserMessage(long)))
+	recvTurn(t, c)
+	require.NoError(t, c.WriteJSON(proto.NewUserMessage(long)))
+	recvTurn(t, c)
+
+	require.NoError(t, c.WriteJSON(proto.NewCompact()))
+	var sawStatus bool
+	for {
+		f := readFrame(t, c)
+		if f.Type == "status" {
+			sawStatus = true
+			break
+		}
+		if f.Type == "compact_chunk" {
+			continue
+		}
+	}
+	assert.True(t, sawStatus)
+}
