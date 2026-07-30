@@ -96,11 +96,20 @@ func TestShell_RunNotOnAllowlist(t *testing.T) {
 // killed and returns an error, not a hang.
 func TestShell_RunTimeout(t *testing.T) {
 	sh := NewShellTools(".")
-	var cmd, pattern string
+	var cmd, pattern, env string
 	if runtime.GOOS == "windows" {
-		cmd = "ping -n 10 127.0.0.1"
-		pattern = "ping*"
+		// Use powershell directly so killing the shell also kills the command:
+		// the default "auto" shell wraps the command in `cmd /c`, which spawns
+		// the target as a child process. TerminateProcess on cmd.exe orphans
+		// the child, which keeps the stdout pipe open long after the timeout
+		// fires — so the ✗ error chunk never lands and the test sees only the
+		// child's output. powershell.exe runs Start-Sleep in-process, so the
+		// kill is immediate and the pipe EOFs at the timeout boundary.
+		env = "powershell"
+		cmd = "Start-Sleep -Seconds 10"
+		pattern = "Start-Sleep*"
 	} else {
+		env = "auto"
 		cmd = "sleep 5"
 		pattern = "sleep*"
 	}
@@ -109,7 +118,7 @@ func TestShell_RunTimeout(t *testing.T) {
 		Shell: guard.ShellPerm{Policy: "allowlist", Patterns: []string{pattern}},
 	})
 	start := time.Now()
-	out, err := runTool(ctx, sh.Run, fmt.Sprintf(`{"command":%q,"timeout":1}`, cmd))
+	out, err := runTool(ctx, sh.Run, fmt.Sprintf(`{"command":%q,"timeout":1,"env":%q}`, cmd, env))
 	elapsed := time.Since(start)
 	require.NoError(t, err, "timeout must surface as a result, not a Go error")
 	assert.Contains(t, out, "✗")

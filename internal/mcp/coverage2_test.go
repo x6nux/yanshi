@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -129,7 +130,7 @@ func TestReconnectBranches(t *testing.T) {
 	m5 := managerWithClient(t, &ServerConfig{Name: "s", Enabled: true, Transport: TransportHTTP, URL: "http://127.0.0.1:1/x", Reconnect: true}, nil)
 	m5.SetHealthConfig(HealthConfig{Enabled: true, StartupTimeout: 100 * time.Millisecond, ReconnectMaxAttempts: 1, ReconnectInitialBackoff: 50 * time.Millisecond, ReconnectMaxBackoff: 50 * time.Millisecond})
 	var firstErr, secondErr error
-	var wg twoWaitGroup
+	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() { defer wg.Done(); firstErr = m5.reconnect(ctx, "s") }()
 	go func() { defer wg.Done(); secondErr = m5.reconnect(ctx, "s") }()
@@ -138,12 +139,6 @@ func TestReconnectBranches(t *testing.T) {
 		t.Fatal("expected at least one reconnect error")
 	}
 }
-
-type twoWaitGroup struct{ n int }
-
-func (w *twoWaitGroup) Add(n int)   { w.n += n }
-func (w *twoWaitGroup) Done()        { w.n--; if w.n <= 0 { w.n = 0 } }
-func (w *twoWaitGroup) Wait()        { for w.n > 0 { time.Sleep(time.Millisecond) } }
 
 // TestCallToolRetryBranches covers CallToolRetry's tool-not-found and
 // reconnect-failed paths.

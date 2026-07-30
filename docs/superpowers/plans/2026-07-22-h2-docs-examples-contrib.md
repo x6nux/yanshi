@@ -857,7 +857,7 @@ job（`docs-gate`）步骤：
 5. **ADR 可达**：复用 Task 3 Step 3 的 grep 脚本，断言每条 ADR 关联路径存在。
 6. **归档无断链**：复用 Task 14 Step 3 的 grep，断言无指向旧路径的死链。
 7. **配置一致性**（Advisory 4）：断言 `internal/config.Config`（含递归嵌套 struct）每个带 `yaml` tag 的导出字段，在生成的 `config-skeleton` 骨架表里**恰好一行**。实现为一个小 Go 测试（`cmd/gendocs` 或 `internal/config`）：`reflect` 遍历 `Config` 收集所有 `yaml:"<key>"` tag 为集合 A；解析 `docs/user-guide/configuration.md` 中 `<!-- BEGIN GENERATED: config-skeleton -->` 区块内每行的 key 列为集合 B；断言 `A == B`（双向：防"struct 有字段、骨架缺行"与"骨架有行、struct 已删字段"）。
-8. **跨文档相对链接可达**（Advisory 3）：遍历 `docs/`（不含 `docs/archive/`）与 `CONTRIBUTING.md`，对每个 `](relative/path.md)` 链接按所在文件目录解析，断言目标存在（broken relative paths → CI 红）。
+8. **跨文档相对链接可达**（Advisory 3）：遍历 `docs/`（不含 `docs/archive/`）与 `CONTRIBUTING.md`，对每个 `](relative/path)` 形式的相对 .md 链接按所在文件目录解析，断言目标存在（broken relative paths → CI 红）。
 
 - [ ] **Step 2: 本地全量演练（单脚本 = CI 全部检查）**
 

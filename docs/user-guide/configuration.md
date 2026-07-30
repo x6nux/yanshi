@@ -97,6 +97,12 @@ C15 TUI 偏好（也可运行时 `/keymap`、`/vim`、`/contrast` 改）：`keym
 下表由 `go run ./cmd/gendocs -config docs/user-guide/configuration.md` 从 `internal/config.Config` 反射生成；列出每个字段的 key（dotted 路径）与类型。说明列留空，语义见上方各块 prose。修改 Config struct 后重生成；不要手改本区块。CI 守门确保 struct 与骨架一一对应（[../adr/README.md](../adr/README.md) 见 governance）。
 
 <!-- BEGIN GENERATED: config-skeleton -->
+### schema_version
+
+| key | type | 说明 |
+|---|---|---|
+| schema_version | int | |
+
 ### server
 
 | key | type | 说明 |
@@ -169,6 +175,9 @@ C15 TUI 偏好（也可运行时 `/keymap`、`/vim`、`/contrast` 改）：`keym
 | compaction.context_window | int | |
 | compaction.model | string | |
 | compaction.chunk_threshold | float | |
+| compaction.cooldown_fraction | float | |
+| compaction.cooldown_duration | string | |
+| compaction.hard_force_fraction | float | |
 
 ### memory
 
@@ -220,6 +229,8 @@ C15 TUI 偏好（也可运行时 `/keymap`、`/vim`、`/contrast` 改）：`keym
 |---|---|---|
 | observability.log.level | string | |
 | observability.log.format | string | |
+| observability.log.file | string | |
+| observability.log.stderr_in_tui | bool | |
 | observability.otel.enabled | bool | |
 | observability.otel.endpoint | string | |
 | observability.otel.service_name | string | |
@@ -251,6 +262,7 @@ C15 TUI 偏好（也可运行时 `/keymap`、`/vim`、`/contrast` 改）：`keym
 | key | type | 说明 |
 |---|---|---|
 | auth.legacy_insecure | bool | |
+| auth.auto_migrate | bool | |
 | auth.device.client_id | string | |
 | auth.device.device_auth_enabled | bool | |
 | auth.device.providers | []DeviceProviderConfig | |

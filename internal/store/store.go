@@ -20,6 +20,13 @@ var sqlOpener = sql.Open
 // Store wraps a SQLite connection with applied migrations.
 type Store struct {
 	DB *sql.DB
+
+	// inMemory is true when the store was opened from ":memory:".
+	// WAL PRAGMAs are skipped for in-memory databases (modernc/sqlite
+	// on macOS/Windows may not handle journal_mode=WAL on :memory:
+	// correctly, causing silent transaction failures).
+	inMemory bool
+
 	// writeMu serializes WAL writes inside a single process so concurrent
 	// goroutines never hit SQLITE_BUSY. Consumers coordinate through WriteTx.
 	// Cross-process conflicts (auth CLI subprocess) are handled by DSN busy_timeout.
@@ -63,7 +70,10 @@ func (s *Store) Close() error {
 	defer s.writeMu.Unlock()
 	// TRUNCATE the WAL on close so -wal doesn't balloon on long-running
 	// instances. Failure is non-fatal — Windows may hold read connections.
-	_, _ = s.DB.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+	// Skip for in-memory databases (no WAL file to checkpoint).
+	if !s.inMemory {
+		_, _ = s.DB.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+	}
 	return s.DB.Close()
 }
 
@@ -109,7 +119,7 @@ func OpenWith(path string, opts OpenOptions) (*Store, error) {
 	if maxOpen > 1 {
 		db.SetConnMaxIdleTime(5 * time.Minute)
 	}
-	s := &Store{DB: db}
+	s := &Store{DB: db, inMemory: path == ":memory:"}
 	if err := s.applyConnectionPragmas(); err != nil {
 		db.Close()
 		return nil, err
@@ -123,7 +133,14 @@ func OpenWith(path string, opts OpenOptions) (*Store, error) {
 
 // buildDSN appends the _pragma query string for per-connection PRAGMAs (modernc
 // DSN format, v1.53.0+). path must not contain '?'.
+// :memory: databases skip the DSN pragmas because modernc may not recognize
+// :memory:?_pragma=... as in-memory on all platforms (macOS/Windows would
+// create a file-backed database instead), and the single-connection forced by
+// :memory: makes the per-connection pragmas redundant anyway.
 func buildDSN(path string, busyMs, autoCkpt int) string {
+	if path == ":memory:" {
+		return path
+	}
 	return path + "?_pragma=busy_timeout(" + strconv.Itoa(busyMs) + ")" +
 		"&_pragma=synchronous(NORMAL)" +
 		"&_pragma=wal_autocheckpoint(" + strconv.Itoa(autoCkpt) + ")"
@@ -134,6 +151,9 @@ func buildDSN(path string, busyMs, autoCkpt int) string {
 // PRAGMAs (synchronous, busy_timeout, wal_autocheckpoint) are handled by DSN
 // _pragma, not here.
 func (s *Store) applyConnectionPragmas() error {
+	if s.inMemory {
+		return nil // WAL is not meaningful for :memory: databases
+	}
 	if _, err := s.DB.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		return fmt.Errorf("store: set WAL: %w", err)
 	}

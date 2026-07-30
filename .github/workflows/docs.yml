@@ -102,4 +102,5 @@ jobs:
       - name: Python parse + import
         run: |
           python -m py_compile examples/sdk-python/main.py
-          PYTHONPATH=sdk/python/src python -c "import yanshi_sdk"
+          pip install -e sdk/python
+          python -c "import yanshi_sdk"

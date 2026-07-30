@@ -66,10 +66,17 @@ func newPermWSServer(t *testing.T) (url, workdir string) {
 }
 
 // readFrame reads one ServerFrame with a generous deadline (the turn may block
-// on a permission round-trip).
+// on a permission round-trip). Under -race the orchestrator/ADK path is
+// instrumented on every memory access and runs much slower, so scale the
+// deadline up to avoid spurious i/o-timeout failures unrelated to the code
+// under test.
 func readFrame(t *testing.T, c *websocket.Conn) proto.ServerFrame {
 	t.Helper()
-	require.NoError(t, c.SetReadDeadline(time.Now().Add(5*time.Second)))
+	deadline := 30 * time.Second
+	if raceDetectorEnabled {
+		deadline = 180 * time.Second
+	}
+	require.NoError(t, c.SetReadDeadline(time.Now().Add(deadline)))
 	_, data, err := c.ReadMessage()
 	require.NoError(t, err)
 	var f proto.ServerFrame

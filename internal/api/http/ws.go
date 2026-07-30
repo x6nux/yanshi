@@ -482,10 +482,25 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 			// reader bypass stays closed until AFTER the post-turn seam is sealed.
 			turnCtx, release := makeTurnCtx()
 			defer release()
-			defer func() {
+			// sealPostTurn seals the post-turn seam. It MUST run before the
+			// "done" frame on the normal path: a client that sees "done" and
+			// immediately records a VCS edit (e.g. the RB1 integration test's
+			// advance()) would race the defer-based seal — the seal folds the
+			// pending edit into its own commit (commitScope clears the
+			// changeset), so the client's follow-up CommitMain hits
+			// "no changes to commit". Sealing before "done" makes the done
+			// frame a true turn-end barrier. The defer remains a safety net
+			// for early-return error paths that don't reach the normal done.
+			sealed := false
+			sealPostTurn := func() {
+				if sealed {
+					return
+				}
+				sealed = true
 				s.sealTurnBoundary(cs.sessionID, cs.turns, len(cs.history),
 					string(vcs.SeamPostTurn), "post-turn:"+strconv.Itoa(cs.turns))
-			}()
+			}
+			defer sealPostTurn()
 
 			// Bind safe correlation IDs (trace/session/turn) for the redacting
 			// logger and (later) OTel spans. The IDs are random per-turn; nothing
@@ -577,10 +592,15 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 			// never stall the tool goroutine. On overload, live TUI chunks may
 			// be dropped; Result still reaches the model through InvokableRun.
 			toolChunkFrames := make(chan proto.ServerFrame, 256)
+			// Snapshot the Done channel before the goroutine starts: turnCtx is
+			// reassigned below (WithToolChunkCallback / WithRetryCallback /
+			// WithNewTurnRecorder), and this goroutine must read a stable value,
+			// not the shared turnCtx variable (-race would flag the racy read).
+			chunkDone := turnCtx.Done()
 			go func() {
 				for {
 					select {
-					case <-turnCtx.Done():
+					case <-chunkDone:
 						return
 					case frame := <-toolChunkFrames:
 						conn.write(frame)
@@ -916,6 +936,10 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 				"tool_calls", cs.toolCalls,
 				"completion_tokens", usage.CompletionTokens+judgeCompletionTokens,
 			)
+			// Seal the post-turn seam BEFORE the done frame so a client that
+			// acts on "done" (records a VCS edit, commits) does not race the
+			// seal's pending-edit fold. See sealPostTurn for the full rationale.
+			sealPostTurn()
 			conn.write(proto.ServerFrame{Type: "done", Text: turnEndSummary(&cs)})
 		}
 

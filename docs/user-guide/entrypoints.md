@@ -202,6 +202,8 @@ Usage of doctor:
     	path to configuration file (default "config.yaml")
   -json
     	emit machine-readable JSON instead of human-readable text
+  -release
+    	promote release-blocking warns to fails (release runbook; see docs/upgrade-guide.md)
 ```
 <!-- END GENERATED: help:doctor -->
 

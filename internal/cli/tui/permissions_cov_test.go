@@ -63,9 +63,12 @@ func TestCov_PermModePersistence(t *testing.T) {
 	persistPermMode = true
 	t.Cleanup(func() { persistPermMode = orig })
 
-	// path=="" → savePermMode no-ops; loads return defaults.
+	// path=="" → savePermMode no-ops; loads return defaults. Clear every
+	// platform's UserConfigDir input (APPDATA on Windows, XDG/HOME on posix).
 	t.Setenv("APPDATA", "")
 	t.Setenv("LOCALAPPDATA", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", "")
 	savePermMode(guard.ModeAuto, 4) // path=="" branch
 	if permModeFile() == "" {
 		assert.Equal(t, guard.ModeDefault, loadSavedMode())
@@ -75,13 +78,16 @@ func TestCov_PermModePersistence(t *testing.T) {
 	// File absent → ReadFile error → defaults.
 	tmp := t.TempDir()
 	t.Setenv("APPDATA", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
 	assert.Equal(t, guard.ModeDefault, loadSavedMode())
 	assert.Equal(t, 0, loadSavedThreshold())
 
-	// Corrupt JSON → Unmarshal error → defaults.
-	dir := filepath.Join(tmp, "yanshi")
-	require.NoError(t, os.MkdirAll(dir, 0o755))
-	f := filepath.Join(dir, "perm_mode.json")
+	// Corrupt JSON → Unmarshal error → defaults. Write the exact path
+	// permModeFile() reads (it varies by OS, so do not hardcode tmp/yanshi).
+	f := permModeFile()
+	require.NotEmpty(t, f)
+	require.NoError(t, os.MkdirAll(filepath.Dir(f), 0o755))
 	require.NoError(t, os.WriteFile(f, []byte("not json"), 0o644))
 	assert.Equal(t, guard.ModeDefault, loadSavedMode())
 	assert.Equal(t, 0, loadSavedThreshold())

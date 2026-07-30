@@ -33,6 +33,13 @@ type wsBackend struct {
 	sendMu sync.Mutex // serialize Send/SendFrame writes (one frame at a time)
 	cur    chan StreamEvent
 	curMu  sync.Mutex
+	// curDone is closed to signal readLoop that the current turn's cur should
+	// be closed. readLoop owns cur (it is the sole sender and closer), so the
+	// cancel goroutine never closes cur directly — that would race with
+	// readLoop's chansend (closechan vs chansend DATA RACE). Instead cancel
+	// closes curDone; readLoop's send select catches it, drains any in-flight
+	// send, and closes cur itself. nil when no turn is active.
+	curDone chan struct{}
 
 	controlMode bool // true while cur is a control-request reply channel
 
@@ -63,8 +70,10 @@ func (b *wsBackend) Send(ctx context.Context, text string) (<-chan StreamEvent, 
 	defer b.sendMu.Unlock()
 
 	ch := make(chan StreamEvent, 16)
+	curDone := make(chan struct{})
 	b.curMu.Lock()
 	b.cur = ch
+	b.curDone = curDone
 	b.controlMode = false // turn mode: close on done/error
 	b.curMu.Unlock()
 
@@ -90,18 +99,21 @@ func (b *wsBackend) Send(ctx context.Context, text string) (<-chan StreamEvent, 
 		case <-b.done:
 			return
 		}
-		// Tell the server to cancel, then end the local channel. Hold sendMu
-		// around the WriteMessage: gorilla/websocket forbids concurrent writers
-		// and every other write site already holds it.
+		// Tell the server to cancel. Hold sendMu around the WriteMessage:
+		// gorilla/websocket forbids concurrent writers.
 		b.sendMu.Lock()
 		_ = b.conn.WriteMessage(websocket.TextMessage, mustMarshal(proto.NewCancel()))
 		b.sendMu.Unlock()
+		// Signal readLoop to close cur. We do NOT close cur directly — that
+		// would race with readLoop's chansend. readLoop catches curDone in its
+		// send select, drains the in-flight send, and closes cur itself.
+		// readLoop also clears b.cur/b.curDone under the lock when it closes
+		// cur (takeAndCloseCur), so we leave them for readLoop to clean up.
 		b.curMu.Lock()
-		cur := b.cur
-		b.cur = nil
-		b.controlMode = false
+		if b.curDone == curDone {
+			close(curDone)
+		}
 		b.curMu.Unlock()
-		safeClose(cur)
 	}()
 
 	return ch, nil
@@ -138,8 +150,10 @@ func (b *wsBackend) SendFrame(ctx context.Context, f proto.ClientFrame) (<-chan 
 	defer b.sendMu.Unlock()
 
 	ch := make(chan StreamEvent, 16)
+	curDone := make(chan struct{})
 	b.curMu.Lock()
 	b.cur = ch
+	b.curDone = curDone
 	b.controlMode = true // control mode: close on the reply frame
 	b.curMu.Unlock()
 
@@ -153,6 +167,7 @@ func (b *wsBackend) SendFrame(ctx context.Context, f proto.ClientFrame) (<-chan 
 		cancel()
 		b.curMu.Lock()
 		b.cur = nil
+		b.curDone = nil
 		b.controlMode = false
 		b.curMu.Unlock()
 		return nil, err
@@ -161,6 +176,7 @@ func (b *wsBackend) SendFrame(ctx context.Context, f proto.ClientFrame) (<-chan 
 		cancel()
 		b.curMu.Lock()
 		b.cur = nil
+		b.curDone = nil
 		b.controlMode = false
 		b.curMu.Unlock()
 		return nil, err
@@ -172,67 +188,100 @@ func (b *wsBackend) SendFrame(ctx context.Context, f proto.ClientFrame) (<-chan 
 		case <-b.done:
 			return
 		}
-		// Hold sendMu around the WriteMessage: gorilla/websocket forbids
-		// concurrent writers.
 		b.sendMu.Lock()
 		_ = b.conn.WriteMessage(websocket.TextMessage, mustMarshal(proto.NewCancel()))
 		b.sendMu.Unlock()
+		// Signal readLoop to close cur (see Send for the race rationale).
 		b.curMu.Lock()
-		cur := b.cur
-		b.cur = nil
-		b.controlMode = false
+		if b.curDone == curDone {
+			close(curDone)
+		}
 		b.curMu.Unlock()
-		safeClose(cur)
 	}()
 
 	return ch, nil
 }
 
 // readLoop pumps frames from the socket into the active channel until closed.
+// readLoop is the SOLE owner of cur: only it sends to and closes cur. The
+// cancel goroutine never closes cur directly (that would race with chansend);
+// instead it closes b.curDone, which readLoop's send-select catches so it can
+// drain the in-flight send and close cur itself (no closechan-vs-chansend race).
 func (b *wsBackend) readLoop() {
 	for {
 		_, data, err := b.conn.ReadMessage()
 		if err != nil {
-			b.curMu.Lock()
-			cur := b.cur
-			b.cur = nil
-			b.controlMode = false
-			b.curMu.Unlock()
-			if cur != nil {
-				safeSend(cur, StreamEvent{Kind: "error", Err: err})
-				safeClose(cur)
-			}
+			b.closeCurWithError(err)
 			return
 		}
 		var f proto.ServerFrame
 		if err := json.Unmarshal(data, &f); err != nil {
 			continue
 		}
-		ev := toStreamEvent(f)
-		b.curMu.Lock()
-		cur := b.cur
-		ctrl := b.controlMode
-		b.curMu.Unlock()
-		if cur != nil {
-			safeSend(cur, ev)
-		}
-		// Turn terminator: done/error close cur (turn mode). Control reply:
-		// models/status/mcp_list close cur (control mode). compact_chunk does
-		// NOT close (it streams before the final status in Task 35b).
-		if ev.Kind == "done" || ev.Kind == "error" {
-			b.curMu.Lock()
-			b.cur = nil
-			b.controlMode = false
-			b.curMu.Unlock()
-			safeClose(cur)
-		} else if ctrl && isControlReply(ev.Kind) {
-			b.curMu.Lock()
-			b.cur = nil
-			b.controlMode = false
-			b.curMu.Unlock()
-			safeClose(cur)
-		}
+		b.deliver(toStreamEvent(f))
 	}
+}
+
+// deliver routes one server event to the active cur, closing cur on terminal
+// frames (done/error/control-reply) or when the turn's curDone fires.
+func (b *wsBackend) deliver(ev StreamEvent) {
+	b.curMu.Lock()
+	cur := b.cur
+	ctrl := b.controlMode
+	done := b.curDone
+	b.curMu.Unlock()
+	if cur == nil {
+		return
+	}
+	terminal := (ev.Kind == "done" || ev.Kind == "error") || (ctrl && isControlReply(ev.Kind))
+	if terminal {
+		// Non-blocking send for terminal frames: we are about to close cur, so
+		// a full buffer just drops the terminal frame (the close is the signal).
+		select {
+		case cur <- ev:
+		default:
+		}
+		b.takeAndCloseCur(cur)
+		return
+	}
+	// Non-terminal frame: block on the send, but bail out when curDone fires
+	// (turn canceled). This replaces the old safeSend+recover pattern: instead
+	// of close(cur) racing with chansend, curDone unblocks the select and
+	// readLoop closes cur itself.
+	select {
+	case cur <- ev:
+	case <-done:
+		b.takeAndCloseCur(cur)
+	}
+}
+
+// takeAndCloseCur closes cur iff it is still the active channel (b.cur == cur),
+// clearing the active-turn pointer under the lock. readLoop is the sole closer
+// of cur, so there is no closechan-vs-chansend race.
+func (b *wsBackend) takeAndCloseCur(cur chan StreamEvent) {
+	b.curMu.Lock()
+	if b.cur == cur {
+		b.cur = nil
+		b.curDone = nil
+		b.controlMode = false
+		close(cur)
+	}
+	b.curMu.Unlock()
+}
+
+// closeCurWithError is the read-error path: send an error event (best-effort)
+// and close cur. Only readLoop calls this (sole owner of cur).
+func (b *wsBackend) closeCurWithError(err error) {
+	b.curMu.Lock()
+	cur := b.cur
+	b.cur = nil
+	b.curDone = nil
+	b.controlMode = false
+	if cur != nil {
+		select { case cur <- StreamEvent{Kind: "error", Err: err}: default: }
+		close(cur)
+	}
+	b.curMu.Unlock()
 }
 
 // isControlReply reports whether a server frame type is the single-frame reply

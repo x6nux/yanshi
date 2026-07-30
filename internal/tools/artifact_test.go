@@ -32,6 +32,13 @@ func newArtifactManager(t *testing.T) (*work.Manager, *work.Store, string, *work
 }
 
 func artifactCtx(manager work.ManagerLike, root string, readGlob string) context.Context {
+	// Resolve symlinks so the FS allowed-path matches the EvalSymlinks-resolved
+	// canonical path withinRootAbs returns (macOS /var → /private/var).
+	// Without this, the artifact read tool's second Authorize (the canonical
+	// path) would be denied because /private/var/... doesn't match /var/.../**.
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
 	if readGlob == "" {
 		// 默认允许 root 整棵子树（** 是递归 glob）
 		readGlob = filepath.ToSlash(filepath.Join(root, "**"))

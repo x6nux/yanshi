@@ -97,6 +97,11 @@ func (h *WorktreeHelper) Add(name string) (string, error) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("worktree: git worktree add: %w: %s", err, strings.TrimSpace(string(out)))
 	}
+	// Normalize symlinks (macOS /tmp → /private/tmp) so the returned path
+	// matches what git worktree list --porcelain reports later.
+	if resolved, err := filepath.EvalSymlinks(tmpDir); err == nil {
+		tmpDir = resolved
+	}
 	return tmpDir, nil
 }
 

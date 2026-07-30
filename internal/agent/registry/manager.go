@@ -185,6 +185,13 @@ func (m *Manager) Spawn(ctx context.Context, req SpawnRequest) (string, error) {
 	rt := m.newRuntimeAgent(req.Runner, req.Emit, req.Prompt)
 	m.runtime[id] = rt
 
+	// Capture parent context under lock — parentRT.ctx is written by
+	// runAgentLoop (line 631) and must not be read unlocked.
+	parentCtx := m.rootCtx
+	if parentRT != nil {
+		parentCtx = parentRT.ctx
+	}
+
 	snapshot, snapErr := m.snapshotLocked()
 	m.mtx.Unlock()
 
@@ -207,12 +214,6 @@ func (m *Manager) Spawn(ctx context.Context, req SpawnRequest) (string, error) {
 	}
 	m.persistMu.Unlock()
 
-	// Start goroutine. rt was captured under the lock above; parentRT likewise,
-	// so runtimeChildCtx's unlocked map read is no longer needed.
-	parentCtx := m.rootCtx
-	if parentRT != nil {
-		parentCtx = parentRT.ctx
-	}
 	childCtx, childCancel := context.WithCancel(parentCtx)
 	rt.ctx = childCtx
 	rt.cancel = childCancel

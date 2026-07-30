@@ -121,11 +121,14 @@ func (m *FakeModel) Generate(_ context.Context, messages []*schema.Message, opts
 	if m.Repeat && len(m.responses) > 0 {
 		return m.responses[0], nil
 	}
+	m.optsMu.Lock()
 	if m.calls < len(m.responses) {
 		resp := m.responses[m.calls]
 		m.calls++
+		m.optsMu.Unlock()
 		return resp, nil
 	}
+	m.optsMu.Unlock()
 	return schema.AssistantMessage("", nil), nil
 }
 

@@ -258,35 +258,51 @@ func TestServiceResumeFromStoreNotFound(t *testing.T) {
 // on the same thread while the first is still running returns ErrTurnAlreadyActive.
 // The v1 contract allows at most one in-progress turn per thread.
 func TestServiceStartTurnRejectsConcurrentTurn(t *testing.T) {
-	// Use a model that does not return quickly so we can start a second turn
-	// before the first finishes. A single-message model finishes immediately,
-	// so we use a multi-message model with an intermediate tool call to keep
-	// the turn alive long enough. Actually, the simplest approach: use a
-	// blocking channel model.
-	model := einollm.NewFakeModel([]string{"delayed-response"}, nil)
-	svc, err := NewService(Config{DefaultModel: model})
+	// The DefaultModel-only path emits a stub chunk and completes without
+	// calling the model, so a FakeModel turn can finish before the second
+	// StartTurn — making the concurrent-reject assertion flaky under -race.
+	// Use an Orchestrator + BlockingModel so the first turn genuinely blocks
+	// in model.Generate (until Block is closed), keeping st.active set.
+	model := einollm.NewBlockingModel("delayed-response")
+	o, err := orchestrator.New(orchestrator.Config{Model: model})
+	require.NoError(t, err)
+	svc, err := NewService(Config{Orchestrator: o})
 	require.NoError(t, err)
 
 	thread, err := svc.Start(context.Background(), ThreadStartParams{})
 	require.NoError(t, err)
 
-	// Start the first turn.
+	// Start the first turn (non-blocking: runTurn runs in a goroutine).
 	_, _, err = svc.StartTurn(context.Background(), TurnStartParams{ThreadID: thread.ID, Input: "first"})
 	require.NoError(t, err)
+
+	// Wait until the model is actually in flight so st.active is guaranteed
+	// set when the second StartTurn runs.
+	<-model.Started
 
 	// Starting a concurrent turn should fail.
 	_, _, err = svc.StartTurn(context.Background(), TurnStartParams{ThreadID: thread.ID, Input: "second"})
 	if !errors.Is(err, ErrTurnAlreadyActive) {
 		t.Fatalf("err = %v, want ErrTurnAlreadyActive", err)
 	}
+
+	// Release the blocked model so the first turn's goroutine can exit.
+	close(model.Block)
 }
 
 // TestServiceInterruptRejectsWrongTurnID proves Interrupt returns an error
 // when the given TurnID does not match the active turn. This protects against
 // stale client state after a connection re-establishment.
 func TestServiceInterruptRejectsWrongTurnID(t *testing.T) {
-	model := einollm.NewFakeModel([]string{"answer"}, nil)
-	svc, err := NewService(Config{DefaultModel: model})
+	// BlockingModel keeps the turn in flight so Interrupt actually has an
+	// active turn to compare the wrong TurnID against. A FakeModel completes
+	// before Interrupt runs (especially under -race), leaving active==nil —
+	// Interrupt then returns nil (no active turn) and the rejection assertion
+	// fails. Waiting on Started guarantees the turn is genuinely in flight.
+	model := einollm.NewBlockingModel("answer")
+	o, err := orchestrator.New(orchestrator.Config{Model: model})
+	require.NoError(t, err)
+	svc, err := NewService(Config{Orchestrator: o})
 	require.NoError(t, err)
 
 	thread, err := svc.Start(context.Background(), ThreadStartParams{})
@@ -294,6 +310,7 @@ func TestServiceInterruptRejectsWrongTurnID(t *testing.T) {
 
 	_, _, err = svc.StartTurn(context.Background(), TurnStartParams{ThreadID: thread.ID, Input: "hello"})
 	require.NoError(t, err)
+	<-model.Started
 
 	// Interrupt with a non-matching TurnID.
 	err = svc.Interrupt(context.Background(), ThreadInterruptParams{ThreadID: thread.ID, TurnID: "wrong-turn-id"})
@@ -301,6 +318,9 @@ func TestServiceInterruptRejectsWrongTurnID(t *testing.T) {
 		t.Fatal("Interrupt with wrong TurnID should fail")
 	}
 	assert.Contains(t, err.Error(), "is not active")
+
+	// Release the blocked model so the first turn's goroutine can exit.
+	close(model.Block)
 }
 
 // TestServiceInterruptReportsThreadNotFound proves Interrupt returns ErrThreadNotFound

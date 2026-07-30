@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +19,26 @@ import (
 	"github.com/x6nux/yanshi/internal/store"
 	"github.com/x6nux/yanshi/internal/tools"
 )
+
+// lockedWriter is a goroutine-safe bytes.Buffer for stderr captured by tests
+// that run a server command in a goroutine: runServe's server goroutine writes
+// concurrently with the test's read, so a plain bytes.Buffer races under -race.
+type lockedWriter struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (w *lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.Write(p)
+}
+
+func (w *lockedWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.String()
+}
 
 // ---- pure helpers --------------------------------------------------------
 
@@ -322,7 +343,7 @@ storage:
 // TestRunServeBadConfig proves a bootstrap failure maps to exitErr before any
 // server goroutine is started.
 func TestRunServeBadConfig(t *testing.T) {
-	var stderr bytes.Buffer
+	var stderr lockedWriter
 	code := runServe(context.Background(), []string{"-config", filepath.Join(t.TempDir(), "nope.yaml")}, &stderr)
 	assert.Equal(t, exitErr, code)
 	assert.Contains(t, stderr.String(), "yanshi serve:")
@@ -330,7 +351,7 @@ func TestRunServeBadConfig(t *testing.T) {
 
 // TestRunServeBadFlag proves a flag parse error maps to exitUsage.
 func TestRunServeBadFlag(t *testing.T) {
-	var stderr bytes.Buffer
+	var stderr lockedWriter
 	code := runServe(context.Background(), []string{"--nope"}, &stderr)
 	assert.Equal(t, exitUsage, code)
 }
@@ -346,7 +367,7 @@ func TestRunServeStartsAndShuts(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 		cancel()
 	}()
-	var stderr bytes.Buffer
+	var stderr lockedWriter
 	done := make(chan int, 1)
 	go func() { done <- runServe(ctx, []string{"-config", cfgPath, "-fake-model"}, &stderr) }()
 	select {
@@ -773,7 +794,7 @@ func TestRunServeAddrOverride(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 		cancel()
 	}()
-	var stderr bytes.Buffer
+	var stderr lockedWriter
 	done := make(chan int, 1)
 	go func() {
 		done <- runServe(ctx, []string{"-config", cfgPath, "-fake-model", "-addr", "127.0.0.1:0"}, &stderr)
@@ -1294,7 +1315,7 @@ storage:
   sqlite_path: ":memory:"
 `
 	require.NoError(t, os.WriteFile(cfgPath, []byte(cfg), 0o644))
-	var stderr bytes.Buffer
+	var stderr lockedWriter
 	done := make(chan int, 1)
 	go func() {
 		done <- runServe(context.Background(), []string{"-config", cfgPath, "-fake-model", "-addr", "127.0.0.1:notaport"}, &stderr)

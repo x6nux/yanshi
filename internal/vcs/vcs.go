@@ -103,7 +103,12 @@ func (v *VCS) lockRepo(key string) func() {
 func New(s *store.Store, worktreeDir string, extraIgnore ...string) *VCS {
 	ig := append([]string{}, defaultIgnore...)
 	ig = append(ig, extraIgnore...)
-	return &VCS{store: s, ignore: ig, worktreeDir: worktreeDir, treeCache: map[string]map[string]string{}}
+	// Canonicalize worktreeDir once so stored worktree paths (derived from it
+	// in addWorktreeLocked via canonicalPath) share the same prefix —
+	// EvalSymlinks on macOS resolves /var → /private/var, and Windows folds
+	// case, both of which would otherwise break HasPrefix checks in tests and
+	// destDir comparisons in restoreScopeLocked.
+	return &VCS{store: s, ignore: ig, worktreeDir: canonicalPath(worktreeDir), treeCache: map[string]map[string]string{}}
 }
 
 // isIgnored snapshots the shared slice under RLock and performs all glob work
@@ -524,6 +529,66 @@ func canonicalRepoRoot(rootPath string) (string, error) {
 	return real, nil
 }
 
+// canonicalPath resolves symlinks and cleans an arbitrary path so that
+// caller-supplied paths (edit targets, restore destinations, worktree paths)
+// compare equal to the EvalSymlinks-canonicalized paths stored in vcs_repos /
+// vcs_worktrees. On macOS the OS temp dir sits behind a symlink (/tmp →
+// /private/tmp, /var → /private/var), so a TempDir-derived path differs from
+// its resolved form; without canonicalization, restoreScopeLocked fails to
+// match the destination to the repo root. Windows additionally lower-cases
+// to match canonicalRepoRoot's case-folding.
+//
+// Unlike canonicalRepoRoot, canonicalPath does NOT error when the path does
+// not exist (EvalSymlinks fails): it falls back to the cleaned absolute form,
+// which is still deterministic for comparison. Used for stored paths
+// (worktree paths) and comparison paths (restore destinations) where
+// case-folding is wanted.
+func canonicalPath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	if real, rerr := filepath.EvalSymlinks(abs); rerr == nil {
+		abs = real
+	}
+	abs = filepath.Clean(abs)
+	if runtime.GOOS == "windows" {
+		abs = strings.ToLower(abs)
+	}
+	return abs
+}
+
+// resolveSymlinks resolves symlinks and cleans a path WITHOUT case-folding, so
+// the repo-relative key a tracked edit is stored under preserves the on-disk
+// filename casing. Unlike EvalSymlinks on the full path (which fails when the
+// target does not exist yet — e.g. a new file being RecordEditMain'd before
+// fs_write creates it), this resolves the PARENT directory (which must exist)
+// and re-appends the filename, so symlinks in the directory chain (/var →
+// /private/var on macOS) are resolved even for as-yet-absent files.
+// Windows's filepath.Rel is already case-insensitive, so symlink resolution
+// alone is sufficient there and case-folding would corrupt VCS keys
+// (e.g. "X" → "x").
+func resolveSymlinks(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	// Resolve symlinks on the parent directory (which must exist) so the
+	// resolved form is correct even for files that don't exist yet. Then
+	// re-append the filename component.
+	parent, name := filepath.Split(abs)
+	if parent != "" {
+		if real, rerr := filepath.EvalSymlinks(filepath.Clean(parent)); rerr == nil {
+			return filepath.Join(real, name)
+		}
+	}
+	// Fallback: try the full path (handles files that DO exist).
+	if real, rerr := filepath.EvalSymlinks(abs); rerr == nil {
+		return real
+	}
+	return filepath.Clean(abs)
+}
+
 func initRepoLockKey(canonicalRoot string) string {
 	return "init:" + canonicalRoot
 }
@@ -687,6 +752,9 @@ func (v *VCS) addWorktreeLocked(repoID string, agents []string) (Worktree, error
 	if err := os.MkdirAll(wtPath, 0o755); err != nil {
 		return Worktree{}, err
 	}
+	// Canonicalize the stored worktree path so restoreScopeLocked's destDir
+	// comparison matches on all platforms (macOS /var → /private/var).
+	wtPath = canonicalPath(wtPath)
 	// materialize main_head's tree into wtPath (repo-relative layout)
 	for path, h := range v.commitTree(r.MainHead) {
 		content, err := v.getBlob(h)
@@ -792,6 +860,17 @@ func (v *VCS) recordEdit(scopeType, scopeID, repoRoot, absPath string, content [
 	if repoRoot == "" {
 		return nil
 	}
+	// Resolve symlinks on both repoRoot and absPath. repoRoot is already
+	// canonical when it comes from canonicRepoRoot (main scope), but may be
+	// non-canonical for worktree scopes where a worktree row was inserted
+	// without going through addWorktreeLocked (tests). macOS temp dirs sit
+	// behind /tmp → /private/tmp (and /var → /private/var) symlinks; without
+	// resolution, filepath.Rel sees the edit as outside the repo and silently
+	// skips it. We deliberately do NOT case-fold (resolveSymlinks, not
+	// canonicalPath): the repo-relative key must preserve the on-disk filename
+	// casing, and Windows's filepath.Rel is already case-insensitive.
+	absPath = resolveSymlinks(absPath)
+	repoRoot = resolveSymlinks(repoRoot)
 	rel, err := filepath.Rel(repoRoot, absPath)
 	if err != nil || strings.HasPrefix(filepath.ToSlash(rel), "..") {
 		return nil // outside repo → skip silently
@@ -1150,31 +1229,17 @@ func (v *VCS) restoreLocked(repoID, commitID, path, destDir string) error {
 }
 
 func (v *VCS) restoreScopeLocked(repoID, destDir string) (string, string, string, error) {
-	destAbs, err := filepath.Abs(destDir)
-	if err != nil {
-		return "", "", "", err
-	}
-	destAbs = filepath.Clean(destAbs)
-	if runtime.GOOS == "windows" {
-		// Canonicalize case to match the stored root_path identity (canonicalRepoRoot
-		// lower-cases Windows roots). Without this, a TempDir-derived destDir with a
-		// different casing than the repo's stored root_path would fail the equality
-		// check even when pointing at the same directory.
-		if real, rerr := filepath.EvalSymlinks(destAbs); rerr == nil {
-			destAbs = strings.ToLower(filepath.Clean(real))
-		} else {
-			destAbs = strings.ToLower(destAbs)
-		}
-	}
+	// Canonicalize the destination so it matches the EvalSymlinks-resolved
+	// root_path / worktree paths on all platforms, not just Windows. macOS
+	// temp dirs sit behind /var → /private/var; without resolution the dest
+	// never matches the repo root and every Restore falls through to the
+	// "not an active working copy" error.
+	destAbs := canonicalPath(destDir)
 	r, err := v.getRepo(repoID)
 	if err != nil {
 		return "", "", "", err
 	}
-	rootAbs := r.RootPath
-	if runtime.GOOS == "windows" {
-		rootAbs = strings.ToLower(rootAbs)
-	}
-	if destAbs == rootAbs {
+	if destAbs == r.RootPath {
 		return "main", repoID, r.RootPath, nil
 	}
 	rows, err := v.store.DB.Query(
@@ -1188,11 +1253,7 @@ func (v *VCS) restoreScopeLocked(repoID, destDir string) (string, string, string
 		if err := rows.Scan(&wtID, &wtPath); err != nil {
 			return "", "", "", err
 		}
-		wtAbs := wtPath
-		if runtime.GOOS == "windows" {
-			wtAbs = strings.ToLower(wtAbs)
-		}
-		if destAbs == wtAbs {
+		if destAbs == canonicalPath(wtPath) {
 			return "worktree", wtID, wtPath, nil
 		}
 	}

@@ -19,7 +19,7 @@ import (
 // own test helper). The worktree dir is a per-test temp dir.
 func newTestVCS(t *testing.T) *vcs.VCS {
 	t.Helper()
-	s, err := store.Open(":memory:")
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { s.Close() })
 	return vcs.New(s, t.TempDir())

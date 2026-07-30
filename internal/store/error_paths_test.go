@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -224,8 +225,13 @@ func TestStore_ClosedDB_WriteTx(t *testing.T) {
 }
 
 func TestStore_ClosedDB_ApplyConnectionPragmas(t *testing.T) {
-	s := storeWithClosedDB(t)
-	err := s.applyConnectionPragmas()
+	// :memory: stores skip WAL pragmas entirely (inMemory guard), so the closed-DB
+	// error path is only reachable on a file-backed store.
+	s, err := Open(filepath.Join(t.TempDir(), "closed.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+	require.NoError(t, s.DB.Close())
+	err = s.applyConnectionPragmas()
 	assert.Error(t, err, "applyConnectionPragmas must fail when the database is closed")
 }
 

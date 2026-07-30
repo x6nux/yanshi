@@ -2,7 +2,6 @@ package tui
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -58,29 +57,11 @@ func TestCov_Render_VersionStamp(t *testing.T) {
 // TestCov_DetectShellEnv covers the SHELL-env early return and the Windows
 // branches (bash / powershell / cmd) via env manipulation.
 func TestCov_DetectShellEnv(t *testing.T) {
-	// SHELL env wins outright.
+	// SHELL env wins outright (cross-platform). The Windows (bash/powershell/
+	// cmd) and posix ("sh") branches are covered by platform-specific files:
+	// startup_cov_windows_test.go and startup_cov_unix_test.go.
 	t.Setenv("SHELL", "/usr/local/bin/zsh")
 	assert.Equal(t, "/usr/local/bin/zsh", detectShellEnv())
-
-	// SHELL unset + Windows: LookPath("bash") branch (covered when bash is on
-	// PATH; the call itself runs regardless).
-	t.Setenv("SHELL", "")
-	got := detectShellEnv()
-	if _, err := exec.LookPath("bash"); err == nil {
-		assert.Equal(t, "bash (Git Bash)", got)
-	}
-
-	// SHELL unset, PATH emptied, PSModulePath set → powershell.
-	t.Setenv("SHELL", "")
-	t.Setenv("PATH", "")
-	t.Setenv("PSModulePath", "something")
-	assert.Equal(t, "powershell", detectShellEnv())
-
-	// SHELL unset, PATH emptied, PSModulePath empty → cmd.
-	t.Setenv("SHELL", "")
-	t.Setenv("PATH", "")
-	t.Setenv("PSModulePath", "")
-	assert.Equal(t, "cmd", detectShellEnv())
 }
 
 // TestCov_RepaintTick covers the repaint-tick closure body by firing the

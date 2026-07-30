@@ -1678,12 +1678,10 @@ func TestSpawnCmdStartFailure(t *testing.T) {
 func TestSpawnInitializeFailureCleanup(t *testing.T) {
 	dir := t.TempDir()
 
-	// Create a fake "opencode" batch script that outputs non-JSON and exits.
-	// This binary is found first in PATH and started by Spawn, but it doesn't
-	// speak ACP, so Initialize fails and the cleanup code runs.
-	scriptContent := "@echo off\r\necho not-json\r\nexit /b 1\r\n"
-	scriptPath := filepath.Join(dir, "opencode.bat")
-	require.NoError(t, os.WriteFile(scriptPath, []byte(scriptContent), 0644))
+	// Create a fake "opencode" that starts but does not speak ACP, so
+	// Initialize fails and the cleanup path runs. The script form is
+	// platform-specific (createNonACPAgent is defined behind build tags).
+	createNonACPAgent(t, dir)
 
 	oldPath := os.Getenv("PATH")
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
@@ -1702,9 +1700,7 @@ func TestSpawnInitializeFailureCleanup(t *testing.T) {
 func TestSpawnWithPolicyAndWorktree(t *testing.T) {
 	dir := t.TempDir()
 
-	scriptContent := "@echo off\r\necho not-json\r\nexit /b 1\r\n"
-	scriptPath := filepath.Join(dir, "opencode.bat")
-	os.WriteFile(scriptPath, []byte(scriptContent), 0644)
+	createNonACPAgent(t, dir)
 
 	oldPath := os.Getenv("PATH")
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)

@@ -36,8 +36,13 @@ func TestCov_MergeTUIPrefs_KeymapReset(t *testing.T) {
 // TestCov_PreferencesPath_NoConfigDir covers the UserConfigDir-error fallback
 // to "." (unlike permModeFile/frecencyPath which return "").
 func TestCov_PreferencesPath_NoConfigDir(t *testing.T) {
+	// Force os.UserConfigDir to fail on every platform: clear the Windows
+	// AppData vars plus posix XDG_CONFIG_HOME and HOME (macOS/Linux need
+	// $HOME). preferencesPath then falls back to ".".
 	t.Setenv("APPDATA", "")
 	t.Setenv("LOCALAPPDATA", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", "")
 	assert.Equal(t, filepath.Join(".", "yanshi", "prefs.json"), preferencesPath())
 }
 

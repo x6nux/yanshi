@@ -2,7 +2,9 @@ package shell
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+	"sync"
 	"time"
 )
 
@@ -57,16 +59,32 @@ type LaunchSpec struct {
 // yet ended" and serializes as absent via omitempty; an empty time.Time{}
 // value would still serialize (time.Time is a struct, not a type that
 // omitempty recognizes).
+//
+// mu is set by liveSession for concurrent-safe MarshalJSON.
 type Session struct {
-	ID        string     `json:"id"`
-	PID       int        `json:"pid"`
-	Command   string     `json:"command"`
-	State     State      `json:"state"`
-	ExitCode  int        `json:"exit_code"`
-	PTY       bool       `json:"pty"`
-	StartedAt time.Time  `json:"started_at"`
-	EndedAt   *time.Time `json:"ended_at,omitempty"`
+	mu        sync.Locker `json:"-"` // injected by liveSession; nil for standalone values
+	ID        string      `json:"id"`
+	PID       int         `json:"pid"`
+	Command   string      `json:"command"`
+	State     State       `json:"state"`
+	ExitCode  int         `json:"exit_code"`
+	PTY       bool        `json:"pty"`
+	StartedAt time.Time   `json:"started_at"`
+	EndedAt   *time.Time  `json:"ended_at,omitempty"`
 }
+
+// MarshalJSON serializes the session under mu (when set), preventing races
+// with concurrent pump() in liveSession writing State/ExitCode fields.
+func (s *Session) MarshalJSON() ([]byte, error) {
+	if s.mu != nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+	}
+	type session Session
+	return json.Marshal((*session)(s))
+}
+// value would still serialize (time.Time is a struct, not a type that
+// omitempty recognizes).
 
 // Job is one invocation tracked by the Manager's job table. Sessions emit a
 // Job per start; the TUI's /jobs view renders this verbatim. ID/SessionID

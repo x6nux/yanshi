@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,15 +19,23 @@ import (
 
 // recordingSpawn 记录每次调用的 prompt；可配置在某个调用上返回错误。
 type recordingSpawn struct {
+	mu       sync.Mutex
 	calls    int32
 	prompts  []string
-	failOn   int // -1 = 不失败
+	failOn   int // -1 = 不失败(按全局调用序号;并发下与 row 映射不确定)
+	failRow  string // 非空时按 prompt 内容确定性失败(优先于 failOn)
 	failWith error
 }
 
 func (r *recordingSpawn) Spawn(ctx context.Context, prompt string, _ []string, _ string) (string, error) {
 	idx := int(atomic.AddInt32(&r.calls, 1)) - 1
+	r.mu.Lock()
 	r.prompts = append(r.prompts, prompt)
+	r.mu.Unlock()
+	// failRow 优先:按 prompt 内容匹配,避免并发调度把失败映射到错误的 row。
+	if r.failWith != nil && r.failRow != "" && strings.Contains(prompt, r.failRow) {
+		return "", r.failWith
+	}
 	if idx == r.failOn && r.failWith != nil {
 		return "", r.failWith
 	}
@@ -68,7 +78,7 @@ func TestRunnerSpawnsPerRowAndPreservesIndex(t *testing.T) {
 }
 
 func TestRunnerPerItemErrorRetention(t *testing.T) {
-	rec := &recordingSpawn{failOn: 1, failWith: errors.New("row-1-boom")}
+	rec := &recordingSpawn{failOn: -1, failRow: "row_index=1", failWith: errors.New("row-1-boom")}
 	runner := batch.Runner{
 		Spawn:         rec.Spawn,
 		Manager:       newRegistryManager(t, 4),

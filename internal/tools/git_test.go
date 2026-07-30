@@ -93,7 +93,8 @@ func TestGitStatusParsesPorcelainV2ZWithHostileNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range names {
-		if !strings.Contains(out, strings.ReplaceAll(name, `"`, `\"`)) {
+		needle := strings.ReplaceAll(strings.ReplaceAll(name, `"`, `\"`), "\t", "\\t")
+		if !strings.Contains(out, needle) {
 			t.Fatalf("out=%s missing %q", out, name)
 		}
 	}
@@ -121,7 +122,7 @@ func TestGitDiffReturnsOneRecordPerFileWithBinaryMarker(t *testing.T) {
 		} `json:"files"`
 	}
 	if err := json.Unmarshal([]byte(out), &res); err != nil {
-		t.Fatal(err)
+		t.Fatalf("out=%q: %v", out, err)
 	}
 	if len(res.Files) != 2 {
 		t.Fatalf("files=%+v", res.Files)

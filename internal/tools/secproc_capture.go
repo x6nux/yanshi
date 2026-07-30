@@ -72,12 +72,21 @@ func runSecureCapture(ctx context.Context, spec secproc.SecureProcessSpec, timeo
 	stderr := &boundedCapture{limit: secureCaptureLimit}
 	stdoutDone := drain(stdout, started.Stdout)
 	stderrDone := drain(stderr, started.Stderr)
+	// Drain stdout/stderr to EOF BEFORE calling Wait. StdoutPipe/StderrPipe
+	// are closed by (*exec.Cmd).Wait once the process exits, so reading from
+	// them after Wait returns "read |0: file already closed". On fast CI
+	// runners (ubuntu) the git process exits — and Wait closes the pipe —
+	// before io.Copy has drained it, silently dropping the output (the test
+	// sees an empty result instead of the staged/unstaged/untracked files).
+	// Drain-to-EOF first; the goroutines unblock when the process closes its
+	// stdout/stderr (on exit or on context-cancel kill), then Wait reaps it.
+	stdoutErr := <-stdoutDone
+	stderrErr := <-stderrDone
 	waitErr := started.Cmd.Wait()
-	stdoutErr, stderrErr := <-stdoutDone, <-stderrDone
-	if stdoutErr != nil {
+	if stdoutErr != nil && stdoutErr != io.EOF {
 		return commandResult{}, stdoutErr
 	}
-	if stderrErr != nil {
+	if stderrErr != nil && stderrErr != io.EOF {
 		return commandResult{}, stderrErr
 	}
 	if err := runCtx.Err(); err != nil {

@@ -189,10 +189,16 @@ func (s *ShellTools) stream(ctx context.Context, argsJSON string) <-chan ToolChu
 		}()
 		// Status ticker: per-second "运行中·Xs" on the right-side panel (overwrite).
 		// Non-blocking send so a status tick can never stall the stdout pump.
+		// tickStopped is closed when the ticker goroutine actually exits, so the
+		// main goroutine can wait for it before returning (and thus before
+		// defer close(ch) runs) — without this, close(ch) races with a final
+		// in-flight ch<- from the ticker (DATA RACE: closechan vs chansend).
 		tickDone := make(chan struct{})
+		tickStopped := make(chan struct{})
 		go func() {
 			t := time.NewTicker(time.Second)
 			defer t.Stop()
+			defer close(tickStopped)
 			for {
 				select {
 				case <-tickDone:
@@ -204,15 +210,28 @@ func (s *ShellTools) stream(ctx context.Context, argsJSON string) <-chan ToolChu
 					}
 				}
 			}
+			}()
+		// Ensure the ticker has fully stopped before this goroutine returns
+		// (and defer close(ch) fires) on EVERY exit path — the scanner's
+		// ctx.Done return, the pushErrChunk returns, and the normal footer
+		// path. Registered after defer close(ch) so LIFO runs it FIRST.
+		defer func() {
+			close(tickDone)
+			<-tickStopped
 		}()
 		sc := bufio.NewScanner(pr)
 		sc.Buffer(make([]byte, 64*1024), 1024*1024)
 		for sc.Scan() {
 			line := sc.Text() + "\n"
-			ch <- ToolChunk{Text: line, Result: line}
+			select {
+			case ch <- ToolChunk{Text: line, Result: line}:
+			case <-ctx.Done():
+				return
+			}
 		}
 		waitErr := <-waitCh
-		close(tickDone)
+		// tickDone is closed + tickStopped awaited by the deferred func above;
+		// no close(tickDone) here (would double-close).
 		if ctx.Err() != nil {
 			pushErrChunk(ch, fmt.Errorf("shell: %w", ctx.Err()))
 			return
@@ -290,7 +309,11 @@ func streamFromReader(ctx context.Context, ch chan<- ToolChunk, r io.Reader) err
 		defer close(scanDone)
 		for sc.Scan() {
 			line := sc.Text() + "\n"
-			ch <- ToolChunk{Text: line, Result: line}
+			select {
+			case ch <- ToolChunk{Text: line, Result: line}:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 
@@ -300,6 +323,7 @@ func streamFromReader(ctx context.Context, ch chan<- ToolChunk, r io.Reader) err
 	for {
 		select {
 		case <-ctx.Done():
+			// scanner already stopped via select before caller closes ch
 			return ctx.Err()
 		case <-scanDone:
 			return sc.Err()

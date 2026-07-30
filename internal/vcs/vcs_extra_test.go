@@ -27,6 +27,13 @@ func ensureFile(t *testing.T, dir, name, content string) {
 func TestRepoRoot_Valid(t *testing.T) {
 	v := newTestVCS(t)
 	root := t.TempDir()
+	// Resolve symlinks on root so it matches the canonicalRepoRoot'd result
+	// (macOS /var → /private/var). Without this, /var/folders/... (TempDir)
+	// would not equal /private/var/folders/... (canonicalRepoRoot).
+	root = filepath.Clean(root)
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
 	ensureFile(t, root, "main.go", "package main")
 	repoID, err := v.InitRepo(root)
 	require.NoError(t, err)

@@ -250,7 +250,10 @@ func TestApplyPatch_CommitRollbackRestoresDisk(t *testing.T) {
 	bdata, _ := os.ReadFile(filepath.Join(dir, "blocker"))
 	assert.Equal(t, "BLOCKER\n", string(bdata))
 	_, xerr := os.Stat(filepath.Join(dir, "blocker", "x.go"))
-	assert.True(t, os.IsNotExist(xerr), "the blocked write must not have landed")
+	// Stat'ing a path under a file yields NotExist on Windows but ENOTDIR on
+	// Linux — either way the file is absent, so any stat error (not only
+	// IsNotExist) proves the blocked write did not land.
+	assert.True(t, xerr != nil, "the blocked write must not have landed")
 }
 
 // TestApplyPatch_WithLSP_AppendsDiagnosticsField 验证 patch 写盘后,每个写过的

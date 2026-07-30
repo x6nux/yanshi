@@ -68,6 +68,15 @@ func (v *VCS) recordDelete(scopeType, scopeID, repoRoot, absPath string) error {
 	if repoRoot == "" {
 		return nil
 	}
+	// Resolve symlinks on both repoRoot and absPath for the same reason
+	// recordEdit does: the repoRoot may be canonical (main scope from
+	// canonicalRepoRoot) or non-canonical (worktree scope with a manually-
+	// inserted row); without resolution, filepath.Rel on macOS would see the
+	// delete as outside the worktree and silently skip it. We do NOT case-fold
+	// (resolveSymlinks, not canonicalPath) so the repo-relative key preserves
+	// filename casing; Windows filepath.Rel is already case-insensitive.
+	absPath = resolveSymlinks(absPath)
+	repoRoot = resolveSymlinks(repoRoot)
 	rel, err := filepath.Rel(repoRoot, absPath)
 	if err != nil || strings.HasPrefix(filepath.ToSlash(rel), "..") {
 		return nil // outside repo → skip silently

@@ -38,10 +38,19 @@ func TestResumeRestoresSavedConstraintsAndEmitsEvent(t *testing.T) {
 	require.Equal(t, StatusInterrupted, archived.Agents[0].Status)
 
 	seen := make(chan string, 1)
+	// release keeps the resumed runner parked so the status check below is
+	// deterministic: without it, a fast CI runner completes before the test
+	// reads got.Status and the test sees "completed" instead of "running".
+	release := make(chan struct{})
 	id, err := m.Resume(context.Background(), rec.ID, ResumeRequest{
 		Runner: RunnerFunc(func(ctx context.Context, agentID, assignment string) (string, error) {
 			seen <- assignment
-			return "second pass", nil
+			select {
+			case <-release:
+				return "second pass", nil
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
 		}),
 	})
 	require.NoError(t, err)
@@ -57,4 +66,5 @@ func TestResumeRestoresSavedConstraintsAndEmitsEvent(t *testing.T) {
 	require.NotNil(t, got.Custom)
 	require.Equal(t, "audit", got.Custom.Name)
 	require.Equal(t, "audit auth", <-seen) // prompt fallback to persisted Prompt
+	close(release)                          // let the parked runner finish before Close reaps it
 }

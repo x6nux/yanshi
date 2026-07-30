@@ -16,7 +16,7 @@ import (
 
 func newTestVCS(t *testing.T) *VCS {
 	t.Helper()
-	s, err := store.Open(":memory:")
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

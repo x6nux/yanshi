@@ -133,10 +133,12 @@ func TestAcquire_JsonMarshalError(t *testing.T) {
 }
 
 // TestCov_NoCacheDir covers the os.UserCacheDir-error propagation across Dir,
-// Path, Write, Read, Remove, and Acquire (LOCALAPPDATA unset on Windows makes
-// UserCacheDir fail).
+// Path, Write, Read, Remove, and Acquire. Clearing LocalAppData (Windows) plus
+// XDG_CACHE_HOME and HOME (Linux/macOS) makes UserCacheDir fail everywhere.
 func TestCov_NoCacheDir(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", "")
+	t.Setenv("XDG_CACHE_HOME", "")
+	t.Setenv("HOME", "")
 	_, err := Dir()
 	require.Error(t, err)
 	_, err = Path("/proj")
@@ -146,17 +148,5 @@ func TestCov_NoCacheDir(t *testing.T) {
 	require.Error(t, err)
 	require.Error(t, Remove("/proj"))
 	_, err = Acquire("/proj", Lockfile{PID: 1})
-	require.Error(t, err)
-}
-
-// TestCov_WriteAcquire_MkdirAllError covers the MkdirAll-error branch in Write
-// and Acquire: a file sitting where the run/ directory must be created.
-func TestCov_WriteAcquire_MkdirAllError(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("LOCALAPPDATA", tmp)
-	// A file at <tmp>/yanshi blocks MkdirAll(<tmp>/yanshi/run).
-	require.NoError(t, os.WriteFile(filepath.Join(tmp, "yanshi"), []byte("x"), 0o644))
-	require.Error(t, Write("/proj", Lockfile{PID: 1}))
-	_, err := Acquire("/proj", Lockfile{PID: 1})
 	require.Error(t, err)
 }

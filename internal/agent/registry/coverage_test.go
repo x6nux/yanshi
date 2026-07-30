@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -363,7 +364,13 @@ func TestResume_AlreadyRunning(t *testing.T) {
 
 	_, err = m.Resume(context.Background(), id, ResumeRequest{Runner: simpleRunner(t, "ok")})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "already running")
+	// The exact message is timing-dependent: Resume hits "is already running"
+	// when the spawned runner hasn't finished yet (rec.Status == Running), or
+	// "runtime already active" when it has finished but the runtime entry is
+	// still live. Both confirm Resume refuses a busy agent — accept either.
+	msg := err.Error()
+	assert.True(t, strings.Contains(msg, "already running") || strings.Contains(msg, "already active"),
+		"expected already-running/active error, got %q", msg)
 }
 
 // ---------------------------------------------------------------------------

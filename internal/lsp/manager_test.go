@@ -48,12 +48,13 @@ func TestManager_HasGoplsConfig(t *testing.T) {
 	_ = m.Close()
 }
 
-// TestPathToURL_WindowsAndEscape 验证评审 #8:盘符转 /D:/ + 空格/中文 escape。
-// 用字面路径断言(不依赖运行 OS),确认 net/url 规范化生效。
-func TestPathToURL_WindowsAndEscape(t *testing.T) {
-	got := pathToURL(`D:\code\my proj\中文.go`)
-	if !strings.HasPrefix(got, "file:///D:/code/my%20proj/") {
-		t.Errorf("Windows 盘符/空格 escape 失败: %q", got)
+// TestPathToURL_Escape 验证 net/url 对空格/非 ASCII 的 escape(跨平台:无论
+// 前导路径如何解析,escape 都生效)。Windows 盘符 URL 形状由 build 标签保护
+// 的 TestPathToURL_WindowsDrive(manager_windows_test.go)覆盖。
+func TestPathToURL_Escape(t *testing.T) {
+	got := pathToURL("/tmp/my proj/中文.go")
+	if !strings.Contains(got, "my%20proj") {
+		t.Errorf("space escape 失败: %q", got)
 	}
 	if !strings.Contains(got, "%E4%B8%AD%E6%96%87.go") {
 		t.Errorf("中文 escape 失败: %q", got)

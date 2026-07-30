@@ -67,9 +67,14 @@ func runTests(ctx context.Context, argsJSON string) (string, error) {
 			return errorResult("no go.mod / Cargo.toml / package.json in work root"), nil
 		}
 	}
-	timeout := time.Duration(clampInt(args.TimeoutS, 1, 1800)) * time.Second
-	if timeout == 0 {
-		timeout = 10 * time.Minute
+	// Default to 10 minutes when the caller omits TimeoutS. The previous
+	// clampInt(args.TimeoutS, 1, 1800) clamped 0 → 1, making the default a
+	// 1-second timeout — fine for the scripted factory on a fast host but a
+	// guaranteed "context deadline exceeded" under -race (helper subprocess
+	// takes >1s to initialize the race detector) and on slow CI runners.
+	timeout := 10 * time.Minute
+	if args.TimeoutS > 0 {
+		timeout = time.Duration(clampInt(args.TimeoutS, 1, 1800)) * time.Second
 	}
 	spec := testSpec(framework, args, root)
 	start := time.Now()

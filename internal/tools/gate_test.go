@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -42,6 +43,14 @@ func gatePrintCmd() (env, command string) {
 }
 
 func gateCtx(t *testing.T, manager work.ManagerLike, root string) context.Context {
+	// Resolve symlinks so the FS allowed-path matches the EvalSymlinks-resolved
+	// root that withinRootAbs returns (macOS /var → /private/var). Without this,
+	// every gate tool call that Authorizes the resolved cwd gets a permission
+	// denial because the non-resolved /var/folders/... pattern doesn't glob-match
+	// /private/var/folders/....
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
 	ctx := WithProfile(WithWorkRoot(WithTaskManager(context.Background(), manager), root), guard.PermissionProfile{
 		Tools: guard.ToolsPerm{Allow: []string{"*"}},
 		Shell: guard.ShellPerm{Policy: "allowlist", Patterns: []string{"*"}},
@@ -188,8 +197,14 @@ func TestTaskGateRun_SpillToArtifact(t *testing.T) {
 	ctx := gateCtx(t, manager, root)
 	env, command := gatePrintCmd()
 	gt := NewGateTools()
-	argsJSON := `{"task_id":"` + task.ID + `","gate":"print","command":"` + command + `","env":"` + env + `"}`
-	out, err := runTool(ctx, gt.Run, argsJSON)
+	argsJSON, err := json.Marshal(map[string]string{
+		"task_id": task.ID,
+		"gate":    "print",
+		"command": command,
+		"env":     env,
+	})
+	require.NoError(t, err)
+	out, err := runTool(ctx, gt.Run, string(argsJSON))
 	require.NoError(t, err)
 	var payload struct {
 		Evidence work.Evidence `json:"evidence"`

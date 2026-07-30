@@ -75,6 +75,13 @@ func (t *Transport) writeLine(msg any) error {
 
 // Call sends a JSON-RPC request and blocks until the response arrives or ctx is cancelled.
 func (t *Transport) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	// Fast-path a pre-cancelled context: without this check the request line
+	// is written and the select below races ctx.Done() against the response.
+	// Under -race a fast FakeAgent can respond before the runtime schedules
+	// the ctx.Done() branch, so Call returns the result instead of the error.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// Allocate an id and register the pending channel before writing.
 	t.mu.Lock()
 	if t.closed {

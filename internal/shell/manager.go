@@ -110,6 +110,12 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Session, error) 
 		output:    newRingBuffer(m.cfg.MaxOutputBytes),
 		done:      make(chan struct{}),
 	}
+	// Bind the Session's MarshalJSON lock to liveSession.mu so json.Marshal of
+	// a Session (e.g. /jobs, /sessions rendering) is serialized against pump()
+	// writing State/ExitCode/EndedAt under the same mutex. Without this,
+	// meta.mu is nil and MarshalJSON skips the lock — a DATA RACE between
+	// reflect-driven field reads and pump's writes.
+	sess.meta.mu = &sess.mu
 	m.mu.Lock()
 	m.sessions[id] = sess
 	m.mu.Unlock()

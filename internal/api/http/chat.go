@@ -258,6 +258,10 @@ func (s *Server) handleSSEInternal(w http.ResponseWriter, r *http.Request,
 				break mergeLoop
 			}
 		}
+		// Drain lifecycle frames (e.g. subagent events) still buffered in the
+		// relay: the merge select above can race past progress events when
+		// classDone fires, so flush them before the status/done terminator.
+		drainLifecycleFrames(w, fl, lifecycleRelay, s.redactor)
 		// Hard failures break regardless of mode: a model error or a user
 		// cancel must not trigger a schema retry. The error frame has
 		// already been emitted above; the post-loop path still emits status

@@ -301,21 +301,36 @@ func TestWS_RestoreTurn_HappyPath(t *testing.T) {
 }
 
 func TestWS_RestoreTurn_EmptyOrMismatchedHeadRejected(t *testing.T) {
-	url, _, _ := setupSeamServer(t)
+	url, _, _, _ := setupSeamServerFull(t)
 	c := dial(t, url)
 	defer c.Close()
 	require.NoError(t, c.WriteJSON(proto.NewUserMessage("seed")))
 	drainTurn(t, c)
-	require.NoError(t, c.WriteJSON(proto.NewRestoreTurn("some-seam", "")))
 	var sf proto.ServerFrame
-	require.NoError(t, c.ReadJSON(&sf))
-	if sf.Type != "error" {
-		t.Errorf("empty confirmed_head: got %q, want error", sf.Type)
+	// restore_turn may transiently be rejected with "while a turn is running"
+	// because setInTurn(false) runs in a defer AFTER the done frame is written
+	// — a frame arriving in that window hits the reader's inline reject path
+	// (error, no done). Retry until the handler actually processes it.
+	for {
+		require.NoError(t, c.WriteJSON(proto.NewRestoreTurn("some-seam", "")))
+		require.NoError(t, c.ReadJSON(&sf))
+		if sf.Type == "error" && !contains(sf.Text, "while a turn is running") {
+			break
+		}
 	}
-	require.NoError(t, c.WriteJSON(proto.NewRestoreTurn("some-seam", "deadbeef-not-the-real-head")))
-	require.NoError(t, c.ReadJSON(&sf))
-	if sf.Type != "error" {
-		t.Errorf("mismatched confirmed_head: got %q, want error", sf.Type)
+	// Drain any trailing frames (the handler sends error+done).
+	for {
+		require.NoError(t, c.ReadJSON(&sf))
+		if sf.Type == "done" {
+			break
+		}
+	}
+	for {
+		require.NoError(t, c.WriteJSON(proto.NewRestoreTurn("some-seam", "deadbeef-not-the-real-head")))
+		require.NoError(t, c.ReadJSON(&sf))
+		if sf.Type == "error" && !contains(sf.Text, "while a turn is running") {
+			break
+		}
 	}
 }
 

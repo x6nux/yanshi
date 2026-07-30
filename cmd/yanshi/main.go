@@ -89,6 +89,14 @@ func dispatch(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "yanshi", Version)
 		return exitOK
 	}
+	// `yanshi -h` / `--help` prints the full usage text to stdout and exits 0.
+	// Without this, -h falls through to runDefault, whose flag.FlagSet treats
+	// -h as flag.ErrHelp and exits 2 with the auto-generated flag list. CI smoke
+	// (yanshi -h) and CLAUDE.md both expect a clean exit 0.
+	if len(argv) == 2 && (argv[1] == "-h" || argv[1] == "--help") {
+		fmt.Fprint(stdout, usage)
+		return exitOK
+	}
 	// S10/O03 managed invocations (auth/doctor with optional leading --config)
 	// route through the testable production dispatcher. The dispatcher reads
 	// the global --config flag, parses the subcommand, and never calls os.Exit
