@@ -1,0 +1,131 @@
+package eino
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"strings"
+
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino-ext/components/model/openai"
+
+	"github.com/x6nux/yanshi/internal/config"
+)
+
+// BuildProviders builds the configured providers as both an ordered failover
+// chain and a name→model map, so a session can switch models mid-conversation
+// (the map) while the resilient default falls across them in config order
+// (the chain).
+//
+// Dispatch is by ProviderConfig.Kind:
+//   - "openai" (default when Kind is empty) → OpenAI Chat Completions adapter,
+//   - "anthropic" → Anthropic Messages API adapter (anthropic.go),
+//   - "openai-responses" → OpenAI Responses API adapter (responses.go),
+//     the unified successor to Chat Completions.
+//
+// The HTTP client intentionally has NO retry and NO timeout at the transport
+// layer: ResilientChatModel (see resilient.go) is the SINGLE retry authority —
+// it handles transient failures (network blips, 5xx, gateway EOFs, mid-stream
+// drops) with exponential backoff and failover across the chain. A second
+// retry loop here would double-count attempts, double the backoff wall-clock,
+// and muddy retry observability (the TUI's "↻ retry N/M…" line tracks the
+// model-layer count). Real 4xx client errors are also filtered at the model
+// layer (isNonRetryableClientErr), so there is nothing left for transport
+// retry to do usefully. http.DefaultTransport still provides connection reuse
+// and proper protocol-level behavior.
+//
+// Returns (models, chain, windows, err): models keys each entry by the
+// provider's REAL model id (with fallbacks — see chooseKey); chain is the same
+// models in config order (for NewResilientModel); windows maps the SAME
+// registry key → p.ContextWindow for every provider that sets one, so the http
+// layer's per-model window lookup (contextWindowFor) hits when the session
+// queries it with the registry key (cs.model / req.Model — the model id, not
+// the config name). Bootstrap forwards `windows` directly; do NOT rebuild it
+// from cfg.LLM.Providers by p.Name (the historical bug — keys did not match
+// the registry's model-id keys, so the per-model window was dead).
+func BuildProviders(cfg *config.Config) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, error) {
+	ctx := context.Background()
+	chain := make([]model.BaseChatModel, 0, len(cfg.LLM.Providers))
+	models := make(map[string]model.BaseChatModel, len(cfg.LLM.Providers))
+	windows := make(map[string]int, len(cfg.LLM.Providers))
+	// The registry is keyed by the provider's REAL model id (config `model`),
+	// so /model lists and switches on the concrete model name (e.g.
+	// "claude-opus-4-8") rather than the config label (e.g. "claude"). When the
+	// model id is empty or shared by another provider (e.g. a generic "auto"),
+	// fall back to the config `name` then a synthetic key so every provider stays
+	// uniquely selectable.
+	used := make(map[string]bool, len(cfg.LLM.Providers))
+	chooseKey := func(p config.ProviderConfig, i int) string {
+		for _, cand := range []string{p.Model, p.Name, fmt.Sprintf("model-%d", i)} {
+			if cand != "" && !used[cand] {
+				return cand
+			}
+		}
+		return fmt.Sprintf("model-%d", i)
+	}
+	for i, p := range cfg.LLM.Providers {
+		m, err := buildOne(ctx, p)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("eino: build provider %q (kind=%q): %w", p.Name, p.Kind, err)
+		}
+		chain = append(chain, m)
+		key := chooseKey(p, i)
+		used[key] = true
+		models[key] = m
+		// Mirror the SAME registry key into the windows map. contextWindowFor
+		// queries by cs.model/req.Model (the model id), so the windows key MUST
+		// be the registry key — not p.Name — or the per-model window silently
+		// misses and compaction falls back to the global ContextWindow.
+		if p.ContextWindow > 0 {
+			windows[key] = p.ContextWindow
+		}
+	}
+	return models, chain, windows, nil
+}
+
+// normalizeKind canonicalizes ProviderConfig.Kind so dispatch is forgiving of
+// case differences, surrounding whitespace, and the "responses" shorthand.
+// Empty Kind defaults to "openai" (the historical behavior before Kind existed).
+// Unknown values are returned lowercased and trimmed unchanged, so a future
+// adapter can register without touching this switch.
+func normalizeKind(k string) string {
+	switch strings.ToLower(strings.TrimSpace(k)) {
+	case "", "openai":
+		return "openai"
+	case "anthropic":
+		return "anthropic"
+	case "openai-responses", "responses":
+		return "openai-responses"
+	default:
+		return strings.ToLower(strings.TrimSpace(k))
+	}
+}
+
+// buildOne constructs a single model adapter for p based on its Kind. It is the
+// per-provider dispatch point extracted from BuildProviders so the chain loop
+// stays readable and each branch is independently testable. See BuildProviders
+// for the no-retry/no-timeout HTTP client rationale.
+func buildOne(ctx context.Context, p config.ProviderConfig) (model.BaseChatModel, error) {
+	switch normalizeKind(p.Kind) {
+	case "anthropic":
+		return NewAnthropicModel(ctx, &AnthropicModelConfig{
+			APIKey:  p.APIKey,
+			Model:   p.Model,
+			BaseURL: p.BaseURL,
+		})
+	case "openai-responses":
+		return NewOpenAIResponsesModel(ctx, &ResponsesConfig{
+			APIKey:  p.APIKey,
+			Model:   p.Model,
+			BaseURL: p.BaseURL,
+		})
+	default: // "openai" and any unrecognized kind (backward-compat)
+		return openai.NewChatModel(ctx, &openai.ChatModelConfig{
+			APIKey:  p.APIKey,
+			Model:   p.Model,
+			BaseURL: p.BaseURL,
+			// No Timeout, no retry Transport: see BuildProviders doc comment.
+			HTTPClient: &http.Client{Transport: http.DefaultTransport},
+		})
+	}
+}
