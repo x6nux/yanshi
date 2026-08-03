@@ -19,6 +19,8 @@ go test ./...                                # 全量测试套件（缓存生效
 go test ./internal/tools -run TestName       # 跑单个测试（或 -run /TestSub/）
 go test -tags e2e_real ./internal/acp/...    # 真实 CLI 的端到端测试（构建标签）
 go vet ./...                                 # vet（仓库内不存在 golangci-lint 配置）
+go test ./internal/archtest                  # 架构治理测试（见下方"治理是机器强制的"）
+./build.sh [release]                         # 带版本注入的构建（ldflags → internal/version）
 ```
 
 **测试缓存与增量测试。** Go 的 build/test cache 默认已生效 —— 包未变更时第二次 `go test` 会输出 `(cached)` 且不重跑。但 `go test ./...` 仍会*遍历*所有包（即使大部分只是检查缓存）。如果只想跑有变更的包，使用 `go run ./cmd/testchanged [flags]`：
@@ -32,6 +34,25 @@ go vet ./...                                 # vet（仓库内不存在 golangci
 **运行。** `./yanshi` 启动自包含的 TUI（为当前项目发现后端，或在进程内嵌入一个）。`--fake-model` 无需任何 API key 即可启动一个确定性 fake model（`llm.providers` 为空时也会自动选择）。alt-screen TUI 无法通过管道驱动；启动自检可用 `./yanshi -h`（打印用法并退出 0）或 `timeout 5 ./yanshi --fake-model -inprocess`。
 
 **配置。** `config.yaml` 已被 gitignore —— 从被跟踪的 `config.example.yaml` 复制而来。YAML 由 `internal/config` 加载；`${VAR}` 环境变量在反序列化前展开。
+
+**治理是机器强制的（`internal/archtest`）。** 下方「约定」里的规则不是荣誉制，而是由测试执行的 —— 违反时 `go test ./internal/archtest` 会红：
+
+- `lines_test.go`（GOV2）：非测试 `.go` 文件 ≤ 1000 纯代码行。豁免写在 `lineExceptions` map 里，**只能删不能加**；被豁免的文件一旦降到限额以下，不删除条目也会失败（禁止死条目）。用 `go run ./cmd/codelines` 做即时检查。
+- `deps_test.go`（GOV1）：六边形分层。`portAllowlists` 规定每个 port 包允许的 internal 依赖；`bootstrap` 是唯一组合根。新增跨包依赖前先看这里，否则 CI 直接红。
+- `docs_test.go`（GOV3）：`internal/` 与 `cmd/` 下所有导出符号必须有 doc 注释；豁免同样只减不增。
+
+**生成的文档会被 CI diff-gate。** 改动 `internal/config.Config`、`internal/api` schema 或任何子命令的 `-h` 文本后，必须重跑生成器并提交结果，否则 `.github/workflows/docs.yml` 的 `git diff --exit-code` 会失败：
+
+```sh
+go run ./cmd/api-schema -markdown docs/api/schema.md
+go run ./cmd/api-schema -markdown docs/api/resources.md
+go run ./cmd/gendocs -config docs/user-guide/configuration.md
+go run ./cmd/gendocs -help-all docs/user-guide/tui.md docs/user-guide/entrypoints.md
+```
+
+**其余 dev 工具（不参与运行时）：** `cmd/depsanalyze` 打印 internal 包的 fan-in/fan-out、分层与风险标记；`cmd/agent-worker` 是连接 Task API 的独立远程 worker。
+
+**CI 硬门禁（`.github/workflows/ci.yml`）：** `go test ./...`（ubuntu/windows/macos）、`go vet`、`go test -race`（逐包、最多 3 次重试 —— 真实 race 会 3/3 全挂，时序 flake 通常重试即过）、以及 `CGO_ENABLED=0` 的构建矩阵（含 `-tags=nokeyring`）加 `yanshi -h` 冒烟。`governance` 与 `fuzz-seed` 目前是 `continue-on-error` 的软门禁。
 
 ## 架构
 
@@ -95,4 +116,7 @@ Agent Client Protocol 适配器，以子进程方式拉起外部 agent CLI，并
 - **重复逻辑必须抽成公共函数** —— 发现重复实现的函数或反复出现的相同逻辑片段时，提取为公共函数/辅助函数（同包内，或放进合适的小包）复用；禁止复制粘贴。
 - **注释是承重文档** —— 包和导出符号都带有多段 doc 注释来解释*为什么*（尤其在 ADK、guard、VCS 周围）。在这些区域增改时，请保持同样的注释密度。
 - **Fake 优先于 mock** —— `einollm.FakeModel`、`goalloop.FakePlanner`/`FakeImplementer`、`cli.FakeBackend`、`acp.FakeAgent` 驱动确定性测试，无需 API key 或子进程。优先新增一个 fake，而非引入 mock 框架。
+- **承重架构决策走 ADR** —— `docs/adr/` 是单决策的演进档案（ADR-0001..0010 已覆盖 UnknownToolsHandler、guard fail-closed、压缩、WS/SSE、autoVCS scope 覆盖等）。新增或修改上述架构章节里的约束时，从 `docs/adr/0000-template.md` 复制一条新 ADR（编号取当前最大 +1），把不可违反的约束落进 Consequences。CLAUDE.md 写全景当前态，ADR 写单条决策的来龙去脉 —— 交叉引用，不要互相复制。
+- **对外契约在 `sdk/`** —— `sdk/schema/` 存放版本化的 API 契约（v1、v1.1），`sdk/python` 与 `sdk/ts` 是从中生成/校验的客户端。改动 `internal/api` 的 wire 格式时同步这里。
+- **提交信息用 conventional commit** —— `feat(scope):` / `fix:` / `docs:` / `refactor:` / `test:` / `chore:` / `ci:`，CHANGELOG 由 `cliff.toml` 自动生成。**（重要：用户没主动要求时，绝对不要执行 git 提交/分支操作）**
 - **被忽略的产物**：`config.yaml`、`*.db`（运行时 SQLite 存储，含 `yanshi.db`）以及构建出的二进制都被 gitignore。构建产物（`yanshi.exe`、`yanshi.exe~`）可能出现在工作树中 —— 不要提交它们。
