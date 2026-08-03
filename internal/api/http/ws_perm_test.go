@@ -72,12 +72,14 @@ func newPermWSServer(t *testing.T) (url, workdir string) {
 // under test.
 //
 // The deadline only exists so a lost frame fails instead of hanging the suite
-// forever — a healthy run returns immediately and never approaches it, so it
-// is sized for the worst scheduler hiccup, not the expected latency. 30s was
-// not enough: a windows CI runner blew through it waiting for the first
-// tool_call frame (TestChatWS_InteractivePermission_Allow, 31.08s, run
-// 30786620495) while the same commit passed on ubuntu and macos. Raising it
-// costs a passing run nothing.
+// forever — a healthy run returns in well under a second and never approaches
+// it. It is deliberately longer than the server's 60s permission-callback
+// timeout (ws.go): when a permission_request really does go missing, outliving
+// that timeout means the client reads the resulting "done" and drainUntil
+// reports `saw "done" before "permission_request"` — the actual diagnosis —
+// instead of an opaque i/o timeout that says only "something was slow". 30s
+// sat under the 60s and produced exactly that useless red on windows (run
+// 30786620495).
 func readFrame(t *testing.T, c *websocket.Conn) proto.ServerFrame {
 	t.Helper()
 	deadline := 120 * time.Second
@@ -116,9 +118,16 @@ func TestChatWS_InteractivePermission_Allow(t *testing.T) {
 
 	require.NoError(t, c.WriteJSON(proto.NewUserMessage("write the file")))
 
-	// The ADK emits a tool_call(running) frame for fs_write BEFORE running it;
-	// then the permission callback fires and emits permission_request.
-	drainUntil(t, c, "tool_call")
+	// Drain straight to permission_request — do NOT drain tool_call first.
+	// The two frames are written by DIFFERENT goroutines (tool_call by the
+	// main loop draining the ADK event iterator, permission_request by the ADK
+	// worker inside the tool's permission callback — see the wsConn doc in
+	// ws_handlers.go), so their order is a race, not a sequence. drainUntil
+	// silently discards non-matching frames, so whenever permission_request
+	// won that race the tool_call drain ATE it: the next drain then waited out
+	// the server's 60s permission timeout and saw "done". That is the whole
+	// story behind two CI reds — an i/o timeout on windows (run 30786620495)
+	// and "saw done before permission_request" on ubuntu (run 30788165405).
 	req := drainUntil(t, c, "permission_request")
 	assert.Equal(t, "fs_write", req.ToolName)
 	assert.Contains(t, req.ToolArgs, "out.txt")
@@ -156,7 +165,8 @@ func TestChatWS_InteractivePermission_Deny(t *testing.T) {
 
 	require.NoError(t, c.WriteJSON(proto.NewUserMessage("write the file")))
 
-	drainUntil(t, c, "tool_call")
+	// No tool_call drain first — it races with permission_request and would
+	// swallow it. See the comment in TestChatWS_InteractivePermission_Allow.
 	req := drainUntil(t, c, "permission_request")
 
 	// Deny.
@@ -220,7 +230,8 @@ func TestChatWS_InteractivePermission_AlwaysAllow_NoReprompt(t *testing.T) {
 
 	// Turn 1: prompt -> always_allow.
 	require.NoError(t, c.WriteJSON(proto.NewUserMessage("go")))
-	drainUntil(t, c, "tool_call")
+	// No tool_call drain first — it races with permission_request and would
+	// swallow it. See the comment in TestChatWS_InteractivePermission_Allow.
 	req := drainUntil(t, c, "permission_request")
 	require.NoError(t, c.WriteJSON(proto.NewPermissionResponse(req.ID, "always_allow")))
 	for {
