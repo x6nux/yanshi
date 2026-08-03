@@ -341,6 +341,12 @@ func (t *AgentTools) streamStartAgent(ctx context.Context, argsJSON string) <-ch
 			pushErrChunk(ch, err)
 			return
 		}
+		// agent_start is a TERMINAL path: this result goes straight back to the
+		// parent agent, so the EVIDENCE section is re-surfaced as an explicit
+		// parent-facing hint (ledger B1/M04b: "the parent can consume EVIDENCE").
+		// The DAG and workflow call sites deliberately do NOT do this — see the
+		// comments there.
+		result = ParentWorkingSetHint(result)
 		ch <- ToolChunk{Result: result} // final conclusion -> model only (context hygiene)
 	}()
 	return ch

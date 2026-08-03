@@ -261,6 +261,10 @@ func (t *AgentTools) streamSummarize(ctx context.Context, argsJSON string) <-cha
 			"max_lines":  strconv.Itoa(maxLines),
 		})
 		sctx, finalize := bindSubAgentProgress(ctx, ch, "")
+		// Deliberately NOT wrapped in ParentWorkingSetHint: summarize answers
+		// under its own "at most N lines" contract, not the five-section
+		// sub-agent contract, so it has no EVIDENCE block to re-surface and a
+		// hint header would only corrupt a length-bounded summary.
 		result, err := t.runSubAgent(WithLeafSubAgentTools(sctx), prompt, []string{"fs_read"}, "")
 		finalize()
 		if err != nil {
@@ -369,6 +373,10 @@ func (t *AgentTools) runFlatWorkflow(ctx context.Context, tasksJSON json.RawMess
 					if wp != nil && wp.StepCB != nil {
 						taskCtx = WithSubAgentProgress(ctx, wp.StepCB(fmt.Sprintf("%d", task.index)))
 					}
+					// Deliberately NOT wrapped in ParentWorkingSetHint: same
+					// reason as the DAG step runner — this is an intermediate
+					// flat-workflow task whose output is aggregated and fed
+					// forward, not handed to the parent as a terminal result.
 					r, err := t.runSubAgent(taskCtx, task.prompt, nil, "")
 					if wp != nil && wp.StepDone != nil {
 						wp.StepDone(fmt.Sprintf("%d", task.index), err)

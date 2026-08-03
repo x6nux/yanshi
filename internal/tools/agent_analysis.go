@@ -63,7 +63,10 @@ func (t *AgentTools) streamAnalysis(ctx context.Context, argsJSON string) <-chan
 				pushErrChunk(ch, err)
 				return
 			}
-			ch <- ToolChunk{Result: result}
+			// Terminal path (same rationale as agent_start): the analysis
+			// result is handed straight to the parent agent, so EVIDENCE is
+			// re-surfaced as a parent-facing working-set hint.
+			ch <- ToolChunk{Result: ParentWorkingSetHint(result)}
 		case "workflow":
 			wp, stopTicker := makeWorkflowProgress(ch)
 			defer stopTicker()

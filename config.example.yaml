@@ -92,6 +92,12 @@ batch:
   rlm_max_concurrency: 16           # <= 16, clamped otherwise
   automation_tick_seconds: 60       # scheduler interval, default 60s if <= 0
 
+# Batch B1: 受管子代理运行时。agent_start / analysis / workflow 拉起的子代理都
+# 由同一个 registry manager 统一记账,所以并发上限是全局共享的。
+subagents:
+  limit: 10                            # 同时在跑的子代理上限,合法范围 1..20,0/缺省 = 10
+  persistence_path: ~/.yanshi/subagents.v1.json  # 子代理登记表落盘位置(跨会话恢复)
+
 # B2-LSP1: post-edit diagnostics. When enabled, yanshi queries language servers
 # after fs_write/fs_edit/apply_patch and feeds the diagnostics back to the model.
 # Servers not found in PATH are silently skipped (soft-degrade).

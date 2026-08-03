@@ -199,6 +199,12 @@ func (t *AgentTools) executeLevel(ctx context.Context, level []ExpandedStep, con
 			if wp != nil && wp.StepCB != nil {
 				stepCtx = WithSubAgentProgress(ctx, wp.StepCB(step.ID))
 			}
+			// Deliberately NOT wrapped in ParentWorkingSetHint: this is an
+			// INTERMEDIATE DAG step. Its output is spliced into the prompt of
+			// downstream steps, so appending the parent-facing hint would let a
+			// sub-agent read a marker meant only for the parent — polluting the
+			// intermediate state. Only terminal paths (agent_start, analysis)
+			// re-surface EVIDENCE.
 			out, err := t.runSubAgent(stepCtx, prompt, nil, "")
 			if wp != nil && wp.StepDone != nil {
 				wp.StepDone(step.ID, err)
