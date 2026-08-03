@@ -28,6 +28,40 @@ func TestAppExposesToolNames(t *testing.T) {
 	require.Contains(t, app.ToolNames, "fs_read", "fs_read is always registered")
 }
 
+// TestC1ToolsAreRegistered proves the C1 capability's tools reach the
+// orchestrator's registry.
+//
+// Why this exists alongside GOV4: GOV4 only proves BuildC1 is *called* from
+// Build. A call whose return value is dropped on the floor still satisfies it,
+// and that is precisely the failure mode this task fixed. Asserting on
+// App.ToolNames proves the output was used.
+//
+// rlm_query is asserted too, and its absence would be a real failure rather
+// than a config quirk: buildMinimalApp runs with FakeModel: true, and
+// SelectRLMModel returns the fake when batch.rlm_model is unset, so rlm_query
+// must register on this path. If it went missing, the fake model never reached
+// BuildC1 — and rlm_query would become a phantom name in the default profile,
+// which GOV5 forbids with no exemption available (the table is removal-only).
+func TestC1ToolsAreRegistered(t *testing.T) {
+	app := buildMinimalApp(t)
+
+	registered := make(map[string]bool, len(app.ToolNames))
+	for _, n := range app.ToolNames {
+		registered[n] = true
+	}
+	for _, name := range []string{
+		"automation_create", "automation_list", "automation_read", "automation_update",
+		"automation_pause", "automation_resume", "automation_delete", "automation_run",
+		"agent_batch", "rlm_query",
+	} {
+		require.True(t, registered[name],
+			"C1 tool %q is missing from App.ToolNames — BuildC1 ran but its tools were "+
+				"never appended to allTools", name)
+	}
+	require.NotNil(t, app.C1Scheduler,
+		"App.C1Scheduler must be set so Shutdown can join the automation tick loop")
+}
+
 // toolWiringExceptions maps a tool name present in the default profile's
 // allow list but absent from the tool registry, to the work package that
 // will register it.

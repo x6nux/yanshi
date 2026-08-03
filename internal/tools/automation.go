@@ -109,6 +109,23 @@ func NewAutomationTools(manager *automation.Manager) *AutomationTools {
 	return set
 }
 
+// Tools 返回八个 automation 工具，供 bootstrap 一次性注册。
+//
+// 存在的理由：组合根一律通过 Tools() 把一组工具追加进 allTools（见 FSTools/
+// TaskTools 等）。逐字段 append 八行会在新增/删除工具时漏改一处而静默丢工具，
+// 而这里的名单和结构体字段同处一个文件，改动可见。
+func (a *AutomationTools) Tools() []*GuardedTool {
+	var ts []*GuardedTool
+	for _, t := range []*GuardedTool{
+		a.Create, a.List, a.Read, a.Update, a.Pause, a.Resume, a.Delete, a.Run,
+	} {
+		if t != nil {
+			ts = append(ts, t)
+		}
+	}
+	return ts
+}
+
 // oneChunk 把同步 fn 包装成单 chunk StreamFunc。
 func oneChunk(fn func() (string, error)) <-chan ToolChunk {
 	out := make(chan ToolChunk, 1)

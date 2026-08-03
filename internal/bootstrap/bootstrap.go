@@ -18,6 +18,7 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
+	"github.com/x6nux/yanshi/internal/agent/automation"
 	"github.com/x6nux/yanshi/internal/agent/orchestrator"
 	apihttp "github.com/x6nux/yanshi/internal/api/http"
 	apiV1 "github.com/x6nux/yanshi/internal/api/v1"
@@ -117,6 +118,15 @@ type App struct {
 
 	// MCP is the MCP connection manager (soft-degrade: may be Enabled()==false).
 	MCP *mcp.Manager
+
+	// C1Scheduler is the automation tick loop started by BuildAutomation as a
+	// goroutine over the root context. Nil when C1 failed to build.
+	//
+	// Shutdown must Wait() on it, not merely cancel it: a tick in flight is
+	// mid-transaction against the store, and closing the store underneath it
+	// yields "database is closed" errors and a run row stuck in `running`
+	// forever. Cancelling only asks it to stop; Wait proves it did.
+	C1Scheduler *automation.Scheduler
 
 	// VCSDBPath is the SQLite store path (cfg.Storage.SQLitePath) and
 	// WorktreeDir is the expanded worktree working dir. Exposed so the goal
@@ -291,6 +301,15 @@ func DefaultOrchestratorProfile() guard.PermissionProfile {
 			"git_status", "git_diff", "run_tests", "diagnostics",
 			"github_pr_context", "github_comment", "github_approve", "github_merge",
 			"review",
+			// C1. Spelled out one by one rather than as "automation_*": GOV5's
+			// phantom-name check skips any entry containing a wildcard, so a
+			// glob here would silently re-open the hole W0 just closed. Note
+			// these eight are additionally approval-gated at call time
+			// (NewApprovalGuardedTool), so listing them here authorizes
+			// discovery, not unattended execution.
+			"automation_create", "automation_list", "automation_read", "automation_update",
+			"automation_pause", "automation_resume", "automation_delete", "automation_run",
+			"agent_batch", "rlm_query",
 		}},
 		Net: guard.NetPerm{Allow: true},
 	}
@@ -565,12 +584,19 @@ func Build(opts Options) (*App, error) {
 	// contextWindowFor(cs.model / req.Model, ...) hits the per-model window
 	// instead of silently falling back to the global ContextWindow.
 	var providerWindows map[string]int
+	// fakeChatModel stays nil on the production path ON PURPOSE: SelectRLMModel
+	// treats a non-nil fake as "rlm_query may fall back to it", so handing it a
+	// real model here would silently defeat the cheap-provider requirement and
+	// route rlm_query at the expensive main model. Only the fake branch below
+	// assigns it.
+	var fakeChatModel model.BaseChatModel
 	if opts.FakeModel || len(cfg.LLM.Providers) == 0 {
 		fm := einollm.NewFakeModelWithMessages([]*schema.Message{
 			schema.AssistantMessage("(no real model configured)", nil),
 		}, nil)
 		fm.Repeat = true
 		chatModel = fm
+		fakeChatModel = fm
 	} else {
 		providerBuilder := opts.ProviderBuilder
 		if providerBuilder == nil {
@@ -745,6 +771,35 @@ func Build(opts Options) (*App, error) {
 	}
 	dispRef := &work.DispatcherRef{}
 	workMgr := work.NewManager(workStore, dispRef, work.ArtifactPolicy{})
+
+	// The broker, the root context and the dispatcher binding are created HERE
+	// rather than next to srv.TaskAPI further down, because C1's A2Adapter
+	// needs a live broker while the tool registry is still being assembled,
+	// and BuildAutomation needs the root context to derive its scheduler
+	// goroutine from. srv.TaskAPI / StartArtifactJanitor / StartSweeper stay
+	// below: they depend on srv, which does not exist yet.
+	broker := task.NewBroker(st, 3, 30*time.Second)
+	// M8: when the VCS + repo are available, wire them into the broker so Claim
+	// auto-assigns a fresh worktree to each claimed task. Gated on VCSRepoID so
+	// a failed InitRepo leaves the broker on its no-worktree behavior.
+	if vcsRepoID != "" {
+		broker.SetVCS(vcsInstance, vcsRepoID)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel-on-error guard, the ctx twin of closeStoreOnError above. It is
+	// load-bearing: BuildAutomation starts `go scheduler.Start(ctx)`, and that
+	// goroutine only exits when this ctx is cancelled. Without the guard, every
+	// error return between here and the successful one would leak a live
+	// scheduler ticking against a store that closeStoreOnError just closed.
+	cancelOnError := true
+	defer func() {
+		if cancelOnError {
+			cancel()
+		}
+	}()
+	// A2: bind the work dispatcher to the broker.
+	dispRef.Bind(work.BrokerAdapter{Broker: broker})
+
 	for _, t := range tools.NewTaskTools().Tools() {
 		allTools = append(allTools, t)
 	}
@@ -779,6 +834,17 @@ func Build(opts Options) (*App, error) {
 			visionUsageSink.add(prompt, completion, total)
 		}))
 	allTools = append(allTools, tools.NewScreenshotTool(imageStore))
+
+	// C1: automation_* (8) + agent_batch + rlm_query. Soft-degrade like VCS
+	// and plugins — a C1 build failure disables the capability and logs, it
+	// does not reject the boot. See wireC1 for the warning/error split.
+	c1Tools, c1Scheduler, c1Err := wireC1(
+		ctx, *cfg, st, workMgr, broker, subagentManager, providerModels, fakeChatModel)
+	if c1Err != nil {
+		fmt.Fprintf(os.Stderr,
+			"yanshi: C1 disabled (automation/agent_batch/rlm_query unavailable): %v\n", c1Err)
+	}
+	allTools = append(allTools, c1Tools...)
 
 	// GOV5 seam: snapshot the registered tool names while allTools is still
 	// in scope. Info() is pure metadata on every tool implementation, so the
@@ -978,20 +1044,11 @@ func Build(opts Options) (*App, error) {
 	srv.AgentV1(agentAPI)                      // V14 versioned resource API (thread/turn/item)
 	srv.Sessions(st)
 
-	// Wire the Task API: create a broker backed by the same store, register
-	// the task endpoints on the same server, and start the heartbeat sweeper.
-	broker := task.NewBroker(st, 3, 30*time.Second)
-	// M8: when the VCS + repo are available, wire them into the broker so Claim
-	// auto-assigns a fresh worktree to each claimed task. Gated on VCSRepoID so
-	// a failed InitRepo leaves the broker on its no-worktree behavior.
-	if vcsRepoID != "" {
-		broker.SetVCS(vcsInstance, vcsRepoID)
-	}
+	// Register the task endpoints on the server and start the heartbeat
+	// sweeper. The broker itself, ctx and the dispatcher binding were created
+	// earlier, next to workMgr — C1 needs them at tool-registry assembly time.
 	srv.TaskAPI(broker, cfg.Profiles)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	// A2: Bind work dispatcher to the broker and start the artifact janitor.
-	dispRef.Bind(work.BrokerAdapter{Broker: broker})
 	work.StartArtifactJanitor(ctx, workStore, workRoot, 6*time.Hour, work.DefaultArtifactTTL)
 
 	broker.StartSweeper(ctx, 10*time.Second)
@@ -1010,10 +1067,12 @@ func Build(opts Options) (*App, error) {
 		Handler: srv.Handler(),
 	}
 
-	// Successful Build: hand store ownership to the caller. The deferred
-	// closeStoreOnError guard becomes a no-op; App.Shutdown still closes the
-	// store via a.Store.Close().
+	// Successful Build: hand store and root-context ownership to the caller.
+	// The deferred closeStoreOnError / cancelOnError guards become no-ops;
+	// App.Shutdown closes the store via a.Store.Close() and cancels the root
+	// context via a.cancel.
 	closeStoreOnError = false
+	cancelOnError = false
 	return &App{
 		Server:          httpServer,
 		Store:           st,
@@ -1039,6 +1098,7 @@ func Build(opts Options) (*App, error) {
 		AgentTools:      agentTools,
 		LSP:             lspMgr,
 		MCP:             mcpManager,
+		C1Scheduler:     c1Scheduler,
 		Approvals:       approvalMgr,
 		ShellManager:    shellManager,
 		SecureFactory:   secureFactory,
@@ -1236,6 +1296,11 @@ func (a *App) Shutdown(ctx context.Context) error {
 		a.cancel()
 	}
 	var errs []error
+	// The automation scheduler observes a.cancel() above; join it before any
+	// store-touching teardown so an in-flight tick cannot race the close.
+	if a.C1Scheduler != nil {
+		a.C1Scheduler.Wait()
+	}
 	if err := a.Server.Shutdown(ctx); err != nil {
 		errs = append(errs, err)
 	}

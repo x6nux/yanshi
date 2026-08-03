@@ -45,6 +45,16 @@ func NewBatchTools(manager *registry.Manager) *BatchTools {
 	return set
 }
 
+// Tools 返回 batch 工具集，供 bootstrap 与其它工具组统一注册。
+// 现在只有 agent_batch 一个，但保持和 FSTools/AutomationTools 相同的注册接口，
+// 这样组合根不必对"单工具组"特殊处理，将来加第二个工具也无需改调用点。
+func (b *BatchTools) Tools() []*GuardedTool {
+	if b.AgentBatch == nil {
+		return nil
+	}
+	return []*GuardedTool{b.AgentBatch}
+}
+
 // runAgentBatch 是 agent_batch 的执行体。错误作为 ToolChunk.Result 回喂模型。
 func runAgentBatch(ctx context.Context, set *BatchTools, args string) <-chan ToolChunk {
 	out := make(chan ToolChunk, 1)

@@ -38,6 +38,15 @@ func NewRLMTools(runner rlm.Runner) *RLMTools {
 	return set
 }
 
+// Tools 返回 RLM 工具集，供 bootstrap 统一注册。
+// 与 BatchTools.Tools 同理：接口统一，组合根不必区分单工具组和多工具组。
+func (r *RLMTools) Tools() []*GuardedTool {
+	if r.Query == nil {
+		return nil
+	}
+	return []*GuardedTool{r.Query}
+}
+
 // runRLMQuery 是 rlm_query 的执行体。错误一律作为 ToolChunk.Result 回喂模型
 // （而不是 Go error），这样 ADK 把错误回喂模型让其改路径重试，与现有 GuardedTool
 // 的 fail-closed 语义一致。

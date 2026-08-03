@@ -28,9 +28,7 @@ import (
 //
 // Entries may only be REMOVED, never added. A dead entry — the function is
 // now reachable from Build without needing to be a root — fails the test.
-var assemblyExceptions = map[string]string{
-	"BuildC1": "W1 装配线：bootstrap.Build 尚未调用 BuildC1（审计 P0-2），见 spec §4.3 W1",
-}
+var assemblyExceptions = map[string]string{}
 
 // bootstrapCallGraph parses every non-test .go file in internal/bootstrap and
 // returns (same-package call graph, exported Build* name → "file:line").
