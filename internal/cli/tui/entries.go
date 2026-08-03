@@ -401,13 +401,13 @@ func (e *toolEntry) renderError(sp spinner.Model) string {
 	return "  " + name + errStyle.Render("(Error|"+short+")") + " " + glyph + "\n\n"
 }
 
-// renderSilent renders a "quiet" tool (fs_read/fs_list/fs_glob/fs_search/
-// fs_mkdir): header only, NO ⎿ result line. These tools return large file dumps
+// renderSilent renders a "quiet" tool (fs_read/fs_list/fs_glob/fs_search):
+// header only, NO ⎿ result line. These tools return large file dumps
 // whose size is already conveyed by the header's size hint ("12.3 KB · 245
 // lines"); a result line would just push prior context off screen. The full
 // content is still available via ctrl+o expand.
-// renderSilent renders a read/classify tool (fs_read/fs_list/fs_glob/fs_search/
-// fs_mkdir) as header-only — "  Read(foo.go) ✓". The result content (file
+// renderSilent renders a read/classify tool (fs_read/fs_list/fs_glob/
+// fs_search) as header-only — "  Read(foo.go) ✓". The result content (file
 // body, directory listing, search hits) is never shown inline: these tools'
 // output is for the model, not the transcript. ctrl+o does not expand them
 // (toggleExpand skips silent tools) — there is nothing to reveal.
@@ -842,7 +842,7 @@ const (
 
 func toolDisplayFor(name string) toolDisplay {
 	switch name {
-	case "fs_read", "fs_list", "fs_glob", "fs_search", "fs_mkdir":
+	case "fs_read", "fs_list", "fs_glob", "fs_search":
 		return toolDispSilent
 	case "shell_run":
 		return toolDispTail

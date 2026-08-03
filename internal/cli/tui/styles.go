@@ -403,7 +403,6 @@ var toolDisplayNames = map[string]string{
 	"fs_list":        "List",
 	"fs_glob":        "Glob",
 	"fs_search":      "Search",
-	"fs_mkdir":       "Mkdir",
 	"shell_run":      "Bash",
 	"time_now":       "Time",
 	"web_fetch":      "Fetch",

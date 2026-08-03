@@ -149,7 +149,12 @@ func TestCov_ExtractPath_EdgeCases(t *testing.T) {
 	// "path" present but no colon follows.
 	assert.Equal(t, "", extractPathFromToolArgs("fs_edit", `{"path"  }`))
 	// No closing delimiter (",,}) → return the trimmed remainder.
-	assert.Equal(t, "bareword", extractPathFromToolArgs("fs_mkdir", `{"path":  bareword`))
+	assert.Equal(t, "bareword", extractPathFromToolArgs("apply_patch", `{"path":  bareword`))
 	// Sanity: the happy path still works.
 	assert.Equal(t, "/proj/main.go", extractPathFromToolArgs("fs_write", `{"path":"/proj/main.go"}`))
+	// apply_patch is a real registered write tool — frecency used to miss it
+	// entirely while matching the never-registered fs_mkdir instead.
+	assert.Equal(t, "/proj/patched.go", extractPathFromToolArgs("apply_patch", `{"path":"/proj/patched.go"}`))
+	// Read tools stay unrecorded: write paths are the "really editing" signal.
+	assert.Equal(t, "", extractPathFromToolArgs("fs_read", `{"path":"/proj/main.go"}`))
 }

@@ -209,12 +209,13 @@ func (m *model) enqueueSave(fn func() error) {
 	}
 }
 
-// extractPathFromToolArgs 从 fs_write/fs_edit/fs_mkdir 的 args JSON 中解析 path 字段。
+// extractPathFromToolArgs 从写工具(fs_write/fs_edit/apply_patch)的 args JSON 中解析
+// path 字段。
 // 其他工具或解析失败返回空串。不引第三方 JSON 库:手工 strings.Index 找 "path" 键,
 // 失败就返回 ""(frecency 不需要精确)。
 func extractPathFromToolArgs(toolName, argsJSON string) string {
 	switch toolName {
-	case "fs_write", "fs_edit", "fs_mkdir":
+	case "fs_write", "fs_edit", "apply_patch":
 		// argsJSON 例如 {"path":"/proj/main.go"}
 		// 简化解析:找 "path" 键,取其字符串值。
 		idx := strings.Index(argsJSON, `"path"`)

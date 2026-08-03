@@ -103,7 +103,7 @@ func TestPlanToolAllowed(t *testing.T) {
 			t.Errorf("PlanToolAllowed(%q) = false, want true", n)
 		}
 	}
-	denied := []string{"fs_write", "fs_edit", "fs_mkdir", "shell_run", "task_cancel", "task_gate_run", "vcs_commit", "web_fetch"}
+	denied := []string{"fs_write", "fs_edit", "apply_patch", "shell_run", "task_cancel", "task_gate_run", "vcs_commit", "web_fetch"}
 	for _, n := range denied {
 		if PlanToolAllowed(n) {
 			t.Errorf("PlanToolAllowed(%q) = true, want false", n)
@@ -119,13 +119,15 @@ func TestModeLabel_Plan(t *testing.T) {
 }
 
 func TestIsEditTool(t *testing.T) {
-	edits := []string{"fs_write", "fs_edit", "fs_mkdir"}
+	edits := []string{"fs_write", "fs_edit"}
 	for _, n := range edits {
 		if !IsEditTool(n) {
 			t.Errorf("IsEditTool(%q) = false, want true", n)
 		}
 	}
-	notEdits := []string{"fs_read", "shell_run", "web_fetch", "vcs_commit"}
+	// apply_patch is a real write tool but deliberately NOT auto-approved:
+	// widening the allow-edits no-prompt set is an authorization change.
+	notEdits := []string{"fs_read", "shell_run", "web_fetch", "vcs_commit", "apply_patch", "fs_mkdir"}
 	for _, n := range notEdits {
 		if IsEditTool(n) {
 			t.Errorf("IsEditTool(%q) = true, want false", n)

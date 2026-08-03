@@ -188,7 +188,6 @@ func TestToolDisplayName(t *testing.T) {
 		"fs_list":      "List",
 		"fs_glob":      "Glob",
 		"fs_search":    "Search",
-		"fs_mkdir":     "Mkdir",
 		"shell_run":    "Bash",
 		"time_now":     "Time",
 		"web_fetch":    "Fetch",
@@ -1684,7 +1683,7 @@ func TestApplyEvent_NestedFullCycleRender(t *testing.T) {
 	// silent tool — in the MAIN agent it renders header-only (renderSilent:
 	// large output is for the model, not the transcript), so the sub-agent
 	// suppresses its ⎿ result line too, matching the main-agent styling for
-	// ALL silent tools (fs_read/fs_list/fs_glob/fs_search/fs_mkdir). The
+	// ALL silent tools (fs_read/fs_list/fs_glob/fs_search). The
 	// child's agent_chunk accumulates into nestedText, not nestedProgress.
 	assert.Len(t, nt.nestedProgress, 1)
 	assert.Contains(t, nt.nestedProgress[0], "Read")

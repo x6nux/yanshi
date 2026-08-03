@@ -15,6 +15,7 @@ import (
 
 	"github.com/x6nux/yanshi/internal/agent/orchestrator"
 	"github.com/x6nux/yanshi/internal/bootstrap"
+	"github.com/x6nux/yanshi/internal/guard"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/tools"
 )
@@ -169,6 +170,56 @@ func TestGOV5ProfileAllowMatchesToolRegistry(t *testing.T) {
 			"profile's allow list — verify this is intentional tightening and not a "+
 			"forgotten authorization:\n  %s",
 			len(unauthorized), strings.Join(unauthorized, "\n  "))
+	}
+}
+
+// TestGOV7EditToolsAreRegistered verifies every name in guard's allow-edits
+// auto-approval set is a tool that is actually registered.
+//
+// Why this matters: this is GOV5's consumption-side twin. GOV5 catches phantom
+// names on the AUTHORIZATION side (the default profile advertising tools that do
+// not exist); this catches them on the CONSUMPTION side. Unlike the TUI's
+// display-only tables (label maps, silent-tool case labels), where a dead name
+// is merely clutter, guard.editTools carries AUTHORIZATION SEMANTICS: it is the
+// set ModeAllowEdits auto-approves WITHOUT prompting the user. A name that
+// matches no registered tool occupies a no-prompt auto-approval slot and makes
+// the set read as broader than it is — exactly how fs_mkdir, a tool that was
+// never registered (FSTools.Tools() ships read/write/edit/list/glob/search/
+// apply_patch), survived here long after it was dropped from the default
+// profile.
+//
+// Why there is no exemption table (unlike GOV5's toolWiringExceptions): after
+// the cleanup the set is {fs_write, fs_edit}, both of which FSTools always
+// registers, so the violation set is identically empty. An exemption table with
+// nothing to exempt would be dead weight — and widening this set is an
+// authorization change that belongs in a deliberate work package, not behind a
+// governance escape hatch.
+func TestGOV7EditToolsAreRegistered(t *testing.T) {
+	app := buildMinimalApp(t)
+
+	registered := make(map[string]bool, len(app.ToolNames))
+	for _, n := range app.ToolNames {
+		registered[n] = true
+	}
+	require.NotEmpty(t, registered, "tool registry must not be empty")
+
+	editTools := guard.EditToolNames()
+	require.NotEmpty(t, editTools, "allow-edits must name concrete tools")
+
+	var phantom []string
+	for _, name := range editTools {
+		if !registered[name] {
+			phantom = append(phantom, name)
+		}
+	}
+	if len(phantom) > 0 {
+		t.Errorf("GOV7: guard's allow-edits auto-approval set names %d tool(s) that are "+
+			"NOT registered:\n  %s\n\n"+
+			"Each phantom name occupies a no-prompt auto-approval slot in a set with "+
+			"authorization semantics.\nFix: remove the name from guard.editTools "+
+			"(internal/guard/mode.go). Do NOT add an exemption table — a name that "+
+			"authorizes nothing has no reason to stay.",
+			len(phantom), strings.Join(phantom, "\n  "))
 	}
 }
 

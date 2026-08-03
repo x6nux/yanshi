@@ -380,7 +380,7 @@ func cmdThink(m model, args []string) (tea.Model, tea.Cmd) {
 //
 //	/mode                    interactive picker
 //	/mode default            ask for every denied call
-//	/mode allow-edits        auto-approve fs_write/fs_edit/fs_mkdir
+//	/mode allow-edits        auto-approve fs_write/fs_edit
 //	/mode yolo               auto-approve EVERYTHING (no confirmation gate here;
 //	                        /mode is an explicit typed command, unlike Shift+Tab)
 //	/mode auto               AI-rated risk mode (threshold = default 4)

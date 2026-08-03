@@ -2,6 +2,7 @@ package guard
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -12,7 +13,7 @@ import (
 // (i.e. the permission callback is about to prompt the user):
 //
 //   - ModeDefault:     prompt the user (the original behavior).
-//   - ModeAllowEdits:  auto-approve file edit/mkdir tools; prompt for the rest.
+//   - ModeAllowEdits:  auto-approve file write/edit tools; prompt for the rest.
 //   - ModeYOLO:        auto-approve everything, never prompt.
 //   - ModeAuto:        ask an AI to rate the call's risk 1-10; auto-approve when
 //     the score is <= AutoThreshold, otherwise prompt.
@@ -115,17 +116,39 @@ func CycleMode(cur PermissionMode) PermissionMode {
 }
 
 // editTools are the tool names ModeAllowEdits auto-approves without prompting:
-// filesystem writes/edits and directory creation are reversible enough to skip
-// the prompt; shell, network, and everything else still prompt.
+// filesystem writes and edits are reversible enough (autoVCS tracks every edit
+// that flows through the fs tools) to skip the prompt; shell, network, and
+// everything else still prompt.
+//
+// GOV7 (internal/bootstrap/wiring_test.go) asserts every name here is a
+// registered tool: this set carries authorization semantics, so a name that
+// matches no tool silently occupies a no-prompt slot. apply_patch is a real
+// write tool and is deliberately NOT in this set — adding it would widen the
+// no-prompt auto-approval surface, which is an authorization change.
 var editTools = map[string]bool{
 	"fs_write": true,
 	"fs_edit":  true,
-	"fs_mkdir": true,
 }
 
-// IsEditTool reports whether name is a file-edit/mkdir tool (the set
+// IsEditTool reports whether name is a file-edit tool (the set
 // ModeAllowEdits auto-approves).
 func IsEditTool(name string) bool { return editTools[name] }
+
+// EditToolNames returns the sorted names ModeAllowEdits auto-approves.
+//
+// Exported for GOV7 (internal/bootstrap/wiring_test.go), which asserts every
+// name in this set is a tool that is actually registered: an unregistered name
+// here is not a harmless typo — it occupies a no-prompt auto-approval slot in a
+// set that carries authorization semantics. The result is sorted because
+// editTools is a map and callers (tests, diagnostics) need stable output.
+func EditToolNames() []string {
+	names := make([]string, 0, len(editTools))
+	for name := range editTools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
 
 // ModeLabel is the short display string shown in the footer.
 func ModeLabel(m PermissionMode) string {
