@@ -135,13 +135,18 @@
 # 已知弱点（不足以推翻 done）：第 2 条只钉死了矩阵的 Policy 一半
 #   （ReadOnlyShell / WritePatterns），RoleDef.AllowedTools 的具体工具名列表
 #   没有任何测试逐字断言 —— 改写某个角色的工具清单不会让任何测试变红。
+# ⚠️ W1 评审第 2 轮回退为 partial：角色注入与 role∩caller 求交都已实现并有测试
+#    （TestRunAgentLoopBindsRoleIntoRunnerContext / TestSpawnIntersectsRoleWithCallerTools），
+#    但验收「7 角色可选」在出厂 profile 下不可达 —— role 参数只存在于 agent_spawn，
+#    而 DefaultOrchestratorProfile 的 allow 列表里只有 agent_start。实测
+#    guard.Check(DefaultOrchestratorProfile(), Action{Tool:"agent_spawn"}) → not permitted。
+#    把受管 agent 工具加进出厂 allow 列表是授权面变更，与 apply_patch 同类，移交 W5。
 - id: "B1/M05"
   package: "W1"
-  verdict: done
+  verdict: partial
   title: "子代理 7 角色"
   acceptance: "7 角色可选；权限矩阵符合；越权拒绝；别名大小写不敏感；未知值返回可接受集"
   evidence: "internal/tools::TestRoleCatalogCoversSevenRoles; internal/tools::TestRoleAllowlistOnlyTightensParent; internal/tools::TestSpawnIntersectsRoleWithCallerTools; internal/tools::TestSpawnRoleNameIsCaseInsensitive; internal/tools::TestSpawnRejectsUnknownRoleAndListsValidOnes"
-
 - id: "B2/LSP1"
   package: "W6"
   verdict: partial
