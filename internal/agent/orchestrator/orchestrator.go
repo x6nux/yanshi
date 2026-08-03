@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -496,11 +497,46 @@ type TurnOpts struct {
 	TurnID              string
 	EmitWorkFrame       func(proto.ServerFrame)
 	ConnectionSessionID string
+
+	// ModelID is the registry model name for this turn — i.e. the key of
+	// Config.MultimodalMap. It is a separate field rather than something
+	// derived from Model because Model is a model.BaseChatModel interface
+	// value: the orchestrator can call it but cannot recover the name it was
+	// registered under, and the multimodal capability lookup is name-keyed.
+	// Empty means "the default model", which IsMultimodal reports as
+	// non-multimodal (fail-safe: placeholders rather than an unsupported
+	// native image part).
+	ModelID string
+
+	// Images are the attachments for this turn. EventsWithHistoryOpts applies
+	// them exactly once, onto a clone of the caller's message slice, never in
+	// place: the WS turn loop retries a turn for schema validation and
+	// task_end enforcement and hands the SAME slice (the session's own
+	// cs.history on attempt 0) to EventsWithHistoryOpts on every attempt, so
+	// an in-place fan-out would append another copy of every image to the
+	// persistent session history on each retry.
+	Images []proto.ImageAttach
 }
 
 // EventsWithHistoryOpts runs one turn with full history and per-turn opts.
 func (o *Orchestrator) EventsWithHistoryOpts(ctx context.Context, messages []*schema.Message, opts TurnOpts) *adk.AsyncIterator[*adk.AgentEvent] {
 	ctx = o.withTurnContext(ctx, opts)
+
+	// Single convergence point for the image fan-out. All three turn entry
+	// points (WS, /api/v1, SSE) only have to fill TurnOpts.ModelID/Images —
+	// the "is this model multimodal, embed a native part or store the bytes
+	// and leave a placeholder" decision lives here once instead of being
+	// reimplemented (and drifting) in three transports.
+	//
+	// The clone is mandatory, not defensive style. Callers reuse their slice
+	// across retries (see TurnOpts.Images), and ApplyImages rewrites the
+	// trailing element of whatever slice it is given. A shallow clone is
+	// sufficient and is all we pay for: ApplyImages copies the trailing
+	// *schema.Message by value and writes the copy back into the slice, so it
+	// never mutates a message the caller still points at.
+	if len(opts.Images) > 0 {
+		messages = o.ApplyImages(slices.Clone(messages), opts.ModelID, opts.Images)
+	}
 
 	// adk.WithChatModelOptions ASSIGNS the option slice rather than appending
 	// to it, so calling it twice drops the first set. Accumulate every

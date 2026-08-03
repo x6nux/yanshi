@@ -1368,3 +1368,92 @@ func tail(s string, n int) string {
 	}
 	return s[len(s)-n:]
 }
+
+// --- Task 12: TurnOpts image fan-out (single convergence point) ---
+
+// TestEventsWithHistoryOpts_AppliesImagesExactlyOnce proves TurnOpts.Images plus
+// TurnOpts.ModelID reach the model through the orchestrator's single injection
+// point: before this task ApplyImages had zero production callers, so an image
+// attached by the client never made it into the prompt at all. The assertion is
+// "exactly once" (one image part on the trailing user message), not merely
+// "present", because a fan-out that runs twice would silently double the token
+// bill of every attachment.
+func TestEventsWithHistoryOpts_AppliesImagesExactlyOnce(t *testing.T) {
+	fm := einollm.NewFakeModel([]string{"ok"}, nil)
+	fm.RecordMessages = true
+	o, err := New(Config{
+		Model:         fm,
+		MultimodalMap: map[string]bool{"mm-model": true},
+		ImageStore:    imagestore.New(imagestore.Config{MaxItems: 20, MaxBytes: 100 << 20}),
+	})
+	require.NoError(t, err)
+
+	history := []*schema.Message{schema.UserMessage("look at this")}
+	drainAgentChunks(t, o.EventsWithHistoryOpts(context.Background(), history, TurnOpts{
+		ModelID: "mm-model",
+		Images:  []proto.ImageAttach{{Source: "paste", Fmt: "png", W: 1, H: 1, DataB64: testPNGB64(t)}},
+	}))
+
+	require.NotEmpty(t, fm.ReceivedMessages, "the turn must reach the model")
+	last := fm.ReceivedMessages[len(fm.ReceivedMessages)-1]
+	require.Equal(t, schema.User, last.Role, "images attach to the trailing user message")
+	require.Len(t, last.UserInputMultiContent, 1,
+		"a multimodal turn must carry the image exactly once — a second fan-out doubles the token bill")
+}
+
+// TestEventsWithHistoryOpts_ImagesDoNotMutateCallerHistory is the load-bearing
+// regression guard for this task, not theoretical hygiene: the WS turn loop
+// (internal/api/http/ws.go) retries a turn for schema validation and task_end
+// enforcement, and on attempt 0 it hands EventsWithHistoryOpts the session's own
+// cs.history slice — only attempt > 0 copies it. So the SAME slice really is
+// passed to EventsWithHistoryOpts more than once with the same TurnOpts. If the
+// image fan-out wrote through to history[n-1] in place, every retry would append
+// another copy of the image to the persistent session history.
+//
+// The test simulates that loop literally: two calls with one slice value, then
+// it asserts the caller's slice is byte-for-byte the state it had before the
+// first call — same element pointers, same content, no image parts.
+func TestEventsWithHistoryOpts_ImagesDoNotMutateCallerHistory(t *testing.T) {
+	fm := einollm.NewFakeModel([]string{"ok", "ok"}, nil)
+	fm.RecordMessages = true
+	o, err := New(Config{
+		Model:         fm,
+		MultimodalMap: map[string]bool{"mm-model": true},
+		ImageStore:    imagestore.New(imagestore.Config{MaxItems: 20, MaxBytes: 100 << 20}),
+	})
+	require.NoError(t, err)
+
+	history := []*schema.Message{
+		schema.UserMessage("first"),
+		schema.AssistantMessage("reply", nil),
+		schema.UserMessage("look at this"),
+	}
+	// Snapshot both the element pointers and the pointed-to values.
+	beforePtrs := append([]*schema.Message(nil), history...)
+	beforeVals := make([]schema.Message, len(history))
+	for i, m := range history {
+		beforeVals[i] = *m
+	}
+
+	opts := TurnOpts{
+		ModelID: "mm-model",
+		Images:  []proto.ImageAttach{{Source: "paste", Fmt: "png", W: 1, H: 1, DataB64: testPNGB64(t)}},
+	}
+	// Attempt 0 and attempt 1 of the ws.go retry loop, same slice, same opts.
+	drainAgentChunks(t, o.EventsWithHistoryOpts(context.Background(), history, opts))
+	drainAgentChunks(t, o.EventsWithHistoryOpts(context.Background(), history, opts))
+
+	require.Len(t, history, len(beforePtrs), "the caller's slice must not grow")
+	for i := range history {
+		require.Same(t, beforePtrs[i], history[i],
+			"history[%d] pointer was swapped — the fan-out wrote through to the caller's slice", i)
+		require.Equal(t, beforeVals[i].Content, history[i].Content, "history[%d].Content was rewritten", i)
+		require.Empty(t, history[i].UserInputMultiContent,
+			"history[%d] gained image parts — a retry would re-inject them", i)
+	}
+
+	// And the second attempt still saw the image exactly once (not zero, not two).
+	last := fm.ReceivedMessages[len(fm.ReceivedMessages)-1]
+	require.Len(t, last.UserInputMultiContent, 1,
+		"the retry must still carry the image, exactly once")
+}
