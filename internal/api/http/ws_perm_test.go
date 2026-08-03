@@ -70,9 +70,17 @@ func newPermWSServer(t *testing.T) (url, workdir string) {
 // instrumented on every memory access and runs much slower, so scale the
 // deadline up to avoid spurious i/o-timeout failures unrelated to the code
 // under test.
+//
+// The deadline only exists so a lost frame fails instead of hanging the suite
+// forever — a healthy run returns immediately and never approaches it, so it
+// is sized for the worst scheduler hiccup, not the expected latency. 30s was
+// not enough: a windows CI runner blew through it waiting for the first
+// tool_call frame (TestChatWS_InteractivePermission_Allow, 31.08s, run
+// 30786620495) while the same commit passed on ubuntu and macos. Raising it
+// costs a passing run nothing.
 func readFrame(t *testing.T, c *websocket.Conn) proto.ServerFrame {
 	t.Helper()
-	deadline := 30 * time.Second
+	deadline := 120 * time.Second
 	if raceDetectorEnabled {
 		deadline = 180 * time.Second
 	}
