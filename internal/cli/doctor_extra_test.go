@@ -165,14 +165,15 @@ func TestCheckHighContrastConfig(t *testing.T) {
 func TestCheckDatabase_OpenError(t *testing.T) {
 	dir := t.TempDir()
 	c := checkDatabase(&config.Config{Storage: config.StorageConfig{SQLitePath: dir}}, nil)
-	// Opening a directory path may succeed or fail by SQLite version; either way
-	// the check must not panic and must report a deterministic status. Assert it
-	// ran (status is one of the known values).
-	switch c.Status {
-	case StatusOK, StatusFail, StatusWarn:
-	default:
-		t.Fatalf("unexpected status %q (%s)", c.Status, c.Message)
-	}
+	// Accepting every possible status ("may succeed or fail by SQLite version")
+	// made this test unfailable — it shared that flaw with the sibling test
+	// below, which hid a real bug. A directory can never be opened as a SQLite
+	// file on any platform or driver version: Open() gets as far as PRAGMA
+	// journal_mode=WAL and dies with "unable to open database file (14)". Pin
+	// the failure, so a regression that silently reports a broken database as
+	// healthy turns this red.
+	assert.Equal(t, StatusFail, c.Status, "a directory path must fail, not report healthy")
+	assert.Contains(t, c.Message, "open ")
 }
 
 // TestCheckDatabase_SkippedAndDefaultDisplay proves the cfgErr skip path and the
