@@ -179,10 +179,13 @@ func TestCheckDatabase_OpenError(t *testing.T) {
 // "<unset>" display when no path is configured.
 func TestCheckDatabase_SkippedAndDefaultDisplay(t *testing.T) {
 	assert.Equal(t, StatusWarn, checkDatabase(nil, errCfg()).Status)
-	// Empty path -> store.Open("") opens the default DB; display is "<unset>".
+	// An unset storage.sqlite_path must FAIL, not open something. It used to
+	// leave a SQLite file literally named "?_pragma=busy_timeout(5000)&..." in
+	// the working directory on every test run, because buildDSN appends the
+	// query string to an empty path and modernc took the result as a filename.
 	c := checkDatabase(&config.Config{}, nil)
-	// Either it opened (OK) or not (fail); both are acceptable. Just exercise it.
-	_ = c
+	assert.Equal(t, StatusFail, c.Status)
+	assert.Contains(t, c.Message, `open "<unset>"`)
 }
 
 // TestCheckDirectories_MissingSkillDirWarns proves a missing builtin skill dir

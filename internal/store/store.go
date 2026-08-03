@@ -4,6 +4,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -93,7 +94,16 @@ var DefaultOptions = OpenOptions{
 }
 
 // OpenWith opens the database at path with the given pool and WAL pragma options.
+//
+// An empty path is an error, not a default. buildDSN appends the _pragma query
+// string unconditionally, so path == "" produces the DSN "?_pragma=..." and
+// modernc creates a database file *named that literal string* in the current
+// working directory — silently, with no error to notice. storage.sqlite_path
+// has no config default, so an omitted key reaches every caller here.
 func OpenWith(path string, opts OpenOptions) (*Store, error) {
+	if path == "" {
+		return nil, errors.New("store: empty database path")
+	}
 	maxOpen := opts.MaxOpenConns
 	if maxOpen <= 0 {
 		maxOpen = DefaultOptions.MaxOpenConns
