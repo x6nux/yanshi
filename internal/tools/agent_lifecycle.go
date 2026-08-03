@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/x6nux/yanshi/internal/agent/registry"
@@ -43,9 +44,12 @@ func (t *AgentTools) streamAgentSpawn(ctx context.Context, argsJSON string) <-ch
 			pushErrChunk(ch, err)
 			return
 		}
-		if a.Role == "" {
-			a.Role = "general"
+		role, effective, err := resolveSpawnRole(a.Role, allowed)
+		if err != nil {
+			pushErrChunk(ch, err)
+			return
 		}
+		a.Role, allowed = role, effective
 
 		profile, ok := ProfileFromContext(ctx)
 		if !ok {
@@ -83,6 +87,95 @@ func (t *AgentTools) streamAgentSpawn(ctx context.Context, argsJSON string) <-ch
 		ch <- ToolChunk{Result: string(body)}
 	}()
 	return ch
+}
+
+// resolveSpawnRole normalizes the requested role, validates it against the
+// catalog in agentroles.go, and returns the canonical role name together with
+// the effective tool allowlist for the sub-agent.
+//
+// A role must only ever NARROW the caller's tool surface, never widen it — a
+// sub-agent that can reach past its parent would turn role selection into a
+// privilege-escalation primitive. Hence the returned list is the intersection
+// of the role's AllowedTools and the caller's requested tools.
+//
+// The two empty-set conventions are easy to get backwards, so they are spelled
+// out here and pinned by tests:
+//
+//   - An empty RoleDef.AllowedTools means "this role adds no tool restriction"
+//     (the caller's list passes through verbatim) — NOT "allow nothing".
+//   - An empty caller list means "inherit the parent's full set" (that is what
+//     parseToolList returns for a missing tools arg), so the role's own list is
+//     used as-is.
+//
+// Both sides may hold glob patterns ("*" for general, "memory_*" for
+// implementer), so membership is tested in both directions: an entry survives
+// when a pattern on the other side matches it. That is what lets a wildcard
+// behave as the superset it is meant to be.
+//
+// Two cases are rejected outright rather than degraded:
+//
+//   - role "custom" with no caller tools. Its RoleDef carries no AllowedTools,
+//     so it would silently mean "everything the caller can do" — the exact
+//     opposite of a custom restricted role. The list must be explicit.
+//   - a fully disjoint intersection. Downstream (selectSubAgentTools) reads an
+//     empty allowlist as "inherit everything", so returning one here would hand
+//     out more than either side allowed. Fail closed instead.
+func resolveSpawnRole(role string, callerTools []string) (string, []string, error) {
+	requested := role
+	if strings.TrimSpace(requested) == "" {
+		requested = "general" // omitted role keeps the historical default
+	}
+	def, ok := LookupRole(requested)
+	if !ok {
+		return "", nil, fmt.Errorf("agent_spawn: unknown role %q; valid roles: %s",
+			role, strings.Join(AgentRoleNames(), ", "))
+	}
+	if def.Name == "custom" && len(callerTools) == 0 {
+		return "", nil, fmt.Errorf(`agent_spawn: role "custom" requires an explicit tools list ` +
+			`(e.g. tools: ["fs_read","fs_search"]); without one the subagent would inherit every ` +
+			`tool the caller can use, which is the opposite of a custom restricted role`)
+	}
+
+	switch {
+	case len(def.AllowedTools) == 0:
+		return def.Name, callerTools, nil
+	case len(callerTools) == 0:
+		return def.Name, def.AllowedTools, nil
+	}
+
+	effective := intersectToolSets(def.AllowedTools, callerTools)
+	if len(effective) == 0 {
+		return "", nil, fmt.Errorf("agent_spawn: role %q allows none of the requested tools %v; role tools: %v",
+			def.Name, callerTools, def.AllowedTools)
+	}
+	return def.Name, effective, nil
+}
+
+// intersectToolSets returns the entries allowed by both sides. Membership is
+// glob-aware in both directions (anyGlobMatch), because either side may hold a
+// pattern such as "*" or "memory_*" that stands for a set of concrete tools.
+// Both input slices are assumed non-empty; the empty-set conventions are
+// handled by resolveSpawnRole.
+func intersectToolSets(roleTools, callerTools []string) []string {
+	out := make([]string, 0, len(callerTools))
+	seen := make(map[string]bool, len(callerTools))
+	keep := func(name string) {
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	for _, c := range callerTools {
+		if anyGlobMatch(roleTools, c) {
+			keep(c)
+		}
+	}
+	for _, r := range roleTools {
+		if anyGlobMatch(callerTools, r) {
+			keep(r)
+		}
+	}
+	return out
 }
 
 type agentWaitArgs struct {

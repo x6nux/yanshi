@@ -127,9 +127,11 @@ func NewAgentTools(chatModel model.BaseChatModel) *AgentTools {
 	// Managed sub-agent lifecycle tools (B1).
 	t.AgentSpawn = NewGuardedTool("agent_spawn", "Agent", "Spawn a managed subagent and return its id immediately.", 0,
 		params(map[string]*schema.ParameterInfo{
-			"prompt":    {Type: schema.String, Required: true},
-			"role":      {Type: schema.String},
-			"tools":     {Type: schema.String},
+			"prompt": {Type: schema.String, Required: true},
+			// Roles are validated (unknown names are rejected), so the legal set
+			// has to be visible to the model here — otherwise it guesses.
+			"role":      {Type: schema.String, Desc: "one of: " + strings.Join(AgentRoleNames(), ", ") + " (default general; \"custom\" requires an explicit tools list)"},
+			"tools":     {Type: schema.String, Desc: "optional JSON array of tool names; intersected with the role's own allowlist"},
 			"nickname":  {Type: schema.String},
 			"model":     {Type: schema.String},
 			"reasoning": {Type: schema.String},

@@ -1,6 +1,9 @@
 package tools
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // RoleDef describes a sub-agent role: its name, system-prompt prefix, the tools
 // it may call, and any additional role-level policy restrictions.
@@ -74,13 +77,41 @@ BLOCKERS:
 `, role)
 }
 
+// LookupRole resolves a role name to its definition, ignoring surrounding
+// whitespace and ASCII case. Role names reach us through model-authored tool
+// arguments, where "Explore" is as likely a spelling as "explore"; without
+// folding, the capitalized form would match no catalog entry and the caller
+// would have to treat a perfectly reasonable request as unknown. The second
+// return value is false for names outside the catalog so callers can reject
+// them instead of silently falling back to an unrestricted role.
+func LookupRole(name string) (RoleDef, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, r := range AgentRoles() {
+		if r.Name == name {
+			return r, true
+		}
+	}
+	return RoleDef{}, false
+}
+
+// AgentRoleNames returns the legal role names in catalog order. It exists so a
+// rejection message can enumerate the valid choices: an error that only says
+// "unknown role" leaves the caller (usually a model) with no way to correct
+// itself, and it will just guess again.
+func AgentRoleNames() []string {
+	roles := AgentRoles()
+	names := make([]string, 0, len(roles))
+	for _, r := range roles {
+		names = append(names, r.Name)
+	}
+	return names
+}
+
 // MustRole returns the role definition for name, panicking if not found (the
 // set of known roles is fixed at compile time).
 func MustRole(name string) RoleDef {
-	for _, r := range AgentRoles() {
-		if r.Name == name {
-			return r
-		}
+	if r, ok := LookupRole(name); ok {
+		return r
 	}
 	panic(fmt.Sprintf("agent role %q not found", name))
 }
