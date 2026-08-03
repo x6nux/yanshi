@@ -1,6 +1,9 @@
 package bootstrap_test
 
 import (
+	"path"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -23,4 +26,116 @@ func TestAppExposesToolNames(t *testing.T) {
 	app := buildMinimalApp(t) // helper from bootstrap_test.go:40
 	require.NotEmpty(t, app.ToolNames, "App.ToolNames must list the registered tools")
 	require.Contains(t, app.ToolNames, "fs_read", "fs_read is always registered")
+}
+
+// toolWiringExceptions maps a tool name present in the default profile's
+// allow list but absent from the tool registry, to the work package that
+// will register it.
+//
+// Entries may only be REMOVED, never added. A dead entry — the tool is now
+// registered — fails the test.
+var toolWiringExceptions = map[string]string{
+	"shell_start":       "W1 装配线：NewShellV2Tools 未注册（审计 P1-7）",
+	"shell_read":        "W1 装配线：NewShellV2Tools 未注册（审计 P1-7）",
+	"shell_write_stdin": "W1 装配线：NewShellV2Tools 未注册（审计 P1-7）",
+	"shell_wait":        "W1 装配线：NewShellV2Tools 未注册（审计 P1-7）",
+	"shell_cancel":      "W1 装配线：NewShellV2Tools 未注册（审计 P1-7）",
+	"task_shell_start":  "W1 装配线：NewShellV2Tools 未注册（审计 P1-7）",
+	"task_shell_wait":   "W1 装配线：NewShellV2Tools 未注册（审计 P1-7）",
+	"task_shell_stdin":  "W1 装配线：NewShellV2Tools 未注册（审计 P1-7）",
+	"task_shell_cancel": "W1 装配线：NewShellV2Tools 未注册（审计 P1-7）",
+}
+
+// TestGOV5ProfileAllowMatchesToolRegistry verifies the default orchestrator
+// profile does not authorize tools that were never registered.
+//
+// A name in the allow list that has no registered tool is worse than a
+// missing feature: anyone reading the profile concludes the capability
+// exists. The audit missed this entirely; the 2026-08-03 re-verification
+// found nine such names.
+//
+// The phantom set depends on the config buildMinimalApp uses — several tools
+// register conditionally (that config yields 59). A different config can
+// shift the set, so treat the exemption table as tied to this harness.
+func TestGOV5ProfileAllowMatchesToolRegistry(t *testing.T) {
+	app := buildMinimalApp(t)
+
+	registered := make(map[string]bool, len(app.ToolNames))
+	for _, n := range app.ToolNames {
+		registered[n] = true
+	}
+	require.NotEmpty(t, registered, "tool registry must not be empty")
+
+	allowed := bootstrap.DefaultOrchestratorProfile().Tools.Allow
+
+	var phantom []string
+	concrete := make(map[string]bool)
+	for _, name := range allowed {
+		if strings.ContainsAny(name, "*?[") {
+			continue // wildcard entries cannot be checked by exact name
+		}
+		concrete[name] = true
+		if registered[name] {
+			continue
+		}
+		if _, exempt := toolWiringExceptions[name]; exempt {
+			continue
+		}
+		phantom = append(phantom, name)
+	}
+	sort.Strings(phantom)
+	if len(phantom) > 0 {
+		t.Errorf("GOV5: default profile allows %d tool(s) that are NOT registered — "+
+			"the profile advertises capabilities that do not exist:\n  %s\n\n"+
+			"Fix: register the tools in bootstrap.Build, or remove them from\n"+
+			"DefaultOrchestratorProfile. If registration is deferred, add entries to\n"+
+			"toolWiringExceptions naming the work package.",
+			len(phantom), strings.Join(phantom, "\n  "))
+	}
+
+	// Dead-entry check: an exempted name that is now registered has been
+	// wired up, so its exemption must be deleted.
+	var dead []string
+	for name := range toolWiringExceptions {
+		if registered[name] {
+			dead = append(dead, name)
+		}
+	}
+	sort.Strings(dead)
+	if len(dead) > 0 {
+		t.Errorf("GOV5: %d stale toolWiringExceptions entr(ies) — these tools are now "+
+			"registered and their exemptions must be DELETED:\n  %s",
+			len(dead), strings.Join(dead, "\n  "))
+	}
+
+	// Advisory only: a registered tool the default profile does not allow is
+	// legitimate (a tightened profile is a valid configuration), but listing
+	// them makes a forgotten authorization easy to spot in CI logs.
+	//
+	// Wildcards are re-applied here (they were skipped in the phantom check
+	// above) so vcs_commit and friends are not reported as unauthorized when
+	// "vcs_*" already covers them.
+	var unauthorized []string
+	for _, n := range app.ToolNames {
+		if concrete[n] {
+			continue
+		}
+		covered := false
+		for _, pat := range allowed {
+			if ok, _ := path.Match(pat, n); ok {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			unauthorized = append(unauthorized, n)
+		}
+	}
+	sort.Strings(unauthorized)
+	if len(unauthorized) > 0 {
+		t.Logf("GOV5 (advisory): %d registered tool(s) are not named in the default "+
+			"profile's allow list — verify this is intentional tightening and not a "+
+			"forgotten authorization:\n  %s",
+			len(unauthorized), strings.Join(unauthorized, "\n  "))
+	}
 }
