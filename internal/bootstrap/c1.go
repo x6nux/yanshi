@@ -120,10 +120,18 @@ func BuildAutomation(
 }
 
 // C1Components 是 buildC1 的产物，聚合 RLM/Automation/Batch 三块。
+//
+// RLM 可能为 nil：rlm_query 依赖一个显式配置的 cheap provider（batch.rlm_model），
+// 未配置时 RLM 单独禁用而非拖垮整个 C1 —— 否则任何没配 rlm_model 的部署会连带
+// 失去 8 个 automation 工具与 agent_batch。调用方必须在使用前判空。
+//
+// Warnings 收集这类非致命降级的原因；bootstrap.Build 把它们打到 stderr 并继续，
+// 与 VCS 初始化失败、插件发现失败采用的同一套软降级模式一致。
 type C1Components struct {
 	RLM        *tools.RLMTools
 	Automation *C1Automation
 	Batch      *tools.BatchTools
+	Warnings   []string
 }
 
 // BuildC1 是 C1 的总装 helper。它不直接构造 A2 的 work.Manager 或 B1 的
@@ -147,9 +155,17 @@ func BuildC1(
 		return nil, errors.New("C1: B1 registry manager is required (M07 depends on B1)")
 	}
 
+	// RLM 是可降级的：缺少 cheap provider 只让 rlm_query 缺席，automation 与
+	// agent_batch 照常装配（详见 C1Components 的 doc 注释）。
+	var (
+		rlmTools *tools.RLMTools
+		warnings []string
+	)
 	c1rlm, err := BuildRLM(cfg, models, fakeModel)
 	if err != nil {
-		return nil, fmt.Errorf("C1: build RLM: %w", err)
+		warnings = append(warnings, fmt.Sprintf("C1: rlm_query disabled: %v", err))
+	} else {
+		rlmTools = c1rlm.Tools
 	}
 
 	auto, err := BuildAutomation(parent, cfg, db, queueAdapter)
@@ -158,8 +174,9 @@ func BuildC1(
 	}
 
 	return &C1Components{
-		RLM:        c1rlm.Tools,
+		RLM:        rlmTools,
 		Automation: auto,
 		Batch:      tools.NewBatchTools(registryMgr),
+		Warnings:   warnings,
 	}, nil
 }

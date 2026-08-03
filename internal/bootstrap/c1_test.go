@@ -298,8 +298,9 @@ func TestBuildC1RejectsNilAdapter(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestBuildC1BuildRLMError(t *testing.T) {
-	// When fakeModel is nil and RLMModel is empty, BuildRLM fails inside BuildC1.
+func TestBuildC1RLMDegradesWithoutModel(t *testing.T) {
+	// fakeModel 为 nil 且 batch.rlm_model 为空时，BuildRLM 失败 —— 但这不该
+	// 连带废掉 automation 与 agent_batch：BuildC1 记警告、RLM 置 nil、其余照常构造。
 	s, _ := store.Open(":memory:")
 	defer s.Close()
 	adapter := bootstrap.NewA2Adapter(newFakeWorkManager(), newFakeBrokerSubmitter(), s)
@@ -309,8 +310,20 @@ func TestBuildC1BuildRLMError(t *testing.T) {
 		Path:          filepath.Join(t.TempDir(), "state.json"),
 	})
 	defer reg.Close()
-	_, err := bootstrap.BuildC1(context.Background(), config.Config{}, s, adapter, reg, nil, nil)
-	require.Error(t, err)
+
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	components, err := bootstrap.BuildC1(parent, config.Config{}, s, adapter, reg, nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, components)
+	assert.Nil(t, components.RLM, "RLM 不可用时应降级为 nil，而非让整个 C1 失败")
+	require.NotNil(t, components.Automation, "automation 不该被 RLM 的失败连累")
+	require.NotNil(t, components.Batch, "agent_batch 不该被 RLM 的失败连累")
+	require.NotEmpty(t, components.Warnings, "降级原因必须可被 bootstrap 打到 stderr")
+
+	cancel()
+	components.Automation.Scheduler.Wait()
 }
 
 func TestBuildC1BuildAutomationError(t *testing.T) {
