@@ -1,6 +1,6 @@
 # V14 Contract Handoff (D2 → D1)
 
-> VS Code 扩展（审计 D2/O12）已于 2026-08 移除，见
+> ⚠️ **D2/O12 已作废** —— VS Code 扩展已于 2026-08 移除，见
 > docs/superpowers/specs/2026-08-03-yanshi-roadmap-design.md §3.2 ④。
 > 本文件其余部分描述的契约不受影响。
 

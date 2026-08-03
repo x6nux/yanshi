@@ -6,11 +6,25 @@
 #
 # verdict: partial | missing | divergent | done | removed
 #   done / removed 是两档终态，都计入「S0 完成」。
-# evidence: 终态条目必填。两种合法形态（校验规则见 internal/archtest/status_test.go）：
-#   - 文件引用: internal/foo/bar.go:123   （只校验文件存在，不校验行号）
-#   - 测试引用: internal/foo::TestName    （包路径，非文件路径）
-#   多条引用用「; 」分隔，每条独立校验。acceptance 有 N 条时应逐条给出覆盖它的
-#   测试 —— 只挂一条测试却宣称 done，等于用第一条验收冒充全部。
+# evidence:
+#   非终态条目写 ""（还没有要证明的东西）。
+#   终态（done / removed）条目必须写成「验收子句号 -> 证据」的映射，acceptance 按
+#   「；」/「;」切成 N 条子句，evidence 的 key 必须恰好是 1..N —— 少一条 = 有承诺没
+#   兑现，多一条 = 引用了已不存在的子句。两者都会让 GOV8 变红。
+#
+#     evidence:
+#       "1": "internal/foo::TestA"
+#       "2": "internal/foo::TestB; internal/bar::TestC"   # 一条子句可以要多个测试
+#
+#   终态证据只接受**测试引用**（包路径::测试名，不是文件路径）：终态断言的是行为，
+#   只有可执行断言能承载这种主张，文件引用只能证明文件存在。
+#
+#   ⚠️ 双向握手：被引用的测试必须在自己的 doc 注释里回写一行
+#       ledger: <条目 ID>#<子句号> <子句原文>
+#   否则 GOV8 红。这条是防「凑数」的关键 —— 想用不相关的测试顶一条验收，就必须
+#   到那个测试体正上方把「本测试证明 <子句>」写下来，谎言被迫落在最容易被拆穿的
+#   位置。反向扫描同时禁止过期标记：测试声称的子句若已不被台账引用，同样红。
+#   规则实现见 internal/archtest/status_evidence_test.go。
 
 - id: "A1/S06"
   package: "W5"
@@ -206,6 +220,15 @@
 #    非交互式传输的预授权策略移交 W5。
 # 2026-08-04 复核：保持 done，evidence 换成逐条对应的测试。原来只挂
 # TestC1ToolsAreRegistered，那只证明 8 个工具进了注册表（第 1 条的一半）。
+# 2026-08-04 二次复核（GOV8 逐句对账）：两处引用与名字不符，已修正 ——
+#   · 第 5 条原引 TestApprovalGatedToolsDeniedWithoutCallback，但它只调了
+#     set.List.InvokableRun 一个工具，撑不起「这九个工具恒被拒」。改为主证
+#     TestApprovalPromisedInDescriptionIsEnforced（遍历全部 9 个，且用
+#     assert.Equal(len(all), checked) 防漏），前者作为「无 callback 即拒」的
+#     直接后果保留为第二条证据。
+#   · 第 2 条原引 TestManagerRunNowIdempotentPerKey，实际调的是 Tick 而非
+#     RunNow，覆盖成立但名字误导；测试已改名为
+#     TestManagerTickEnqueuesDueSlotOnce（同一份断言，不改行为）。
 # 已知弱点（不足以推翻 done）：第 4 条的持久化测试都在同一个 live store 上新建
 # Repository 做往返，没有「重开进程 / 重开文件 DB」的跨重启耐久性测试。
 - id: "C1/AU1"
@@ -213,21 +236,38 @@
   verdict: done
   title: "Automations（计划任务）"
   acceptance: "可创建计划任务；按时触发入队；生命周期可控；持久化；approval 门禁"
-  evidence: "internal/agent/automation::TestManagerCreateAssignsIDAndNextRun; internal/agent/automation::TestManagerRunNowIdempotentPerKey; internal/tools::TestAutomationCreateReadUpdatePauseResumeDeleteRun; internal/agent/automation::TestRepositorySaveLoadRoundTrip; internal/tools::TestApprovalGatedToolsDeniedWithoutCallback"
+  evidence:
+    "1": "internal/agent/automation::TestManagerCreateAssignsIDAndNextRun"
+    "2": "internal/agent/automation::TestManagerTickEnqueuesDueSlotOnce"
+    "3": "internal/tools::TestAutomationCreateReadUpdatePauseResumeDeleteRun"
+    "4": "internal/agent/automation::TestRepositorySaveLoadRoundTrip"
+    "5": "internal/tools::TestApprovalPromisedInDescriptionIsEnforced; internal/tools::TestApprovalGatedToolsDeniedWithoutCallback"
 
 # W1/Task 4 Step 7：agent_batch 与 automation_* 同一次装配接入；同样只在 WS 上可用
 # （见上条 C1/AU1 的 approval 说明）。
-# 2026-08-04 复核：保持 done，evidence 换成逐条对应的测试。
-# 已知弱点（不足以推翻 done）：第 2 条证明的是「超过 cap 的 spawn 被
-# SpawnErrCap 拒绝并退避重试」，没有任何测试观测同时在飞的峰值并发数。
-# 另注意 internal/agent/batch::TestRunnerCapsAtRegistryMaxConcurrent 名不副实
-# （3 行 / cap 4，从不触发上限），不能拿它当第 2 条的证据。
+# 2026-08-04 复核：done → partial。第 2 条「限并发」的实现就不成立。
+# 缺的是第 2 条（第 1、3 条覆盖成立：internal/tools::TestAgentBatchCSVInputEndToEnd、
+# internal/agent/batch::TestRunnerPerItemErrorRetention）。
+# 根因：internal/agent/registry/manager.go 的 finishTerminal 只翻 rec.Status，
+# 全仓 delete(m.runtime, …) 只有 3 处（spawn 回滚 ×2、restoreRecord），**完成路径
+# 一处都没有** —— runningLocked() 单调不减，所谓「并发上限」实际是**终身 spawn
+# 预算**。实跑探针：cap=1，第 1 个 agent 跑完且 List.Running=0 之后，
+# len(m.runtime)=1、runningLocked()=1，第二次 Spawn 直接返回
+# "subagent concurrency limit reached (cap=1)"。
+# 生产后果：internal/tools/batch.go:112-118 是 CappedRetries:50 / CappedBackoff:100ms，
+# 即**行数超过 registry cap（默认 10）的批任务必然每行空转 5s 后失败**。
+# 原 evidence 里的 internal/agent/batch::TestRunnerSpawnCapExhausted 不是「限并发
+# 生效」的证据，而是这个泄漏的**目击者**：cap=1 / 2 行，第 0 行已完成，第 1 行仍被
+# 判超限。另注意 internal/agent/batch::TestRunnerCapsAtRegistryMaxConcurrent 名不
+# 副实（3 行 / cap 4，从不触发上限），同样不能当第 2 条的证据。
+# ⚠️ 修复归 W3（= W3 计划里的 F2/LEAK2「槽位泄漏」），本条只做台账诚实性，不在
+#    W1 的工作面上动 registry。
 - id: "C1/M07"
   package: "W1"
-  verdict: done
+  verdict: partial
   title: "CSV 批量 agent jobs"
   acceptance: "可提交批量任务；限并发；逐项结果+汇总可查"
-  evidence: "internal/tools::TestAgentBatchCSVInputEndToEnd; internal/agent/batch::TestRunnerSpawnCapExhausted; internal/agent/batch::TestRunnerPerItemErrorRetention"
+  evidence: ""
 
 # W1/Task 2：BuildRLM 失败曾让整个 BuildC1 返回 error，于是没配 batch.rlm_model 的
 # 部署连带丢掉八个 automation 工具与 agent_batch。改为软降级（RLM 置 nil + Warnings），
@@ -348,12 +388,22 @@
   acceptance: "start/resume/interrupt + 流式 item 可用;有版本+Schema;兼容测试完善"
   evidence: ""
 
+# 2026-08-04 复核：保持 removed，但第 2 条此前**实测为假** —— evidence 只覆盖第 1 条，
+# 而 docs/feature-status-audit.md 仍写着「check-d2.sh…接上即可」（一条会被后来者照做
+# 的活指令），docs/superpowers/plans/2026-07-21-d2-sdk-ide.md 的 Goal 仍把 VS Code
+# 扩展列为交付物且无作废标记；作废声明只写在 W9 计划里，没回写这两处。
+# 处置：把文档改成真的（两处补「D2/O12 已作废」墓碑），并补
+# internal/archtest::TestVSCodeExtensionNotAdvertisedInDocs 守住第 2 条。
+# 该测试如何回避「grep 判断不了语义」：活文档一律零提及；必须保留提及的审计/计划/
+# spec 逐个列进 d2HistoricalDocs 并强制带墓碑，豁免只减不增、死条目失败。
 - id: "D2/O12"
   package: "-"
   verdict: removed
   title: "IDE 扩展（VS Code）"
   acceptance: "ide/vscode/ 与 scripts/check-d2.sh 不存在；文档无对其作为交付物的描述"
-  evidence: "internal/archtest::TestVSCodeExtensionRemoved"
+  evidence:
+    "1": "internal/archtest::TestVSCodeExtensionRemoved"
+    "2": "internal/archtest::TestVSCodeExtensionNotAdvertisedInDocs"
 
 - id: "D2/V15"
   package: "W9"

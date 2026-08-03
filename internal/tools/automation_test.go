@@ -83,6 +83,11 @@ func TestAutomationToolsAllEightPresent(t *testing.T) {
 // 描述里写了 "Approval required"，就必须真的走 AuthorizeApprovalRequired 门禁。
 // 注意过滤串故意不带句点 —— automation_list 的描述是 "Approval required even though
 // this is read-only."，带句点过滤会把它静默跳过。
+//
+// 这是「approval 门禁」这条验收的主证据：它遍历全部 9 个工具，并用
+// assert.Equal(len(all), checked) 保证没有一个被静默跳过。
+//
+// ledger: C1/AU1#5 approval 门禁
 func TestApprovalPromisedInDescriptionIsEnforced(t *testing.T) {
 	set, _ := setupAutomation(t)
 	batchSet, _ := newBatchTools(t)
@@ -109,6 +114,11 @@ func TestApprovalPromisedInDescriptionIsEnforced(t *testing.T) {
 // 工具在没有 permission callback 的 context 下恒被拒（AuthorizeApprovalRequired 在无
 // callback 时直接 DenyErr）。这意味着这九个工具只在 WS/TUI 这类交互式传输上可用，
 // SSE / v1 / task-agent 三条路径上一律拒绝 —— 这是「需要人工批准」的必然结果，不是缺陷。
+//
+// ⚠️ 这条只跑一个工具（set.List），因此它是门禁**后果**的证据，不是「这九个工具都
+// 被门禁」的证据 —— 后者由 TestApprovalPromisedInDescriptionIsEnforced 承担。
+//
+// ledger: C1/AU1#5 approval 门禁
 func TestApprovalGatedToolsDeniedWithoutCallback(t *testing.T) {
 	set, _ := setupAutomation(t)
 	ctx := tools.WithProfile(context.Background(), allowAll(
@@ -122,6 +132,11 @@ func TestApprovalGatedToolsDeniedWithoutCallback(t *testing.T) {
 	assert.Contains(t, result, "requires explicit approval")
 }
 
+// TestAutomationCreateReadUpdatePauseResumeDeleteRun covers the controllable
+// lifecycle end to end through the tool layer: create → read → update → pause →
+// resume → delete → run.
+//
+// ledger: C1/AU1#3 生命周期可控
 func TestAutomationCreateReadUpdatePauseResumeDeleteRun(t *testing.T) {
 	set, m := setupAutomation(t)
 	ctx := withApprovingUser(tools.WithProfile(context.Background(), allowAll(

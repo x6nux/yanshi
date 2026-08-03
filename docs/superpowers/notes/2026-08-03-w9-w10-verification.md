@@ -2,6 +2,11 @@
 
 > 2026-08-03 实测。所有行号与计数为亲自核对的当前值。
 
+> ⚠️ **D2/O12 已作废** —— VS Code 扩展（`ide/vscode/`）与 `scripts/check-d2.sh` 已于 2026-08
+> 以移除方式结案（spec `docs/superpowers/specs/2026-08-03-yanshi-roadmap-design.md` §3.2 ④），
+> 由 `internal/archtest::TestVSCodeExtensionRemoved` 守住。本文中一切把它当作交付物/待办的
+> 描述均已失效，**不要照做**。
+
 ---
 
 # W9 对外契约

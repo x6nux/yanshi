@@ -31,7 +31,11 @@ type ledgerEntry struct {
 	Verdict    string `yaml:"verdict"`
 	Title      string `yaml:"title"`
 	Acceptance string `yaml:"acceptance"`
-	Evidence   string `yaml:"evidence"`
+	// Evidence is a plain string for non-terminal entries and a clause-index
+	// mapping for terminal ones — see evidenceField and the GOV8 gate in
+	// status_evidence_test.go, which is where terminal evidence is audited
+	// clause by clause.
+	Evidence evidenceField `yaml:"evidence"`
 }
 
 var (
@@ -90,11 +94,11 @@ func testExistsInPkg(t *testing.T, pkgDir, testName string) bool {
 // checkEvidence validates an evidence string and returns "" when valid or a
 // human-readable reason when not.
 //
-// An entry may cite SEVERAL references separated by ";". That is not
-// cosmetic: acceptance criteria are conjunctions ("1-16 并发；顺序对应；cap
-// 生效"), and a single-reference field quietly encouraged citing the test for
-// the FIRST clause and calling the whole entry done. Splitting here means an
-// entry can name one test per clause and every one of them is checked.
+// A clause may cite SEVERAL references separated by ";" — one clause can
+// legitimately take more than one test to prove. Which clause a reference
+// belongs to, and whether every clause has one, is decided one level up in
+// checkTerminalEvidence (GOV8); this function only answers "does this
+// reference resolve".
 //
 // Each reference takes one of two legal forms:
 //
@@ -179,19 +183,14 @@ func TestFeatureStatusLedgerIntegrity(t *testing.T) {
 		if !terminalVerdicts[e.Verdict] {
 			continue
 		}
-		if e.Evidence == "" {
+		if e.Evidence.Empty() {
 			problems = append(problems, e.ID+": verdict "+e.Verdict+
 				" requires non-empty evidence")
 			continue
 		}
-		if reason := checkEvidence(t, root, e.Evidence); reason != "" {
-			problems = append(problems, e.ID+": bad evidence — "+reason)
-		}
-		if e.Verdict == "removed" && !strings.Contains(e.Evidence, "::") {
-			problems = append(problems, e.ID+": verdict removed requires a TEST "+
-				"reference (pkg::TestName) — it must assert the thing is gone, and a "+
-				"file reference cannot do that")
-		}
+		// Clause-by-clause auditing (reference validity, per-clause coverage,
+		// and the test-side handshake) lives in the GOV8 gate.
+		problems = append(problems, checkTerminalEvidence(t, root, e)...)
 	}
 
 	sort.Strings(problems)

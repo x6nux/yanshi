@@ -17,11 +17,16 @@ import (
 )
 
 type entry struct {
-	ID       string `yaml:"id"`
-	Package  string `yaml:"package"`
-	Verdict  string `yaml:"verdict"`
-	Title    string `yaml:"title"`
-	Evidence string `yaml:"evidence"`
+	ID      string `yaml:"id"`
+	Package string `yaml:"package"`
+	Verdict string `yaml:"verdict"`
+	Title   string `yaml:"title"`
+	// Evidence is decoded as a raw node because the ledger uses two shapes for
+	// it — a scalar for open entries and a clause-number mapping for terminal
+	// ones (see the GOV8 gate in internal/archtest/status_evidence_test.go).
+	// This tool only tallies verdicts and never reads it; a concrete type here
+	// would just make the counter fail whenever the evidence schema moves.
+	Evidence yaml.Node `yaml:"evidence"`
 }
 
 func isTerminal(v string) bool { return v == "done" || v == "removed" }

@@ -5,6 +5,11 @@
 > 本报告的价值在于它记录了每一项判定的 `file:line` 证据与对抗式证伪过程，可用于追溯「为什么当初这么判」。
 > 分解与修复计划见 `docs/superpowers/specs/2026-08-03-yanshi-roadmap-design.md`。
 
+> ⚠️ **D2/O12 已作废** —— VS Code 扩展（`ide/vscode/`）与 `scripts/check-d2.sh` 已于 2026-08
+> 以移除方式结案（spec `docs/superpowers/specs/2026-08-03-yanshi-roadmap-design.md` §3.2 ④），
+> 由 `internal/archtest::TestVSCodeExtensionRemoved` 守住。本文中一切把它当作交付物/待办的
+> 描述均已失效，**不要照做**。
+
 > **审计日期**：2026-07-31 · **模块** `github.com/x6nux/yanshi` · **Go** 1.26.4
 > **对照基线**：`docs/archive/feature-roadmap-codex-deepseek.md`（Tier A–D，55 项）+ `docs/archive/feature-roadmap-e-h.md`（Tier E–H，25 项）+ `docs/superpowers/plans/` 下 07-18/19/20 的早期 lane 计划（M1，14 项）
 > **审计范围**：**94 个编号功能项 / 23 个批次**，逐项对**代码**实测取证，不采信任何文档的自述状态。
@@ -1007,7 +1012,7 @@ t.chatModelOptions = opts   // 第二次调用覆盖第一次
 | 15 | 覆盖率无门禁 | 把 75%/80%/50% 纳入 CI 或 `archtest` |
 | 16 | `docs.yml` paths 缺 `cmd/yanshi/**` | 补一行，防止 CLI 帮助快照静默漂移（UDOC1） |
 | 17 | 两份 schema 并存（3 $defs vs 21 $defs） | 加 parity 测试或统一来源（V14/V15） |
-| 18 | SDK / IDE 测试完全不在 CI | `scripts/check-d2.sh` 已写好但从未被任何 workflow 引用，接上即可（V15/O12） |
+| 18 | SDK / IDE 测试完全不在 CI | `scripts/check-d2.sh` 已写好但从未被任何 workflow 引用，接上即可（V15/O12） ⚠️ **已作废：该脚本与 `ide/vscode/` 已随 D2/O12 删除，不要「接上」——见本文顶部 D2/O12 作废声明** |
 | 19 | `-h` 里没有 `auth` 子命令 | `cmd/yanshi/main.go:38-77` 补进 usage（O03） |
 | 20 | 路线图状态全面滞后 | 用本报告替代，或在两份路线图头部加指向说明（发现 12） |
 

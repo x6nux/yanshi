@@ -27,6 +27,11 @@ func TestRepositoryLoadEmptyReturnsDefault(t *testing.T) {
 	assert.Empty(t, state.Runs)
 }
 
+// TestRepositorySaveLoadRoundTrip covers persistence: state written through
+// the repository comes back identical from a fresh Repository over the same
+// store.
+//
+// ledger: C1/AU1#4 持久化
 func TestRepositorySaveLoadRoundTrip(t *testing.T) {
 	repo := automation.NewRepository(newTestStore(t))
 	original := automation.State{

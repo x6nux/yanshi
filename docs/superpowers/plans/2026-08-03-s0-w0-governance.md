@@ -2,6 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> ⚠️ **D2/O12 已作废** —— VS Code 扩展（`ide/vscode/`）与 `scripts/check-d2.sh` 已于 2026-08
+> 以移除方式结案（spec `docs/superpowers/specs/2026-08-03-yanshi-roadmap-design.md` §3.2 ④），
+> 由 `internal/archtest::TestVSCodeExtensionRemoved` 守住。本文中一切把它当作交付物/待办的
+> 描述均已失效，**不要照做**。
+
 **Goal:** 给 yanshi 加三条机器强制的治理断言（GOV4/GOV5/GOV6）与一套 63 项功能状态台账，把「重跑 118 个子代理的审计」变成 `go test`，并让「零件造好、总装线没接」这类失效模式在 CI 上不可能再发生。
 
 **Architecture:** 沿用仓库既有的 `internal/archtest` 治理测试模式（纯 stdlib 的 `go/ast` 分析 + 只减不增的豁免表）。GOV4（装配可达性）与 GOV6（context 注入闭环）是静态 AST 分析，落在 `internal/archtest`；GOV5（工具注册一致性）因工具名藏在构造函数内部无法静态提取，改为 `internal/bootstrap` 的运行时集成测试（`--fake-model` 跑完整 `Build` 后比对）。状态台账是一份 YAML 单一真相源，配一个 dev 工具统计和一条防虚报断言。

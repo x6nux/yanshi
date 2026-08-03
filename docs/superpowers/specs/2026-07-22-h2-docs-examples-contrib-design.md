@@ -6,6 +6,11 @@
 > **范围**：只写面向外部的文档、示例、贡献指南与 docs 治理；**不新增功能面**，不改运行时行为。
 > **状态**：设计稿，待用户审阅 → writing-plans。
 
+> ⚠️ **D2/O12 已作废** —— VS Code 扩展（`ide/vscode/`）与 `scripts/check-d2.sh` 已于 2026-08
+> 以移除方式结案（spec `docs/superpowers/specs/2026-08-03-yanshi-roadmap-design.md` §3.2 ④），
+> 由 `internal/archtest::TestVSCodeExtensionRemoved` 守住。本文中一切把它当作交付物/待办的
+> 描述均已失效，**不要照做**。
+
 > **命名说明（重要）**：team 内已把 roadmap 的 H tier 重组为 hybrid 结构——**H1 = 发布工程**（roadmap 原 Tier G：VER/CIG/PKG/UPG），**H2 = 文档 / examples / 贡献**（roadmap 原 Tier H 全部：UDOC1 + APIREF1 + ADR1 + EX1 + CONTRIB1）。本 spec 即 team-H2，覆盖 5 个条目，以本定义为权威；roadmap 文件里"Batch H1=文档 / Batch H2=examples"的旧切分是 stale 的，需在 roadmap 自检（task #2）里对齐（见 open question OQ-1）。
 
 ---

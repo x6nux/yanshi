@@ -4,6 +4,11 @@
 > **基线**：`docs/feature-status-audit.md`（2026-07-31 机器化审计，94 项，32% 端到端可用）
 > **本文范围**：7 个子项目的分解与顺序 + **S0（断线修复）的完整设计**。S1–S4c 只定边界与依赖，各自的详细设计在其启动时另立 spec。
 
+> ⚠️ **D2/O12 已作废** —— VS Code 扩展（`ide/vscode/`）与 `scripts/check-d2.sh` 已于 2026-08
+> 以移除方式结案（spec `docs/superpowers/specs/2026-08-03-yanshi-roadmap-design.md` §3.2 ④），
+> 由 `internal/archtest::TestVSCodeExtensionRemoved` 守住。本文中一切把它当作交付物/待办的
+> 描述均已失效，**不要照做**。
+
 ---
 
 ## 1. 目标与定位
