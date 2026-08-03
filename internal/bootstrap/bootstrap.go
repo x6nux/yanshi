@@ -665,6 +665,17 @@ func Build(opts Options) (*App, error) {
 	}
 	allTools = append(allTools, shellTools.Run, timeTools.Now)
 
+	// Shell v2 (W1): the nine persistent-session / background-job tools. They
+	// are constructed here — before the toolNames snapshot — even though the
+	// shell.Manager they drive is not built until the security posture below,
+	// because the tools reach the manager through the per-turn context
+	// (tools.WithShellManager), never through a constructor argument. Wiring
+	// them any later would silently drop them from the registry while the
+	// default profile keeps advertising the names (the GOV5 failure this fixes).
+	shellV2 := tools.NewShellV2Tools(workRoot)
+	allTools = append(allTools, shellV2.Start, shellV2.Read, shellV2.Write, shellV2.Wait,
+		shellV2.Cancel, shellV2.TaskStart, shellV2.TaskWait, shellV2.TaskWrite, shellV2.TaskCancel)
+
 	// Agent tools: agent_start, workflow_start, analysis, and summarize for
 	// sub-agent delegation, parallel workflow execution, quick code analysis,
 	// and file content condensation (fs_read-only sub-agent).
@@ -913,10 +924,19 @@ func Build(opts Options) (*App, error) {
 
 	// Shell manager + secure factory (Task 21): persistent session manager
 	// with job persistence and the production launch pipeline.
+	// Factory is NOT optional: Manager.Start returns "no process factory
+	// configured" without it, so every shell v2 tool would fail at runtime
+	// while still passing every test that substitutes its own factory. It is
+	// built from the same primitives as secureFactory below (netpolicy +
+	// sandbox) so the two launch paths share one posture.
 	shellManager := shell.NewManager(shell.Config{
 		Root:           workRoot,
 		MaxOutputBytes: cfg.Security.Shell.MaxOutputBytes,
 		IdleTimeout:    cfg.Security.Shell.IdleTimeout,
+		Factory: shell.NewSecureLaunchFactory(shell.SecureLaunchFactory{
+			Policy:  networkPolicy,
+			Sandbox: sb,
+		}),
 	})
 	if st != nil {
 		shellManager = shellManager.WithPersistence(shell.JobFromKV(st))

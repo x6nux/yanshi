@@ -1,14 +1,22 @@
 package bootstrap_test
 
 import (
+	"context"
+	"encoding/json"
 	"path"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/require"
 
+	"github.com/x6nux/yanshi/internal/agent/orchestrator"
 	"github.com/x6nux/yanshi/internal/bootstrap"
+	einollm "github.com/x6nux/yanshi/internal/llm/eino"
+	"github.com/x6nux/yanshi/internal/tools"
 )
 
 // TestDefaultOrchestratorProfileIsStable proves the factory-default profile
@@ -68,17 +76,7 @@ func TestC1ToolsAreRegistered(t *testing.T) {
 //
 // Entries may only be REMOVED, never added. A dead entry — the tool is now
 // registered — fails the test.
-var toolWiringExceptions = map[string]string{
-	"shell_start":       "W1 装配线：NewShellV2Tools 未注册（审计 P1-7）",
-	"shell_read":        "W1 装配线：NewShellV2Tools 未注册（审计 P1-7）",
-	"shell_write_stdin": "W1 装配线：NewShellV2Tools 未注册（审计 P1-7）",
-	"shell_wait":        "W1 装配线：NewShellV2Tools 未注册（审计 P1-7）",
-	"shell_cancel":      "W1 装配线：NewShellV2Tools 未注册（审计 P1-7）",
-	"task_shell_start":  "W1 装配线：NewShellV2Tools 未注册（审计 P1-7）",
-	"task_shell_wait":   "W1 装配线：NewShellV2Tools 未注册（审计 P1-7）",
-	"task_shell_stdin":  "W1 装配线：NewShellV2Tools 未注册（审计 P1-7）",
-	"task_shell_cancel": "W1 装配线：NewShellV2Tools 未注册（审计 P1-7）",
-}
+var toolWiringExceptions = map[string]string{}
 
 // TestGOV5ProfileAllowMatchesToolRegistry verifies the default orchestrator
 // profile does not authorize tools that were never registered.
@@ -213,4 +211,151 @@ func TestOrchestratorReceivesSecuritySubsystems(t *testing.T) {
 		t.Error("orchestrator.SecureFactory is nil — tools.WithSecureProcessFactory is " +
 			"never called, so processes launch without the secure launch pipeline")
 	}
+}
+
+// runShellTurn drives one orchestrator turn with a scripted model and returns
+// every tool_result observed, keyed by tool name.
+//
+// The permission callback is not optional decoration: the default profile
+// leaves security.shell.policy empty, so guard.Check returns Prompt for
+// shell_start. Without a callback bound in ctx the GuardedTool layer has no
+// one to ask and the turn stalls on a decision that never arrives — so the
+// end-to-end assertion below would time out for a reason that has nothing to
+// do with the wiring it is meant to prove.
+func runShellTurn(t *testing.T, app *bootstrap.App, msgs []*schema.Message) map[string]string {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ctx = tools.WithPermissionCallback(ctx, func(tools.PermissionRequest) tools.PermissionDecision {
+		return tools.PermissionAllow
+	})
+
+	mdl := einollm.NewFakeModelWithMessages(msgs, nil)
+	// EventsWithHistoryOpts returns the iterator alone — failures arrive as
+	// events on it, not as a second return value.
+	iter := app.Orch.EventsWithHistoryOpts(ctx,
+		[]*schema.Message{schema.UserMessage("run the shell probe")},
+		orchestrator.TurnOpts{Model: mdl})
+
+	results := map[string]string{}
+	for {
+		ev, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if ev.Err != nil {
+			t.Fatalf("unexpected agent error: %v", ev.Err)
+		}
+		if ev.Output == nil || ev.Output.MessageOutput == nil {
+			continue
+		}
+		mv := ev.Output.MessageOutput
+		if mv.Role != schema.Tool {
+			continue
+		}
+		msg, err := materializeMessage(mv)
+		if err != nil {
+			t.Fatalf("drain tool_result stream: %v", err)
+		}
+		if msg != nil {
+			results[mv.ToolName] = msg.Content
+		}
+	}
+	return results
+}
+
+// materializeMessage collapses the streaming/non-streaming split in adk's
+// MessageVariant so callers can read Content uniformly. The orchestrator runs
+// with EnableStreaming, so tool results arrive as streams in practice.
+func materializeMessage(mv *adk.MessageVariant) (*schema.Message, error) {
+	if mv.IsStreaming && mv.MessageStream != nil {
+		return mv.GetMessage()
+	}
+	return mv.Message, nil
+}
+
+// TestShellV2EndToEndSpawnsRealProcess proves the shell v2 tools registered by
+// bootstrap.Build can actually spawn a process and return its stdout, driving
+// shell_start -> shell_wait -> shell_read through a real orchestrator turn.
+//
+// Why this test exists, and why it asserts on stdout rather than on wiring:
+// every previous shell test substituted its own shell.Config.Factory. That is
+// exactly why bootstrap could omit Factory for so long without anyone
+// noticing — the code path that fails in production was never the code path
+// under test. A registry assertion would not have caught it either: the tools
+// register fine, then fail at call time with "no process factory configured".
+// Only running the process and reading its output covers the gap, which is the
+// class of test spec §6.1 names.
+//
+// The two failure strings it discriminates against are the two ways this
+// wiring breaks: "shell: runtime unavailable" (no shell.Manager bound in the
+// turn context) and "no process factory configured" (Manager present but
+// Config.Factory nil).
+func TestShellV2EndToEndSpawnsRealProcess(t *testing.T) {
+	app := buildMinimalApp(t)
+
+	// echo is a builtin of both sh and cmd.exe, and shell.ShellArgv wraps the
+	// command in the platform shell, so this needs no external binary.
+	const marker = "yanshi-shell-v2-alive"
+	start := schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "c1", Type: "function", Function: schema.FunctionCall{
+			Name:      "shell_start",
+			Arguments: `{"command":"echo ` + marker + `"}`,
+		},
+	}})
+	startRes := runShellTurn(t, app, []*schema.Message{start})
+
+	raw, ok := startRes["shell_start"]
+	require.Truef(t, ok, "no shell_start tool_result — the tool never ran (results: %v)", startRes)
+	require.NotContains(t, raw, "runtime unavailable",
+		"orchestrator.Config.ShellManager never reached the tool context")
+	require.NotContains(t, raw, "no process factory configured",
+		"shell.Config.Factory is nil in bootstrap.Build — shell v2 cannot spawn anything")
+
+	var sess struct {
+		ID  string `json:"id"`
+		PID int    `json:"pid"`
+	}
+	require.NoErrorf(t, json.Unmarshal([]byte(raw), &sess),
+		"shell_start did not return a session; got %q", raw)
+	require.NotEmpty(t, sess.ID, "session id missing from shell_start result")
+	require.NotZerof(t, sess.PID, "session PID is 0 — no OS process was spawned (result: %s)", raw)
+
+	// Second turn: wait for exit, then read the buffered output. Two scripted
+	// responses means the ReAct loop really iterates (model -> tool -> model).
+	wait := schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "c2", Type: "function", Function: schema.FunctionCall{
+			Name:      "shell_wait",
+			Arguments: `{"id":"` + sess.ID + `"}`,
+		},
+	}})
+	read := schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "c3", Type: "function", Function: schema.FunctionCall{
+			Name:      "shell_read",
+			Arguments: `{"id":"` + sess.ID + `"}`,
+		},
+	}})
+	res := runShellTurn(t, app, []*schema.Message{wait, read})
+
+	waitRaw, ok := res["shell_wait"]
+	require.Truef(t, ok, "no shell_wait tool_result (results: %v)", res)
+	var exited struct {
+		State    string `json:"state"`
+		ExitCode int    `json:"exit_code"`
+	}
+	require.NoErrorf(t, json.Unmarshal([]byte(waitRaw), &exited),
+		"shell_wait did not return a session; got %q", waitRaw)
+	require.Equal(t, "exited", exited.State, "process did not reach a terminal state")
+	require.Equal(t, 0, exited.ExitCode, "echo exited non-zero — the launch pipeline mangled the command")
+
+	readRaw, ok := res["shell_read"]
+	require.Truef(t, ok, "no shell_read tool_result (results: %v)", res)
+	var out struct {
+		Output string `json:"output"`
+	}
+	require.NoErrorf(t, json.Unmarshal([]byte(readRaw), &out),
+		"shell_read did not return output; got %q", readRaw)
+	require.Containsf(t, out.Output, marker,
+		"shell_read returned %q — the real stdout of the spawned process never made it back", out.Output)
 }
