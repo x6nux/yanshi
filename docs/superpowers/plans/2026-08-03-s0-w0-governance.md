@@ -1177,7 +1177,11 @@ extract() {  # $1=章节起始正则 $2=章节结束正则 $3=verdict
   awk "/$1/,/$2/" "$AUDIT" | awk -v v="$3" '
     /^#### / {
       line=$0
-      gsub(/^#### `/,"",line); gsub(/` /,"/",line)
+      # sub (first occurrence), NOT gsub: one audit heading — A3 C13 —
+      # has backticks in the TITLE (`/mcp` 实化管理界面). A greedy gsub eats
+      # the title's closing backtick too and silently corrupts it. Counts
+      # stay correct, so only Step 7's manual spot-check catches this.
+      gsub(/^#### `/,"",line); sub(/` /,"/",line)
       split(line, a, " — ")
       id=a[1]; title=a[2]
       next
