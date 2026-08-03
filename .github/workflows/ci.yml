@@ -105,37 +105,27 @@ jobs:
         shell: bash
         run: ${{ matrix.os == 'windows' && './yanshi.exe -h' || './yanshi -h' }}
 
-  # --- soft-gated jobs: E3 (governance) and E2 (fuzz/property) -----------------
-  # Each job soft-passes (exit 0) until its batch's test assets exist, and has
-  # continue-on-error as a safety net. Flip to a hard required check when the
-  # batch lands: tighten the guard, drop continue-on-error.
+  # --- hard gates: governance (GOV1-GOV6 + ledger) and fuzz/property ----------
+  # Both were soft ("continue-on-error") while the E3 and E2 assets were being
+  # built. Those assets landed, and governance now also carries GOV4/GOV5/GOV6
+  # plus the feature-status ledger assertions — a regression there is exactly
+  # the failure mode W0 exists to prevent, so it must fail the build.
 
   governance:
-    name: governance (E3 GOV1/GOV2/GOV3)
+    name: governance (GOV1-GOV6 + ledger)
     runs-on: ubuntu-latest
-    continue-on-error: true   # soft until E3 governance tests land
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-      - name: run governance tests if present
-        shell: bash
-        run: |
-          set -e
-          # Guard: E3 ships GOV1/GOV2/GOV3 tests under internal/archtest.
-          # Until then, soft-pass. Drop continue-on-error once E3 is stable.
-          if [ ! -d internal/archtest ]; then
-            echo "no governance tests yet (E3 pending); soft-pass"
-            exit 0
-          fi
-          go test ./internal/archtest
+      - name: run governance tests
+        run: go test ./internal/archtest
 
   fuzz-seed:
     name: fuzz-seed (E2 FUZ1/PROP1)
     runs-on: ubuntu-latest
-    continue-on-error: true   # soft until E2 fuzz/property tests land
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

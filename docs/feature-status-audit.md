@@ -1,5 +1,10 @@
 # Yanshi 功能实现审计：规划 vs 实际
 
+> ⚠️ **本文件是 2026-07-31 的历史快照，不是当前状态的权威描述。**
+> 当前状态以 `docs/feature-status.yaml` 为唯一真相源（`go run ./cmd/featurestatus` 查看统计）。
+> 本报告的价值在于它记录了每一项判定的 `file:line` 证据与对抗式证伪过程，可用于追溯「为什么当初这么判」。
+> 分解与修复计划见 `docs/superpowers/specs/2026-08-03-yanshi-roadmap-design.md`。
+
 > **审计日期**：2026-07-31 · **模块** `github.com/x6nux/yanshi` · **Go** 1.26.4
 > **对照基线**：`docs/archive/feature-roadmap-codex-deepseek.md`（Tier A–D，55 项）+ `docs/archive/feature-roadmap-e-h.md`（Tier E–H，25 项）+ `docs/superpowers/plans/` 下 07-18/19/20 的早期 lane 计划（M1，14 项）
 > **审计范围**：**94 个编号功能项 / 23 个批次**，逐项对**代码**实测取证，不采信任何文档的自述状态。

@@ -210,4 +210,3 @@ Usage of doctor:
 ## SDK 与 IDE
 
 - TypeScript SDK（`@x6nux/yanshi-sdk`）与 Python SDK（`yanshi_sdk`）：以代码驱动同一个 v1 agent service。最小端到端见 [../api/sdk-ts.md](../api/sdk-ts.md) / [../api/sdk-python.md](../api/sdk-python.md)，可跑样例见 [../../examples/](../../examples/)。
-- VS Code 扩展：经 app-server（JSON-RPC）接入。

@@ -278,10 +278,10 @@
 
 - id: "D2/O12"
   package: "-"
-  verdict: missing
+  verdict: removed
   title: "IDE 扩展（VS Code）"
-  acceptance: "turn 发起/取消/流式；selection/open files 注入；断线恢复"
-  evidence: ""
+  acceptance: "ide/vscode/ 与 scripts/check-d2.sh 不存在；文档无对其作为交付物的描述"
+  evidence: "internal/archtest::TestVSCodeExtensionRemoved"
 
 - id: "D2/V15"
   package: "W9"
