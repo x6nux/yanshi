@@ -51,7 +51,10 @@ jobs:
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
-          version: "~> v2"
+          # v2.7 floor: archives.format_overrides uses the plural `formats`
+          # key. ci.yml's release-config job runs `check` against the same
+          # constraint, so config errors surface on PRs instead of on tag push.
+          version: "~> v2.7"
           args: release --clean --release-notes RELEASE_NOTES.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -52,10 +52,16 @@ checksum:
 snapshot:
   version_template: "{{ incpatch .Version }}-dev"
 
-# git-cliff generates the release notes (release.yml runs it and feeds the file
-# via --release-notes). Disable goreleaser's built-in changelog to avoid a dupe.
-changelog:
-  skip: true
+# No `changelog:` block on purpose. git-cliff owns the release notes
+# (release.yml feeds them via --release-notes RELEASE_NOTES.md) and the
+# changelog pipe loads ReleaseNotesFile on its first lines, then returns early
+# — so the built-in changelog never runs and there is no dupe to suppress.
+#
+# Do NOT "disable" the pipe to express that: the disable check lives in the
+# pipe's Skip(), not its Run(), so disabling it also skips the --release-notes
+# load and ships an EMPTY release body. (The older `changelog.skip` key was
+# removed outright in goreleaser v2.0 — with version: 2 and UnmarshalStrict it
+# is a hard parse error, not a warning.)
 
 release:
   draft: false
