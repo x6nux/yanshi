@@ -640,6 +640,19 @@ func (m *Manager) runAgentLoop(ctx context.Context, agentID string, rt *runtimeA
 		Status: StatusRunning, Timestamp: time.Now().UTC(),
 	})
 
+	// Bind the agent's role for the whole run. This is the only place every
+	// sub-agent run funnels through, and it is what makes the role catalog in
+	// internal/tools/agentroles.go take effect: the orchestrator reads
+	// RoleFromContext to pick the PromptPrefix and the per-role
+	// tools.RolePolicy. Without this binding the lookup runs against the empty
+	// string and all seven role definitions are inert.
+	//
+	// An empty role is deliberately NOT bound: it matches no catalog entry and
+	// would shadow any role bound further out with a useless value.
+	if role := m.recordRole(agentID); role != "" {
+		ctx = WithRole(ctx, role)
+	}
+
 	assignment := rt.assignment
 	var result string
 	var runErr error

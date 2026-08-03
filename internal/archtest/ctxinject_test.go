@@ -24,9 +24,7 @@ import (
 //
 // Entries may only be REMOVED, never added. A dead entry — the injector now
 // has a production call site — fails the test.
-var ctxInjectExceptions = map[string]string{
-	"internal/agent/registry.WithRole": "W1 装配线：Manager.runAgentLoop 派生 child ctx 时未绑 role（审计 P0-5），见 spec §4.3 W1",
-}
+var ctxInjectExceptions = map[string]string{}
 
 // ctxInjector is one exported context-injecting function declaration.
 type ctxInjector struct {
