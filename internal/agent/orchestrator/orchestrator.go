@@ -522,6 +522,19 @@ type TurnOpts struct {
 func (o *Orchestrator) EventsWithHistoryOpts(ctx context.Context, messages []*schema.Message, opts TurnOpts) *adk.AsyncIterator[*adk.AgentEvent] {
 	ctx = o.withTurnContext(ctx, opts)
 
+	// Tier G entry B: "@path" references in the trailing user message become
+	// attachments and join TurnOpts.Images before the fan-out below.
+	//
+	// This sits HERE, not in the transports, because resolution needs exactly
+	// two things — the work root and the permission profile — and withTurnContext
+	// has just bound both onto ctx one line above. WS/SSE/v1 have neither at
+	// hand; pushing the root and the profile out to three transports to do the
+	// same parse three times would widen their contract for no gain. It also
+	// means the sub-agent path (which reaches this same method with a
+	// model-composed prompt) is jailed by construction rather than by remembering
+	// to call the parser at a fourth site.
+	messages, opts.Images = o.expandPathRefs(ctx, messages, opts.Images)
+
 	// Single convergence point for the image fan-out. All three turn entry
 	// points (WS, /api/v1, SSE) only have to fill TurnOpts.ModelID/Images —
 	// the "is this model multimodal, embed a native part or store the bytes

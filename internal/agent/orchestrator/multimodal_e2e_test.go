@@ -2,14 +2,18 @@ package orchestrator
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"image"
 	"image/color"
 	"image/png"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/require"
+	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/imagestore"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/proto"
@@ -72,4 +76,50 @@ func TestE2E_NonMultimodalMainUsesPlaceholderAndStore(t *testing.T) {
 	require.Contains(t, msgs[0].Content, "[image:img-1", "placeholder must reference the stored image id")
 	_, ok := store.Get("img-1")
 	require.True(t, ok, "image must be in the store for image_describe")
+}
+
+// TestE2E_PathRefTurnWiring proves Tier G entry B is actually wired into the
+// turn path: a "@path" reference in the trailing user message reaches the model
+// as an image part, an escaping reference does not, and neither rewrites the
+// caller's history slice (the WS turn loop reuses it across retries).
+func TestE2E_PathRefTurnWiring(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "work")
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "shots"), 0o750))
+	raw, err := base64.StdEncoding.DecodeString(encodePNGBase64ForE2E(t))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "shots", "a.png"), raw, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(parent, "secret.png"), raw, 0o600))
+
+	newOrch := func() (*Orchestrator, *einollm.FakeModel) {
+		fm := einollm.NewFakeModel([]string{"unused"}, nil)
+		fm.Vision, fm.RecordImages = true, true
+		o, err := New(Config{
+			Model:         fm,
+			MultimodalMap: map[string]bool{"mm": true},
+			ImageStore:    imagestore.New(imagestore.Config{MaxItems: 20, MaxBytes: 100 << 20}),
+			WorkRoot:      root,
+			Profile: guard.PermissionProfile{
+				Tools: guard.ToolsPerm{Allow: []string{"*"}},
+				FS:    guard.FSPerm{Read: []string{"**"}},
+			},
+		})
+		require.NoError(t, err)
+		return o, fm
+	}
+
+	t.Run("in-root ref reaches the model as an image part", func(t *testing.T) {
+		o, _ := newOrch()
+		msgs := []*schema.Message{{Role: schema.User, Content: "看 @shots/a.png"}}
+		out := drainAgentChunks(t, o.EventsWithHistoryOpts(context.Background(), msgs, TurnOpts{ModelID: "mm"}))
+		require.Contains(t, out, "fake-vision(1 image)")
+		require.Equal(t, "看 @shots/a.png", msgs[0].Content, "caller history must not be rewritten in place")
+	})
+
+	t.Run("escaping ref reaches the model as text only", func(t *testing.T) {
+		o, _ := newOrch()
+		msgs := []*schema.Message{{Role: schema.User, Content: "看 @../secret.png"}}
+		out := drainAgentChunks(t, o.EventsWithHistoryOpts(context.Background(), msgs, TurnOpts{ModelID: "mm"}))
+		require.Contains(t, out, "fake-vision(0 images)")
+	})
 }
