@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/tools"
@@ -143,4 +144,60 @@ func (o *Orchestrator) expandPathRefs(ctx context.Context, messages []*schema.Me
 	merged := make([]proto.ImageAttach, 0, len(images)+len(res.Images))
 	merged = append(append(merged, images...), res.Images...)
 	return out, merged
+}
+
+// imageAttacher is the model-facing half of Tier G entry C. It is the point
+// where an image produced BY A TOOL (fs_read on a .png, web_fetch on an image/*
+// response) actually reaches the model.
+//
+// # Why a middleware and not the EventsWithHistoryOpts fan-out
+//
+// TurnOpts.Images and expandPathRefs both converge on ApplyImages, which runs
+// ONCE, before the turn starts — the right place for images the caller already
+// held. Tool-produced images do not exist yet at that moment: they appear in the
+// middle of the ReAct loop, several model calls later. So they need an injection
+// point inside the loop, and BeforeModelRewriteState is the only hook whose
+// returned state the ADK PERSISTS. Injecting from a model wrapper instead would
+// work for exactly one call and then vanish, because the ADK rebuilds the
+// message list from its own state on the next iteration — the model would lose
+// the picture the moment it called another tool.
+//
+// It reuses appendImageParts, so a tool-produced image and a user-pasted one are
+// laid out for the provider identically; there is one image-part encoder in this
+// package, not two.
+//
+// Draining is what bounds this: the sink hands over each image once, so the
+// growing ADK state carries exactly one copy. The non-multimodal case never
+// reaches here at all — the sink refuses to collect, and the tools return their
+// text hint instead (see tools.TurnImages).
+type imageAttacher struct {
+	*adk.BaseChatModelAgentMiddleware
+}
+
+// newImageAttacher builds an imageAttacher ready for installation on an
+// adk.ChatModelAgentConfig.Handlers slice.
+func newImageAttacher() *imageAttacher {
+	return &imageAttacher{BaseChatModelAgentMiddleware: &adk.BaseChatModelAgentMiddleware{}}
+}
+
+// BeforeModelRewriteState appends any images the turn's tools produced since the
+// last model call to the ADK state, as native image parts.
+//
+// The clone mirrors ApplyImages' clone for the same reason: appendImageParts
+// rewrites the trailing element of the slice it is handed, and the ADK's state
+// slice may be aliased by the recorder middleware's capture.
+func (a *imageAttacher) BeforeModelRewriteState(
+	ctx context.Context,
+	state *adk.ChatModelAgentState,
+	_ *adk.ModelContext,
+) (context.Context, *adk.ChatModelAgentState, error) {
+	if state == nil {
+		return ctx, state, nil
+	}
+	images := tools.TurnImagesFromContext(ctx).Drain()
+	if len(images) == 0 {
+		return ctx, state, nil
+	}
+	state.Messages = appendImageParts(slices.Clone(state.Messages), images)
+	return ctx, state, nil
 }

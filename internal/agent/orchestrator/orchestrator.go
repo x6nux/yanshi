@@ -305,6 +305,14 @@ func (o *Orchestrator) withTurnContext(ctx context.Context, opts TurnOpts) conte
 	ctx = o.bindExecutionContext(ctx, opts.ConnectionSessionID)
 	ctx = tools.WithPlanMode(ctx, opts.PlanMode)
 	ctx = tools.WithThreadLink(ctx, opts.ThreadID, opts.TurnID)
+	// Tier G entry C: the sidecar that carries images produced by fs_read /
+	// web_fetch back to the model. A tool result is a string, so the bytes cannot
+	// ride the return value; they go here and imageAttacher drains them into the
+	// ADK state before the next model call. The sink carries the turn model's
+	// multimodal capability so the tools know whether an image part has anywhere
+	// to go — an empty ModelID resolves to false, i.e. hint text, which is the
+	// fail-safe answer for the entry points that do not select a model.
+	ctx = tools.WithTurnImages(ctx, tools.NewTurnImages(o.IsMultimodal(opts.ModelID)))
 	if opts.EmitWorkFrame != nil {
 		ctx = tools.WithWorkEventCallback(ctx, func(event work.Event) {
 			opts.EmitWorkFrame(workEventFrame(event))
@@ -405,7 +413,7 @@ func (o *Orchestrator) runnerFor(chatModel model.BaseChatModel, plan bool) *adk.
 				UnknownToolsHandler: unknownToolHandler(names),
 			},
 		},
-		Handlers: []adk.ChatModelAgentMiddleware{newMessageRecorder()},
+		Handlers: []adk.ChatModelAgentMiddleware{newMessageRecorder(), newImageAttacher()},
 	})
 	if err != nil {
 		return nil

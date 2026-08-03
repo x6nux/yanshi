@@ -294,8 +294,15 @@ func (f *FSTools) runRead(ctx context.Context, argsJSON string) (string, error) 
 		return "", err
 	}
 	absPath := paths[0]
-	// Tier G entry C: image files return a structured ref, not binary bytes.
+	// Tier G entry C: an image file never returns its raw bytes as "text". When
+	// the turn's model is multimodal the bytes go out of band, onto the turn's
+	// image sink, and the model SEES the picture; otherwise there is nowhere for
+	// an image part to go, so we keep the original hint and let the model route
+	// through image_describe (the auxiliary multimodal model).
 	if IsImagePath(a.Path) {
+		if imageAttachEnabled(ctx) {
+			return attachFileImage(ctx, absPath, a.Path), nil
+		}
 		return fmt.Sprintf("[image file: %s -- call image_describe with this path to understand it]", a.Path), nil
 	}
 	fi, err := os.Stat(absPath)

@@ -141,8 +141,17 @@ func (w *WebTools) runFetch(ctx context.Context, argsJSON string) (string, error
 	if resp.StatusCode >= 400 {
 		return "", fmt.Errorf("web.fetch: HTTP %d", resp.StatusCode)
 	}
-	// Tier G entry C: image/* responses return a structured ref, not binary bytes.
+	// Tier G entry C: an image/* response never returns its raw bytes as "text".
+	// The net policy above has already decided this request was allowed — the
+	// branch below only changes how the AUTHORIZED response is PRESENTED: as a
+	// real attachment when the turn's model is multimodal, otherwise as the
+	// original hint (no binary in a text message, ever).
 	if ct := resp.Header.Get("Content-Type"); strings.HasPrefix(ct, "image/") {
+		if imageAttachEnabled(ctx) {
+			if out, ok := attachResponseImage(ctx, req.URL.String(), ct, resp.Body); ok {
+				return out, nil
+			}
+		}
 		return fmt.Sprintf("[image response: %s (%s) -- call image_describe with this URL or fetch the bytes to understand it]", req.URL.String(), ct), nil
 	}
 	tr := &truncatingReader{r: resp.Body, limit: w.maxBytes}

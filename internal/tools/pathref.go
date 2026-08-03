@@ -19,17 +19,15 @@ import (
 // package paths ("user@host.png", "a@b").
 var pathRefPattern = regexp.MustCompile(`(^|\s)@([^\s]+)`)
 
-// maxPathRefImages caps how many attachments one message may expand to, and
-// maxPathRefImageBytes caps each one. Both exist because the text that drives
-// this expansion is model-influenceable (a sub-agent prompt is model output),
-// so "@a.png @b.png @c.png …" is a context-window exhaustion vector, not just a
-// user convenience. The byte cap matches imagestore's own per-image default so
-// an attachment that passes here is not silently dropped by the store on the
-// non-multimodal placeholder path.
-const (
-	maxPathRefImages     = 8
-	maxPathRefImageBytes = 10 << 20 // 10 MiB
-)
+// maxPathRefImages caps how many attachments one message may expand to. It
+// exists because the text that drives this expansion is model-influenceable (a
+// sub-agent prompt is model output), so "@a.png @b.png @c.png …" is a
+// context-window exhaustion vector, not just a user convenience.
+//
+// The PER-IMAGE byte cap is deliberately not defined here: @path, fs_read and
+// web_fetch all use maxImageAttachBytes (imageattach.go). One constant, because
+// three doors into one feature must not disagree about which images are too big.
+const maxPathRefImages = 8
 
 // pathRefGuardTool is the guard tool name @path expansion authorizes as. It is
 // deliberately fs_read rather than a name of its own: expanding "@a.png" IS a
@@ -171,7 +169,7 @@ func resolvePathRefImage(ctx context.Context, root, ref string, attached int, se
 	if info.IsDir() || !info.Mode().IsRegular() {
 		return nil, "not a regular file"
 	}
-	if info.Size() > maxPathRefImageBytes {
+	if info.Size() > maxImageAttachBytes {
 		return nil, "image exceeds the per-image size limit"
 	}
 	if seen[absPath] {
