@@ -803,62 +803,6 @@ func Build(opts Options) (*App, error) {
 		loadProjectPrompt(workRoot), cfg.I18N.OutputLanguage,
 	)
 
-	orchConfig := orchestrator.Config{
-		Model:           chatModel,
-		Tools:           allTools,
-		Profile:         profile,
-		Instruction:     instruction,
-		SkillMetaPrompt: registry.MetaPrompt(),
-		MemorySuffix:    memorySuffix,
-		WorkRoot:        workRoot,
-		TaskManager:     workMgr,
-		SubagentManager: subagentManager,
-		AvailableModels: availableModels,
-		LSP:             lspMgr,
-		MCP:             mcpManager,
-		MultimodalMap:   multimodalMap,
-		ImageStore:      imageStore,
-		Compaction: orchestrator.CompactionConfig{
-			Threshold:         cfg.Compaction.Threshold,
-			ContextWindow:     cfg.Compaction.ContextWindow,
-			KeepRecent:        cfg.Compaction.KeepRecent,
-			CooldownTokens:    int(cfg.Compaction.CooldownFraction * float64(cfg.Compaction.ContextWindow)),
-			CooldownDuration:  parseCooldownDuration(cfg.Compaction.CooldownDuration),
-			HardForceFraction: cfg.Compaction.HardForceFraction,
-		},
-	}
-	// Wire the main scope (Agent="orchestrator") so chat/orchestrator edits
-	// auto-track to main. Only set when InitRepo succeeded; otherwise the
-	// orchestrator runs without a scope (no tracking) and a caller-supplied
-	// scope (e.g. a task-broker worktree scope) is still respected.
-	if vcsRepoID != "" {
-		orchConfig.VCSScope = tools.VCSScope{VCS: vcsInstance, RepoID: vcsRepoID, Agent: "orchestrator"}
-	}
-	orch, err := orchestrator.New(orchConfig)
-	if err != nil {
-		// store closed via closeStoreOnError guard
-		return nil, fmt.Errorf("bootstrap: orchestrator: %w", err)
-	}
-	// Clear leftover oversized-output temp files from a previous run before any
-	// tool can write new ones. Best-effort: a missing dir is a no-op.
-	tools.Sweep(workRoot)
-
-	// V14: construct the shared agent API service over the orchestrator + store.
-	// HTTP and the JSON-RPC app-server both consume this single instance so
-	// thread/turn/item semantics cannot drift between transports. The default
-	// model is the bootstrap chat model (fake when no providers are configured);
-	// the per-name map lets thread/start and turn/start switch models by id.
-	agentAPI, err := apiV1.NewService(apiV1.Config{
-		Orchestrator: orch,
-		DefaultModel: chatModel,
-		Models:       providerModels,
-		Store:        st,
-	})
-	if err != nil {
-		// store closed via closeStoreOnError guard
-		return nil, fmt.Errorf("bootstrap: agent api: %w", err)
-	}
-
 	// Task 10/13: build the security posture from config and warn the operator
 	// when Phase 0 is in effect. sandbox.New returns an honest CapabilityReport
 	// even when OS isolation is not enforced, so the rest of the system can
@@ -922,12 +866,70 @@ func Build(opts Options) (*App, error) {
 		Sandbox:  sb,
 	}
 
-	// Wire security subsystems into the orchestrator config.
-	orchConfig.Sandbox = sb
-	orchConfig.NetworkPolicy = networkPolicy
-	orchConfig.Approvals = approvalMgr
-	orchConfig.ShellManager = shellManager
-	orchConfig.SecureFactory = secureFactory
+	orchConfig := orchestrator.Config{
+		Model:           chatModel,
+		Tools:           allTools,
+		Profile:         profile,
+		Instruction:     instruction,
+		SkillMetaPrompt: registry.MetaPrompt(),
+		MemorySuffix:    memorySuffix,
+		WorkRoot:        workRoot,
+		TaskManager:     workMgr,
+		SubagentManager: subagentManager,
+		AvailableModels: availableModels,
+		// Security posture (Task 10/13/21). These MUST be part of the literal:
+		// orchestrator.New takes Config by value and the package has no
+		// setters, so assigning them after New writes to a discarded copy and
+		// every tools.With* injection in bindExecutionContext silently no-ops.
+		Sandbox:       sb,
+		NetworkPolicy: networkPolicy,
+		Approvals:     approvalMgr,
+		ShellManager:  shellManager,
+		SecureFactory: secureFactory,
+		LSP:           lspMgr,
+		MCP:           mcpManager,
+		MultimodalMap: multimodalMap,
+		ImageStore:    imageStore,
+		Compaction: orchestrator.CompactionConfig{
+			Threshold:         cfg.Compaction.Threshold,
+			ContextWindow:     cfg.Compaction.ContextWindow,
+			KeepRecent:        cfg.Compaction.KeepRecent,
+			CooldownTokens:    int(cfg.Compaction.CooldownFraction * float64(cfg.Compaction.ContextWindow)),
+			CooldownDuration:  parseCooldownDuration(cfg.Compaction.CooldownDuration),
+			HardForceFraction: cfg.Compaction.HardForceFraction,
+		},
+	}
+	// Wire the main scope (Agent="orchestrator") so chat/orchestrator edits
+	// auto-track to main. Only set when InitRepo succeeded; otherwise the
+	// orchestrator runs without a scope (no tracking) and a caller-supplied
+	// scope (e.g. a task-broker worktree scope) is still respected.
+	if vcsRepoID != "" {
+		orchConfig.VCSScope = tools.VCSScope{VCS: vcsInstance, RepoID: vcsRepoID, Agent: "orchestrator"}
+	}
+	orch, err := orchestrator.New(orchConfig)
+	if err != nil {
+		// store closed via closeStoreOnError guard
+		return nil, fmt.Errorf("bootstrap: orchestrator: %w", err)
+	}
+	// Clear leftover oversized-output temp files from a previous run before any
+	// tool can write new ones. Best-effort: a missing dir is a no-op.
+	tools.Sweep(workRoot)
+
+	// V14: construct the shared agent API service over the orchestrator + store.
+	// HTTP and the JSON-RPC app-server both consume this single instance so
+	// thread/turn/item semantics cannot drift between transports. The default
+	// model is the bootstrap chat model (fake when no providers are configured);
+	// the per-name map lets thread/start and turn/start switch models by id.
+	agentAPI, err := apiV1.NewService(apiV1.Config{
+		Orchestrator: orch,
+		DefaultModel: chatModel,
+		Models:       providerModels,
+		Store:        st,
+	})
+	if err != nil {
+		// store closed via closeStoreOnError guard
+		return nil, fmt.Errorf("bootstrap: agent api: %w", err)
+	}
 
 	// Build HTTP server and register routes. providerWindows is the
 	// BuildProviders-returned map keyed by the registry's model id (see above);

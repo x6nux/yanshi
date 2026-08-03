@@ -139,3 +139,44 @@ func TestGOV5ProfileAllowMatchesToolRegistry(t *testing.T) {
 			len(unauthorized), strings.Join(unauthorized, "\n  "))
 	}
 }
+
+// TestOrchestratorReceivesSecuritySubsystems asserts the orchestrator BUILT BY
+// bootstrap.Build actually holds all five security subsystems.
+//
+// Why this test exists separately from TestBuild_MinimalApp: that test asserts
+// App.Sandbox / App.NetworkPolicy / App.Approvals / App.ShellManager /
+// App.SecureFactory, and App is a struct literal assembled from the SAME local
+// variables — so it is non-nil no matter what the orchestrator received. It is
+// structurally incapable of catching a wiring break between those locals and
+// orchestrator.Config. orchestrator.Config is taken BY VALUE by New and the
+// package exposes no setters, so any assignment made after New is silently
+// discarded. Only reading back from the orchestrator proves the injection.
+//
+// Each nil field disables one tools.With* injection in bindExecutionContext,
+// which means the corresponding subsystem never reaches a real tool call.
+func TestOrchestratorReceivesSecuritySubsystems(t *testing.T) {
+	app := buildMinimalApp(t)
+	require.NotNil(t, app.Orch, "orchestrator must be built")
+
+	rep := app.Orch.SecurityReport()
+	if rep.Sandbox == nil {
+		t.Error("orchestrator.Sandbox is nil — tools.WithSandbox is never called in " +
+			"bindExecutionContext, so every tool runs outside the sandbox posture")
+	}
+	if rep.NetworkPolicy == nil {
+		t.Error("orchestrator.NetworkPolicy is nil — tools.WithNetworkPolicy is never " +
+			"called, so net_fetch and friends see no host allow/deny policy")
+	}
+	if rep.Approvals == nil {
+		t.Error("orchestrator.Approvals is nil — tools.WithApprovalManager is never " +
+			"called, so persistent/session approval rules are never consulted")
+	}
+	if rep.ShellManager == nil {
+		t.Error("orchestrator.ShellManager is nil — tools.WithShellManager is never " +
+			"called, so the shell v2 tools have no session manager to attach to")
+	}
+	if rep.SecureFactory == nil {
+		t.Error("orchestrator.SecureFactory is nil — tools.WithSecureProcessFactory is " +
+			"never called, so processes launch without the secure launch pipeline")
+	}
+}
