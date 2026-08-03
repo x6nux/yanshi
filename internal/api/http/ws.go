@@ -16,6 +16,7 @@ import (
 
 	"github.com/x6nux/yanshi/internal/agent/orchestrator"
 	"github.com/x6nux/yanshi/internal/approval"
+	"github.com/x6nux/yanshi/internal/guard"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	obslog "github.com/x6nux/yanshi/internal/observe/log"
 	"github.com/x6nux/yanshi/internal/proto"
@@ -641,10 +642,20 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 				conn.write(proto.NewRetry(attempt, max, int(delay.Milliseconds()), err.Error()))
 			})
 
+			// Plan mode is decided ONCE per turn, from the live mode state, and
+			// carried in TurnOpts: that field is the single entry point for the
+			// entire plan implementation (tools.WithPlanMode for the runtime
+			// authorize firewall, runnerFor's plan-keyed runner, and
+			// filterPlanTools' read-only tool set). Without it /plan would only
+			// change the permission-callback wording and still hand the model a
+			// write-capable tool set. Reading it here (not per tool call) keeps
+			// one turn on one runner even if the user switches mode mid-turn.
+			turnMode, _ := cs.perm.get()
 			opts := orchestrator.TurnOpts{
 				Model:               cs.selectModel(models),
 				ThinkingEffort:      cs.thinking,
 				OutputSchema:        cf.OutputSchema,
+				PlanMode:            turnMode == guard.ModePlan,
 				ConnectionSessionID: connectionSessionID,
 			}
 

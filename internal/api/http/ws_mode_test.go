@@ -148,3 +148,62 @@ func TestResolvePermissionMode_DestructiveGate(t *testing.T) {
 		})
 	}
 }
+
+// TestChatWS_ModePlan_ProducesReadOnlyTurn proves set_mode("plan") makes the
+// NEXT turn genuinely read-only, not merely differently-worded: the WS handler
+// must carry the live mode into orchestrator.TurnOpts.PlanMode, which is the
+// single entry point for the whole plan implementation (tools.WithPlanMode,
+// runnerFor's plan-keyed runner, and filterPlanTools).
+//
+// The observable that separates "plan wired" from "plan is just a label": with
+// PlanMode set, filterPlanTools drops fs_write from the registered tool set, so
+// the scripted model's call reaches UnknownToolsHandler instead of the tool —
+// and an unknown tool produces NO tool_result frame at all (only registered
+// tools emit a ToolOutput event the WS loop translates). Without the field the
+// tool stays registered, runs, and is merely denied at the permission callback,
+// which emits a "permission denied" tool_result. Asserting on the tool_result
+// therefore pins the tool-set filtering, not just the absent file: the
+// permission callback is a SECOND line of defense that already denies writes in
+// plan mode and would otherwise mask the missing TurnOpts field entirely.
+func TestChatWS_ModePlan_ProducesReadOnlyTurn(t *testing.T) {
+	url, workdir := newPermWSServer(t)
+	c := dial(t, url)
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.NewSetMode("plan", 0)))
+	drainUntil(t, c, "status")
+
+	require.NoError(t, c.WriteJSON(proto.NewUserMessage("write the file")))
+
+	var sawCall, sawErr bool
+	var results []string
+	for {
+		f := readFrame(t, c)
+		switch f.Type {
+		case "tool_call":
+			sawCall = sawCall || f.ToolName == "fs_write"
+		case "tool_result":
+			results = append(results, f.ToolName+": "+f.Text)
+		case "error":
+			sawErr = true
+		}
+		if f.Type == "done" {
+			break
+		}
+	}
+
+	// The model still emits the call — so an absent result means the tool was
+	// filtered out of the plan runner, not that the turn died early.
+	assert.True(t, sawCall, "the scripted model must still attempt fs_write")
+	assert.False(t, sawErr, "a plan turn must complete normally, not error out")
+	for _, r := range results {
+		assert.NotContains(t, r, "permission denied",
+			"fs_write reached the permission layer, so it was still registered: "+
+				"TurnOpts.PlanMode was not set and the turn is not read-only")
+	}
+	assert.Empty(t, results,
+		"plan mode must run the plan runner: fs_write is filtered out of the tool set, "+
+			"so it produces no tool result at all; got %v", results)
+	assert.NoFileExists(t, filepath.Join(workdir, "out.txt"),
+		"plan mode is read-only: fs_write must never reach the disk")
+}
