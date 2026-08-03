@@ -210,7 +210,7 @@ func (s *ShellTools) stream(ctx context.Context, argsJSON string) <-chan ToolChu
 					}
 				}
 			}
-			}()
+		}()
 		// Ensure the ticker has fully stopped before this goroutine returns
 		// (and defer close(ch) fires) on EVERY exit path — the scanner's
 		// ctx.Done return, the pushErrChunk returns, and the normal footer
@@ -258,7 +258,6 @@ type shellRunArgs struct {
 	Env     string `json:"env"` // shell environment: ""|auto|cmd|powershell|bash|zsh|sh
 }
 
-
 // shellCommand returns an exec.Cmd configured for the requested shell env.
 // Task 15: the resolution logic now lives in internal/shell.ShellArgv so
 // SecureProcessFactory (Task 14) and the future shell v2 (Task 20) share one
@@ -291,7 +290,6 @@ func shellCommand(ctx context.Context, env, command string) *exec.Cmd {
 	}
 	return exec.CommandContext(ctx, prog, args...)
 }
-
 
 // streamFromReader is the shared scanner helper (Task 21) used by BOTH
 // the SecureProcessFactory path and the legacy pipe path in shell_run's

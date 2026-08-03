@@ -294,8 +294,8 @@ func TestWithLSP_Nil(t *testing.T) {
 // stubLSP is a minimal LSPManager implementation for testing.
 type stubLSP struct{}
 
-func (s *stubLSP) Enabled() bool                                  { return false }
-func (s *stubLSP) DidChange(path, content string)                 {}
+func (s *stubLSP) Enabled() bool                                             { return false }
+func (s *stubLSP) DidChange(path, content string)                            {}
 func (s *stubLSP) Diagnostics(path string, _ time.Duration) []lsp.Diagnostic { return nil }
 
 func TestWithLSP_Value(t *testing.T) {
@@ -352,4 +352,3 @@ func TestRequireTaskManager_Unbound(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "task manager unavailable")
 }
-

@@ -12,11 +12,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/x6nux/yanshi/internal/agent/registry"
+	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	obslog "github.com/x6nux/yanshi/internal/observe/log"
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/task/work"
 	"github.com/x6nux/yanshi/internal/tools"
-	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 )
 
 // TestNew_NilModelError proves that New returns an error when Model is nil.

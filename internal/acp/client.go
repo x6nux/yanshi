@@ -418,8 +418,8 @@ func (c *Client) handleInboundRequest(req inboundRequest) (json.RawMessage, erro
 
 	case "terminal/create":
 		var params struct {
-			SessionID string `json:"sessionId"`
-			Command   string `json:"command"`
+			SessionID string   `json:"sessionId"`
+			Command   string   `json:"command"`
 			Args      []string `json:"args"`
 		}
 		if err := json.Unmarshal(req.Params, &params); err != nil {

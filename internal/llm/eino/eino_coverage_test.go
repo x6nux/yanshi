@@ -274,7 +274,7 @@ func TestConcatMessageContents_NilHandling(t *testing.T) {
 func TestCompactingModel_StreamDisabled(t *testing.T) {
 	inner := &recordingModel{reply: "ok", streamOK: true}
 	cm := &CompactingModel{
-		Inner:   inner,
+		Inner:     inner,
 		Threshold: 0, // disabled
 	}
 	sr, err := cm.Stream(context.Background(), []*schema.Message{schema.UserMessage("hi")})

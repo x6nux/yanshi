@@ -15,12 +15,13 @@ func cmdSkills(m model, _ []string) (tea.Model, tea.Cmd) {
 }
 
 // cmdSkill is the entry for /skill <subcommand> [args]. Subcommands:
-//   install <source>   install a skill from github:owner/repo[/subdir]
-//   uninstall <name>   remove an installed skill
-//   trust <name>       mark a skill as reviewed (writes .trusted)
-//   untrust <name>     revoke trust
-//   enable <name>      re-enable a disabled skill
-//   disable <name>     hide from MetaPrompt and skill_use
+//
+//	install <source>   install a skill from github:owner/repo[/subdir]
+//	uninstall <name>   remove an installed skill
+//	trust <name>       mark a skill as reviewed (writes .trusted)
+//	untrust <name>     revoke trust
+//	enable <name>      re-enable a disabled skill
+//	disable <name>     hide from MetaPrompt and skill_use
 //
 // All subcommands are routed through protocol frames so the BACKEND performs
 // the git clone / file writes — remote mode (SSE) is unaffected. No /skill

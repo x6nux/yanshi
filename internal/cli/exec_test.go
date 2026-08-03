@@ -53,9 +53,9 @@ func (f *fakeExecBackend) SendFrame(_ context.Context, fr proto.ClientFrame) (<-
 	return ch, nil
 }
 
-func (f *fakeExecBackend) Cancel() error      { return nil }
-func (f *fakeExecBackend) Close() error       { return nil }
-func (f *fakeExecBackend) Mode() string       { return f.mode }
+func (f *fakeExecBackend) Cancel() error { return nil }
+func (f *fakeExecBackend) Close() error  { return nil }
+func (f *fakeExecBackend) Mode() string  { return f.mode }
 func (f *fakeExecBackend) recorded() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()

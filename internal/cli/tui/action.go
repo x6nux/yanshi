@@ -12,11 +12,11 @@ import (
 
 // actionItem 是全局动作面板的一条候选项。
 type actionItem struct {
-	Label    string                              // 显示文本,如 "/help"、"default"、"gpt-4o"
-	Source   string                              // "command" | "mode" | "model" | "theme"
-	Category string                              // 用于分组显示的类目(与 Source 同义,但允许未来细分)
-	Hint     string                              // 副本/说明,如 "Show this help"
-	Action   func(model) (tea.Model, tea.Cmd)   // 对齐现有 command.run 约定
+	Label    string                           // 显示文本,如 "/help"、"default"、"gpt-4o"
+	Source   string                           // "command" | "mode" | "model" | "theme"
+	Category string                           // 用于分组显示的类目(与 Source 同义,但允许未来细分)
+	Hint     string                           // 副本/说明,如 "Show this help"
+	Action   func(model) (tea.Model, tea.Cmd) // 对齐现有 command.run 约定
 }
 
 // actionState 是 popup 的运行时状态。

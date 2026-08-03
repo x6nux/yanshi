@@ -243,4 +243,3 @@ func TestRedactAttrsMapsAll(t *testing.T) {
 }
 
 // guard intentionally removed — fmt is no longer imported.
-

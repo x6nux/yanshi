@@ -57,11 +57,11 @@ func TestApplyDiffContent_TracksToRecorder(t *testing.T) {
 	}))
 
 	var (
-		mu      sync.Mutex
-		gotWtID string
-		gotAg   string
-		gotPath string
-		gotBody []byte
+		mu       sync.Mutex
+		gotWtID  string
+		gotAg    string
+		gotPath  string
+		gotBody  []byte
 		gotCalls int
 	)
 	c.SetVCSTracking("wt-1", func(worktreeID, agent, absPath string, content []byte) error {

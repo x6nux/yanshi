@@ -15,9 +15,9 @@ import (
 // Lockfile is the on-disk record of a running backend for one project root.
 type Lockfile struct {
 	PID       int       `json:"pid"`
-	Addr      string    `json:"addr"`       // e.g. "127.0.0.1:54321"
-	Auth      string    `json:"auth"`       // "none" (loopback) or "token"
-	Root      string    `json:"root"`       // absolute project root, for verification
+	Addr      string    `json:"addr"` // e.g. "127.0.0.1:54321"
+	Auth      string    `json:"auth"` // "none" (loopback) or "token"
+	Root      string    `json:"root"` // absolute project root, for verification
 	StartedAt time.Time `json:"started_at"`
 	Version   int       `json:"version"`
 }

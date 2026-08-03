@@ -833,7 +833,7 @@ func TestModel_FooterAccountsForViewportHeight(t *testing.T) {
 		Kind: "status", Model: "claude-opus-4", TokensIn: 2000, ContextWindow: 128000, Thinking: "high",
 	})
 
-		footerH := blockHeight(m.statusHeader(), w)
+	footerH := blockHeight(m.statusHeader(), w)
 	inputH := blockHeight(inputBorder.Render(m.input.View()), w)
 	wantVP := h - footerH - inputH
 	if wantVP < 3 {

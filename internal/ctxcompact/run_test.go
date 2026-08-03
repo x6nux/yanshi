@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/ctxcompact"
+	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 )
 
 func TestRun_FullPipeline(t *testing.T) {

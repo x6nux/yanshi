@@ -43,12 +43,12 @@ const (
 
 // Seam 是 vcs_seams 一行的轻量视图。
 type Seam struct {
-	ID          string
-	RepoID      string
-	SessionID   string
-	CommitID    string
-	TurnSeq     int
-	HistoryLen  int
+	ID         string
+	RepoID     string
+	SessionID  string
+	CommitID   string
+	TurnSeq    int
+	HistoryLen int
 	// PrevTurnSeq / PrevHistoryLen are set only on SeamPreRevert (undo)
 	// seams. They capture the conversation boundary BEFORE the revert, so
 	// restoring the undo seam can restore the longer pre-revert history (D2).

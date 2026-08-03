@@ -205,9 +205,9 @@ func (r *ResilientChatModel) Stream(ctx context.Context, in []*schema.Message, o
 type streamOutcome int
 
 const (
-	streamDone streamOutcome = iota // clean EOF
-	streamEmpty                     // EOF with no content delivered (ever) → empty retry
-	streamErr                       // non-EOF recv error (or ctx cancel)
+	streamDone  streamOutcome = iota // clean EOF
+	streamEmpty                      // EOF with no content delivered (ever) → empty retry
+	streamErr                        // non-EOF recv error (or ctx cancel)
 )
 
 // runStream is the retry loop driving the reader returned by Stream: open a

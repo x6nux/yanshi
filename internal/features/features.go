@@ -23,9 +23,9 @@ type Stage string
 // default; Beta is opt-in for early adopters; Experimental stays off until
 // graduated.
 const (
-	Stable        Stage = "stable"
-	Beta          Stage = "beta"
-	Experimental  Stage = "experimental"
+	Stable       Stage = "stable"
+	Beta         Stage = "beta"
+	Experimental Stage = "experimental"
 )
 
 // Spec is the registration record for a flag: its key, maturity stage,

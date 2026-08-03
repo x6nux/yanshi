@@ -15,11 +15,11 @@ type Tier int
 // Development-workflow difficulty levels, ordered from quickest (T0) to most
 // autonomous (T4). Higher tiers engage more evaluators and judgement criteria.
 const (
-	TierQuickFix Tier = iota // T0
-	TierStandard             // T1
-	TierDesigned             // T2
-	TierTeam                 // T3
-	TierAutonomous           // T4
+	TierQuickFix   Tier = iota // T0
+	TierStandard               // T1
+	TierDesigned               // T2
+	TierTeam                   // T3
+	TierAutonomous             // T4
 )
 
 // String returns the canonical lowercase name for the tier.

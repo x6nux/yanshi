@@ -251,9 +251,9 @@ func TestManagerChecklistStoreErrors(t *testing.T) {
 // --- truncate & summarizeArtifact extra branches ---
 
 func TestTruncateBranches(t *testing.T) {
-	assert.Equal(t, "…", truncate("abc", 0))   // max <= 0
-	assert.Equal(t, "…", truncate("abc", -1))  // negative
-	assert.Equal(t, "ab", "ab")                // sanity
+	assert.Equal(t, "…", truncate("abc", 0))  // max <= 0
+	assert.Equal(t, "…", truncate("abc", -1)) // negative
+	assert.Equal(t, "ab", "ab")               // sanity
 	assert.Equal(t, "abcde", truncate("abcde", 5))
 	// truncation: 5 runes from a 10-rune string + ellipsis
 	out := truncate("abcdefghij", 5)

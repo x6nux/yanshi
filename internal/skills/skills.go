@@ -35,7 +35,7 @@ type Root struct {
 }
 
 // Builtin, User, Plugin construct Roots with the conventional source tags.
-func Builtin(dir string) Root      { return Root{Dir: dir, Source: "builtin"} }
+func Builtin(dir string) Root { return Root{Dir: dir, Source: "builtin"} }
 
 // User constructs a root with the "user" source tag.
 func User(dir string) Root { return Root{Dir: dir, Source: "user"} }

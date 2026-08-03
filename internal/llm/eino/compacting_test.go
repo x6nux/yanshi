@@ -25,7 +25,7 @@ import (
 type recordingModel struct {
 	mu       sync.Mutex
 	inputs   [][]*schema.Message
-	calls    int // total Generate+Stream calls; the 1st is the summarize turn
+	calls    int    // total Generate+Stream calls; the 1st is the summarize turn
 	summary  string // content returned for the summarize call (1st call)
 	reply    string // content returned for the main call (subsequent calls)
 	streamOK bool   // Stream returns a 1-chunk reader; else errors
@@ -310,12 +310,12 @@ func TestWithCompactCallback_NilIsNoop(t *testing.T) {
 func TestCompactingModel_CooldownDefersReCompact(t *testing.T) {
 	inner := &recordingModel{summary: "summarized", reply: "done", streamOK: true}
 	cm := &CompactingModel{
-		Inner:               inner,
-		Threshold:           0.5,
-		ContextWindow:       400,
-		KeepRecent:          2,
-		CooldownTokens:      100,
-		HardForceFraction:   0.95,
+		Inner:             inner,
+		Threshold:         0.5,
+		ContextWindow:     400,
+		KeepRecent:        2,
+		CooldownTokens:    100,
+		HardForceFraction: 0.95,
 	}
 	ctx := context.Background()
 
@@ -369,12 +369,12 @@ func TestCompactingModel_CooldownDefersReCompact(t *testing.T) {
 func TestCompactingModel_HardForceOverridesCooldown(t *testing.T) {
 	inner := &recordingModel{summary: "s", reply: "ok"}
 	cm := &CompactingModel{
-		Inner:               inner,
-		Threshold:           0.8,
-		ContextWindow:       1000,
-		KeepRecent:          1,
-		CooldownTokens:      99999, // extremely large — should still be overridden
-		HardForceFraction:   0.95,
+		Inner:             inner,
+		Threshold:         0.8,
+		ContextWindow:     1000,
+		KeepRecent:        1,
+		CooldownTokens:    99999, // extremely large — should still be overridden
+		HardForceFraction: 0.95,
 	}
 	msgs := []*schema.Message{
 		schema.UserMessage("go"),
@@ -390,12 +390,12 @@ func TestCompactingModel_HardForceOverridesCooldown(t *testing.T) {
 func TestCompactingModel_FirstCompactNoCooldown(t *testing.T) {
 	inner := &recordingModel{summary: "s", reply: "ok"}
 	cm := &CompactingModel{
-		Inner:               inner,
-		Threshold:           0.8,
-		ContextWindow:       2000,
-		KeepRecent:          2,
-		CooldownTokens:      100,
-		HardForceFraction:   0.0, // disable hard-force for isolation
+		Inner:             inner,
+		Threshold:         0.8,
+		ContextWindow:     2000,
+		KeepRecent:        2,
+		CooldownTokens:    100,
+		HardForceFraction: 0.0, // disable hard-force for isolation
 	}
 	msgs := []*schema.Message{
 		schema.UserMessage("go"),

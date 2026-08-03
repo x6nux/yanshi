@@ -15,10 +15,10 @@ import (
 //   - ModeAllowEdits:  auto-approve file edit/mkdir tools; prompt for the rest.
 //   - ModeYOLO:        auto-approve everything, never prompt.
 //   - ModeAuto:        ask an AI to rate the call's risk 1-10; auto-approve when
-//                      the score is <= AutoThreshold, otherwise prompt.
+//     the score is <= AutoThreshold, otherwise prompt.
 //   - ModePlan:        只读模式。runtime guard（guard.PlanToolAllowed）只放行
-//                      只读工具与 task/checklist 元数据；任何写操作直接 deny。
-//                      不参与 Shift+Tab cycle（CycleMode 永不返回 ModePlan）。
+//     只读工具与 task/checklist 元数据；任何写操作直接 deny。
+//     不参与 Shift+Tab cycle（CycleMode 永不返回 ModePlan）。
 type PermissionMode string
 
 // Permission mode values.
@@ -41,8 +41,8 @@ const DefaultAutoThreshold = 4
 // cycleOrder 是 Shift+Tab 推进的子集 —— ModePlan 不在里面，让用户只有显式
 // /plan 才能进入只读模式，避免误切（已决策约束 §7）。
 var (
-	allModes    = []PermissionMode{ModeDefault, ModeAllowEdits, ModeAuto, ModeYOLO, ModePlan}
-	cycleOrder  = []PermissionMode{ModeDefault, ModeAllowEdits, ModeAuto, ModeYOLO}
+	allModes   = []PermissionMode{ModeDefault, ModeAllowEdits, ModeAuto, ModeYOLO, ModePlan}
+	cycleOrder = []PermissionMode{ModeDefault, ModeAllowEdits, ModeAuto, ModeYOLO}
 )
 
 // Modes returns the ordered list of all permission modes (including ModePlan),

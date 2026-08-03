@@ -59,13 +59,13 @@ type DeviceProvider interface {
 // (127.0.0.1, ::1, localhost). Loopback HTTP is the test exception.
 type GenericRFC8628Config struct {
 	ClientID     string
-	ClientSecret string              // optional; only some providers require
+	ClientSecret string // optional; only some providers require
 	DeviceURL    string
 	TokenURL     string
 	Scopes       []string
-	HTTPClient   *http.Client        // override for testing; copied per Authorize
-	Timeout      time.Duration       // per-request timeout; <=0 normalizes to 30s
-	Redactor     *secrets.Redactor   // registers client_secret and device_code
+	HTTPClient   *http.Client      // override for testing; copied per Authorize
+	Timeout      time.Duration     // per-request timeout; <=0 normalizes to 30s
+	Redactor     *secrets.Redactor // registers client_secret and device_code
 }
 
 // GenericRFC8628Provider is the exported struct literal form; callers may

@@ -83,8 +83,7 @@ func TestManager_StatusUsesMetadataAndPropagatesBackendFailure(t *testing.T) {
 	}
 
 	metadata.loadErr = errors.New("metadata-load-sentinel")
-	if _, err := manager.Status("openai", "main");
-	!errors.Is(err, metadata.loadErr) {
+	if _, err := manager.Status("openai", "main"); !errors.Is(err, metadata.loadErr) {
 		t.Fatalf("metadata load error swallowed: %v", err)
 	}
 }
@@ -115,12 +114,10 @@ func TestManager_LogoutDeletesCredentialAndMetadata(t *testing.T) {
 	if err := manager.Logout("openai", "main"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := credentials.Get("openai", "main");
-	!errors.Is(err, secrets.ErrSecretNotFound) {
+	if _, err := credentials.Get("openai", "main"); !errors.Is(err, secrets.ErrSecretNotFound) {
 		t.Fatalf("credential survived logout: %v", err)
 	}
-	if _, err := metadata.LoadAuthMetadata("openai", "main");
-	!errors.Is(err, ErrAuthMetadataNotFound) {
+	if _, err := metadata.LoadAuthMetadata("openai", "main"); !errors.Is(err, ErrAuthMetadataNotFound) {
 		t.Fatalf("metadata survived logout: %v", err)
 	}
 }
@@ -178,8 +175,7 @@ func TestManager_LogoutMissingReturnsNotFound(t *testing.T) {
 	manager := managerWithCredentialStore(t,
 		&fakeCredentialStore{values: map[string]string{}})
 	manager.SetMetadataStore(&memoryMetadataStore{rows: map[string]AuthMetadata{}})
-	if err := manager.Logout("openai", "main");
-	!errors.Is(err, secrets.ErrSecretNotFound) {
+	if err := manager.Logout("openai", "main"); !errors.Is(err, secrets.ErrSecretNotFound) {
 		t.Fatalf("missing logout = %v", err)
 	}
 }

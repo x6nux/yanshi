@@ -25,18 +25,18 @@ func (r *recordingFactory) Start(_ context.Context, spec LaunchSpec) (Process, C
 
 type noopProcess struct{}
 
-func (noopProcess) Wait() error                                        { return nil }
-func (noopProcess) PID() int                                           { return 1 }
-func (noopProcess) Kill() error                                        { return nil }
-func (noopProcess) Capabilities() ProcessCapabilities                 { return ProcessCapabilities{CanKillTree: false} }
+func (noopProcess) Wait() error                       { return nil }
+func (noopProcess) PID() int                          { return 1 }
+func (noopProcess) Kill() error                       { return nil }
+func (noopProcess) Capabilities() ProcessCapabilities { return ProcessCapabilities{CanKillTree: false} }
 
 type noopConsole struct{}
 
-func (noopConsole) Read([]byte) (int, error)           { return 0, errConsoleClosed }
-func (noopConsole) Write(p []byte) (int, error)        { return len(p), nil }
-func (noopConsole) Close() error                       { return nil }
-func (noopConsole) Resize(uint16, uint16) error        { return nil }
-func (noopConsole) PTY() bool                          { return false }
+func (noopConsole) Read([]byte) (int, error)    { return 0, errConsoleClosed }
+func (noopConsole) Write(p []byte) (int, error) { return len(p), nil }
+func (noopConsole) Close() error                { return nil }
+func (noopConsole) Resize(uint16, uint16) error { return nil }
+func (noopConsole) PTY() bool                   { return false }
 
 var errConsoleClosed = errors.New("console closed")
 

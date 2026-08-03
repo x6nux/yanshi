@@ -23,8 +23,8 @@ const Version = "v1"
 // Resource status constants. Stable string values are part of the wire
 // contract; renaming any of them is a breaking change.
 const (
-	ThreadStatusActive   = "active"
-	ThreadStatusArchived = "archived"
+	ThreadStatusActive    = "active"
+	ThreadStatusArchived  = "archived"
 	TurnStatusInProgress  = "inProgress"
 	TurnStatusCompleted   = "completed"
 	TurnStatusInterrupted = "interrupted"

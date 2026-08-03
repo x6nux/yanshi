@@ -83,6 +83,7 @@ func (s *Session) MarshalJSON() ([]byte, error) {
 	type session Session
 	return json.Marshal((*session)(s))
 }
+
 // value would still serialize (time.Time is a struct, not a type that
 // omitempty recognizes).
 

@@ -66,5 +66,5 @@ func TestResumeRestoresSavedConstraintsAndEmitsEvent(t *testing.T) {
 	require.NotNil(t, got.Custom)
 	require.Equal(t, "audit", got.Custom.Name)
 	require.Equal(t, "audit auth", <-seen) // prompt fallback to persisted Prompt
-	close(release)                          // let the parked runner finish before Close reaps it
+	close(release)                         // let the parked runner finish before Close reaps it
 }

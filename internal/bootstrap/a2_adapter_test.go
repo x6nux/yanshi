@@ -300,4 +300,3 @@ func TestA2Adapter_LookupUnknownStatus(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, automation.RunFailed, status.Status)
 }
-

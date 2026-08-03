@@ -30,7 +30,7 @@ func TestCrossProcessBusyTimeout_DualOpen(t *testing.T) {
 		done <- b.KVSet("cross_proc_key", "cross_proc_val")
 	}()
 	time.Sleep(50 * time.Millisecond) // let b start waiting on writeMu
-	a.writeMu.Unlock()                 // release so b can acquire it
+	a.writeMu.Unlock()                // release so b can acquire it
 	select {
 	case err := <-done:
 		assert.NoError(t, err, "second writer must succeed within busy_timeout")

@@ -30,7 +30,7 @@ func TestStore_RedactsAllWritePaths(t *testing.T) {
 		t.Fatalf("CreateSession leaked: %q", title)
 	}
 
-	if err := st.AppendMessage(id, 0, "user", "message with " + secret); err != nil {
+	if err := st.AppendMessage(id, 0, "user", "message with "+secret); err != nil {
 		t.Fatal(err)
 	}
 	msgs, err := st.Messages(id)
@@ -41,7 +41,7 @@ func TestStore_RedactsAllWritePaths(t *testing.T) {
 		t.Fatalf("AppendMessage leaked: %q", msgs[len(msgs)-1].Content)
 	}
 
-	if err := st.UpdateSessionTitle(id, "title with " + secret); err != nil {
+	if err := st.UpdateSessionTitle(id, "title with "+secret); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.DB.QueryRow("SELECT title FROM sessions WHERE id = ?", id).Scan(&title); err != nil {

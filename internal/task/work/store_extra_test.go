@@ -18,8 +18,8 @@ import (
 // that require AppendTimeline / AttachBrokerTask / Transition to fail *after*
 // the durable Create has already committed.
 type dbClosingDispatcher struct {
-	closeDB      func()
-	submitErr    error
+	closeDB        func()
+	submitErr      error
 	submitSucceeds bool
 }
 

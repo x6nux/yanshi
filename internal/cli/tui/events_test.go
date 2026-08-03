@@ -20,12 +20,12 @@ import (
 // (the time between the model being invoked and the first chunk arriving),
 // making "Thought for Xs" read shorter than what the user actually waited.
 //
-//   tool_result arrives ──┬── lastEventAt captured
-//                         │  (model invoked, starts reasoning)
-//                         │  ... TTFT + reasoning startup ...
-//                         │  first thinking delta arrives
-//                         └── startedAt should point to lastEventAt (above),
-//                             not time.Now() here.
+//	tool_result arrives ──┬── lastEventAt captured
+//	                      │  (model invoked, starts reasoning)
+//	                      │  ... TTFT + reasoning startup ...
+//	                      │  first thinking delta arrives
+//	                      └── startedAt should point to lastEventAt (above),
+//	                          not time.Now() here.
 //
 // This must be strictly ≤ before (the time captured just before sleeping),
 // because startedAt points to lastEventAt which predates the sleep.

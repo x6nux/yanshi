@@ -30,8 +30,8 @@ type FakeAgent struct {
 	done   chan struct{}
 
 	// Scriptable behaviour.
-	Updates         []string // scripted agent_message_chunk texts (default ["hello ","world"])
-	HoldPrompt      bool     // if true, don't auto-resolve the prompt (for cancel tests)
+	Updates         []string      // scripted agent_message_chunk texts (default ["hello ","world"])
+	HoldPrompt      bool          // if true, don't auto-resolve the prompt (for cancel tests)
 	InboundRequests []InboundSpec // server->client requests to send during prompt
 	// UsageReports, when non-empty, are emitted as session/update usage_report
 	// notifications right before the prompt resolves (after text chunks).
@@ -43,13 +43,13 @@ type FakeAgent struct {
 
 	// capturedNewSession is the raw session/new params received, if any.
 	// Guarded by sessionMu.
-	sessionMu         sync.Mutex
+	sessionMu          sync.Mutex
 	capturedNewSession json.RawMessage
 
 	// Pending prompt state (hold mode). Guarded by promptMu.
-	promptMu    sync.Mutex
-	promptID    int64   // request id of the held session/prompt (> 0 means held)
-	promptCanc  chan struct{} // closed when session/cancel arrives for the held prompt
+	promptMu   sync.Mutex
+	promptID   int64         // request id of the held session/prompt (> 0 means held)
+	promptCanc chan struct{} // closed when session/cancel arrives for the held prompt
 }
 
 // InboundSpec describes a scripted server->client request.

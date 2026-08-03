@@ -94,11 +94,11 @@ type pipeConsole struct {
 	r io.ReadCloser
 }
 
-func (c *pipeConsole) Read(b []byte) (int, error)         { return c.r.Read(b) }
-func (c *pipeConsole) Write([]byte) (int, error)          { return 0, fmt.Errorf("pipe console is read-only") }
-func (c *pipeConsole) Resize(uint16, uint16) error        { return fmt.Errorf("pipe console cannot resize") }
-func (c *pipeConsole) Close() error                       { return c.r.Close() }
-func (c *pipeConsole) PTY() bool                          { return false }
+func (c *pipeConsole) Read(b []byte) (int, error)  { return c.r.Read(b) }
+func (c *pipeConsole) Write([]byte) (int, error)   { return 0, fmt.Errorf("pipe console is read-only") }
+func (c *pipeConsole) Resize(uint16, uint16) error { return fmt.Errorf("pipe console cannot resize") }
+func (c *pipeConsole) Close() error                { return c.r.Close() }
+func (c *pipeConsole) PTY() bool                   { return false }
 
 // ErrPTYUnavailable is the single sentinel every platform returns from
 // StartPTYProcess in Phase 0. Tests assert errors.Is(err, ErrPTYUnavailable)

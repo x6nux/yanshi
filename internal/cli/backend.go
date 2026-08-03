@@ -28,21 +28,21 @@ type StreamEvent struct {
 
 	// Phase-10 control-reply fields (T32-T35). Populated by toStreamEvent for
 	// the corresponding server frames; zero for ordinary turn events.
-	ID            string   // permission_request: id to echo back in the response
-	Reason        string   // permission_request: why the static profile would deny
-	ApprovalRequired bool // permission_request: must be explicit one-shot allow/deny (no always_allow)
-	Model         string   // status / session_restored: active model name
-	Thinking      string   // status / session_restored: active reasoning effort
-	PermMode      string   // status: permission mode (default|allow-edits|yolo|auto)
-	AutoThreshold int      // status: auto-mode risk ceiling (1-10)
-	TokensIn      int      // status / session_restored: cumulative input tokens
-	TokensOut     int      // status / session_restored: cumulative output tokens
-	CachedTokens    int // status: cumulative prompt-cache hits
-	ReasoningTokens int // status: cumulative reasoning tokens
-	Turns         int      // status / session_restored: turn count
-	ContextWindow int      // status: compaction context-window budget (tokens)
-	Items         []string                  // models / mcp_list: the listed names
-	MCPServers    []proto.MCPServerStatus `json:"mcp_servers,omitempty"` // mcp_status: server status snapshots
+	ID               string                  // permission_request: id to echo back in the response
+	Reason           string                  // permission_request: why the static profile would deny
+	ApprovalRequired bool                    // permission_request: must be explicit one-shot allow/deny (no always_allow)
+	Model            string                  // status / session_restored: active model name
+	Thinking         string                  // status / session_restored: active reasoning effort
+	PermMode         string                  // status: permission mode (default|allow-edits|yolo|auto)
+	AutoThreshold    int                     // status: auto-mode risk ceiling (1-10)
+	TokensIn         int                     // status / session_restored: cumulative input tokens
+	TokensOut        int                     // status / session_restored: cumulative output tokens
+	CachedTokens     int                     // status: cumulative prompt-cache hits
+	ReasoningTokens  int                     // status: cumulative reasoning tokens
+	Turns            int                     // status / session_restored: turn count
+	ContextWindow    int                     // status: compaction context-window budget (tokens)
+	Items            []string                // models / mcp_list: the listed names
+	MCPServers       []proto.MCPServerStatus `json:"mcp_servers,omitempty"` // mcp_status: server status snapshots
 
 	Compacted    bool
 	TokensBefore int
@@ -68,9 +68,9 @@ type StreamEvent struct {
 	// Skill carries one ack subject on skill_ack; may be nil when the target
 	// no longer exists (for example, a successful uninstall). CB4: StreamEvent
 	// does NOT have a Name field — the ack name comes from Skill.Name.
-	Skill *proto.SkillInfo `json:"skill,omitempty"`
-	Action string `json:"action,omitempty"`
-	Messages []MessageStub `json:"messages,omitempty"`
+	Skill    *proto.SkillInfo `json:"skill,omitempty"`
+	Action   string           `json:"action,omitempty"`
+	Messages []MessageStub    `json:"messages,omitempty"`
 
 	StructuredResult json.RawMessage
 

@@ -35,8 +35,8 @@ type GuardPolicy struct {
 	// session/update tool_call notifications. Guarded by callMu.
 	// OnPermission uses this to determine the action kind so it can
 	// consult the guard before auto-allowing.
-	callMu  sync.Mutex
-	calls   map[string]Update
+	callMu sync.Mutex
+	calls  map[string]Update
 }
 
 // NewGuardPolicy creates a GuardPolicy backed by the given permission profile.

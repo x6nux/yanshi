@@ -45,7 +45,6 @@ func TestUnknownFieldsAreIgnored(t *testing.T) {
 	}
 }
 
-
 func TestTurnStartParamsImagesIsCamelCaseAndOmittable(t *testing.T) {
 	with, _ := json.Marshal(TurnStartParams{ThreadID: "t", Input: "hi", Images: []proto.ImageAttach{
 		{ID: "img-1", Fmt: "png", DataB64: "AA"},

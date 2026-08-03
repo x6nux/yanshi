@@ -94,5 +94,7 @@ func runRealAgent(t *testing.T, agent, marker string) {
 	}
 }
 
-func TestE2E_RealClaudeCode(t *testing.T) { runRealAgent(t, "claudecode", "hello from claudecode via acp") }
-func TestE2E_RealCodex(t *testing.T)      { runRealAgent(t, "codex", "hello from codex via acp") }
+func TestE2E_RealClaudeCode(t *testing.T) {
+	runRealAgent(t, "claudecode", "hello from claudecode via acp")
+}
+func TestE2E_RealCodex(t *testing.T) { runRealAgent(t, "codex", "hello from codex via acp") }

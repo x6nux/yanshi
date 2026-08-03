@@ -20,7 +20,7 @@ func TestVCSSeamsSchema_LocksColumnsAndIndexes(t *testing.T) {
 		"commit_id": true, "turn_seq": true, "history_len": true,
 		"prev_turn_seq": true, "prev_history_len": true,
 		"history_snapshot": true,
-		"kind": true, "label": true, "created_at": true,
+		"kind":             true, "label": true, "created_at": true,
 	}
 	rows, err := s.DB.Query("PRAGMA table_info(vcs_seams)")
 	if err != nil {

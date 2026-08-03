@@ -18,8 +18,8 @@ import (
 
 func TestWorkEventFrame_PlanUpdate(t *testing.T) {
 	f := workEventFrame(work.Event{
-		Kind:   work.EventPlanUpdate,
-		TaskID: "t1",
+		Kind:      work.EventPlanUpdate,
+		TaskID:    "t1",
 		Checklist: work.Checklist{Items: nil},
 	})
 	// PlanUpdate must produce an event with non-nil Checklist.

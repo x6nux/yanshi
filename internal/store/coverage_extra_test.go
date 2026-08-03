@@ -54,8 +54,8 @@ func TestOpenWith_CustomOptions(t *testing.T) {
 	t.Run("negative autocheckpoint disables", func(t *testing.T) {
 		// 传入 -1 不会被默认值覆盖（ckpt != 0），且 DSN _pragma 接收负数。
 		s, err := OpenWith(filepath.Join(dir, "negckpt.db"), OpenOptions{
-			MaxOpenConns:     1,
-			BusyTimeoutMs:    500,
+			MaxOpenConns:      1,
+			BusyTimeoutMs:     500,
 			WALAutoCheckpoint: -1,
 		})
 		require.NoError(t, err)

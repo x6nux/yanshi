@@ -64,16 +64,16 @@ func (b *sseBackend) Send(ctx context.Context, text string) (<-chan StreamEvent,
 	copy(snapshot, b.history)
 	b.histMu.Unlock()
 
-			b.turns++
-		body, _ := json.Marshal(struct {
-			Messages []schema.Message `json:"messages"`
-			ThreadID string `json:"thread_id,omitempty"`
-			TurnID   string `json:"turn_id,omitempty"`
-		}{
-			Messages: snapshot,
-			ThreadID: b.threadID,
-			TurnID:   b.threadID + ":" + fmt.Sprintf("%d", b.turns),
-		})
+	b.turns++
+	body, _ := json.Marshal(struct {
+		Messages []schema.Message `json:"messages"`
+		ThreadID string           `json:"thread_id,omitempty"`
+		TurnID   string           `json:"turn_id,omitempty"`
+	}{
+		Messages: snapshot,
+		ThreadID: b.threadID,
+		TurnID:   b.threadID + ":" + fmt.Sprintf("%d", b.turns),
+	})
 
 	// Create the cancellable child ctx BEFORE building the request so the
 	// request inherits it. Otherwise Cancel() only fires the goroutine's

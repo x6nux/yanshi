@@ -371,9 +371,9 @@ func TestAnthropicStream_TextNoDoubleEmit(t *testing.T) {
 // TestAnthropicStream_UsageFromStartFrame guards the streaming usage merge
 // (review S1). Anthropic's streaming SSE splits usage across two events:
 //
-//   message_start.message.usage: input_tokens, output_tokens (initial 1),
-//     cache_read_input_tokens, cache_creation_input_tokens
-//   message_delta.usage: output_tokens ONLY (final accumulated value)
+//	message_start.message.usage: input_tokens, output_tokens (initial 1),
+//	  cache_read_input_tokens, cache_creation_input_tokens
+//	message_delta.usage: output_tokens ONLY (final accumulated value)
 //
 // Before S1, readStream only read ev.Usage on message_delta, so on real
 // Anthropic streams PromptTokens and CachedTokens were always 0

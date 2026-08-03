@@ -236,17 +236,17 @@ func TestStatus_MirrorsPermMode(t *testing.T) {
 // segment (colored by danger) for non-default modes.
 func TestFooter_ShowsPermMode(t *testing.T) {
 	m := newModel(&fakeSession{}, "/proj")
-		m.permMode = guard.ModeYOLO
-		assert.Contains(t, m.statusHeader(), "bypass permissions")
+	m.permMode = guard.ModeYOLO
+	assert.Contains(t, m.statusHeader(), "bypass permissions")
 
-		m2 := newModel(&fakeSession{}, "/proj")
-		m2.permMode = guard.ModeAuto
-		m2.autoThreshold = 5
-		assert.Contains(t, m2.statusHeader(), "auto ≤5")
+	m2 := newModel(&fakeSession{}, "/proj")
+	m2.permMode = guard.ModeAuto
+	m2.autoThreshold = 5
+	assert.Contains(t, m2.statusHeader(), "auto ≤5")
 
-		m3 := newModel(&fakeSession{}, "/proj")
-		m3.permMode = guard.ModeDefault
-		assert.Contains(t, m3.statusHeader(), "manual mode", "default mode is visible in the footer")
+	m3 := newModel(&fakeSession{}, "/proj")
+	m3.permMode = guard.ModeDefault
+	assert.Contains(t, m3.statusHeader(), "manual mode", "default mode is visible in the footer")
 }
 
 // TestMandatoryPermissionSurvivesYOLOAndAuto proves that mandatory-approval

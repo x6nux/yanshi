@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/cloudwego/eino/schema"
 )
 
 // TestBlockingModel_BlocksUntilReleased proves a call stays blocked until Block

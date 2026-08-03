@@ -5,7 +5,8 @@
 // as a regression guard against accidental behavioral changes in Update.
 //
 // USE: go test ./internal/cli/tui -run TestUpdateGolden -update   (regenerate)
-//      go test ./internal/cli/tui -run TestUpdateGolden           (verify)
+//
+//	go test ./internal/cli/tui -run TestUpdateGolden           (verify)
 package tui
 
 import (

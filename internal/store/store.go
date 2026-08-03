@@ -81,15 +81,15 @@ func (s *Store) Close() error {
 // OpenOptions configures the WAL connection pool. The zero value is replaced by
 // DefaultOptions in OpenWith.
 type OpenOptions struct {
-	MaxOpenConns     int // read pool size (0 = default 4; :memory: forced 1)
-	BusyTimeoutMs    int // busy_timeout in ms (0 = default 5000)
+	MaxOpenConns      int // read pool size (0 = default 4; :memory: forced 1)
+	BusyTimeoutMs     int // busy_timeout in ms (0 = default 5000)
 	WALAutoCheckpoint int // wal_autocheckpoint pages (0 = default 1000; negative = disable)
 }
 
 // DefaultOptions is the fallback for zero OpenOptions fields.
 var DefaultOptions = OpenOptions{
-	MaxOpenConns:     4,
-	BusyTimeoutMs:    5000,
+	MaxOpenConns:      4,
+	BusyTimeoutMs:     5000,
 	WALAutoCheckpoint: 1000,
 }
 

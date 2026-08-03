@@ -37,10 +37,10 @@ type Client struct {
 	pending map[int64]chan map[string]any // id → 响应 channel(request 创建、deliver 投递、request 退出时删除)
 	closed  bool
 
-	diagMu   sync.Mutex
-	diags    map[string][]Diagnostic // uri → 最新诊断(Task 4 storeDiags 写入)
-	editGen  map[string]int64        // uri → 编辑 generation(notifyChange 递增;Task 4)
-	pubGen   map[string]int64        // uri → 已收到 publication 的 generation(readLoop storeDiags 盖写;Task 4)
+	diagMu  sync.Mutex
+	diags   map[string][]Diagnostic // uri → 最新诊断(Task 4 storeDiags 写入)
+	editGen map[string]int64        // uri → 编辑 generation(notifyChange 递增;Task 4)
+	pubGen  map[string]int64        // uri → 已收到 publication 的 generation(readLoop storeDiags 盖写;Task 4)
 
 	done      chan struct{} // readLoop 退出时 close(让 request 的 select 解除阻塞)
 	closeOnce sync.Once

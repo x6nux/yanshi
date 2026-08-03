@@ -251,7 +251,7 @@ func TestUpdate_NameOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "renamed", updated.Name)
 	assert.Equal(t, "do orig", updated.Prompt) // unchanged
-	assert.True(t, updated.Active)              // unchanged
+	assert.True(t, updated.Active)             // unchanged
 }
 
 func TestUpdate_ScheduleOnly(t *testing.T) {
@@ -659,8 +659,8 @@ func TestThreadID_Empty(t *testing.T) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-func strPtr(s string) *string      { return &s }
-func boolPtr(b bool) *bool         { return &b }
+func strPtr(s string) *string        { return &s }
+func boolPtr(b bool) *bool           { return &b }
 func timePtr(t time.Time) *time.Time { return &t }
 
 func cwdsPtr(c []string) *[]string { return &c }

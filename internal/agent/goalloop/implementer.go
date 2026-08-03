@@ -146,8 +146,8 @@ func (h *WorktreeHelper) List() ([]string, error) {
 // For M6, the structure is in place but real multi-worker ACP execution is
 // exercised only in flagged E2E tests (requires real CLI agents on PATH).
 type ACPImplementer struct {
-	Agent string // "claudecode" | "opencode" | "codex"
-	Profile guard.PermissionProfile
+	Agent      string // "claudecode" | "opencode" | "codex"
+	Profile    guard.PermissionProfile
 	profileSet bool // true when WithProfile was called
 
 	// VCS, when non-nil with RepoID, makes the worker use autoVCS worktrees

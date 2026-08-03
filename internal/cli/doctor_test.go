@@ -298,7 +298,6 @@ token: "test-token"
 	}
 }
 
-
 func TestRunDoctor_IncludesObservabilityChecks(t *testing.T) {
 	dir := t.TempDir()
 	cfgBody := fmt.Sprintf(`

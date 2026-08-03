@@ -242,8 +242,8 @@ func (p ArtifactPolicy) withDefaults() ArtifactPolicy {
 //   - 单次 artifact_read 默认 64 KiB / 最大 1 MiB；
 //   - TTL 7 天。
 const (
-	DefaultArtifactQuota   int64 = 64 << 20
-	DefaultArtifactTTL           = 7 * 24 * time.Hour
-	DefaultArtifactReadSize      = 64 << 10
-	MaxArtifactReadSize          = 1 << 20
+	DefaultArtifactQuota    int64 = 64 << 20
+	DefaultArtifactTTL            = 7 * 24 * time.Hour
+	DefaultArtifactReadSize       = 64 << 10
+	MaxArtifactReadSize           = 1 << 20
 )

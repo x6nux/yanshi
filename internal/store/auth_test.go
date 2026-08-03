@@ -80,12 +80,10 @@ func TestAuthSQLiteAdapterLoadDeleteLifecycle(t *testing.T) {
 	if err := adapter.DeleteAuthMetadata("openai", "main"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adapter.LoadAuthMetadata("openai", "main");
-	!errors.Is(err, auth.ErrAuthMetadataNotFound) {
+	if _, err := adapter.LoadAuthMetadata("openai", "main"); !errors.Is(err, auth.ErrAuthMetadataNotFound) {
 		t.Fatalf("load after delete = %v", err)
 	}
-	if err := adapter.DeleteAuthMetadata("openai", "main");
-	!errors.Is(err, auth.ErrAuthMetadataNotFound) {
+	if err := adapter.DeleteAuthMetadata("openai", "main"); !errors.Is(err, auth.ErrAuthMetadataNotFound) {
 		t.Fatalf("second delete = %v", err)
 	}
 }

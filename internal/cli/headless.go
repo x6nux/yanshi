@@ -9,11 +9,11 @@ import (
 
 // HeadlessRunOptions drives one or more prompts through one resolved backend.
 type HeadlessRunOptions struct {
-	Inputs  []HeadlessInput
-	Output  ExecOutputFormat
-	Stdout  io.Writer
-	Stderr  io.Writer
-	Resume  string
+	Inputs []HeadlessInput
+	Output ExecOutputFormat
+	Stdout io.Writer
+	Stderr io.Writer
+	Resume string
 }
 
 // HeadlessResult reports the last known server session id and completed prompts.

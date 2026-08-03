@@ -34,13 +34,13 @@ type Broker struct {
 	// optional so existing NewBroker callers are unaffected.
 	VCS    *vcs.VCS
 	RepoID string
-// createdWT tracks worktrees the broker itself created in Claim (taskID →
-// worktreeID) so terminal paths can reclaim them. Lifecycle:
-//   ╔═══════════╗   Claim   ╔════════════════╗   terminal (finalize /   ╔═══════════════╗
-//   ║  no VCS / ║ ──► ───── ─║ createdWT[id] ║ ──► cancel / requeue-  ──║ reclaimWorktree║
-//   ║ pre-set wt║  skip map  ║  = wtID       ║    failed)              ║ delete + 移除  ║
-//   ╚═══════════╝            ╚════════════════╝                         ╚═══════════════╝
-//   non-terminal requeue → KEEP worktree (reusable by re-claim)
+	// createdWT tracks worktrees the broker itself created in Claim (taskID →
+	// worktreeID) so terminal paths can reclaim them. Lifecycle:
+	//   ╔═══════════╗   Claim   ╔════════════════╗   terminal (finalize /   ╔═══════════════╗
+	//   ║  no VCS / ║ ──► ───── ─║ createdWT[id] ║ ──► cancel / requeue-  ──║ reclaimWorktree║
+	//   ║ pre-set wt║  skip map  ║  = wtID       ║    failed)              ║ delete + 移除  ║
+	//   ╚═══════════╝            ╚════════════════╝                         ╚═══════════════╝
+	//   non-terminal requeue → KEEP worktree (reusable by re-claim)
 	createdWT   map[string]string
 	createdWTMu sync.Mutex
 }

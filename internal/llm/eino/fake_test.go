@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/cloudwego/eino/schema"
 )
 
 func TestFakeModel_Generate(t *testing.T) {
@@ -27,7 +27,9 @@ func TestFakeModel_Stream(t *testing.T) {
 	var got string
 	for {
 		msg, err := sr.Recv()
-		if errors.Is(err, io.EOF) { break }
+		if errors.Is(err, io.EOF) {
+			break
+		}
 		require.NoError(t, err)
 		got += msg.Content
 	}

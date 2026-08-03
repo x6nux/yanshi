@@ -45,8 +45,8 @@ var defaultIgnore = []string{
 
 // VCS is the lightweight version-control core over a store.
 type VCS struct {
-	store       *store.Store
-	ignore      []string
+	store  *store.Store
+	ignore []string
 	// ignoreMu protects the shared ignore slice independently of repo lanes.
 	// isIgnored copies under RLock, then matches after unlock; loadDotIgnore parses
 	// first and appends under Lock, so unrelated repo scans never hold this lock

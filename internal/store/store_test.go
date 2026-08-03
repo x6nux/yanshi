@@ -47,8 +47,6 @@ func TestMigrate_AddsWorktreeColumn(t *testing.T) {
 	}
 }
 
-
-
 func TestOpen_AppliesWALPragmas(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "yanshi.db")
@@ -174,5 +172,3 @@ func getSessionUpdatedAt(t *testing.T, st *Store, sessionID string) int64 {
 	require.NoError(t, st.DB.QueryRow("SELECT updated_at FROM sessions WHERE id=?", sessionID).Scan(&updatedAt))
 	return updatedAt
 }
-
-

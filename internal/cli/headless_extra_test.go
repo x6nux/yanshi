@@ -86,10 +86,10 @@ func TestReadHeadlessInputs_JSONLEmptyPromptField(t *testing.T) {
 // user_message; SendFrame returns a one-line reply for control frames or nil for
 // permission_response; SendFrameErr forces an error on the named frame type.
 type frameBackend struct {
-	sendErr     error
-	frameErr    error
-	frameErrOn  string
-	permReturn  bool // SendFrame returns nil for permission_response
+	sendErr    error
+	frameErr   error
+	frameErrOn string
+	permReturn bool // SendFrame returns nil for permission_response
 }
 
 func (b *frameBackend) Send(_ context.Context, _ string) (<-chan StreamEvent, error) {
@@ -256,4 +256,3 @@ func TestExec_ResumeJSONLRendersRestoreEvent(t *testing.T) {
 	// The session_restored reply must appear as a JSONL line on stdout.
 	assert.Contains(t, stdout.String(), "session_restored")
 }
-

@@ -24,11 +24,11 @@ func TestManager_DisabledWhenNoServer(t *testing.T) {
 
 func TestDetectLanguage_ByExtension(t *testing.T) {
 	cases := map[string]string{
-		"main.go":     "go",
-		"a/b/c.py":    "python",
-		"x.ts":        "typescript",
-		"README.md":   "",
-		"Makefile":    "",
+		"main.go":   "go",
+		"a/b/c.py":  "python",
+		"x.ts":      "typescript",
+		"README.md": "",
+		"Makefile":  "",
 	}
 	for path, want := range cases {
 		if got := detectLanguage(path); got != want {

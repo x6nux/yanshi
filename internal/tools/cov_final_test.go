@@ -282,7 +282,9 @@ func TestCov_TaskListThreadFilter(t *testing.T) {
 
 	out, err := runTool(ctx, tt.List, `{"limit":20}`)
 	require.NoError(t, err)
-	var resp struct{ Tasks []work.Summary `json:"tasks"` }
+	var resp struct {
+		Tasks []work.Summary `json:"tasks"`
+	}
 	require.NoError(t, json.Unmarshal([]byte(out), &resp))
 	require.Len(t, resp.Tasks, 1)
 	assert.Equal(t, t2.ID, resp.Tasks[0].ID)
@@ -301,7 +303,9 @@ func TestCov_TaskListAll(t *testing.T) {
 
 	out, err := runTool(ctx, tt.List, `{"limit":20,"all":true}`)
 	require.NoError(t, err)
-	var resp struct{ Tasks []work.Summary `json:"tasks"` }
+	var resp struct {
+		Tasks []work.Summary `json:"tasks"`
+	}
 	require.NoError(t, json.Unmarshal([]byte(out), &resp))
 	assert.Len(t, resp.Tasks, 2)
 }
@@ -683,4 +687,3 @@ func TestCov_InvokableRunConsecutiveErrors(t *testing.T) {
 		params(nil), SyncStream(kernel))
 	_ = gt
 }
-

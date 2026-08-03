@@ -12,9 +12,10 @@ import (
 // not modified (rows are not shared, so COW is implicit).
 //
 // fromSeq semantics (unified across store / WS handler / TUI help):
-//   -1      = copy ALL messages.
-//   >=0     = copy messages with seq <= fromSeq (inclusive upper bound).
-//   <-1     = invalid; return an error and create no fork (GB5).
+//
+//	-1      = copy ALL messages.
+//	>=0     = copy messages with seq <= fromSeq (inclusive upper bound).
+//	<-1     = invalid; return an error and create no fork (GB5).
 //
 // For fromSeq >=0, only values greater than the source's maximum seq are out
 // of range; an upper bound that falls in a seq gap still copies every row with

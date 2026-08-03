@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/x6nux/yanshi/internal/agent/registry"
+	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/tools"
-	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 )
 
 // TestBindManagedRunner_WithRealManager proves that when a real subagentMgr

@@ -1,8 +1,8 @@
 package eino
 
 import (
-	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino-ext/components/model/openai"
+	"github.com/cloudwego/eino/components/model"
 )
 
 // ReasoningEffortOption returns a per-call model.Option that sets

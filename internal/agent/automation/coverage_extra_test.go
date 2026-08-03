@@ -143,9 +143,9 @@ func TestEnqueueUnlocked_RepoLoadError(t *testing.T) {
 
 // reconcileLateFailingQueue 先正常响应 SubmitRun，之后 Lookup 返回错误。
 type reconcileLateFailingQueue struct {
-	mu     sync.Mutex
+	mu          sync.Mutex
 	submitCalls int
-	states map[string]RunStatus
+	states      map[string]RunStatus
 }
 
 func newReconcileLateFailingQueue() *reconcileLateFailingQueue {

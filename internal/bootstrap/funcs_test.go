@@ -429,7 +429,6 @@ func TestShutdown_ErrorAccumulation(t *testing.T) {
 	}
 }
 
-
 // --- Build load config error ---
 
 func TestBuild_LoadConfigError(t *testing.T) {
@@ -470,10 +469,7 @@ func TestBuild_WithBadLSPTimeout(t *testing.T) {
 	app.Shutdown(context.Background())
 }
 
-
 // --- Shutdown with pre-closed server ---
-
-
 
 // --- resolveLogWriter ---
 
@@ -557,7 +553,6 @@ func TestDefaultLogDir(t *testing.T) {
 	}
 }
 
-
 // --- openLogFile error paths ---
 
 func TestOpenLogFile_InvalidAbsPath(t *testing.T) {
@@ -584,7 +579,6 @@ func TestDefaultLogDir_ErrorPath(t *testing.T) {
 	// On some Windows versions, UserConfigDir may still succeed.
 	t.Logf("defaultLogDir returned %q (platform-dependent)", dir)
 }
-
 
 // --- Build with TUIMode ---
 

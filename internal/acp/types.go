@@ -118,9 +118,9 @@ type AgentInfo struct{ Name, Title, Version string }
 // @agentclientprotocol/claude-agent-acp) reject session/new with -32602 if the
 // field is absent, so it MUST be present and non-nil.
 type NewSessionParams struct {
-	Cwd                    string                    `json:"cwd"`
-	McpServers             map[string]json.RawMessage `json:"mcpServers"`
-	AdditionalDirectories  []string                  `json:"additionalDirectories,omitempty"`
+	Cwd                   string                     `json:"cwd"`
+	McpServers            map[string]json.RawMessage `json:"mcpServers"`
+	AdditionalDirectories []string                   `json:"additionalDirectories,omitempty"`
 }
 
 // NewSessionResult is the result of the "session/new" request.
@@ -140,11 +140,13 @@ type PromptParams struct {
 }
 
 // PromptResult is the result of the "session/prompt" request.
-type PromptResult struct{ StopReason string `json:"stopReason"` }
+type PromptResult struct {
+	StopReason string `json:"stopReason"`
+}
 
 // ContentBlock is a single content block in a prompt or update.
 type ContentBlock struct {
-	Type string `json:"type"`           // "text"
+	Type string `json:"type"` // "text"
 	Text string `json:"text,omitempty"`
 }
 
@@ -192,7 +194,9 @@ type Usage struct {
 // ---------------------------------------------------------------------------
 
 // CancelParams are the params for the "session/cancel" notification.
-type CancelParams struct{ SessionID string `json:"sessionId"` }
+type CancelParams struct {
+	SessionID string `json:"sessionId"`
+}
 
 // ---------------------------------------------------------------------------
 // server -> client requests
@@ -206,10 +210,15 @@ type RequestPermissionParams struct {
 }
 
 // ToolCallRef references a tool call for a permission request.
-type ToolCallRef struct{ ToolCallID string `json:"toolCallId"` }
+type ToolCallRef struct {
+	ToolCallID string `json:"toolCallId"`
+}
 
 // PermissionOption is one selectable option in a permission request.
-type PermissionOption struct{ OptionID, Name string; Kind string }
+type PermissionOption struct {
+	OptionID, Name string
+	Kind           string
+}
 
 // PermissionOutcome is the result of a permission request.
 type PermissionOutcome struct {
@@ -218,10 +227,15 @@ type PermissionOutcome struct {
 }
 
 // FSReadParams are the params for "fs/read_text_file".
-type FSReadParams struct{ SessionID, Path string; Line, Limit *int }
+type FSReadParams struct {
+	SessionID, Path string
+	Line, Limit     *int
+}
 
 // FSReadResult is the result of "fs/read_text_file".
-type FSReadResult struct{ Content string `json:"content"` }
+type FSReadResult struct {
+	Content string `json:"content"`
+}
 
 // FSWriteParams are the params for "fs/write_text_file".
 type FSWriteParams struct{ SessionID, Path, Content string }

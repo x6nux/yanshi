@@ -15,21 +15,21 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
+	"github.com/x6nux/yanshi/internal/agent/registry"
+	"github.com/x6nux/yanshi/internal/approval"
 	"github.com/x6nux/yanshi/internal/guard"
+	"github.com/x6nux/yanshi/internal/imagestore"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
+	"github.com/x6nux/yanshi/internal/mcp"
+	"github.com/x6nux/yanshi/internal/netpolicy"
 	obslog "github.com/x6nux/yanshi/internal/observe/log"
 	otelobs "github.com/x6nux/yanshi/internal/observe/otel"
 	"github.com/x6nux/yanshi/internal/proto"
-	"github.com/x6nux/yanshi/internal/approval"
-	"github.com/x6nux/yanshi/internal/netpolicy"
 	"github.com/x6nux/yanshi/internal/sandbox"
 	"github.com/x6nux/yanshi/internal/secproc"
 	"github.com/x6nux/yanshi/internal/shell"
 	"github.com/x6nux/yanshi/internal/task/work"
 	"github.com/x6nux/yanshi/internal/tools"
-	"github.com/x6nux/yanshi/internal/imagestore"
-	"github.com/x6nux/yanshi/internal/mcp"
-	"github.com/x6nux/yanshi/internal/agent/registry"
 )
 
 // BaseTool is an alias for the tool interface the orchestrator accepts.
@@ -37,8 +37,8 @@ type BaseTool = tool.InvokableTool
 
 // Config configures an Orchestrator.
 type Config struct {
-	Model model.BaseChatModel
-	Tools []BaseTool
+	Model           model.BaseChatModel
+	Tools           []BaseTool
 	Instruction     string
 	SkillMetaPrompt string
 	MaxIters        int
@@ -73,9 +73,9 @@ type Config struct {
 
 // CompactionConfig mirrors config.CompactionConfig.
 type CompactionConfig struct {
-	Threshold    float64
+	Threshold     float64
 	ContextWindow int
-	KeepRecent   int
+	KeepRecent    int
 	// CooldownTokens is the minimum token growth since the last successful
 	// compaction before another one is allowed (per-model instance). 0 means
 	// no token-growth cooldown.
@@ -99,11 +99,11 @@ type Orchestrator struct {
 	// model is the compaction-wrapped default model, cached for sub-agent reuse.
 	model model.BaseChatModel
 
-	instruction     string
-	agentTools      []tool.BaseTool
-	toolNames       []string
-	maxIters        int
-	compaction      CompactionConfig
+	instruction string
+	agentTools  []tool.BaseTool
+	toolNames   []string
+	maxIters    int
+	compaction  CompactionConfig
 
 	// runners memoizes per-model+per-mode Runners, keyed by runnerCacheKey.
 	runners sync.Map
@@ -117,17 +117,17 @@ type Orchestrator struct {
 
 	taskManager work.ManagerLike
 
-	approvals     *approval.Manager
-	sandbox       sandbox.Sandbox
-	networkPolicy *netpolicy.Policy
-	secureFactory secproc.Factory
-	shellManager  *shell.Manager
-	subagentMgr   *registry.Manager
-	lspMgr        tools.LSPManager
-	mcpMgr        *mcp.Manager
+	approvals       *approval.Manager
+	sandbox         sandbox.Sandbox
+	networkPolicy   *netpolicy.Policy
+	secureFactory   secproc.Factory
+	shellManager    *shell.Manager
+	subagentMgr     *registry.Manager
+	lspMgr          tools.LSPManager
+	mcpMgr          *mcp.Manager
 	availableModels map[string]bool
-	multimodalMap map[string]bool
-	imageStore    *imagestore.Store
+	multimodalMap   map[string]bool
+	imageStore      *imagestore.Store
 }
 
 // runnerToolMode distinguishes between agent (full tools) and plan (filtered tools) runners.
@@ -217,7 +217,7 @@ func New(cfg Config) (*Orchestrator, error) {
 		lspMgr:          cfg.LSP,
 		mcpMgr:          cfg.MCP,
 		multimodalMap:   cfg.MultimodalMap,
-		imageStore:     cfg.ImageStore,
+		imageStore:      cfg.ImageStore,
 		availableModels: cfg.AvailableModels,
 	}, nil
 }
@@ -275,12 +275,24 @@ func (o *Orchestrator) bindExecutionContext(ctx context.Context, connectionSessi
 	if o.approvals != nil && connectionSessionID != "" {
 		ctx = tools.WithApprovalManager(ctx, o.approvals, connectionSessionID)
 	}
-	if o.sandbox != nil { ctx = tools.WithSandbox(ctx, o.sandbox) }
-	if o.networkPolicy != nil { ctx = tools.WithNetworkPolicy(ctx, o.networkPolicy) }
-	if o.secureFactory != nil { ctx = tools.WithSecureProcessFactory(ctx, o.secureFactory) }
-	if o.shellManager != nil { ctx = tools.WithShellManager(ctx, o.shellManager) }
-	if o.vcsScope.VCS != nil { ctx = tools.WithVCS(ctx, o.vcsScope) }
-	if o.lspMgr != nil { ctx = tools.WithLSP(ctx, o.lspMgr) }
+	if o.sandbox != nil {
+		ctx = tools.WithSandbox(ctx, o.sandbox)
+	}
+	if o.networkPolicy != nil {
+		ctx = tools.WithNetworkPolicy(ctx, o.networkPolicy)
+	}
+	if o.secureFactory != nil {
+		ctx = tools.WithSecureProcessFactory(ctx, o.secureFactory)
+	}
+	if o.shellManager != nil {
+		ctx = tools.WithShellManager(ctx, o.shellManager)
+	}
+	if o.vcsScope.VCS != nil {
+		ctx = tools.WithVCS(ctx, o.vcsScope)
+	}
+	if o.lspMgr != nil {
+		ctx = tools.WithLSP(ctx, o.lspMgr)
+	}
 	return ctx
 }
 
@@ -476,13 +488,13 @@ func (o *Orchestrator) EventsWithHistory(ctx context.Context, messages []*schema
 
 // TurnOpts selects per-turn model + plan mode + context values.
 type TurnOpts struct {
-	Model          model.BaseChatModel
-	ThinkingEffort string
-	OutputSchema   json.RawMessage
-	PlanMode       bool
-	ThreadID       string
-	TurnID         string
-	EmitWorkFrame  func(proto.ServerFrame)
+	Model               model.BaseChatModel
+	ThinkingEffort      string
+	OutputSchema        json.RawMessage
+	PlanMode            bool
+	ThreadID            string
+	TurnID              string
+	EmitWorkFrame       func(proto.ServerFrame)
 	ConnectionSessionID string
 }
 
@@ -593,7 +605,7 @@ func (o *Orchestrator) runSubAgentTurn(ctx context.Context, prompt string, allow
 	}
 
 	sub, err := New(Config{
-		Model: o.rawModel, // 用未包裹的 rawModel，让子 Orchestrator 独立构建 compaction
+		Model:       o.rawModel, // 用未包裹的 rawModel，让子 Orchestrator 独立构建 compaction
 		Tools:       selected,
 		Profile:     o.profile,
 		MaxIters:    o.maxIters,

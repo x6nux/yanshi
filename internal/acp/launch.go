@@ -7,9 +7,9 @@ import (
 
 // launchDescriptors maps agent names to their argv for spawning an ACP subprocess.
 var launchDescriptors = map[string][]string{
-	"opencode":    {"opencode", "acp"},
-	"claudecode":  {"npx", "@agentclientprotocol/claude-agent-acp"},
-	"codex":       {"npx", "@agentclientprotocol/codex-acp"},
+	"opencode":   {"opencode", "acp"},
+	"claudecode": {"npx", "@agentclientprotocol/claude-agent-acp"},
+	"codex":      {"npx", "@agentclientprotocol/codex-acp"},
 }
 
 // LaunchSpec resolves an agent name to the argv used to spawn its ACP subprocess.

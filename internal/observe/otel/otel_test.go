@@ -52,7 +52,7 @@ func TestSetupExporterFailureSoftDegradesToNoop(t *testing.T) {
 	resetOTelNoop()
 	boom := errors.New("collector unavailable")
 	rt := setupWithFactories(context.Background(), Config{Enabled: true, ServiceName: "yanshi", SampleRatio: 1}, factories{
-		trace: func(context.Context, Config) (sdktrace.SpanExporter, error) { return nil, boom },
+		trace:  func(context.Context, Config) (sdktrace.SpanExporter, error) { return nil, boom },
 		metric: func(context.Context, Config) (sdkmetric.Exporter, error) { return nil, boom },
 	})
 	if rt.Enabled() {

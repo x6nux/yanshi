@@ -21,8 +21,8 @@ type commandKind int
 
 const (
 	cmdSlash    commandKind = iota // 普通 / 命令
-	cmdMCPTool                      // MCP 工具条目（name=qualified 运行时名）
-	cmdMCPGroup                     // 分组标题（不可选）
+	cmdMCPTool                     // MCP 工具条目（name=qualified 运行时名）
+	cmdMCPGroup                    // 分组标题（不可选）
 )
 
 // command describes one slash command or palette entry. kind distinguishes
@@ -68,22 +68,22 @@ var commandTable = []command{
 	{name: "archive", help: "hide a session: /archive <id>", helpKey: "tui.command.help.archive", run: cmdArchive},
 	{name: "unarchive", help: "restore a session: /unarchive <id>", helpKey: "tui.command.help.unarchive", run: cmdUnarchive},
 	{name: "archived", help: "list archived sessions", helpKey: "tui.command.help.archived", run: cmdArchived},
-		{name: "delete", help: "delete a session: /delete <id> yes", helpKey: "tui.command.help.delete", run: cmdDelete},
-		{name: "permissions", help: "list / revoke approval rules", run: cmdPermissions},
-		{name: "jobs", help: "list / read / stdin / cancel shell jobs", run: cmdJobs},
-		{name: "theme", help: "list / switch colour theme", helpKey: "tui.command.help.theme", run: cmdTheme},
-		{name: "plan", help: "enter read-only plan mode (WS only)", run: cmdPlan},
-		{name: "plan-off", help: "exit plan mode, restore previous permission mode", run: cmdPlanOff},
-		{name: "restore-turn", help: "list main seams or revert to a prior turn", run: cmdRestoreTurn},
-		{name: "memory", help: "show active memory file path", run: cmdMemory},
-		{name: "logs", help: "tail the structured log file (or report stderr)", run: cmdLogs},
-		{name: "fork", help: "fork this session: /fork [seq] (-1=all, >=0=up to seq)", run: cmdFork},
-		{name: "side", help: "start an ephemeral side conversation (V11)", run: cmdSide},
-		{name: "btw", help: "alias for /side", run: cmdSide},
-		{name: "main", help: "exit current side conversation (discard; keep is future polish)", run: cmdMain},
-		{name: "skills", help: "list installed skills", run: cmdSkills},
-		{name: "skill", help: "manage: /skill install|uninstall|trust|untrust|enable|disable", run: cmdSkill},
-		{name: "review", help: "run code review on a PR diff: /review <diff text or PR URL>", run: cmdReview},
+	{name: "delete", help: "delete a session: /delete <id> yes", helpKey: "tui.command.help.delete", run: cmdDelete},
+	{name: "permissions", help: "list / revoke approval rules", run: cmdPermissions},
+	{name: "jobs", help: "list / read / stdin / cancel shell jobs", run: cmdJobs},
+	{name: "theme", help: "list / switch colour theme", helpKey: "tui.command.help.theme", run: cmdTheme},
+	{name: "plan", help: "enter read-only plan mode (WS only)", run: cmdPlan},
+	{name: "plan-off", help: "exit plan mode, restore previous permission mode", run: cmdPlanOff},
+	{name: "restore-turn", help: "list main seams or revert to a prior turn", run: cmdRestoreTurn},
+	{name: "memory", help: "show active memory file path", run: cmdMemory},
+	{name: "logs", help: "tail the structured log file (or report stderr)", run: cmdLogs},
+	{name: "fork", help: "fork this session: /fork [seq] (-1=all, >=0=up to seq)", run: cmdFork},
+	{name: "side", help: "start an ephemeral side conversation (V11)", run: cmdSide},
+	{name: "btw", help: "alias for /side", run: cmdSide},
+	{name: "main", help: "exit current side conversation (discard; keep is future polish)", run: cmdMain},
+	{name: "skills", help: "list installed skills", run: cmdSkills},
+	{name: "skill", help: "manage: /skill install|uninstall|trust|untrust|enable|disable", run: cmdSkill},
+	{name: "review", help: "run code review on a PR diff: /review <diff text or PR URL>", run: cmdReview},
 }
 
 // lookupCommand finds a command by name (the first token after "/").
@@ -302,7 +302,7 @@ func (m model) sendControlFrame(f proto.ClientFrame) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(m.waitForEvent(), activityTick())
 }
 
- // paletteMCPItems returns command entries for MCP tools grouped by server.
+// paletteMCPItems returns command entries for MCP tools grouped by server.
 func (m *model) paletteMCPItems() []command {
 	var items []command
 	for _, srv := range m.paletteMCPServers {
@@ -317,6 +317,7 @@ func (m *model) paletteMCPItems() []command {
 	}
 	return items
 }
+
 // --- handlers ---------------------------------------------------------------
 
 // cmdHelp renders the command list locally — no server round-trip. The
@@ -349,7 +350,6 @@ func cmdFeatures(m model, args []string) (tea.Model, tea.Cmd) {
 	}
 	return m.sendControlFrame(proto.NewFeaturesSet(args[1], args[0] == "enable"))
 }
-
 
 // cmdModel: no arg → interactive picker; one arg → switch to that model.
 func cmdModel(m model, args []string) (tea.Model, tea.Cmd) {
@@ -875,7 +875,7 @@ func newCmdHelpEntry(b *i18n.Bundle, table []command) cmdHelpEntry {
 		b = defaultBundle()
 	}
 	var sb strings.Builder
-	sb.WriteString(roleAsst.Render("▌ " + b.Get("tui.command.help.title")) + "\n")
+	sb.WriteString(roleAsst.Render("▌ "+b.Get("tui.command.help.title")) + "\n")
 	var rows []string
 	for _, c := range table {
 		help := c.help
@@ -1197,7 +1197,7 @@ func formatSessionAck(action, id, title string) string {
 // permissionPopup), not as a transcript entry.
 type permissionEntry struct {
 	id, tool, args, reason string
-	mandatory bool
+	mandatory              bool
 }
 
 // thinkingEntry is a Claude.ai-style reasoning block. While the model streams

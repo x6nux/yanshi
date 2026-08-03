@@ -373,7 +373,6 @@ func TestStatusFrameCarriesCostAndFeatures(t *testing.T) {
 	}
 }
 
-
 func TestUserMessageWithImagesCarriesAdditiveField(t *testing.T) {
 	fr := NewUserMessageWithImages("see this", []ImageAttach{
 		{ID: "img-1", Source: "paste", Fmt: "png", W: 1280, H: 720, DataB64: "AAAA"},

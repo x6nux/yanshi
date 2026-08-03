@@ -1,26 +1,26 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-	"bytes"
-	"encoding/base64"
-	"image"
-	"image/color"
-	"image/png"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/x6nux/yanshi/internal/guard"
-	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/imagestore"
+	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/store"
 	"github.com/x6nux/yanshi/internal/tools"
@@ -1074,8 +1074,8 @@ func TestOrchestrator_InjectsWorkRoot(t *testing.T) {
 	model := einollm.NewFakeModelWithMessages([]*schema.Message{tc1, tc2}, nil)
 
 	o, err := New(Config{
-		Model:   model,
-		Tools:   []BaseTool{big},
+		Model:    model,
+		Tools:    []BaseTool{big},
 		WorkRoot: root,
 		// Task 2: orchestrator no longer fall-backs to Tools={"*"}; tests must
 		// pass an explicit profile that allows the test's tool names.
@@ -1130,8 +1130,8 @@ func TestOrchestrator_SubAgentInheritsWorkRoot(t *testing.T) {
 	model := einollm.NewFakeModelWithMessages([]*schema.Message{tcSpawn, tcBig, subDone, parentDone}, nil)
 
 	o, err := New(Config{
-		Model:   model,
-		Tools:   []BaseTool{big, spawn},
+		Model:    model,
+		Tools:    []BaseTool{big, spawn},
 		WorkRoot: root,
 		// Task 2: orchestrator no longer fall-backs to Tools={"*"}; tests must
 		// pass an explicit profile that allows the test's tool names.
@@ -1287,11 +1287,10 @@ func TestRunSubAgentTurn_PropagatesMemorySuffix_Inherit(t *testing.T) {
 	}
 }
 
-
 func TestApplyImages_MultimodalDirectEmbedsImagePart(t *testing.T) {
 	store := imagestore.New(imagestore.Config{MaxItems: 20, MaxBytes: 100 << 20})
 	cfg := Config{
-		Model: einollm.NewFakeModel([]string{"ok"}, nil),
+		Model:         einollm.NewFakeModel([]string{"ok"}, nil),
 		MultimodalMap: map[string]bool{"mm-model": true},
 		ImageStore:    store,
 	}

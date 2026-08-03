@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/ctxcompact"
+	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 )
 
 // longMsgs builds n user messages of `chars` each — used for gate tests where
@@ -85,9 +85,9 @@ func TestMaybeCompact_PreservesToolCalls(t *testing.T) {
 	fm := einollm.NewFakeModel([]string{"summary"}, nil)
 	msgs := []*schema.Message{
 		{Role: schema.User, Content: "edit internal/ctxcompact/compact.go"}, // 0 ws (pin)
-		{Role: schema.Assistant, Content: strings.Repeat("x", 3000)},       // 1 summarize
-		{Role: schema.Assistant, Content: "noise"},                         // 2 tail
-		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{              // 3 tail tool_call
+		{Role: schema.Assistant, Content: strings.Repeat("x", 3000)},        // 1 summarize
+		{Role: schema.Assistant, Content: "noise"},                          // 2 tail
+		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{ // 3 tail tool_call
 			{ID: "c1", Function: schema.FunctionCall{Name: "edit_file", Arguments: `{"path":"internal/ctxcompact/compact.go"}`}},
 		}},
 		{Role: schema.Tool, ToolCallID: "c1", Content: "edited"}, // 4 tail tool_result

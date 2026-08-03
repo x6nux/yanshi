@@ -11,7 +11,7 @@ import (
 
 // SpawnOptions configures Spawn.
 type SpawnOptions struct {
-	Agent     string   // "opencode" | "claudecode" | "codex"
+	Agent     string // "opencode" | "claudecode" | "codex"
 	Cwd       string
 	ExtraDirs []string
 	Env       []string // optional extra env (e.g. API keys)

@@ -16,8 +16,8 @@ import (
 
 	"github.com/x6nux/yanshi/internal/acp"
 	"github.com/x6nux/yanshi/internal/config"
-	corekeymap "github.com/x6nux/yanshi/internal/keymap"
 	"github.com/x6nux/yanshi/internal/i18n"
+	corekeymap "github.com/x6nux/yanshi/internal/keymap"
 	"github.com/x6nux/yanshi/internal/lockfile"
 	"github.com/x6nux/yanshi/internal/secrets"
 	"github.com/x6nux/yanshi/internal/store"
@@ -567,7 +567,6 @@ func checkPermissions(cfg *config.Config, cfgErr error) CheckResult {
 	}
 	return CheckResult{Name: "permissions", Status: StatusOK, Message: strings.Join(details, "; ")}
 }
-
 
 // expandHomeDir resolves a leading "~" to the user's home directory. This
 // mirrors bootstrap.expandHome and main.expandHome, both of which are

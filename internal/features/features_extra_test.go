@@ -7,10 +7,10 @@ import "testing"
 // silently register an incomplete flag.
 func TestRegisterPanicsOnMissingRequiredFields(t *testing.T) {
 	cases := []Spec{
-		{Key: "", Stage: Stable, Owner: "o"},           // missing key
-		{Key: "k", Stage: "", Owner: "o"},              // missing stage
-		{Key: "k", Stage: Stable, Owner: ""},           // missing owner
-		{Key: "k", Stage: Stable, Owner: "o"},          // valid (control)
+		{Key: "", Stage: Stable, Owner: "o"},  // missing key
+		{Key: "k", Stage: "", Owner: "o"},     // missing stage
+		{Key: "k", Stage: Stable, Owner: ""},  // missing owner
+		{Key: "k", Stage: Stable, Owner: "o"}, // valid (control)
 	}
 	for i, spec := range cases {
 		missing := spec.Key == "" || spec.Stage == "" || spec.Owner == ""

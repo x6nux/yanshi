@@ -39,9 +39,9 @@ type LLMPlanner struct {
 
 // planJSON is the JSON schema the model is asked to return.
 type planJSON struct {
-	Goal  string          `json:"goal"`
+	Goal  string           `json:"goal"`
 	Tests []AcceptanceTest `json:"tests"`
-	Steps []string        `json:"steps"`
+	Steps []string         `json:"steps"`
 }
 
 // Plan builds a prompt, calls the model, and parses the JSON response.

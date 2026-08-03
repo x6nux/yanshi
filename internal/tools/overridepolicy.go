@@ -13,6 +13,7 @@ type availableModelsKey struct{}
 func WithAvailableModels(ctx context.Context, models map[string]bool) context.Context {
 	return context.WithValue(ctx, availableModelsKey{}, models)
 }
+
 // AvailableModelsFromContext retrieves the set of available model names from
 // context, or nil if none was set.
 func AvailableModelsFromContext(ctx context.Context) map[string]bool {

@@ -38,18 +38,18 @@ type tuiSession interface {
 // submit, applyEvent; see entries.go / events.go / view.go / permissions.go /
 // startup.go for the rest).
 type model struct {
-	sess      tuiSession
-	entries   []entry
+	sess    tuiSession
+	entries []entry
 	// startupBanner is the *startupEntry at entries[0]. Held on the model so
 	// Update can append the async tool-probe rows to its info in place once
 	// startupToolsMsg arrives — without scanning the slice or type-asserting.
 	startupBanner *startupEntry
-	input     textarea.Model
-	viewport  viewport.Model
-	spinner   spinner.Model
-	width     int
-	height    int
-	streamCh  <-chan cli.StreamEvent
+	input         textarea.Model
+	viewport      viewport.Model
+	spinner       spinner.Model
+	width         int
+	height        int
+	streamCh      <-chan cli.StreamEvent
 	// pending holds the in-flight assistant text. It is a plain string (NOT a
 	// strings.Builder): the model is passed by value through bubbletea's
 	// value-receiver Update/applyEvent, and a copied non-zero Builder panics on
@@ -131,7 +131,7 @@ type model struct {
 	// Enter runs the selected command (when no args are typed).
 	paletteItems []command
 	paletteSel   int
- // paletteMCPServers is the MCP server status snapshot used to populate
+	// paletteMCPServers is the MCP server status snapshot used to populate
 	// palette MCP tool entries. Updated when an mcp_status frame arrives.
 	paletteMCPServers []proto.MCPServerStatus
 
@@ -193,14 +193,14 @@ type model struct {
 	pendingPermissions []*permissionEntry
 	permSel            int
 
-		permMode      guard.PermissionMode
-		autoThreshold int
-	prePlanMode guard.PermissionMode
+	permMode         guard.PermissionMode
+	autoThreshold    int
+	prePlanMode      guard.PermissionMode
 	prePlanThreshold int
-		yoloConfirm   int
-		msgQueue      []string
-		queueMode     QueueMode
-		autoProcessing bool
+	yoloConfirm      int
+	msgQueue         []string
+	queueMode        QueueMode
+	autoProcessing   bool
 
 	// restoreSessions holds the session list when the restore picker is active.
 	// Non-nil means the picker is open and Up/Down/Enter/Escape are captured.
@@ -214,7 +214,7 @@ type model struct {
 	// When pickerKind != "" the picker popup is shown and Up/Down/Enter/Escape
 	// are captured for navigation. "model-loading" is a transient state while
 	// waiting for the backend models list reply.
-	pickerKind   string       // "", "model", "mode", "theme"
+	pickerKind   string // "", "model", "mode", "theme"
 	pickerItems  []pickerItem
 	pickerCursor int
 
@@ -229,65 +229,64 @@ type model struct {
 	// always nil in production.
 	countReflow *int
 
-		// inputPasted is set by the bracketed-paste / bulk-rune detection in Update
-		// (tea.KeyMsg.Paste, or a single tea.KeyRunes with >50 runes — the
-		// terminal's "I dropped a big paste" signal). submit() reads it to mark the
-		// resulting userEntry as pasted (so render() collapses long pastes to
-		// "[粘贴 #id]") and then resets it. A typed long message leaves it false,
-		// so the message renders in full. See userEntry doc for the why.
-		inputPasted bool
+	// inputPasted is set by the bracketed-paste / bulk-rune detection in Update
+	// (tea.KeyMsg.Paste, or a single tea.KeyRunes with >50 runes — the
+	// terminal's "I dropped a big paste" signal). submit() reads it to mark the
+	// resulting userEntry as pasted (so render() collapses long pastes to
+	// "[粘贴 #id]") and then resets it. A typed long message leaves it false,
+	// so the message renders in full. See userEntry doc for the why.
+	inputPasted bool
 
-		// theme selects the footer colour theme (default / high-contrast / muted),
-		// switchable at runtime via /theme. The default is used when empty.
-		theme ThemeName
+	// theme selects the footer colour theme (default / high-contrast / muted),
+	// switchable at runtime via /theme. The default is used when empty.
+	theme ThemeName
 
-		// C2 — UX4 (frecency) + UX5/UX6/UX7 plumbing shared across the new
-		// popups. frecency records file-write frequency for future UX sources;
-		// models is the cached model list (populated lazily by the first /model
-		// reply and consumed by the Ctrl+K action palette); saveQueue is the
-		// single-worker save channel (see frecency.go for the design rationale).
-		frecency  *Frecency
-		models    []string
-		saveQueue chan saveCmd
+	// C2 — UX4 (frecency) + UX5/UX6/UX7 plumbing shared across the new
+	// popups. frecency records file-write frequency for future UX sources;
+	// models is the cached model list (populated lazily by the first /model
+	// reply and consumed by the Ctrl+K action palette); saveQueue is the
+	// single-worker save channel (see frecency.go for the design rationale).
+	frecency  *Frecency
+	models    []string
+	saveQueue chan saveCmd
 
-		// C2 — UX7: stacked toast notifications. toasts holds the visible
-		// stack (FIFO ≤5); toastTickActive gates the independent toast tick
-		// chain so multiple pushes in quick succession only start ONE tick
-		// (the chain self-cleans when the queue drains).
-		toasts          toastQueue
-		toastTickActive bool
+	// C2 — UX7: stacked toast notifications. toasts holds the visible
+	// stack (FIFO ≤5); toastTickActive gates the independent toast tick
+	// chain so multiple pushes in quick succession only start ONE tick
+	// (the chain self-cleans when the queue drains).
+	toasts          toastQueue
+	toastTickActive bool
 
-		// C2 — UX1: global action palette (Ctrl+K). action holds the popup
-		// state (query + cursor + ranked items); actionLoadingModels is a
-		// dedicated "list_models in flight" flag — NOT overloading pickerKind,
-		// which would collide with the existing model picker's n==0 panic guard.
-		action              *actionState
-		actionLoadingModels bool
+	// C2 — UX1: global action palette (Ctrl+K). action holds the popup
+	// state (query + cursor + ranked items); actionLoadingModels is a
+	// dedicated "list_models in flight" flag — NOT overloading pickerKind,
+	// which would collide with the existing model picker's n==0 panic guard.
+	action              *actionState
+	actionLoadingModels bool
 
-		// C2 — UX2: F1 help panel. helpVisible gates the popup; helpQuery is
-		// the fuzzy filter (matches against Label+Hint). Read-only: no cursor,
-		// no Enter action — the help panel exists for discovery, not invocation.
-		// helpRendered is a cache of the popup's rendered string (refreshed on
-		// every help-state mutation); reflow reads it to size the viewport
-		// without going through helpPopup (which would form an init cycle:
-		// commandTable → cmdModel → sendControlFrame → reflow → helpPopup →
-		// ... → commandTable).
-		helpVisible  bool
-		helpQuery    string
-		helpRendered string
+	// C2 — UX2: F1 help panel. helpVisible gates the popup; helpQuery is
+	// the fuzzy filter (matches against Label+Hint). Read-only: no cursor,
+	// no Enter action — the help panel exists for discovery, not invocation.
+	// helpRendered is a cache of the popup's rendered string (refreshed on
+	// every help-state mutation); reflow reads it to size the viewport
+	// without going through helpPopup (which would form an init cycle:
+	// commandTable → cmdModel → sendControlFrame → reflow → helpPopup →
+	// ... → commandTable).
+	helpVisible  bool
+	helpQuery    string
+	helpRendered string
 
-		// C2 — UX5: draft stash (Ctrl+S / /stash). LIFO stack of multiline
-		// drafts persisted as JSONL via the shared saveQueue (single worker).
-		stash *Stash
+	// C2 — UX5: draft stash (Ctrl+S / /stash). LIFO stack of multiline
+	// drafts persisted as JSONL via the shared saveQueue (single worker).
+	stash *Stash
 
-		// C2 — UX6: prompt history. History is the FIFO of actually-sent
-		// prompts (recorded by dispatchSend, NOT by submit/enqueue, so
-		// queued-but-unsent text stays editable via Alt+↑ without polluting
-		// history). historySearch is the popup state for Alt+R fuzzy search.
-		history       *History
-		historySearch *historyState
-	}
-
+	// C2 — UX6: prompt history. History is the FIFO of actually-sent
+	// prompts (recorded by dispatchSend, NOT by submit/enqueue, so
+	// queued-but-unsent text stays editable via Alt+↑ without polluting
+	// history). historySearch is the popup state for Alt+R fuzzy search.
+	history       *History
+	historySearch *historyState
+}
 
 func newModel(sess tuiSession, root string) model {
 	vp := viewport.New(80, 10)
@@ -295,24 +294,24 @@ func newModel(sess tuiSession, root string) model {
 	sp.Spinner = spinner.Dot
 	bundle := defaultBundle()
 	m := model{
-			sess:          sess,
-			input:         newInput(),
-			viewport:      vp,
-			spinner:       sp,
-			status:        root,
-			workDir:       dirName(root),
-			gitBranch:     detectGitBranch(root),
-			rootPath:      root,
-			permMode:      loadSavedMode(),
-			autoThreshold: loadSavedThreshold(),
-			queueMode:     QueueModeQueue,
-			theme:         ThemeDefault,
-			bundle:        bundle,
-			prefs:         Preferences{},
-			effective: EffectivePreferences{
-				UILocale: bundle.Effective(), ThemeName: "default", KeymapName: "default",
-			},
-		}
+		sess:          sess,
+		input:         newInput(),
+		viewport:      vp,
+		spinner:       sp,
+		status:        root,
+		workDir:       dirName(root),
+		gitBranch:     detectGitBranch(root),
+		rootPath:      root,
+		permMode:      loadSavedMode(),
+		autoThreshold: loadSavedThreshold(),
+		queueMode:     QueueModeQueue,
+		theme:         ThemeDefault,
+		bundle:        bundle,
+		prefs:         Preferences{},
+		effective: EffectivePreferences{
+			UILocale: bundle.Effective(), ThemeName: "default", KeymapName: "default",
+		},
+	}
 	m.input.Placeholder = bundle.Get("tui.input.placeholder")
 	// Startup banner: header (OS/Shell/Go/Date) renders instantly; tool rows
 	// are appended asynchronously by probeStartupTools (see Init/Update) so the
@@ -423,26 +422,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-		case repaintMsg:
-			// 5s safety-net heartbeat (B2): a full reflow + viewport refresh +
-			// tea.Repaint so non-event-driven time-variant state (mm:ss elapsed
-			// counter drift during long quiet tool calls, latent out-of-sync state
-			// from any future patch that forgets to reflow) is rebuilt from current
-			// state at most 5s stale. Re-arm unconditionally — the heartbeat runs
-			// for the lifetime of the program, unlike activityTick which only fires
-			// while streaming.
-			m.reflow()
-			m.refresh()
-			return m, tea.Batch(repaintTick(), tea.Repaint)
+	case repaintMsg:
+		// 5s safety-net heartbeat (B2): a full reflow + viewport refresh +
+		// tea.Repaint so non-event-driven time-variant state (mm:ss elapsed
+		// counter drift during long quiet tool calls, latent out-of-sync state
+		// from any future patch that forgets to reflow) is rebuilt from current
+		// state at most 5s stale. Re-arm unconditionally — the heartbeat runs
+		// for the lifetime of the program, unlike activityTick which only fires
+		// while streaming.
+		m.reflow()
+		m.refresh()
+		return m, tea.Batch(repaintTick(), tea.Repaint)
 
-		case gitRefreshMsg:
-			// Refresh the git branch display when .git/HEAD changes (detected by the
-			// fsnotify file watcher). Re-arm the watcher immediately so the next
-			// branch switch is caught.
-			m.gitBranch = detectGitBranch(m.rootPath)
-			return m, watchGitHead(m.rootPath)
+	case gitRefreshMsg:
+		// Refresh the git branch display when .git/HEAD changes (detected by the
+		// fsnotify file watcher). Re-arm the watcher immediately so the next
+		// branch switch is caught.
+		m.gitBranch = detectGitBranch(m.rootPath)
+		return m, watchGitHead(m.rootPath)
 
-		case debounceMsg:
+	case debounceMsg:
 		// The deferred input reflow has come due. consume() first so the next
 		// input mutation can arm a fresh tick, then reflow once with all the
 		// keystrokes accumulated during the ~16ms coalescing window. growInput
@@ -770,41 +769,41 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 			m.pendingSeamRestore = nil
 		}
 		m.entries = append(m.entries, errorEntry{text: ev.Text})
-		case "models":
-			// Reply to /model (no arg): when the model picker is open, populate
-			// its items interactively; otherwise render the static list.
-			// C2 — UX1: Ctrl+K action palette refresh path. We mirror the reply
-			// into m.models (the palette's model source) regardless of which
-			// path opened the request, and clear actionLoadingModels here (the
-			// single source of truth — no premature "loaded" Msg in Update).
-			// When Ctrl+K is the trigger (actionLoadingModels=true), the reply
-			// MUST NOT append a transcript modelsEntry — the user did not ask
-			// /model for a visible list, so a popup-only refresh is correct.
-			m.flushAssistant()
-			actionRefresh := m.actionLoadingModels
-			m.models = append([]string(nil), ev.Items...)
-			if m.pickerKind == "model" {
-				m.pickerItems = make([]pickerItem, 0, len(ev.Items))
-				for _, name := range ev.Items {
-					m.pickerItems = append(m.pickerItems, pickerItem{
-						name:    name,
-						current: name == m.modelName,
-					})
-				}
-				m.pickerCursor = 0
-				m.refresh()
-				m.viewport.GotoBottom()
-			} else if !actionRefresh {
-				m.entries = append(m.entries, modelsEntry{names: ev.Items})
+	case "models":
+		// Reply to /model (no arg): when the model picker is open, populate
+		// its items interactively; otherwise render the static list.
+		// C2 — UX1: Ctrl+K action palette refresh path. We mirror the reply
+		// into m.models (the palette's model source) regardless of which
+		// path opened the request, and clear actionLoadingModels here (the
+		// single source of truth — no premature "loaded" Msg in Update).
+		// When Ctrl+K is the trigger (actionLoadingModels=true), the reply
+		// MUST NOT append a transcript modelsEntry — the user did not ask
+		// /model for a visible list, so a popup-only refresh is correct.
+		m.flushAssistant()
+		actionRefresh := m.actionLoadingModels
+		m.models = append([]string(nil), ev.Items...)
+		if m.pickerKind == "model" {
+			m.pickerItems = make([]pickerItem, 0, len(ev.Items))
+			for _, name := range ev.Items {
+				m.pickerItems = append(m.pickerItems, pickerItem{
+					name:    name,
+					current: name == m.modelName,
+				})
 			}
-			m.actionLoadingModels = false
-			if m.action != nil {
-				// Active popup: recompute items (now including the fresh model
-				// cache) and reset the cursor so the user's next keypress acts
-				// on the new top-ranked row.
-				m.action.items = m.rankedActions()
-				m.action.cursor = 0
-			}
+			m.pickerCursor = 0
+			m.refresh()
+			m.viewport.GotoBottom()
+		} else if !actionRefresh {
+			m.entries = append(m.entries, modelsEntry{names: ev.Items})
+		}
+		m.actionLoadingModels = false
+		if m.action != nil {
+			// Active popup: recompute items (now including the fresh model
+			// cache) and reset the cursor so the user's next keypress acts
+			// on the new top-ranked row.
+			m.action.items = m.rankedActions()
+			m.action.cursor = 0
+		}
 	case "mcp_status":
 		// Reply to /mcp or mcp_action: render MCP server status.
 		m.flushAssistant()

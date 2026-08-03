@@ -973,7 +973,6 @@ func TestFS_WriteWithLSP_AppendsDiagnosticsField(t *testing.T) {
 	assertDiagField(t, out, "fmt unused", true)
 }
 
-
 func TestFsReadImageFileReturnsStructuredRef(t *testing.T) {
 	dir := t.TempDir()
 	pngPath := filepath.Join(dir, "shot.png")

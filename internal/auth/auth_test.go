@@ -126,7 +126,7 @@ func TestSafeDurationFromSeconds(t *testing.T) {
 		{name: "max int32", seconds: math.MaxInt32,
 			want: time.Duration(math.MaxInt32) * time.Second},
 		// Overflow guard: this value would overflow int64 when multiplied by 1e9.
-		{name: "overflow clamped", seconds: math.MaxInt64 / 1_000_000_000 + 1,
+		{name: "overflow clamped", seconds: math.MaxInt64/1_000_000_000 + 1,
 			want: time.Duration(math.MaxInt64)},
 	}
 	for _, c := range cases {

@@ -64,7 +64,10 @@ token: "test-token"
 // order gate.
 func TestBuild_MinimalApp(t *testing.T) {
 	app := buildMinimalApp(t)
-	for _, c := range []struct{ name string; v any }{
+	for _, c := range []struct {
+		name string
+		v    any
+	}{
 		{"Server", app.Server}, {"Store", app.Store}, {"Orch", app.Orch},
 		{"Broker", app.Broker}, {"Model", app.Model}, {"Skills", app.Skills},
 		{"AgentAPI", app.AgentAPI}, {"VCS", app.VCS},
@@ -224,8 +227,8 @@ func TestBuild_EndToEndTurn(t *testing.T) {
 		Tools: guard.ToolsPerm{Allow: []string{"time_now"}},
 	}
 	o, err := orchestrator.New(orchestrator.Config{
-		Model: mdl,
-		Tools: orchTools,
+		Model:   mdl,
+		Tools:   orchTools,
 		Profile: profile,
 	})
 	require.NoError(t, err)
@@ -984,9 +987,9 @@ func TestBuild_SecretsResolvesBeforeProviders(t *testing.T) {
 				{Name: "p3", Kind: "openai", Model: "gpt-fake", APIKey: "sk-raw-not-allowed"},
 			},
 		},
-		Secrets:  config.SecretsConfig{Backend: "none"},
-		Auth:     config.AuthConfig{LegacyInsecure: false},
-		Storage:  config.StorageConfig{SQLitePath: filepath.Join(dir, "yanshi.db")},
+		Secrets: config.SecretsConfig{Backend: "none"},
+		Auth:    config.AuthConfig{LegacyInsecure: false},
+		Storage: config.StorageConfig{SQLitePath: filepath.Join(dir, "yanshi.db")},
 	}
 	_, err := bootstrap.Build(bootstrap.Options{Cfg: cfg, FakeModel: true})
 	if err == nil {
@@ -1046,8 +1049,8 @@ func TestBuild_AuthManagerResolvesCredentialsBeforeProviders(t *testing.T) {
 				{Name: "p1", Kind: "openai", Model: "gpt-fake", APIKey: "secret://openai/main"},
 			},
 		},
-		Secrets:  config.SecretsConfig{Backend: "file", FilePath: secretPath, PassphraseEnv: "YANSHI_PASSPHRASE"},
-		Storage:  config.StorageConfig{SQLitePath: filepath.Join(dir, "yanshi.db")},
+		Secrets: config.SecretsConfig{Backend: "file", FilePath: secretPath, PassphraseEnv: "YANSHI_PASSPHRASE"},
+		Storage: config.StorageConfig{SQLitePath: filepath.Join(dir, "yanshi.db")},
 	}
 
 	var builderCalls int
@@ -1100,12 +1103,13 @@ func TestBuild_AuthManagerResolvesCredentialsBeforeProviders(t *testing.T) {
 }
 
 // TestBuild_DeviceProviderInjection (structural fix #2) covers both sources:
-//   (a) cfg-driven providers get NewGenericRFC8628Provider validation, and a
-//       non-HTTPS non-loopback URL aborts Build;
-//   (b) AuthDeps.Providers override cfg entirely (replacement, not merge),
-//       so tests can inject an httptest endpoint without it being re-
-//       validated through NewGenericRFC8628Provider;
-//   (c) duplicate / empty IDs are rejected whether from cfg or injection.
+//
+//	(a) cfg-driven providers get NewGenericRFC8628Provider validation, and a
+//	    non-HTTPS non-loopback URL aborts Build;
+//	(b) AuthDeps.Providers override cfg entirely (replacement, not merge),
+//	    so tests can inject an httptest endpoint without it being re-
+//	    validated through NewGenericRFC8628Provider;
+//	(c) duplicate / empty IDs are rejected whether from cfg or injection.
 func TestBuild_DeviceProviderInjection(t *testing.T) {
 	dir := t.TempDir()
 	base := &config.Config{
@@ -1254,7 +1258,7 @@ storage:
 `, filepath.Join(dir, "test.db")))
 	require.NoError(t, os.WriteFile(cfgPath, yamlBytes, 0644))
 	app, err := bootstrap.Build(bootstrap.Options{
-		ConfigPath: cfgPath,
+		ConfigPath:      cfgPath,
 		ProviderBuilder: fakeProviderBuilder,
 	})
 	require.NoError(t, err)
@@ -1278,7 +1282,7 @@ storage:
 `, filepath.Join(dir, "test.db")))
 	require.NoError(t, os.WriteFile(cfgPath, yamlBytes, 0644))
 	app, err := bootstrap.Build(bootstrap.Options{
-		ConfigPath: cfgPath,
+		ConfigPath:      cfgPath,
 		ProviderBuilder: fakeProviderBuilder,
 	})
 	require.NoError(t, err)

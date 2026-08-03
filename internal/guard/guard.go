@@ -11,9 +11,9 @@ import (
 // Action describes an attempted operation to be authorized.
 type Action struct {
 	Tool    string // tool name, e.g. "fs_read", "shell_run", "web_fetch"
-	FS      FSWant  // set for filesystem operations
-	Shell   string  // shell command, for shell operations
-	NetHost string  // target host, for network operations
+	FS      FSWant // set for filesystem operations
+	Shell   string // shell command, for shell operations
+	NetHost string // target host, for network operations
 	// Workdir is the project/work root used as the in-scope boundary for the
 	// destructive-deletion dimension (checkDestructive). The shell tool
 	// populates it; other tools leave it empty (the dimension no-ops on Shell=="").

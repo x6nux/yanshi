@@ -57,10 +57,10 @@ func TestMemoryConfigRejectsSecretPaths(t *testing.T) {
 func TestMemoryConfigRoundTripsJSONValues(t *testing.T) {
 	cfg := NewMemoryConfig()
 	values := map[string]string{
-		"model":     `"gpt-4o"`,
+		"model":       `"gpt-4o"`,
 		"temperature": `0.7`,
-		"schema":    `{"type":"object"}`,
-		"tags":      `["a","b"]`,
+		"schema":      `{"type":"object"}`,
+		"tags":        `["a","b"]`,
 	}
 	for k, v := range values {
 		if err := cfg.Write(k, json.RawMessage(v)); err != nil {

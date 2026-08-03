@@ -123,11 +123,11 @@ func NewOpenAIResponsesModel(_ context.Context, cfg *ResponsesConfig) (*openaiRe
 	}
 	return &openaiResponsesModel{
 		cfg: ResponsesConfig{
-			APIKey:           cfg.APIKey,
-			Model:            cfg.Model,
-			BaseURL:          base,
-			MaxOutputTokens:  maxTokens,
-			HTTPClient:       hc,
+			APIKey:          cfg.APIKey,
+			Model:           cfg.Model,
+			BaseURL:         base,
+			MaxOutputTokens: maxTokens,
+			HTTPClient:      hc,
 		},
 		client: hc,
 	}, nil
@@ -146,8 +146,8 @@ type responsesInputItem struct {
 	Type string `json:"type"` // "message" | "function_call" | "function_call_output"
 
 	// For type="message":
-	Role    string                  `json:"role,omitempty"`    // "user" | "assistant" | "system" | "developer"
-	Content []responsesContentPart  `json:"content,omitempty"`
+	Role    string                 `json:"role,omitempty"` // "user" | "assistant" | "system" | "developer"
+	Content []responsesContentPart `json:"content,omitempty"`
 
 	// For type="function_call" (assistant tool call):
 	CallID    string `json:"call_id,omitempty"`
@@ -169,10 +169,10 @@ type responsesContentPart struct {
 
 // responsesTool declares a function tool to the Responses API.
 type responsesTool struct {
-	Type     string                 `json:"type"` // "function"
-	Name     string                 `json:"name"`
-	Description string              `json:"description,omitempty"`
-	Parameters any                  `json:"parameters,omitempty"` // JSON Schema
+	Type        string `json:"type"` // "function"
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Parameters  any    `json:"parameters,omitempty"` // JSON Schema
 }
 
 // responsesTextConfig maps onto the OpenAI Responses API top-level text field
@@ -209,20 +209,20 @@ type responsesRequest struct {
 
 // responsesResponse is the non-streaming response body.
 type responsesResponse struct {
-	ID     string                 `json:"id"`
-	Object string                 `json:"object"`  // "response"
-	Status string                 `json:"status"`  // "completed" | "incomplete" | "failed"
-	Output []responsesOutputItem  `json:"output"`
-	Usage  *responsesUsage        `json:"usage,omitempty"`
+	ID     string                `json:"id"`
+	Object string                `json:"object"` // "response"
+	Status string                `json:"status"` // "completed" | "incomplete" | "failed"
+	Output []responsesOutputItem `json:"output"`
+	Usage  *responsesUsage       `json:"usage,omitempty"`
 }
 
 // responsesOutputItem is one entry in response.output[]. We care about
 // type="message" (text content) and type="function_call" (tool calls).
 type responsesOutputItem struct {
-	Type    string                  `json:"type"`
-	Role    string                  `json:"role,omitempty"`
-	Status  string                  `json:"status,omitempty"`
-	ID      string                  `json:"id,omitempty"`
+	Type    string                   `json:"type"`
+	Role    string                   `json:"role,omitempty"`
+	Status  string                   `json:"status,omitempty"`
+	ID      string                   `json:"id,omitempty"`
 	Content []responsesOutputContent `json:"content,omitempty"`
 
 	// For type="function_call":

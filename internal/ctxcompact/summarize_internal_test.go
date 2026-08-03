@@ -69,8 +69,8 @@ func TestSplitIsSafe_WithOrphanPair(t *testing.T) {
 func TestSplitIsSafe_ResultCallOnRight(t *testing.T) {
 	msgs := []*schema.Message{
 		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "c1", Function: schema.FunctionCall{Name: "read"}}}}, // 0 ← call
-		{Role: schema.User, Content: "in between"},                               // 1 ← no ToolCalls (left at split)
-		{Role: schema.Tool, ToolCallID: "c1", Content: "result"},                 // 2 ← result (right at split)
+		{Role: schema.User, Content: "in between"},               // 1 ← no ToolCalls (left at split)
+		{Role: schema.Tool, ToolCallID: "c1", Content: "result"}, // 2 ← result (right at split)
 	}
 	// Split at i=2: left=msgs[1] has no ToolCalls (left check passes).
 	// Right=msgs[2] has ToolCallID="c1" → scans left for matching call.
@@ -132,10 +132,10 @@ func TestBuildCarryRequest_WithCarry(t *testing.T) {
 func TestTakeChunk_SplitAtToolPairBoundary(t *testing.T) {
 	// First, confirm the normal split works when no pair is crossed.
 	msgs := []*schema.Message{
-		{Role: schema.User, Content: "start"},                                                                                 // 0: ~9 tok
-		{Role: schema.Assistant, Content: "middle"},                                                                            // 1: ~9 tok
-		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "c1", Function: schema.FunctionCall{Name: "read"}}}},        // 2: ~25 tok
-		{Role: schema.Tool, ToolCallID: "c1", Content: "result"},                                                              // 3: ~9 tok
+		{Role: schema.User, Content: "start"},       // 0: ~9 tok
+		{Role: schema.Assistant, Content: "middle"}, // 1: ~9 tok
+		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "c1", Function: schema.FunctionCall{Name: "read"}}}}, // 2: ~25 tok
+		{Role: schema.Tool, ToolCallID: "c1", Content: "result"},                                                        // 3: ~9 tok
 	}
 	chunk, rest := takeChunk(msgs, 20)
 	// After 2 messages (9+9=18), adding the third (25) exceeds budget 20.
@@ -148,7 +148,7 @@ func TestTakeChunk_SplitAtToolPairBoundary(t *testing.T) {
 	// its result (right) — splitIsSafe must block it, keeping both in the chunk.
 	msgs2 := []*schema.Message{
 		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "c1", Function: schema.FunctionCall{Name: "read"}}}}, // 0: ~25 tok
-		{Role: schema.Tool, ToolCallID: "c1", Content: "result"},                        // 1: ~9 tok
+		{Role: schema.Tool, ToolCallID: "c1", Content: "result"},                                                        // 1: ~9 tok
 	}
 	chunk2, rest2 := takeChunk(msgs2, 20)
 	// After msg0 (25) exceeds budget at i=1, but splitIsSafe blocks because
@@ -161,7 +161,7 @@ func TestTakeChunk_SplitAtToolPairBoundary(t *testing.T) {
 // TestSplitIsSafe_NilLeftMessage covers the left == nil branch.
 func TestSplitIsSafe_NilLeftMessage(t *testing.T) {
 	msgs := []*schema.Message{
-		nil,                              // 0: nil — left at i=1
+		nil,                               // 0: nil — left at i=1
 		{Role: schema.User, Content: "b"}, // 1: right at i=1
 	}
 	// Split at i=1: left=msgs[0]=nil → left check skipped (left==nil).

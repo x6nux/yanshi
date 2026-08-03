@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/cloudwego/eino/components/tool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/cloudwego/eino/components/tool"
 	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/task/work"
 )

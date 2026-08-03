@@ -28,7 +28,7 @@ const (
 // io.Discard so the driver is safe without a terminal; cmd/yanshi passes
 // os.Stdout/os.Stderr.
 type ExecOptions struct {
-	Options          // session resolution (Root, ConfigPath, FakeModel, Server, InProcess)
+	Options        // session resolution (Root, ConfigPath, FakeModel, Server, InProcess)
 	Prompt  string // the user turn text (required)
 	Output  ExecOutputFormat
 	Resume  string // optional session id to restore before the turn ("" = fresh)

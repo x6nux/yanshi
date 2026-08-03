@@ -160,13 +160,13 @@ func (cs *connSession) applySetMode(cf proto.ClientFrame) (oldMode, newMode guar
 //
 // Mode rules (after the destructive-deletion gate, which is profile-independent):
 //   - yolo:  allow everything EXCEPT catastrophic mass deletion (blocked
-//            structurally in guard) and out-of-workdir deletion (blocked here).
-//            Bypasses profile-policy denies (PolicyHardDeny).
+//     structurally in guard) and out-of-workdir deletion (blocked here).
+//     Bypasses profile-policy denies (PolicyHardDeny).
 //   - auto:  AI risk-assesses everything (including profile denies and
-//            out-of-workdir deletion) except catastrophic mass deletion, which
-//            is blocked structurally in guard and fail-safely here.
+//     out-of-workdir deletion) except catastrophic mass deletion, which
+//     is blocked structurally in guard and fail-safely here.
 //   - allow-edits / default: prompt for ordinary denies; deny silently for
-//            profile-policy denies (policy="deny" means block, not ask).
+//     profile-policy denies (policy="deny" means block, not ask).
 //   - plan:  deny (read-only).
 //
 // Plan 模式（已决策约束 §4、§6）：

@@ -524,7 +524,7 @@ func TestTask_RequeueStaleTask_ExceedsMaxRetries(t *testing.T) {
 
 // TestTask_RequeueStaleTask_PreservesResultWhenFailed proves that when
 // a running task is flagged stale and maxRetries is exceeded, the existing
-// result is preserved (not cleared to '').
+// result is preserved (not cleared to ”).
 func TestTask_RequeueStaleTask_PreservesResultWhenFailed(t *testing.T) {
 	s, err := Open(":memory:")
 	require.NoError(t, err)

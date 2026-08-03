@@ -30,11 +30,11 @@ func TestUsageExtractsCacheAndReasoning(t *testing.T) {
 		ResponseMeta: &schema.ResponseMeta{
 			FinishReason: "stop",
 			Usage: &schema.TokenUsage{
-				PromptTokens:     100,
-				PromptTokenDetails: schema.PromptTokenDetails{CachedTokens: 40},
-				CompletionTokens: 20,
+				PromptTokens:            100,
+				PromptTokenDetails:      schema.PromptTokenDetails{CachedTokens: 40},
+				CompletionTokens:        20,
 				CompletionTokensDetails: schema.CompletionTokensDetails{ReasoningTokens: 8},
-				TotalTokens:     120,
+				TotalTokens:             120,
 			},
 		},
 	}

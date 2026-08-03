@@ -69,7 +69,7 @@ type FakeModel struct {
 	Vision bool
 
 	// RecordImages, when true, makes Generate/Stream count image parts.
-	RecordImages  bool
+	RecordImages   bool
 	LastImageCount int
 
 	optsMu sync.Mutex

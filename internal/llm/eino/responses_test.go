@@ -88,9 +88,9 @@ func TestResponsesGenerate(t *testing.T) {
 // unknown status passes through verbatim.
 func TestResponsesGenerate_StatusMapping(t *testing.T) {
 	cases := map[string]string{
-		"completed":   "stop",
-		"incomplete":  "length",
-		"cancelled":   "cancelled",
+		"completed":  "stop",
+		"incomplete": "length",
+		"cancelled":  "cancelled",
 	}
 	for apiStatus, wantFinish := range cases {
 		apiStatus, wantFinish := apiStatus, wantFinish

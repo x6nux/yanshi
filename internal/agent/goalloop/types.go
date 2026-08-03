@@ -17,9 +17,9 @@ type AcceptanceTest struct {
 
 // Plan is the output of the Planner: the goal, acceptance tests, and implementation steps.
 type Plan struct {
-	Goal  string          // echoed goal text
+	Goal  string           // echoed goal text
 	Tests []AcceptanceTest // acceptance tests that must pass
-	Steps []string        // ordered implementation steps
+	Steps []string         // ordered implementation steps
 }
 
 // EvalVerdict is the result of one Evaluator examining the implementation.

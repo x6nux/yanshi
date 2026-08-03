@@ -271,10 +271,10 @@ type errorCredentialStore struct {
 	deleteErr error
 }
 
-func (e *errorCredentialStore) Available() error                    { return nil }
-func (e *errorCredentialStore) Get(_, _ string) (string, error)     { return "", e.getErr }
-func (e *errorCredentialStore) Set(_, _, _ string) error            { return e.setErr }
-func (e *errorCredentialStore) Delete(_, _ string) error            { return e.deleteErr }
+func (e *errorCredentialStore) Available() error                { return nil }
+func (e *errorCredentialStore) Get(_, _ string) (string, error) { return "", e.getErr }
+func (e *errorCredentialStore) Set(_, _, _ string) error        { return e.setErr }
+func (e *errorCredentialStore) Delete(_, _ string) error        { return e.deleteErr }
 
 func TestManager_Status_EmptyValue(t *testing.T) {
 	credentials := &fakeCredentialStore{values: map[string]string{
@@ -535,10 +535,10 @@ func TestManager_ListAccounts_NonEnumerator(t *testing.T) {
 
 type nonEnumerateStore struct{}
 
-func (n *nonEnumerateStore) Available() error                          { return nil }
-func (n *nonEnumerateStore) Get(_, _ string) (string, error)           { return "", secrets.ErrSecretNotFound }
-func (n *nonEnumerateStore) Set(_, _, _ string) error                  { return nil }
-func (n *nonEnumerateStore) Delete(_, _ string) error                  { return nil }
+func (n *nonEnumerateStore) Available() error                { return nil }
+func (n *nonEnumerateStore) Get(_, _ string) (string, error) { return "", secrets.ErrSecretNotFound }
+func (n *nonEnumerateStore) Set(_, _, _ string) error        { return nil }
+func (n *nonEnumerateStore) Delete(_, _ string) error        { return nil }
 
 // --- SetClock/SetSleeper nop paths ---
 

@@ -38,14 +38,14 @@ import (
 //	features_list        request the runtime feature flag table (reply: features)
 //	features_set         toggle one flag; Enabled *bool so false is serialised (reply: features)
 type ClientFrame struct {
-	Type     string `json:"type"`               // user_message|cancel|set_model|set_thinking|set_mode|clear|list_models|get_status|permission_response|compact|list_mcp|mcp_action
-	Text     string `json:"text,omitempty"`     // user_message
-	Name     string `json:"name,omitempty"`     // set_model
-	Effort   string `json:"effort,omitempty"`   // set_thinking: low|medium|high|off
-	Mode     string `json:"mode,omitempty"`     // set_mode: default|allow-edits|yolo|auto
-	AutoThreshold int `json:"auto_threshold,omitempty"` // set_mode: auto risk ceiling 1-10 (0 = default)
-	ID       string `json:"id,omitempty"`       // permission_response
-	Decision string `json:"decision,omitempty"` // permission_response: allow|deny|always_allow
+	Type          string `json:"type"`                     // user_message|cancel|set_model|set_thinking|set_mode|clear|list_models|get_status|permission_response|compact|list_mcp|mcp_action
+	Text          string `json:"text,omitempty"`           // user_message
+	Name          string `json:"name,omitempty"`           // set_model
+	Effort        string `json:"effort,omitempty"`         // set_thinking: low|medium|high|off
+	Mode          string `json:"mode,omitempty"`           // set_mode: default|allow-edits|yolo|auto
+	AutoThreshold int    `json:"auto_threshold,omitempty"` // set_mode: auto risk ceiling 1-10 (0 = default)
+	ID            string `json:"id,omitempty"`             // permission_response
+	Decision      string `json:"decision,omitempty"`       // permission_response: allow|deny|always_allow
 	// OutputSchema carries an optional JSON Schema for a user_message turn. When
 	// non-empty the server validates the model's final output against it and
 	// emits a structured_result frame (A12-core); when empty/absent the turn is
@@ -56,8 +56,8 @@ type ClientFrame struct {
 	// seams. restore_turn re-sends it so the server can reject a stale target.
 	// Empty is invalid and is rejected fail-closed (D6).
 	ConfirmedHead string `json:"confirmed_head,omitempty"` // restore_turn
-	MCPServer string `json:"mcp_server,omitempty"`
-	MCPAction string `json:"mcp_action,omitempty"`
+	MCPServer     string `json:"mcp_server,omitempty"`
+	MCPAction     string `json:"mcp_action,omitempty"`
 	// Seq selects the inclusive upper bound for fork_session (-1 = all messages,
 	// >=0 = up to that seq). Other frames leave it zero.
 	Seq int `json:"seq,omitempty"`
@@ -298,8 +298,8 @@ type ServerFrame struct {
 	// AutoThreshold is the ModeAuto risk ceiling; carried on status frames so the
 	// client can render "auto(≤N)".
 	AutoThreshold int `json:"auto_threshold,omitempty"` // status
-	TokensIn  int      `json:"tokens_in,omitempty"`     // status / session_restored
-	TokensOut int      `json:"tokens_out,omitempty"`    // status / session_restored
+	TokensIn      int `json:"tokens_in,omitempty"`      // status / session_restored
+	TokensOut     int `json:"tokens_out,omitempty"`     // status / session_restored
 	// CachedTokens / ReasoningTokens (Task A6) break out the API's
 	// prompt-cache-hit and reasoning-model spend so /cost can surface them
 	// separately. Sources: schema.TokenUsage.PromptTokenDetails.CachedTokens and
@@ -307,15 +307,15 @@ type ServerFrame struct {
 	// clients (and frames emitted before usage arrives) unchanged.
 	CachedTokens    int `json:"cached_tokens,omitempty"`    // status
 	ReasoningTokens int `json:"reasoning_tokens,omitempty"` // status
-	Turns     int      `json:"turns,omitempty"`          // status / session_restored
+	Turns           int `json:"turns,omitempty"`            // status / session_restored
 	// ContextWindow is the session's compaction context-window budget (tokens),
 	// carried on a status frame so the client can render "ctx: <in>/<window>" in
 	// its header. Comes from the server's configured Compaction.ContextWindow.
-	ContextWindow int      `json:"context_window,omitempty"`
-	ID            string   `json:"id,omitempty"`      // permission_request
-	Reason        string   `json:"reason,omitempty"`  // permission_request
-	ApprovalRequired bool `json:"approval_required,omitempty"` // permission_request: must be explicit one-shot allow/deny
-	Servers       []string `json:"servers,omitempty"` // mcp_list
+	ContextWindow    int      `json:"context_window,omitempty"`
+	ID               string   `json:"id,omitempty"`                // permission_request
+	Reason           string   `json:"reason,omitempty"`            // permission_request
+	ApprovalRequired bool     `json:"approval_required,omitempty"` // permission_request: must be explicit one-shot allow/deny
+	Servers          []string `json:"servers,omitempty"`           // mcp_list
 	// Compaction fields (Task 35b). Compacted is set on a status frame after a
 	// compaction completed; TokensBefore/After carry the estimated token counts
 	// across the compaction so the client can render "compacted (X → Y tokens)".
@@ -326,9 +326,9 @@ type ServerFrame struct {
 	// Retry fields: carried by a "retry" frame announcing a transient-error
 	// retry (e.g. a mid-stream "unexpected EOF") so the client can render
 	// "↻ retry N/M…" in its activity line. Text carries the triggering error.
-	RetryAttempt int    `json:"retry_attempt,omitempty"`
-	RetryMax     int    `json:"retry_max,omitempty"`
-	RetryDelayMs int    `json:"retry_delay_ms,omitempty"`
+	RetryAttempt int `json:"retry_attempt,omitempty"`
+	RetryMax     int `json:"retry_max,omitempty"`
+	RetryDelayMs int `json:"retry_delay_ms,omitempty"`
 	// Sessions is the list of stored sessions (reply to session_list).
 	Sessions []SessionInfo `json:"sessions,omitempty"`
 	// SessionID is the restored session id (carried on session_restored).
@@ -388,10 +388,10 @@ type ServerFrame struct {
 	// MCPServers carries the mcp_status frame.
 	MCPServers []MCPServerStatus `json:"mcp_servers,omitempty"`
 
-		// A2 task/plan/checklist 帧字段。
-		Task      *work.WorkTask  `json:"task,omitempty"`
-		TaskID    string          `json:"task_id,omitempty"`
-		Checklist *work.Checklist `json:"checklist,omitempty"`
+	// A2 task/plan/checklist 帧字段。
+	Task      *work.WorkTask  `json:"task,omitempty"`
+	TaskID    string          `json:"task_id,omitempty"`
+	Checklist *work.Checklist `json:"checklist,omitempty"`
 	// Subagent lifecycle event fields (B1).
 	AgentID     string `json:"agent_id,omitempty"`
 	AgentRole   string `json:"agent_role,omitempty"`

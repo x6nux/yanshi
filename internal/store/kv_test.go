@@ -43,7 +43,7 @@ func TestKV_Overwrite(t *testing.T) {
 
 // TestKV_EmptyKeyAndValue proves the kv table accepts an empty-string key
 // and an empty-string value without special-casing (the UPSERT WHERE matches
-// on the empty string). This guards against a future "key != ''" guard.
+// on the empty string). This guards against a future "key != ”" guard.
 func TestKV_EmptyKeyAndValue(t *testing.T) {
 	s, err := Open(":memory:")
 	require.NoError(t, err)

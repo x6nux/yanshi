@@ -56,13 +56,13 @@ func main() {
 	}
 
 	type Info struct {
-		ShortPath  string
-		Files      int
-		Lines      int
-		TestFiles  int
-		TestLines  int
-		Imports    []string
-		IntDeps    []string
+		ShortPath string
+		Files     int
+		Lines     int
+		TestFiles int
+		TestLines int
+		Imports   []string
+		IntDeps   []string
 	}
 
 	var infos []Info
@@ -145,7 +145,10 @@ func main() {
 			fanIn[dep]++
 		}
 	}
-	type fi struct{ name string; count int }
+	type fi struct {
+		name  string
+		count int
+	}
 	var fiList []fi
 	for k, v := range fanIn {
 		fiList = append(fiList, fi{k, v})

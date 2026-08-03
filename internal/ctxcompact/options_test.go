@@ -6,8 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/ctxcompact"
+	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 )
 
 // TestModelSummarizer_FakeModelSatisfies is a compile-time check: if FakeModel

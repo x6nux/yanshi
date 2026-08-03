@@ -40,7 +40,7 @@ var portAllowlists = map[string]map[string]bool{
 	ip("internal/guard"): {ip("internal/execpolicy"): true},
 	ip("internal/store"): {},
 	ip("internal/proto"): {
-		ip("internal/pathjail"): true,
+		ip("internal/pathjail"):  true,
 		ip("internal/task/work"): true,
 	},
 	ip("internal/config"): {},

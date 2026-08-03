@@ -315,7 +315,7 @@ func TestEdgeAutoScroll(t *testing.T) {
 // rune's byte offset.
 func TestColToByteOffsetTerminalWidth(t *testing.T) {
 	cases := []string{
-		"  项目  main  opus",                  // footer with powerline arrows
+		"  项目  main  opus",                              // footer with powerline arrows
 		"│ Send a message…  (Enter = send · newline)   │", // input border + placeholder ·
 		"proj │ main │ opus",                              // muted-footer separators
 	}

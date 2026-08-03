@@ -302,7 +302,9 @@ func TestAuthorize_StructuralHardDeny_NotOverridableByCallback(t *testing.T) {
 
 // TestAuthorize_ReportedProfile_YoloBypassesEverythingButDestruction is the
 // end-to-end confirmation for the operator's reported profile
-//   tools=["*"], fs.read=["**"], fs.write=[], shell policy="deny", net.allow=false
+//
+//	tools=["*"], fs.read=["**"], fs.write=[], shell policy="deny", net.allow=false
+//
 // Under a YOLO-style callback the profile is fully bypassed (read/write/shell/
 // net all proceed), while the destructive-deletion gate still blocks
 // catastrophic mass deletion regardless of mode.

@@ -232,6 +232,7 @@ func TestTask_IncrementAttempts(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), got.Attempts)
 }
+
 // TestTask_WorktreeID_RoundTrip verifies that a freshly created task has an
 // empty worktree_id (column default), that SetTaskWorktree persists a value
 // readable back via GetTask, and that ListPending surfaces it too — so a

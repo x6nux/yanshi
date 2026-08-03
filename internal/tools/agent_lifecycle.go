@@ -122,7 +122,9 @@ func (t *AgentTools) streamAgentWait(ctx context.Context, argsJSON string) <-cha
 	return ch
 }
 
-type agentResultArgs struct{ AgentID string `json:"agent_id"` }
+type agentResultArgs struct {
+	AgentID string `json:"agent_id"`
+}
 type agentSendInputArgs struct {
 	AgentID   string `json:"agent_id"`
 	Text      string `json:"text"`
@@ -136,7 +138,9 @@ type agentAssignArgs struct {
 	AgentID    string `json:"agent_id"`
 	Assignment string `json:"assignment"`
 }
-type agentCancelArgs struct{ AgentID string `json:"agent_id"` }
+type agentCancelArgs struct {
+	AgentID string `json:"agent_id"`
+}
 type agentListArgs struct {
 	IncludeArchived bool `json:"include_archived,omitempty"`
 }

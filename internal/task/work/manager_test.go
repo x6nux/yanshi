@@ -17,12 +17,12 @@ import (
 // Manager.Create(dispatch=true) 与 Manager.Cancel 的 broker 协作路径。
 // 它不需要 *sql.DB，也不引入 internal/task.Broker（避免 work → task 反向依赖）。
 type fakeDispatcher struct {
-	mu          sync.Mutex
-	submitErr   error
-	cancelErr   error
-	submitted   []submitCall
-	cancels     []string
-	nextBroker  int
+	mu         sync.Mutex
+	submitErr  error
+	cancelErr  error
+	submitted  []submitCall
+	cancels    []string
+	nextBroker int
 }
 
 type submitCall struct {

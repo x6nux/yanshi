@@ -40,7 +40,7 @@ func TestParsePipelineAndRedirects(t *testing.T) {
 
 func TestProgramNormalizationAbsoluteAndWindowsExe(t *testing.T) {
 	cases := map[string]string{
-		`/usr/bin/go test`:          "go",
+		`/usr/bin/go test`:            "go",
 		`C:\\Go\\bin\\GO.EXE version`: "go",
 	}
 	for raw, want := range cases {

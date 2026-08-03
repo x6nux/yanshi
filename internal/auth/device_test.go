@@ -118,7 +118,7 @@ func TestDeviceFlow_SlowDownBacksOff(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]any{
 				"device_code": "dc", "user_code": "U",
 				"verification_uri": "https://example.com/device",
-				"expires_in": 900, "interval": 2,
+				"expires_in":       900, "interval": 2,
 			})
 		}
 	}))
@@ -153,7 +153,7 @@ func TestDeviceFlow_ExpiredDeviceCode(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"device_code": "dc-SECRET", "user_code": "U",
 			"verification_uri": "https://example.com/device",
-			"expires_in": 900, "interval": 1,
+			"expires_in":       900, "interval": 1,
 		})
 	}))
 	defer srv.Close()
@@ -185,7 +185,7 @@ func TestDeviceFlow_ContextCancel(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"device_code": "dc", "user_code": "U",
 			"verification_uri": "https://example.com/device",
-			"expires_in": 900, "interval": 1,
+			"expires_in":       900, "interval": 1,
 		})
 	}))
 	defer srv.Close()
@@ -423,7 +423,7 @@ type fakeCredentialStore struct {
 }
 
 func credentialKey(service, account string) string { return service + "\x00" + account }
-func (f *fakeCredentialStore) Available() error { return nil }
+func (f *fakeCredentialStore) Available() error    { return nil }
 func (f *fakeCredentialStore) Get(service, account string) (string, error) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
@@ -500,7 +500,9 @@ func TestCommitDeviceToken_MetadataFailureCompensates(t *testing.T) {
 			m := managerWithCredentialStore(t, st)
 			m.SetMetadataStore(metadataStoreFunc(func(
 				string, string, AuthMetadata,
-			) error { return metadataErr }))
+			) error {
+				return metadataErr
+			}))
 
 			err := m.commitDeviceToken("provider", "main", &DeviceToken{
 				AccessToken: "new-token", ExpiresIn: 60,
@@ -550,7 +552,9 @@ func TestCommitDeviceToken_RollbackFailureIsJoined(t *testing.T) {
 			m := managerWithCredentialStore(t, tt.store)
 			m.SetMetadataStore(metadataStoreFunc(func(
 				string, string, AuthMetadata,
-			) error { return metadataErr }))
+			) error {
+				return metadataErr
+			}))
 			err := m.commitDeviceToken("provider", "main", &DeviceToken{
 				AccessToken: "new-token", ExpiresIn: 60,
 			})

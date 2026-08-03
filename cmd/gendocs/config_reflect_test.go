@@ -15,18 +15,18 @@ import (
 
 // yamlKeyProbe exposes every tag shape yamlKey must distinguish.
 type yamlKeyProbe struct {
-	NoTag    string `json:"x"`           // no yaml tag → ""
-	Dashed   string `yaml:"-"`           // explicit skip → ""
-	Named    string `yaml:"server"`      // explicit key
+	NoTag     string `json:"x"`          // no yaml tag → ""
+	Dashed    string `yaml:"-"`          // explicit skip → ""
+	Named     string `yaml:"server"`     // explicit key
 	Omitempty string `yaml:",omitempty"` // empty key → ToLower(Name)
 }
 
 func TestYAMLKeyBranches(t *testing.T) {
 	ct := reflect.TypeOf(yamlKeyProbe{})
 	cases := map[string]string{
-		"NoTag":    "",
-		"Dashed":   "",
-		"Named":    "server",
+		"NoTag":     "",
+		"Dashed":    "",
+		"Named":     "server",
 		"Omitempty": "omitempty", // ToLower("Omitempty")
 	}
 	for i := 0; i < ct.NumField(); i++ {

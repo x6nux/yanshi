@@ -10,7 +10,7 @@ import (
 // known agent name and an error for unknown names.
 func TestLaunchSpec(t *testing.T) {
 	tests := []struct {
-		name    string
+		name     string
 		wantArgv []string
 		wantErr  bool
 	}{

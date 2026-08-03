@@ -11,8 +11,8 @@ import (
 
 // PermissionProfile scopes what an agent is allowed to do.
 type PermissionProfile struct {
-	FS       FSPerm       `yaml:"fs"`
-	Tools    ToolsPerm    `yaml:"tools"`
+	FS    FSPerm    `yaml:"fs"`
+	Tools ToolsPerm `yaml:"tools"`
 	// MCP is an additional fail-closed gate for dynamically discovered MCP tools.
 	// A tool named mcp_<server>_<tool> must match BOTH MCP.Allow and Tools.Allow.
 	// Empty MCP.Allow denies every MCP tool even when Tools.Allow contains "*".

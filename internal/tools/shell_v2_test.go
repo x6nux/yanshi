@@ -17,20 +17,20 @@ import (
 // package tools, not shell, so it cannot reference the shell-internal fakes).
 type fakeShellProcess struct{}
 
-func (fakeShellProcess) Wait() error                                  { return nil }
-func (fakeShellProcess) PID() int                                     { return 1 }
-func (fakeShellProcess) Kill() error                                  { return nil }
+func (fakeShellProcess) Wait() error { return nil }
+func (fakeShellProcess) PID() int    { return 1 }
+func (fakeShellProcess) Kill() error { return nil }
 func (fakeShellProcess) Capabilities() shell.ProcessCapabilities {
 	return shell.ProcessCapabilities{CanKillTree: false}
 }
 
 type fakeShellConsole struct{}
 
-func (fakeShellConsole) Read([]byte) (int, error)     { return 0, io.EOF }
-func (fakeShellConsole) Write(p []byte) (int, error)  { return len(p), nil }
-func (fakeShellConsole) Close() error                 { return nil }
-func (fakeShellConsole) Resize(uint16, uint16) error  { return nil }
-func (fakeShellConsole) PTY() bool                    { return false }
+func (fakeShellConsole) Read([]byte) (int, error)    { return 0, io.EOF }
+func (fakeShellConsole) Write(p []byte) (int, error) { return len(p), nil }
+func (fakeShellConsole) Close() error                { return nil }
+func (fakeShellConsole) Resize(uint16, uint16) error { return nil }
+func (fakeShellConsole) PTY() bool                   { return false }
 
 type fakeShellFactory struct{}
 

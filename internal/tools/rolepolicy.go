@@ -18,7 +18,7 @@ var ErrRolePolicyDenied = errors.New("denied by subagent role policy")
 type RolePolicy struct {
 	ReadOnlyShell bool
 	WritePatterns []string
-// WithRolePolicy stores a role policy in context for downstream enforcement.
+	// WithRolePolicy stores a role policy in context for downstream enforcement.
 }
 
 type rolePolicyKey struct{}

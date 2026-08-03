@@ -311,21 +311,21 @@ var themeDefault = Theme{
 	Name:        ThemeDefault,
 	Description: "white text on coloured dark backgrounds",
 	Colors: map[string]segmentColors{
-		"name":  {fg: "255", bg: "17", bold: true},  // white on navy
-		"mode":  {fg: "255", bg: "22", bold: false},  // white on dark green
-		"dir":   {fg: "255", bg: "24", bold: false},  // white on dark blue
-		"git":   {fg: "255", bg: "53", bold: false},  // white on dark purple
-		"model": {fg: "255", bg: "23", bold: false},  // white on dark teal
-		"ctx":   {fg: "255", bg: "58", bold: false},  // white on dark olive
-		"total": {fg: "255", bg: "130", bold: false}, // white on dark orange (consumption tally)
-		"think": {fg: "255", bg: "55", bold: false},  // white on brighter purple
-		"cache": {fg: "255", bg: "28", bold: false},  // white on dark green (darker than mode)
+		"name":         {fg: "255", bg: "17", bold: true},   // white on navy
+		"mode":         {fg: "255", bg: "22", bold: false},  // white on dark green
+		"dir":          {fg: "255", bg: "24", bold: false},  // white on dark blue
+		"git":          {fg: "255", bg: "53", bold: false},  // white on dark purple
+		"model":        {fg: "255", bg: "23", bold: false},  // white on dark teal
+		"ctx":          {fg: "255", bg: "58", bold: false},  // white on dark olive
+		"total":        {fg: "255", bg: "130", bold: false}, // white on dark orange (consumption tally)
+		"think":        {fg: "255", bg: "55", bold: false},  // white on brighter purple
+		"cache":        {fg: "255", bg: "28", bold: false},  // white on dark green (darker than mode)
 		"perm_default": {fg: "245", bg: "236", bold: false},
 		"perm_edits":   {fg: "255", bg: "22", bold: false},
 		"perm_auto":    {fg: "255", bg: "94", bold: false},
 		"perm_yolo":    {fg: "255", bg: "52", bold: true},
-		"tools": {fg: "245", bg: "235", bold: false},
-		"queue": {fg: "255", bg: "94", bold: true},
+		"tools":        {fg: "245", bg: "235", bold: false},
+		"queue":        {fg: "255", bg: "94", bold: true},
 	},
 }
 
@@ -335,21 +335,21 @@ var themeHighContrast = Theme{
 	Name:        ThemeHighContrast,
 	Description: "brighter backgrounds, bold text",
 	Colors: map[string]segmentColors{
-		"name":  {fg: "255", bg: "19", bold: true},
-		"mode":  {fg: "255", bg: "28", bold: true},
-		"dir":   {fg: "255", bg: "26", bold: true},
-		"git":   {fg: "255", bg: "55", bold: true},
-		"model": {fg: "255", bg: "30", bold: true},
-		"ctx":   {fg: "255", bg: "59", bold: true},
-		"total": {fg: "255", bg: "130", bold: true},
-		"think": {fg: "255", bg: "56", bold: true},
-		"cache": {fg: "255", bg: "28", bold: true},
+		"name":         {fg: "255", bg: "19", bold: true},
+		"mode":         {fg: "255", bg: "28", bold: true},
+		"dir":          {fg: "255", bg: "26", bold: true},
+		"git":          {fg: "255", bg: "55", bold: true},
+		"model":        {fg: "255", bg: "30", bold: true},
+		"ctx":          {fg: "255", bg: "59", bold: true},
+		"total":        {fg: "255", bg: "130", bold: true},
+		"think":        {fg: "255", bg: "56", bold: true},
+		"cache":        {fg: "255", bg: "28", bold: true},
 		"perm_default": {fg: "255", bg: "236", bold: true},
 		"perm_edits":   {fg: "255", bg: "28", bold: true},
 		"perm_auto":    {fg: "255", bg: "100", bold: true},
 		"perm_yolo":    {fg: "15", bg: "88", bold: true},
-		"tools": {fg: "255", bg: "237", bold: true},
-		"queue": {fg: "255", bg: "100", bold: true},
+		"tools":        {fg: "255", bg: "237", bold: true},
+		"queue":        {fg: "255", bg: "100", bold: true},
 	},
 }
 
@@ -360,21 +360,21 @@ var themeMuted = Theme{
 	Name:        ThemeMuted,
 	Description: "minimal, text-only on plain background",
 	Colors: map[string]segmentColors{
-		"name":  {fg: "255", bg: "236", bold: true},
-		"mode":  {fg: "42", bg: "236", bold: false},
-		"dir":   {fg: "75", bg: "236", bold: false},
-		"git":   {fg: "141", bg: "236", bold: false},
-		"model": {fg: "51", bg: "236", bold: false},
-		"ctx":   {fg: "221", bg: "236", bold: false},
-		"total": {fg: "215", bg: "236", bold: false},
-		"think": {fg: "213", bg: "236", bold: false},
-		"cache": {fg: "156", bg: "236", bold: false},
+		"name":         {fg: "255", bg: "236", bold: true},
+		"mode":         {fg: "42", bg: "236", bold: false},
+		"dir":          {fg: "75", bg: "236", bold: false},
+		"git":          {fg: "141", bg: "236", bold: false},
+		"model":        {fg: "51", bg: "236", bold: false},
+		"ctx":          {fg: "221", bg: "236", bold: false},
+		"total":        {fg: "215", bg: "236", bold: false},
+		"think":        {fg: "213", bg: "236", bold: false},
+		"cache":        {fg: "156", bg: "236", bold: false},
 		"perm_default": {fg: "245", bg: "236", bold: false},
 		"perm_edits":   {fg: "42", bg: "236", bold: false},
 		"perm_auto":    {fg: "179", bg: "236", bold: false},
 		"perm_yolo":    {fg: "203", bg: "236", bold: true},
-		"tools": {fg: "245", bg: "236", bold: false},
-		"queue": {fg: "179", bg: "236", bold: true},
+		"tools":        {fg: "245", bg: "236", bold: false},
+		"queue":        {fg: "179", bg: "236", bold: true},
 	},
 }
 

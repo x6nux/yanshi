@@ -13,10 +13,10 @@ import (
 // write. The goal is to keep secret material from ever crossing the JSON-RPC
 // wire (defense in depth alongside guard and the redacting logger).
 var secretPathFragments = map[string]bool{
-	"token":    true,
-	"api_key":  true,
-	"apikey":   true,
-	"secret":   true,
+	"token":   true,
+	"api_key": true,
+	"apikey":  true,
+	"secret":  true,
 }
 
 // MemoryConfig is the default ConfigBackend: a thread-safe in-memory key/value

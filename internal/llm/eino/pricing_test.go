@@ -8,14 +8,14 @@ import (
 func TestDefaultPricingRealAnthropicModels(t *testing.T) {
 	tab := DefaultPricing()
 	cases := map[string]ModelPricing{
-		"claude-fable-5":     {InputPerM: 10, CacheHitPerM: 1, OutputPerM: 50},
-		"claude-mythos-5":    {InputPerM: 10, CacheHitPerM: 1, OutputPerM: 50},
-		"claude-opus-4-8":    {InputPerM: 5, CacheHitPerM: 0.5, OutputPerM: 25},
-		"claude-opus-4-7":    {InputPerM: 5, CacheHitPerM: 0.5, OutputPerM: 25},
-		"claude-opus-4-6":    {InputPerM: 5, CacheHitPerM: 0.5, OutputPerM: 25},
-		"claude-sonnet-5":    {InputPerM: 3, CacheHitPerM: 0.3, OutputPerM: 15},
-		"claude-sonnet-4-6":  {InputPerM: 3, CacheHitPerM: 0.3, OutputPerM: 15},
-		"claude-haiku-4-5":   {InputPerM: 1, CacheHitPerM: 0.1, OutputPerM: 5},
+		"claude-fable-5":    {InputPerM: 10, CacheHitPerM: 1, OutputPerM: 50},
+		"claude-mythos-5":   {InputPerM: 10, CacheHitPerM: 1, OutputPerM: 50},
+		"claude-opus-4-8":   {InputPerM: 5, CacheHitPerM: 0.5, OutputPerM: 25},
+		"claude-opus-4-7":   {InputPerM: 5, CacheHitPerM: 0.5, OutputPerM: 25},
+		"claude-opus-4-6":   {InputPerM: 5, CacheHitPerM: 0.5, OutputPerM: 25},
+		"claude-sonnet-5":   {InputPerM: 3, CacheHitPerM: 0.3, OutputPerM: 15},
+		"claude-sonnet-4-6": {InputPerM: 3, CacheHitPerM: 0.3, OutputPerM: 15},
+		"claude-haiku-4-5":  {InputPerM: 1, CacheHitPerM: 0.1, OutputPerM: 5},
 	}
 	for model, want := range cases {
 		got, ok := tab[model]
@@ -87,9 +87,9 @@ func TestLedgerReportsNAForUnknownModel(t *testing.T) {
 func TestFormatCostRanges(t *testing.T) {
 	cases := map[float64]string{
 		0.00001: "<$0.0001",
-		0.001:  "$0.0010",
-		0.1:    "$0.100",
-		12.345: "$12.35",
+		0.001:   "$0.0010",
+		0.1:     "$0.100",
+		12.345:  "$12.35",
 	}
 	for in, want := range cases {
 		if got := FormatCost(in, true); got != want {

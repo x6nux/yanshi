@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/bubbles/spinner"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/x6nux/yanshi/internal/proto"
 )
 

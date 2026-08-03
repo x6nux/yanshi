@@ -278,7 +278,10 @@ func (b *wsBackend) closeCurWithError(err error) {
 	b.curDone = nil
 	b.controlMode = false
 	if cur != nil {
-		select { case cur <- StreamEvent{Kind: "error", Err: err}: default: }
+		select {
+		case cur <- StreamEvent{Kind: "error", Err: err}:
+		default:
+		}
 		close(cur)
 	}
 	b.curMu.Unlock()

@@ -51,8 +51,8 @@ func TestBuildProviders_FallsBackToNameOnDuplicateModel(t *testing.T) {
 		t.Skipf("eino-ext openai provider unavailable in this eino version: %v", err)
 	}
 	assert.Len(t, models, 2, "both providers selectable despite shared model id")
-	assert.Contains(t, models, "auto")        // first provider keyed by model id
-	assert.Contains(t, models, "openai")      // second fell back to its name
+	assert.Contains(t, models, "auto")   // first provider keyed by model id
+	assert.Contains(t, models, "openai") // second fell back to its name
 }
 
 func TestBuildProviders_EmptyProviders(t *testing.T) {

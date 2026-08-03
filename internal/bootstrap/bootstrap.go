@@ -19,9 +19,9 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/x6nux/yanshi/internal/agent/orchestrator"
-	"github.com/x6nux/yanshi/internal/approval"
 	apihttp "github.com/x6nux/yanshi/internal/api/http"
 	apiV1 "github.com/x6nux/yanshi/internal/api/v1"
+	"github.com/x6nux/yanshi/internal/approval"
 	"github.com/x6nux/yanshi/internal/auth"
 	"github.com/x6nux/yanshi/internal/config"
 	"github.com/x6nux/yanshi/internal/features"
@@ -29,6 +29,8 @@ import (
 	"github.com/x6nux/yanshi/internal/imagestore"
 	"github.com/x6nux/yanshi/internal/instruct"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
+	"github.com/x6nux/yanshi/internal/lsp"
+	"github.com/x6nux/yanshi/internal/mcp"
 	"github.com/x6nux/yanshi/internal/memory"
 	"github.com/x6nux/yanshi/internal/netpolicy"
 	obslog "github.com/x6nux/yanshi/internal/observe/log"
@@ -43,8 +45,6 @@ import (
 	"github.com/x6nux/yanshi/internal/task/work"
 	"github.com/x6nux/yanshi/internal/tools"
 	"github.com/x6nux/yanshi/internal/vcs"
-	"github.com/x6nux/yanshi/internal/lsp"
-	"github.com/x6nux/yanshi/internal/mcp"
 
 	agentregistry "github.com/x6nux/yanshi/internal/agent/registry"
 )
@@ -65,7 +65,6 @@ func (a *visionUsageAccumulator) add(prompt, completion, total int) {
 	a.Total += int64(total)
 }
 
-
 // App holds the fully wired yanshi application.
 type App struct {
 	Server *http.Server
@@ -79,11 +78,11 @@ type App struct {
 	// (Phase-10 /model). Empty when running with FakeModel or no providers; in
 	// that case Model is the fake and switching is a no-op. The default
 	// (resilient chain) stays in Model.
-	Models map[string]model.BaseChatModel
-	VisionAux model.BaseChatModel
+	Models        map[string]model.BaseChatModel
+	VisionAux     model.BaseChatModel
 	MultimodalMap map[string]bool
-	ImageStore *imagestore.Store
-	VisionUsage *visionUsageAccumulator
+	ImageStore    *imagestore.Store
+	VisionUsage   *visionUsageAccumulator
 
 	// Skills is the loaded skill registry (M7); nil only if Build returned an
 	// error before registry construction. Exposed for tests and diagnostics.
@@ -333,8 +332,8 @@ func Build(opts Options) (*App, error) {
 	})
 
 	st, err := store.OpenWith(cfg.Storage.SQLitePath, store.OpenOptions{
-		MaxOpenConns:     cfg.Storage.WALMaxOpenConns,
-		BusyTimeoutMs:    cfg.Storage.BusyTimeoutMs,
+		MaxOpenConns:      cfg.Storage.WALMaxOpenConns,
+		BusyTimeoutMs:     cfg.Storage.BusyTimeoutMs,
 		WALAutoCheckpoint: cfg.Storage.WALAutoCheckpoint,
 	})
 	if err != nil {
@@ -649,7 +648,7 @@ func Build(opts Options) (*App, error) {
 	// B1: build the subagent manager.
 	bootID := fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
 	subagentManager := agentregistry.NewManager(agentregistry.NewManagerOpts{
-		RootContext:    context.Background(),
+		RootContext:   context.Background(),
 		Path:          cfg.Subagents.PersistencePath,
 		SessionBootID: bootID,
 		MaxConcurrent: cfg.Subagents.Limit,
@@ -780,13 +779,13 @@ func Build(opts Options) (*App, error) {
 		SkillMetaPrompt: registry.MetaPrompt(),
 		MemorySuffix:    memorySuffix,
 		WorkRoot:        workRoot,
-			TaskManager:    workMgr,
-			SubagentManager: subagentManager,
-			AvailableModels: availableModels,
-			LSP:             lspMgr,
-			MCP:            mcpManager,
-		MultimodalMap: multimodalMap,
-		ImageStore:    imageStore,
+		TaskManager:     workMgr,
+		SubagentManager: subagentManager,
+		AvailableModels: availableModels,
+		LSP:             lspMgr,
+		MCP:             mcpManager,
+		MultimodalMap:   multimodalMap,
+		ImageStore:      imageStore,
 		Compaction: orchestrator.CompactionConfig{
 			Threshold:         cfg.Compaction.Threshold,
 			ContextWindow:     cfg.Compaction.ContextWindow,
@@ -851,10 +850,10 @@ func Build(opts Options) (*App, error) {
 			report.Effective, report.Reason)
 	}
 	networkPolicy := &netpolicy.Policy{
-		Default:       cfg.Security.Network.Default,
-		Allow:         append([]string(nil), cfg.Security.Network.Allow...),
-		Deny:          append([]string(nil), cfg.Security.Network.Deny...),
-		AllowPrivate:  cfg.Security.Network.AllowPrivate,
+		Default:      cfg.Security.Network.Default,
+		Allow:        append([]string(nil), cfg.Security.Network.Allow...),
+		Deny:         append([]string(nil), cfg.Security.Network.Deny...),
+		AllowPrivate: cfg.Security.Network.AllowPrivate,
 	}
 
 	// Approval manager + audit bus: one process-wide manager mirrors persistent
@@ -982,39 +981,39 @@ func Build(opts Options) (*App, error) {
 	// store via a.Store.Close().
 	closeStoreOnError = false
 	return &App{
-		Server:        httpServer,
-		Store:         st,
-		Orch:          orch,
-		Broker:        broker,
-		Addr:          addr,
-		Model:         chatModel,
-		Models:        providerModels,
-		VisionAux:      visionAux,
-		MultimodalMap:  multimodalMap,
-		ImageStore:     imageStore,
-		VisionUsage:    &visionUsageSink,
-		AgentAPI:      agentAPI,
-		Skills:        registry,
-		VCS:           vcsInstance,
-		VCSRepoID:     vcsRepoID,
-		VCSDBPath:     cfg.Storage.SQLitePath,
-		WorktreeDir:   worktreeDir,
-		Sandbox:       sb,
-		NetworkPolicy: networkPolicy,
+		Server:          httpServer,
+		Store:           st,
+		Orch:            orch,
+		Broker:          broker,
+		Addr:            addr,
+		Model:           chatModel,
+		Models:          providerModels,
+		VisionAux:       visionAux,
+		MultimodalMap:   multimodalMap,
+		ImageStore:      imageStore,
+		VisionUsage:     &visionUsageSink,
+		AgentAPI:        agentAPI,
+		Skills:          registry,
+		VCS:             vcsInstance,
+		VCSRepoID:       vcsRepoID,
+		VCSDBPath:       cfg.Storage.SQLitePath,
+		WorktreeDir:     worktreeDir,
+		Sandbox:         sb,
+		NetworkPolicy:   networkPolicy,
 		SubagentManager: subagentManager,
 		AgentTools:      agentTools,
 		LSP:             lspMgr,
-			MCP:            mcpManager,
-		Approvals:     approvalMgr,
-		ShellManager:  shellManager,
-		SecureFactory: secureFactory,
-		Features:      featureReg,
-		Pricing:       priceTab,
-		OTel:          otelRT,
-		Redactor:      redactor,
-		Auth:          authMgr,
-		LogPath:       logPath,
-		cancel:        cancel,
+		MCP:             mcpManager,
+		Approvals:       approvalMgr,
+		ShellManager:    shellManager,
+		SecureFactory:   secureFactory,
+		Features:        featureReg,
+		Pricing:         priceTab,
+		OTel:            otelRT,
+		Redactor:        redactor,
+		Auth:            authMgr,
+		LogPath:         logPath,
+		cancel:          cancel,
 	}, nil
 }
 

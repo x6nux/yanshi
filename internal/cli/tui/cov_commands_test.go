@@ -421,10 +421,10 @@ func TestPalette_MoveCompleteAndMCP(t *testing.T) {
 		{name: "srv.tool", kind: cmdMCPTool},
 	}
 	m.paletteSel = 0
-	m.paletteMove(1)                    // lands on group -> skips to MCPTool
+	m.paletteMove(1) // lands on group -> skips to MCPTool
 	assert.Equal(t, 2, m.paletteSel, "paletteMove skips group headers")
 
-	m.paletteComplete()                 // completes the MCP tool
+	m.paletteComplete() // completes the MCP tool
 	assert.Equal(t, "srv.tool", m.input.Value(), "MCP tool inserts qualified name")
 	assert.Nil(t, m.paletteItems, "palette dismissed after complete")
 

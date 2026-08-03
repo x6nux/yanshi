@@ -25,8 +25,8 @@ import (
 // create a sub-agent (a fresh ChatModelAgent in the same process) to execute a
 // given goal and return the result. Multiple sub-agents can run concurrently.
 type SpawnAgentTool struct {
-	model     model.BaseChatModel  // default LLM for sub-agents
-	tools     []tool.BaseTool      // base tools (spawn_agent auto-filtered)
+	model     model.BaseChatModel // default LLM for sub-agents
+	tools     []tool.BaseTool     // base tools (spawn_agent auto-filtered)
 	profile   guard.PermissionProfile
 	models    map[string]model.BaseChatModel // optional named models
 	vcs       *vcs.VCS                       // optional VCS instance

@@ -42,9 +42,9 @@ type EffectiveMode string
 
 // Effective modes a sandbox reports, ordered from full OS isolation to disabled.
 const (
-	OSIsolated         EffectiveMode = "os-isolated"
+	OSIsolated        EffectiveMode = "os-isolated"
 	DegradedHostGuard EffectiveMode = "host-guard-degraded"
-	Disabled           EffectiveMode = "disabled"
+	Disabled          EffectiveMode = "disabled"
 )
 
 // CapabilityReport is the answer to "what is this sandbox actually doing for

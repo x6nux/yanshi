@@ -54,7 +54,7 @@ func TestStartHealthLoopRunsAndCancels(t *testing.T) {
 	m.SetHealthConfig(HealthConfig{Enabled: true, Interval: 5 * time.Millisecond})
 	cancel := m.StartHealthLoop(context.Background())
 	time.Sleep(30 * time.Millisecond) // let at least one tick fire
-	cancel()                           // must return promptly after wg.Wait
+	cancel()                          // must return promptly after wg.Wait
 }
 
 // TestHealthOncePaths covers healthOnce's skip-nil, ping-success-continue, and
@@ -369,7 +369,7 @@ func TestHTTPClientPostErrorBranches(t *testing.T) {
 type errTokenSource struct{}
 
 func (errTokenSource) Token(context.Context) (string, error) { return "", errors.New("no token") }
-func (errTokenSource) Invalidate()                            {}
+func (errTokenSource) Invalidate()                           {}
 
 // --- oauth.go bad-URL and zero-expires ---
 

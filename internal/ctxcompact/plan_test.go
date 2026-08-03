@@ -58,10 +58,10 @@ func TestPlan_ShortCircuitsWhenAlreadySummarized(t *testing.T) {
 
 func TestPlan_EnforcesToolPairs(t *testing.T) {
 	msgs := []*schema.Message{
-		{Role: schema.User, Content: "noise"},                                                          // 0
+		{Role: schema.User, Content: "noise"}, // 0
 		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "c1", Function: schema.FunctionCall{Name: "r"}}}}, // 1
-		{Role: schema.Tool, ToolCallID: "c1", Content: "res"},                                          // 2
-		{Role: schema.User, Content: "recent"},                                                         // 3
+		{Role: schema.Tool, ToolCallID: "c1", Content: "res"},                                                        // 2
+		{Role: schema.User, Content: "recent"},                                                                       // 3
 	}
 	p := Plan(msgs, PlanOpts{KeepRecent: 1})
 	assert.Contains(t, p.PinnedIndices, 1, "call pulled in to pair with pinned result")

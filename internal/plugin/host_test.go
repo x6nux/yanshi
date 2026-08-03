@@ -11,9 +11,9 @@ import (
 // fakeConnector is a minimal Connector for testing.
 type fakeConnector struct{ name string }
 
-func (f *fakeConnector) Name() string                       { return f.name }
-func (f *fakeConnector) Start(_ context.Context) error      { return nil }
-func (f *fakeConnector) Stop(_ context.Context) error       { return nil }
+func (f *fakeConnector) Name() string                  { return f.name }
+func (f *fakeConnector) Start(_ context.Context) error { return nil }
+func (f *fakeConnector) Stop(_ context.Context) error  { return nil }
 
 func TestHost_RegisterGet(t *testing.T) {
 	h := NewHost()

@@ -14,10 +14,10 @@ import (
 
 // NewManagerOpts configures a Manager.
 type NewManagerOpts struct {
-	RootContext    context.Context
-	Path           string
-	SessionBootID  string
-	MaxConcurrent  int // 0 → default 10; must be 1..20
+	RootContext   context.Context
+	Path          string
+	SessionBootID string
+	MaxConcurrent int // 0 → default 10; must be 1..20
 }
 
 // ---------------------------------------------------------------------------
@@ -34,18 +34,18 @@ type NewManagerOpts struct {
 //   - Closed gate checked before any mutation
 //   - Running persisted before returning from Spawn/Resume
 type Manager struct {
-	mtx          sync.RWMutex        // guards records + runtime
-	records      map[string]Record   // all agents (running + terminal)
-	runtime      map[string]*runtimeAgent
-	limit        int
-	path         string
-	bootID       string
-	rootCtx      context.Context
-	rootCancel   context.CancelFunc
-	closed       atomic.Bool
-	wg           sync.WaitGroup
-	agentIDSeq   atomic.Int64
-	persistMu    sync.Mutex // serialises writes
+	mtx        sync.RWMutex      // guards records + runtime
+	records    map[string]Record // all agents (running + terminal)
+	runtime    map[string]*runtimeAgent
+	limit      int
+	path       string
+	bootID     string
+	rootCtx    context.Context
+	rootCancel context.CancelFunc
+	closed     atomic.Bool
+	wg         sync.WaitGroup
+	agentIDSeq atomic.Int64
+	persistMu  sync.Mutex // serialises writes
 }
 
 // runtimeAgent tracks the in-memory state of a running managed sub-agent.
@@ -489,6 +489,7 @@ func (m *Manager) restoreRecord(agentID string, old Record, cancelToCall context
 		cancelToCall()
 	}
 }
+
 // ---------------------------------------------------------------------------
 
 // Wait blocks until the sub-agent reaches a terminal state or the context is

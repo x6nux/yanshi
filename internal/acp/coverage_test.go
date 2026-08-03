@@ -270,7 +270,7 @@ func TestFakeAgentCancelPrompt(t *testing.T) {
 	fa.HoldPrompt = true
 
 	resultCh := make(chan struct {
-		sr string
+		sr  string
 		err error
 	}, 1)
 	go func() {
@@ -322,7 +322,7 @@ func TestFakeAgentCancelledNotificationOtherMethod(t *testing.T) {
 func TestGuardPolicyOnFSReadAllow(t *testing.T) {
 	gp := NewGuardPolicy(guard.PermissionProfile{
 		Tools: guard.ToolsPerm{Allow: []string{"*"}},
-		FS: guard.FSPerm{Read: []string{"/tmp/**"}},
+		FS:    guard.FSPerm{Read: []string{"/tmp/**"}},
 	})
 	if err := gp.OnFSRead("/tmp/x"); err != nil {
 		t.Fatalf("expected allow, got: %v", err)
@@ -332,7 +332,7 @@ func TestGuardPolicyOnFSReadAllow(t *testing.T) {
 func TestGuardPolicyOnFSReadDeny(t *testing.T) {
 	gp := NewGuardPolicy(guard.PermissionProfile{
 		Tools: guard.ToolsPerm{Allow: []string{"*"}},
-		FS: guard.FSPerm{Read: []string{"/safe/**"}},
+		FS:    guard.FSPerm{Read: []string{"/safe/**"}},
 	})
 	if err := gp.OnFSRead("/tmp/x"); err == nil {
 		t.Fatal("expected deny for path outside allowed patterns")
@@ -342,7 +342,7 @@ func TestGuardPolicyOnFSReadDeny(t *testing.T) {
 func TestGuardPolicyOnFSWriteAllow(t *testing.T) {
 	gp := NewGuardPolicy(guard.PermissionProfile{
 		Tools: guard.ToolsPerm{Allow: []string{"*"}},
-		FS: guard.FSPerm{Write: []string{"/tmp/**"}},
+		FS:    guard.FSPerm{Write: []string{"/tmp/**"}},
 	})
 	if err := gp.OnFSWrite("/tmp/x"); err != nil {
 		t.Fatalf("expected allow, got: %v", err)
@@ -352,7 +352,7 @@ func TestGuardPolicyOnFSWriteAllow(t *testing.T) {
 func TestGuardPolicyOnFSWriteDeny(t *testing.T) {
 	gp := NewGuardPolicy(guard.PermissionProfile{
 		Tools: guard.ToolsPerm{Allow: []string{"*"}},
-		FS: guard.FSPerm{Write: []string{"/safe/**"}},
+		FS:    guard.FSPerm{Write: []string{"/safe/**"}},
 	})
 	if err := gp.OnFSWrite("/tmp/x"); err == nil {
 		t.Fatal("expected deny for path outside allowed patterns")
@@ -675,7 +675,7 @@ func TestClientHandleInboundRequestFSWriteBadParams(t *testing.T) {
 func TestClientHandleInboundRequestFSWriteDenied(t *testing.T) {
 	cl := NewClient(new(bytes.Buffer), new(bytes.Buffer))
 	cl.SetPolicy(NewGuardPolicy(guard.PermissionProfile{
-		FS: guard.FSPerm{Write: []string{}},
+		FS:    guard.FSPerm{Write: []string{}},
 		Tools: guard.ToolsPerm{Allow: []string{"fs.write"}},
 	}))
 	_, err := cl.handleInboundRequest(inboundRequest{
@@ -741,7 +741,7 @@ func TestClientHandleInboundRequestTerminalAllows(t *testing.T) {
 func TestClientHandleInboundRequestFSReadDenied(t *testing.T) {
 	cl := NewClient(new(bytes.Buffer), new(bytes.Buffer))
 	cl.SetPolicy(NewGuardPolicy(guard.PermissionProfile{
-		FS: guard.FSPerm{Read: []string{}},
+		FS:    guard.FSPerm{Read: []string{}},
 		Tools: guard.ToolsPerm{Allow: []string{"fs.read"}},
 	}))
 	_, err := cl.handleInboundRequest(inboundRequest{
@@ -763,7 +763,7 @@ func TestClientHandleInboundRequestFSReadExisting(t *testing.T) {
 	cl.sessionCwds["s"] = dir
 	cl.sessionMu.Unlock()
 	cl.SetPolicy(NewGuardPolicy(guard.PermissionProfile{
-		FS: guard.FSPerm{Read: []string{filepath.Join(dir, "**")}},
+		FS:    guard.FSPerm{Read: []string{filepath.Join(dir, "**")}},
 		Tools: guard.ToolsPerm{Allow: []string{"fs.read"}},
 	}))
 
@@ -789,7 +789,7 @@ func TestClientHandleInboundRequestFSReadNonexistent(t *testing.T) {
 	cl.sessionCwds["s"] = "/nonexistent"
 	cl.sessionMu.Unlock()
 	cl.SetPolicy(NewGuardPolicy(guard.PermissionProfile{
-		FS: guard.FSPerm{Read: []string{"/nonexistent/**"}},
+		FS:    guard.FSPerm{Read: []string{"/nonexistent/**"}},
 		Tools: guard.ToolsPerm{Allow: []string{"fs.read"}},
 	}))
 
@@ -811,7 +811,7 @@ func TestClientHandleInboundRequestFSWriteCreatesDirAndFile(t *testing.T) {
 	cl.sessionCwds["s"] = dir
 	cl.sessionMu.Unlock()
 	cl.SetPolicy(NewGuardPolicy(guard.PermissionProfile{
-		FS: guard.FSPerm{Write: []string{filepath.Join(dir, "**")}},
+		FS:    guard.FSPerm{Write: []string{filepath.Join(dir, "**")}},
 		Tools: guard.ToolsPerm{Allow: []string{"fs.write"}},
 	}))
 
@@ -937,7 +937,7 @@ func TestApplyDiffContentSkipsNonDiff(t *testing.T) {
 	dir := t.TempDir()
 	cl := NewClient(new(bytes.Buffer), new(bytes.Buffer))
 	cl.SetPolicy(NewGuardPolicy(guard.PermissionProfile{
-		FS: guard.FSPerm{Write: []string{filepath.Join(dir, "**")}},
+		FS:    guard.FSPerm{Write: []string{filepath.Join(dir, "**")}},
 		Tools: guard.ToolsPerm{Allow: []string{"fs.write"}},
 	}))
 
@@ -961,7 +961,7 @@ func TestApplyDiffContentSkipsEmptyPath(t *testing.T) {
 	dir := t.TempDir()
 	cl := NewClient(new(bytes.Buffer), new(bytes.Buffer))
 	cl.SetPolicy(NewGuardPolicy(guard.PermissionProfile{
-		FS: guard.FSPerm{Write: []string{filepath.Join(dir, "**")}},
+		FS:    guard.FSPerm{Write: []string{filepath.Join(dir, "**")}},
 		Tools: guard.ToolsPerm{Allow: []string{"fs.write"}},
 	}))
 
@@ -980,7 +980,7 @@ func TestApplyDiffContentSkipsEmptyPath(t *testing.T) {
 func TestApplyDiffContentDeniedByPolicy(t *testing.T) {
 	cl := NewClient(new(bytes.Buffer), new(bytes.Buffer))
 	cl.SetPolicy(NewGuardPolicy(guard.PermissionProfile{
-		FS: guard.FSPerm{Write: []string{"/safe/**"}},
+		FS:    guard.FSPerm{Write: []string{"/safe/**"}},
 		Tools: guard.ToolsPerm{Allow: []string{"fs.write"}},
 	}))
 
@@ -1004,7 +1004,7 @@ func TestApplyDiffContentWithOldText(t *testing.T) {
 
 	cl := NewClient(new(bytes.Buffer), new(bytes.Buffer))
 	cl.SetPolicy(NewGuardPolicy(guard.PermissionProfile{
-		FS: guard.FSPerm{Write: []string{filepath.Join(dir, "**")}},
+		FS:    guard.FSPerm{Write: []string{filepath.Join(dir, "**")}},
 		Tools: guard.ToolsPerm{Allow: []string{"fs.write"}},
 	}))
 	cl.sessionMu.Lock()
@@ -1043,7 +1043,7 @@ func TestApplyDiffContentWithOldTextFileMissing(t *testing.T) {
 	dir := t.TempDir()
 	cl := NewClient(new(bytes.Buffer), new(bytes.Buffer))
 	cl.SetPolicy(NewGuardPolicy(guard.PermissionProfile{
-		FS: guard.FSPerm{Write: []string{filepath.Join(dir, "**")}},
+		FS:    guard.FSPerm{Write: []string{filepath.Join(dir, "**")}},
 		Tools: guard.ToolsPerm{Allow: []string{"fs.write"}},
 	}))
 
@@ -1068,7 +1068,7 @@ func TestApplyDiffContentWithOldTextFileMissing(t *testing.T) {
 func TestApplyDiffContentMkdirFailure(t *testing.T) {
 	cl := NewClient(new(bytes.Buffer), new(bytes.Buffer))
 	cl.SetPolicy(NewGuardPolicy(guard.PermissionProfile{
-		FS: guard.FSPerm{Write: []string{"/**"}},
+		FS:    guard.FSPerm{Write: []string{"/**"}},
 		Tools: guard.ToolsPerm{Allow: []string{"fs.write"}},
 	}))
 
@@ -1272,9 +1272,9 @@ func TestClientInitializeUnmarshalError(t *testing.T) {
 
 // acpReadMessage is used in TestClientInitializeUnmarshalError to read the request ID.
 type acpReadMessage struct {
-	ID     int64            `json:"id"`
-	Method string           `json:"method"`
-	Result json.RawMessage  `json:"result,omitempty"`
+	ID     int64           `json:"id"`
+	Method string          `json:"method"`
+	Result json.RawMessage `json:"result,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

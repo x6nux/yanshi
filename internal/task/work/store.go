@@ -165,13 +165,13 @@ func (s *Store) Create(ctx context.Context, w *WorkTask) error {
 // 不存在时返回 sql.ErrNoRows（与标准库语义一致）。
 func (s *Store) Get(ctx context.Context, id string) (*WorkTask, error) {
 	var (
-		w           WorkTask
-		status      string
-		threadID    string
-		turnID      string
-		brokerTask  string
-		createdAt   int64
-		updatedAt   int64
+		w          WorkTask
+		status     string
+		threadID   string
+		turnID     string
+		brokerTask string
+		createdAt  int64
+		updatedAt  int64
 	)
 	row := s.db.QueryRowContext(ctx, `SELECT id,title,prompt,status,thread_id,turn_id,broker_task_id,created_at,updated_at
 		FROM task_work WHERE id=?`, id)
@@ -482,8 +482,8 @@ func (s *Store) PutArtifact(ctx context.Context, a Artifact) error {
 // GetArtifact 只返回元数据；不存在返回 sql.ErrNoRows。
 func (s *Store) GetArtifact(ctx context.Context, id string) (Artifact, error) {
 	var (
-		a          Artifact
-		createdAt  int64
+		a         Artifact
+		createdAt int64
 	)
 	err := s.db.QueryRowContext(ctx, `SELECT id,task_id,label,summary,content_ref,size,created_at FROM task_work_artifacts WHERE id=?`, id).
 		Scan(&a.ID, &a.TaskID, &a.Label, &a.Summary, &a.ContentRef, &a.Size, &createdAt)

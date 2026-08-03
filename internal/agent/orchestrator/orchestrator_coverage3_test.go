@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/tools"
-	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 )
 
 // TestWrapCompaction_WithThreshold wraps the model in CompactingModel.

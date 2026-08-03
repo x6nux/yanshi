@@ -63,11 +63,11 @@ func (c *fakeConsole) Close() error {
 	return nil
 }
 func (c *fakeConsole) Resize(uint16, uint16) error { return nil }
-func (c *fakeConsole) PTY() bool                    { return false }
+func (c *fakeConsole) PTY() bool                   { return false }
 
 type fakeFactory struct {
-	consoleOut   [][]byte
-	canKillTree  bool
+	consoleOut  [][]byte
+	canKillTree bool
 }
 
 func (f *fakeFactory) Start(_ context.Context, spec LaunchSpec) (Process, Console, error) {

@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	einollm "github.com/x6nux/yanshi/internal/llm/eino"
+	"github.com/cloudwego/eino/schema"
 	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/imagestore"
-	"github.com/cloudwego/eino/schema"
+	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 )
 
 // testPNGBytes encodes a solid-color PNG for test image construction.
@@ -33,8 +33,8 @@ func testPNGBytes(t *testing.T, w, h int) []byte {
 }
 
 type visionUsage struct {
-	called                        bool
-	prompt, completion, total     int
+	called                    bool
+	prompt, completion, total int
 }
 
 func (v *visionUsage) record(p, c, t int) { v.called = true; v.prompt, v.completion, v.total = p, c, t }

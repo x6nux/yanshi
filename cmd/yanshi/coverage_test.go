@@ -834,7 +834,9 @@ func TestRunGoalRealPathLightweight(t *testing.T) {
 func TestRunGoalRealPathLoopSetup(t *testing.T) {
 	cfgPath := writeServeConfig(t)
 	done := make(chan int, 1)
-	go func() { done <- runGoal([]string{"-config", cfgPath, "-tier", "t3", "-max-iters", "1", "-goal", "loop goal"}) }()
+	go func() {
+		done <- runGoal([]string{"-config", cfgPath, "-tier", "t3", "-max-iters", "1", "-goal", "loop goal"})
+	}()
 	select {
 	case code := <-done:
 		// The loop fails to implement (no external CLI); that is exitErr, not a

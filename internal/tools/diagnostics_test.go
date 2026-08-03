@@ -39,7 +39,7 @@ func TestDiagnosticsAggregatesIndependentProbes(t *testing.T) {
 		t.Fatal(err)
 	}
 	var res struct {
-		Git       struct {
+		Git struct {
 			Available bool `json:"available"`
 		} `json:"git"`
 		Toolchain struct {

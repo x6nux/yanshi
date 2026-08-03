@@ -34,9 +34,9 @@ type ConfigBackend interface {
 // shutdown could return while items were still pending in a goroutine,
 // racing callers that read stdout the moment Serve returns.
 type Server struct {
-	agent   *v1.Service
-	config  ConfigBackend
-	writeMu sync.Mutex
+	agent    *v1.Service
+	config   ConfigBackend
+	writeMu  sync.Mutex
 	inflight sync.WaitGroup
 }
 
@@ -212,11 +212,11 @@ func capabilitiesResult(initialize bool) v1.Capabilities {
 		methods = append(methods, "config/read", "config/write")
 	}
 	return v1.Capabilities{
-		Version:   v1.Version,
-		Methods:   methods,
-		ItemTypes: []string{v1.ItemTurnStarted, v1.ItemMessageDelta, v1.ItemReasoningDelta, v1.ItemToolCall, v1.ItemToolResult, v1.ItemToolProgress, v1.ItemStructuredResult, v1.ItemTurnError, v1.ItemTurnCompleted},
+		Version:       v1.Version,
+		Methods:       methods,
+		ItemTypes:     []string{v1.ItemTurnStarted, v1.ItemMessageDelta, v1.ItemReasoningDelta, v1.ItemToolCall, v1.ItemToolResult, v1.ItemToolProgress, v1.ItemStructuredResult, v1.ItemTurnError, v1.ItemTurnCompleted},
 		UnknownFields: "ignored",
-		Stream:    "item/updated",
+		Stream:        "item/updated",
 	}
 }
 

@@ -55,9 +55,9 @@ type PermissionRequest struct {
 // YOLO、Auto 下都不能绕过显式审批；SSE 没 callback → fail-closed。
 //
 // 加新工具到这里时，**必须同时**：
-//   1. 在 Authorize 的 force-prompt 分支测试它；
-//   2. 在 cli/tui/permissions.go 的 resolvePermissionMode 里确保 YOLO/Auto 模式
-//      仍回问用户（force-prompt 决不能被 auto-approve 短路）。
+//  1. 在 Authorize 的 force-prompt 分支测试它；
+//  2. 在 cli/tui/permissions.go 的 resolvePermissionMode 里确保 YOLO/Auto 模式
+//     仍回问用户（force-prompt 决不能被 auto-approve 短路）。
 var forcePromptTools = map[string]struct{}{
 	"task_cancel": {},
 }
@@ -199,17 +199,17 @@ func auditPermission(ctx context.Context, tool, decision, source, reasonCode str
 // Resolution order:
 //  1. No profile bound       -> DenyErr (fail-closed). Callback/manager are NOT consulted.
 //  2. guard.Check verdict    -> Allow: allow. Structural HardDeny (Overridable=false:
-//                               metachar, parse-error, denylist, unknown policy, empty
-//                               MCP): DenyErr firewall — callback/manager MUST NOT
-//                               override. Overridable HardDeny (profile-policy default)
-//                               + Prompt: continue to escalation.
+//     metachar, parse-error, denylist, unknown policy, empty
+//     MCP): DenyErr firewall — callback/manager MUST NOT
+//     override. Overridable HardDeny (profile-policy default)
+//     + Prompt: continue to escalation.
 //  3. Approval manager hit   -> allow (a prior session/persistent rule for this scope).
 //  4. Callback resolves      -> honor the decision:
-//                               - allow            -> allow
-//                               - always_allow     -> record TTL=session rule + allow
-//                               - allow_session    -> record TTL=session rule + allow
-//                               - allow_persistent -> record TTL=persistent rule + allow
-//                               - deny/unknown     -> DenyErr
+//     - allow            -> allow
+//     - always_allow     -> record TTL=session rule + allow
+//     - allow_session    -> record TTL=session rule + allow
+//     - allow_persistent -> record TTL=persistent rule + allow
+//     - deny/unknown     -> DenyErr
 //  5. No callback            -> DenyErr (the static behavior; SSE path).
 //
 // argsJSON is carried in the PermissionRequest.Args for display (it matches the

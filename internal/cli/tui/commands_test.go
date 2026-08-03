@@ -269,76 +269,76 @@ func TestModel_CompactChunkStreaming(t *testing.T) {
 	assert.Equal(t, 9100, m.tokensIn)
 }
 
-	// TestModel_CommandMCP proves /mcp sends mcp_action list and the mcp_status reply renders.
-	func TestModel_CommandMCP(t *testing.T) {
-		rec := &recordingSession{}
-		m := newModel(rec, "/proj")
-		mm, _ := m.runCommand("/mcp")
-		_ = mm.(model)
-		require.Len(t, rec.frames, 1)
-		assert.Equal(t, "mcp_action", rec.frames[0].Type)
-		assert.Equal(t, "", rec.frames[0].MCPServer)
-		assert.Equal(t, "list", rec.frames[0].MCPAction)
+// TestModel_CommandMCP proves /mcp sends mcp_action list and the mcp_status reply renders.
+func TestModel_CommandMCP(t *testing.T) {
+	rec := &recordingSession{}
+	m := newModel(rec, "/proj")
+	mm, _ := m.runCommand("/mcp")
+	_ = mm.(model)
+	require.Len(t, rec.frames, 1)
+	assert.Equal(t, "mcp_action", rec.frames[0].Type)
+	assert.Equal(t, "", rec.frames[0].MCPServer)
+	assert.Equal(t, "list", rec.frames[0].MCPAction)
 
-		// mcp_status reply renders the server status.
-		m = newModel(&fakeSession{}, "/proj")
-		m = m.applyEvent(cli.StreamEvent{
-			Kind: "mcp_status",
-			MCPServers: []proto.MCPServerStatus{
-				{Name: "filesystem", Status: "ready", ToolCount: 2, Transport: "stdio"},
-			},
-		})
-		var mc mcpStatusEntry
-		var found bool
-		for _, e := range m.entries {
-			if x, ok := e.(mcpStatusEntry); ok {
-				mc, found = x, true
-			}
+	// mcp_status reply renders the server status.
+	m = newModel(&fakeSession{}, "/proj")
+	m = m.applyEvent(cli.StreamEvent{
+		Kind: "mcp_status",
+		MCPServers: []proto.MCPServerStatus{
+			{Name: "filesystem", Status: "ready", ToolCount: 2, Transport: "stdio"},
+		},
+	})
+	var mc mcpStatusEntry
+	var found bool
+	for _, e := range m.entries {
+		if x, ok := e.(mcpStatusEntry); ok {
+			mc, found = x, true
 		}
-		assert.True(t, found, "mcp_status must render a server-status entry")
-		require.Len(t, mc.servers, 1)
-		assert.Equal(t, "filesystem", mc.servers[0].Name)
 	}
+	assert.True(t, found, "mcp_status must render a server-status entry")
+	require.Len(t, mc.servers, 1)
+	assert.Equal(t, "filesystem", mc.servers[0].Name)
+}
 
-	// ---- T34a: /sessions /restore ----
+// ---- T34a: /sessions /restore ----
 
-	// TestModel_CommandSessions_SendsFrame proves /sessions sends session_list.
-	func TestModel_CommandSessions_SendsFrame(t *testing.T) {
-		rec := &recordingSession{}
-		m := newModel(rec, "/proj")
-		mm, _ := m.runCommand("/sessions")
-		_ = mm.(model)
-		require.Len(t, rec.frames, 1)
-		assert.Equal(t, "session_list", rec.frames[0].Type)
-	}
+// TestModel_CommandSessions_SendsFrame proves /sessions sends session_list.
+func TestModel_CommandSessions_SendsFrame(t *testing.T) {
+	rec := &recordingSession{}
+	m := newModel(rec, "/proj")
+	mm, _ := m.runCommand("/sessions")
+	_ = mm.(model)
+	require.Len(t, rec.frames, 1)
+	assert.Equal(t, "session_list", rec.frames[0].Type)
+}
 
-	// TestModel_Sessions_RendersList proves a sessions event fills the pending
-	// sessionsEntry in place.
-	func TestModel_Sessions_RendersList(t *testing.T) {
-		m := newModel(&fakeSession{}, "/proj")
-		// Pre-create the entry (cmdSessions does this).
-		m.entries = append(m.entries, &sessionsEntry{})
-		m = m.applyEvent(cli.StreamEvent{
-			Kind: "sessions",
-			Sessions: []proto.SessionInfo{
-				{ID: "abc123", Title: "my chat", CreatedAt: 1000000, UpdatedAt: 1000001, MsgCount: 3},
-				{ID: "def456", Title: "debug", CreatedAt: 1000002, UpdatedAt: 1000003, MsgCount: 1},
-			},
-		})
-		se := m.lastSessionsEntry()
-		require.NotNil(t, se, "sessionsEntry must exist")
-		require.Len(t, se.sessions, 2)
-		assert.Equal(t, "abc123", se.sessions[0].ID)
-		assert.Equal(t, "my chat", se.sessions[0].Title)
-		assert.Equal(t, 3, se.sessions[0].MsgCount)
-		assert.Equal(t, "def456", se.sessions[1].ID)
+// TestModel_Sessions_RendersList proves a sessions event fills the pending
+// sessionsEntry in place.
+func TestModel_Sessions_RendersList(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	// Pre-create the entry (cmdSessions does this).
+	m.entries = append(m.entries, &sessionsEntry{})
+	m = m.applyEvent(cli.StreamEvent{
+		Kind: "sessions",
+		Sessions: []proto.SessionInfo{
+			{ID: "abc123", Title: "my chat", CreatedAt: 1000000, UpdatedAt: 1000001, MsgCount: 3},
+			{ID: "def456", Title: "debug", CreatedAt: 1000002, UpdatedAt: 1000003, MsgCount: 1},
+		},
+	})
+	se := m.lastSessionsEntry()
+	require.NotNil(t, se, "sessionsEntry must exist")
+	require.Len(t, se.sessions, 2)
+	assert.Equal(t, "abc123", se.sessions[0].ID)
+	assert.Equal(t, "my chat", se.sessions[0].Title)
+	assert.Equal(t, 3, se.sessions[0].MsgCount)
+	assert.Equal(t, "def456", se.sessions[1].ID)
 
-		// Verify the rendered output contains session data.
-		rendered := se.render(80, m.spinner)
-		assert.Contains(t, rendered, "stored sessions")
-		assert.Contains(t, rendered, "abc123")
-		assert.Contains(t, rendered, "my chat")
-	}
+	// Verify the rendered output contains session data.
+	rendered := se.render(80, m.spinner)
+	assert.Contains(t, rendered, "stored sessions")
+	assert.Contains(t, rendered, "abc123")
+	assert.Contains(t, rendered, "my chat")
+}
 
 // TestModel_CommandRestore_SendsFrame proves /restore sends restore_session.
 func TestModel_CommandRestore_SendsFrame(t *testing.T) {
@@ -780,7 +780,7 @@ func TestModel_CommandStats_RoutesSessionReply(t *testing.T) {
 
 	// The session-list reply arrives.
 	m = m.applyEvent(cli.StreamEvent{
-		Kind: "sessions",
+		Kind:     "sessions",
 		Sessions: []proto.SessionInfo{{ID: "s1", Title: "t", TokensIn: 5, TokensOut: 5}},
 	})
 	assert.Nil(t, m.pendingStatsEntry, "reply must clear pendingStatsEntry")
@@ -865,7 +865,6 @@ func TestFeaturesEntryRendersStageOwnerAndDisabled(t *testing.T) {
 	assert.Contains(t, out, "disabled")
 	assert.Contains(t, out, "runtime")
 }
-
 
 // TestCmdHelpEntry_PreRendered verifies the cmdHelpEntry constructed by
 // newCmdHelpEntry contains the localized title and each command from the

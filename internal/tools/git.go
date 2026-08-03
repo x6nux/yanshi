@@ -66,9 +66,9 @@ func runGitStatus(ctx context.Context, argsJSON string) (string, error) {
 	root := WorkRootFromContext(ctx)
 	spec := secproc.SecureProcessSpec{
 		Tool: "git_status", Program: "git", Dir: root,
-		Args:            []string{"-c", "core.quotepath=false", "status", "--porcelain=v2", "-z", "--untracked-files=all"},
-		Env:             gitEnvIsolation(root),
-		UseSandboxTier:  sandbox.ReadOnly,
+		Args:           []string{"-c", "core.quotepath=false", "status", "--porcelain=v2", "-z", "--untracked-files=all"},
+		Env:            gitEnvIsolation(root),
+		UseSandboxTier: sandbox.ReadOnly,
 	}
 	res, err := secureCommandRunner(ctx, spec, 10*time.Second)
 	if err != nil {
@@ -123,9 +123,9 @@ func collectGitDiffFiles(ctx context.Context, root string, args gitDiffArgs) ([]
 		// Include staged changes
 		cachedSpec := secproc.SecureProcessSpec{
 			Tool: "git_diff", Program: "git", Dir: root,
-			Args:            []string{"-c", "core.quotepath=false", "diff", "--cached", "--numstat", "-z", "--no-ext-diff", "--"},
-			Env:             gitEnvIsolation(root),
-			UseSandboxTier:  sandbox.ReadOnly,
+			Args:           []string{"-c", "core.quotepath=false", "diff", "--cached", "--numstat", "-z", "--no-ext-diff", "--"},
+			Env:            gitEnvIsolation(root),
+			UseSandboxTier: sandbox.ReadOnly,
 		}
 		res, err := secureCommandRunner(ctx, cachedSpec, 10*time.Second)
 		if err != nil {
@@ -135,9 +135,9 @@ func collectGitDiffFiles(ctx context.Context, root string, args gitDiffArgs) ([]
 		// Include untracked files
 		untrackedSpec := secproc.SecureProcessSpec{
 			Tool: "git_diff", Program: "git", Dir: root,
-			Args:            []string{"-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard", "-z"},
-			Env:             gitEnvIsolation(root),
-			UseSandboxTier:  sandbox.ReadOnly,
+			Args:           []string{"-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard", "-z"},
+			Env:            gitEnvIsolation(root),
+			UseSandboxTier: sandbox.ReadOnly,
 		}
 		res, err = secureCommandRunner(ctx, untrackedSpec, 10*time.Second)
 		if err != nil {

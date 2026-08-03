@@ -96,7 +96,7 @@ func (m model) pickerPopup() string {
 		}
 		b.WriteString("\n")
 	}
-		b.WriteString("  " + toolMeta.Render("↑↓ jk navigate · enter select · esc cancel") + "\n")
+	b.WriteString("  " + toolMeta.Render("↑↓ jk navigate · enter select · esc cancel") + "\n")
 	return b.String()
 }
 
@@ -144,51 +144,51 @@ func (m *model) reflow() {
 	if yp := m.yoloPopup(); yp != "" {
 		yoloH = blockHeight(yp, m.width)
 	}
-		pickerH := 0
-		if pp := m.sessionPickerPopup(); pp != "" {
-			pickerH = blockHeight(pp, m.width)
-		}
-		cmdPickerH := 0
-		if pp := m.pickerPopup(); pp != "" {
-			cmdPickerH = blockHeight(pp, m.width)
-		}
-		queueH := 0
+	pickerH := 0
+	if pp := m.sessionPickerPopup(); pp != "" {
+		pickerH = blockHeight(pp, m.width)
+	}
+	cmdPickerH := 0
+	if pp := m.pickerPopup(); pp != "" {
+		cmdPickerH = blockHeight(pp, m.width)
+	}
+	queueH := 0
 	if qp := m.queuePreview(); qp != "" {
 		queueH = blockHeight(qp, m.width)
 	}
-		// C2 — UX7: toast block height. Toasts render between the viewport and
-		// the status line (above all popups) so they overlay the transcript
-		// without displacing input. The blockHeight is the wrapped height of
-		// the rendered stack (one row per toast + the leading blank separator).
-		toastH := 0
-		if tb := m.toasts.render(m.width); tb != "" {
-			toastH = blockHeight(tb, m.width)
-		}
-		// C2 — UX1: action palette popup height. The palette overlays the
-		// viewport like toast/picker — when open, reserve its blockHeight so
-		// the transcript viewport shrinks and the JoinVertical total stays
-		// exactly terminal-height.
-		actionH := 0
-		if ap := m.actionPopup(); ap != "" {
-			actionH = blockHeight(ap, m.width)
-		}
-		// C2 — UX2: F1 help panel. Modal popup; reserve its height when open.
-		// NOTE: not calling helpPopup here because it transitively reads
-		// commandTable, which creates an init cycle (commandTable → cmdModel →
-		// sendControlFrame → reflow → helpPopup → renderHelp → commandTable).
-		// We compute the height from the cached helpRendered string instead,
-		// refreshed on each KeyMsg that mutates help state.
-		helpH := 0
-		if m.helpVisible && m.helpRendered != "" {
-			helpH = blockHeight(m.helpRendered, m.width)
-		}
-		// C2 — UX6: history search popup (Alt+R). Modal; reserve height.
-		historyH := 0
-		if hp := m.historyPopup(); hp != "" {
-			historyH = blockHeight(hp, m.width)
-		}
-		m.viewport.Width = m.width
-		m.viewport.Height = max(3, m.height-footerH-inputH-statusH-paletteH-permH-yoloH-pickerH-cmdPickerH-queueH-toastH-actionH-helpH-historyH)
+	// C2 — UX7: toast block height. Toasts render between the viewport and
+	// the status line (above all popups) so they overlay the transcript
+	// without displacing input. The blockHeight is the wrapped height of
+	// the rendered stack (one row per toast + the leading blank separator).
+	toastH := 0
+	if tb := m.toasts.render(m.width); tb != "" {
+		toastH = blockHeight(tb, m.width)
+	}
+	// C2 — UX1: action palette popup height. The palette overlays the
+	// viewport like toast/picker — when open, reserve its blockHeight so
+	// the transcript viewport shrinks and the JoinVertical total stays
+	// exactly terminal-height.
+	actionH := 0
+	if ap := m.actionPopup(); ap != "" {
+		actionH = blockHeight(ap, m.width)
+	}
+	// C2 — UX2: F1 help panel. Modal popup; reserve its height when open.
+	// NOTE: not calling helpPopup here because it transitively reads
+	// commandTable, which creates an init cycle (commandTable → cmdModel →
+	// sendControlFrame → reflow → helpPopup → renderHelp → commandTable).
+	// We compute the height from the cached helpRendered string instead,
+	// refreshed on each KeyMsg that mutates help state.
+	helpH := 0
+	if m.helpVisible && m.helpRendered != "" {
+		helpH = blockHeight(m.helpRendered, m.width)
+	}
+	// C2 — UX6: history search popup (Alt+R). Modal; reserve height.
+	historyH := 0
+	if hp := m.historyPopup(); hp != "" {
+		historyH = blockHeight(hp, m.width)
+	}
+	m.viewport.Width = m.width
+	m.viewport.Height = max(3, m.height-footerH-inputH-statusH-paletteH-permH-yoloH-pickerH-cmdPickerH-queueH-toastH-actionH-helpH-historyH)
 	m.refresh()
 	// Re-clamp YOffset after a Height change. A GotoBottom from an event that
 	// arrived BEFORE WindowSizeMsg (e.g. fetchInitialStatus) runs against the
@@ -330,25 +330,25 @@ func (m model) renderScreen() string {
 		blocks = append(blocks, pp)
 	}
 	if sp := m.sessionPickerPopup(); sp != "" {
-			blocks = append(blocks, sp)
-		}
-		if cp := m.pickerPopup(); cp != "" {
-			blocks = append(blocks, cp)
-		}
-		// C2 — UX1: action palette (Ctrl+K). Rendered alongside other popups
-		// so it shares the same JoinVertical layout pipeline.
-		if ap := m.actionPopup(); ap != "" {
-			blocks = append(blocks, ap)
-		}
-		// C2 — UX2: F1 help panel. Rendered alongside other popups.
-		if hp := m.helpRendered; hp != "" {
-			blocks = append(blocks, hp)
-		}
-		// C2 — UX6: history search popup (Alt+R). Rendered alongside other popups.
-		if hp := m.historyPopup(); hp != "" {
-			blocks = append(blocks, hp)
-		}
-		if pb := m.paletteBlock(); pb != "" {
+		blocks = append(blocks, sp)
+	}
+	if cp := m.pickerPopup(); cp != "" {
+		blocks = append(blocks, cp)
+	}
+	// C2 — UX1: action palette (Ctrl+K). Rendered alongside other popups
+	// so it shares the same JoinVertical layout pipeline.
+	if ap := m.actionPopup(); ap != "" {
+		blocks = append(blocks, ap)
+	}
+	// C2 — UX2: F1 help panel. Rendered alongside other popups.
+	if hp := m.helpRendered; hp != "" {
+		blocks = append(blocks, hp)
+	}
+	// C2 — UX6: history search popup (Alt+R). Rendered alongside other popups.
+	if hp := m.historyPopup(); hp != "" {
+		blocks = append(blocks, hp)
+	}
+	if pb := m.paletteBlock(); pb != "" {
 		blocks = append(blocks, pb)
 	}
 	if qp := m.queuePreview(); qp != "" {
@@ -685,11 +685,11 @@ func (m model) statusHeader() string {
 		}
 		return segmentColors{fg: "255", bg: "236", bold: false}
 	}
-		var segs []segmentDef
-		var c segmentColors
+	var segs []segmentDef
+	var c segmentColors
 
-		// 1. Working directory.
-		if m.workDir != "" {
+	// 1. Working directory.
+	if m.workDir != "" {
 		c = tc("dir")
 		segs = append(segs, segmentDef{text: " " + m.workDir + " ", fg: c.fg, bg: c.bg, bold: c.bold})
 	}
