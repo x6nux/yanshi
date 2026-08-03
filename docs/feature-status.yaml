@@ -9,6 +9,8 @@
 # evidence: 终态条目必填。两种合法形态（校验规则见 internal/archtest/status_test.go）：
 #   - 文件引用: internal/foo/bar.go:123   （只校验文件存在，不校验行号）
 #   - 测试引用: internal/foo::TestName    （包路径，非文件路径）
+#   多条引用用「; 」分隔，每条独立校验。acceptance 有 N 条时应逐条给出覆盖它的
+#   测试 —— 只挂一条测试却宣称 done，等于用第一条验收冒充全部。
 
 - id: "A1/S06"
   package: "W5"
@@ -63,12 +65,22 @@
 # W1/Task 11：WS turn 从未设置 TurnOpts.PlanMode，plan 模式只改了权限回调措辞，
 # 模型仍拿到可写工具集。测试断言 tool_result 而非「文件不存在」—— 修复前后文件都不
 # 会出现，只有 tool_result 能区分「工具被过滤」与「工具跑了但被回调拒」。
+# 2026-08-04 复核：done → partial。原 evidence 只覆盖第 1 条验收。逐条结论：
+#   1 plan 模式禁编辑类工具 —— 覆盖（guard 白名单 / tools.Authorize 防火墙 / WS e2e 三层）
+#   2 计划可流式更新 ——【缺】每一跳（tool→work.Event→ServerFrame→proto）都有单测，
+#     但 TUI 的帧 switch（internal/cli/tui/model.go）没有 plan_update /
+#     checklist_update 分支，帧到不了用户；也没有任何端到端流式断言。
+#   3 确认后切执行且历史连续 ——【缺】完全无测试。/plan-off 的模式切回有测试
+#     （internal/cli/tui::TestCmdPlan_EnterAndExitWS），但没有任何测试断言
+#     plan→执行 切换后 connSession.history 连续。
+#   4 checklist 状态持久 —— 覆盖到 store/manager 层（SQLite 往返），但 update_plan
+#     工具层测试全部走 work.NewFakeManager()，工具→持久层这一段未接通验证。
 - id: "A2/G05"
   package: "W1"
-  verdict: done
+  verdict: partial
   title: "Plan mode + update_plan/checklist 工具"
   acceptance: "plan 模式禁编辑类工具；计划可流式更新；确认后切执行且历史连续；checklist 状态持久"
-  evidence: "internal/api/http::TestChatWS_ModePlan_ProducesReadOnlyTurn"
+  evidence: "internal/guard::TestPlanToolAllowed; internal/tools::TestAuthorize_PlanMode_DeniesWriteTools; internal/api/http::TestChatWS_ModePlan_ProducesReadOnlyTurn; internal/task/work::TestManagerChecklistAPIs"
 
 - id: "A3/C13"
   package: "W6"
@@ -119,12 +131,16 @@
 # W1/Task 9：role 此前只用于「空则回落 general」，RoleDef.AllowedTools 从不参与任何
 # 判断。现在 resolveSpawnRole 归一化 + 拒绝未知名（并枚举合法值）+ 返回 role ∩ caller
 # —— 角色只能收窄父代理的工具面，不能扩大，否则选角色就成了提权原语。
+# 2026-08-04 复核：保持 done，evidence 补齐到逐条对应（原来只挂第 3 条）。
+# 已知弱点（不足以推翻 done）：第 2 条只钉死了矩阵的 Policy 一半
+#   （ReadOnlyShell / WritePatterns），RoleDef.AllowedTools 的具体工具名列表
+#   没有任何测试逐字断言 —— 改写某个角色的工具清单不会让任何测试变红。
 - id: "B1/M05"
   package: "W1"
   verdict: done
   title: "子代理 7 角色"
   acceptance: "7 角色可选；权限矩阵符合；越权拒绝；别名大小写不敏感；未知值返回可接受集"
-  evidence: "internal/tools::TestSpawnIntersectsRoleWithCallerTools"
+  evidence: "internal/tools::TestRoleCatalogCoversSevenRoles; internal/tools::TestRoleAllowlistOnlyTightensParent; internal/tools::TestSpawnIntersectsRoleWithCallerTools; internal/tools::TestSpawnRoleNameIsCaseInsensitive; internal/tools::TestSpawnRejectsUnknownRoleAndListsValidOnes"
 
 - id: "B2/LSP1"
   package: "W6"
@@ -183,31 +199,51 @@
 #    注入 callback，故这九个工具在 SSE / v1 / task-agent 三条非交互式路径上恒被拒。
 #    门禁本身的测试：internal/tools::TestApprovalGatedToolsDeniedWithoutCallback。
 #    非交互式传输的预授权策略移交 W5。
+# 2026-08-04 复核：保持 done，evidence 换成逐条对应的测试。原来只挂
+# TestC1ToolsAreRegistered，那只证明 8 个工具进了注册表（第 1 条的一半）。
+# 已知弱点（不足以推翻 done）：第 4 条的持久化测试都在同一个 live store 上新建
+# Repository 做往返，没有「重开进程 / 重开文件 DB」的跨重启耐久性测试。
 - id: "C1/AU1"
   package: "W1"
   verdict: done
   title: "Automations（计划任务）"
   acceptance: "可创建计划任务；按时触发入队；生命周期可控；持久化；approval 门禁"
-  evidence: "internal/bootstrap::TestC1ToolsAreRegistered"
+  evidence: "internal/agent/automation::TestManagerCreateAssignsIDAndNextRun; internal/agent/automation::TestManagerRunNowIdempotentPerKey; internal/tools::TestAutomationCreateReadUpdatePauseResumeDeleteRun; internal/agent/automation::TestRepositorySaveLoadRoundTrip; internal/tools::TestApprovalGatedToolsDeniedWithoutCallback"
 
 # W1/Task 4 Step 7：agent_batch 与 automation_* 同一次装配接入；同样只在 WS 上可用
 # （见上条 C1/AU1 的 approval 说明）。
+# 2026-08-04 复核：保持 done，evidence 换成逐条对应的测试。
+# 已知弱点（不足以推翻 done）：第 2 条证明的是「超过 cap 的 spawn 被
+# SpawnErrCap 拒绝并退避重试」，没有任何测试观测同时在飞的峰值并发数。
+# 另注意 internal/agent/batch::TestRunnerCapsAtRegistryMaxConcurrent 名不副实
+# （3 行 / cap 4，从不触发上限），不能拿它当第 2 条的证据。
 - id: "C1/M07"
   package: "W1"
   verdict: done
   title: "CSV 批量 agent jobs"
   acceptance: "可提交批量任务；限并发；逐项结果+汇总可查"
-  evidence: "internal/bootstrap::TestC1ToolsAreRegistered"
+  evidence: "internal/tools::TestAgentBatchCSVInputEndToEnd; internal/agent/batch::TestRunnerSpawnCapExhausted; internal/agent/batch::TestRunnerPerItemErrorRetention"
 
 # W1/Task 2：BuildRLM 失败曾让整个 BuildC1 返回 error，于是没配 batch.rlm_model 的
 # 部署连带丢掉八个 automation 工具与 agent_batch。改为软降级（RLM 置 nil + Warnings），
 # 与 VCS 初始化、插件发现相同的非致命启动失败处理方式。
+# 2026-08-04 复核：done → partial。原 evidence
+# （internal/bootstrap::TestBuildC1RLMDegradesWithoutModel）断言的是
+# components.RLM == nil，即 rlm_query 压根没被构造 —— 与四条验收无一对应。
+# 换成真实覆盖的测试后逐条结论：
+#   1 1-16 并发 —— 覆盖（>16 被拒）
+#   2 顺序对应 —— 覆盖
+#   3 cap 生效 —— 覆盖
+#   4 成本显著低于 sub-agent ——【缺】无任何度量。SelectRLMModel 强制
+#     cost_class=cheap 只是「声明便宜」，不是「实测更便宜」；没有任何测试或
+#     基准比较 rlm_query 与 agent_spawn 的 token / 费用。这一条不达标，
+#     故整条保持 partial（与 B1/M04b、G/VISION-TOOL、A1/T07/T08 同一把尺子）。
 - id: "C1/RLM1"
   package: "W1"
-  verdict: done
+  verdict: partial
   title: "rlm_query 批量并行 LLM"
   acceptance: "1-16 并发；顺序对应；cap 生效；成本显著低于 sub-agent"
-  evidence: "internal/bootstrap::TestBuildC1RLMDegradesWithoutModel"
+  evidence: "internal/tools::TestRLMQueryRejectsMoreThanSixteen; internal/agent/rlm::TestRunUsesGenerateAndPreservesOrder; internal/agent/rlm::TestRunCapsConcurrencyAtSixteen"
 
 - id: "C2/UX1"
   package: "W8"
@@ -402,12 +438,23 @@
 # 路径谁都没调它。图像扇出收敛进 TurnOpts，在 EventsWithHistoryOpts 内统一施加。
 # 证据选「不改写调用方 history」这条：WS turn 循环为 schema 校验/task_end 重试会把
 # 同一个 cs.history 切片重复传入，就地扇出会让每次重试都往持久会话历史里再追加一份图。
+# 2026-08-04 复核：done → partial。原 evidence 断言的是 images 不污染调用方
+# history（copy-on-write 回归），是第 1 条里最弱的一个候选，且完全不碰 2/3 条。
+# 逐条结论：
+#   1 主多模态图直达 —— 覆盖（e2e + 单测 + WS/SSE/v1 三条传输）
+#   2 主非多模态+有辅助：占位+image_describe 走通 ——【缺接缝】占位入 store
+#     与 image_describe 按 id 取图各自有测试，但没有任何测试把 ApplyImages 产出的
+#     img-N 喂给同一个 store 上的 image_describe，「走通」未被证明。
+#   3 无辅助：error 而非静默 ——【缺，且是实现缺口不只是测试缺口】
+#     ApplyImages 根本不看 visionAux：主非多模态 + 无辅助时照样插占位、不报错；
+#     只有模型恰好调用 image_describe 时才拿到配置错误串。turn / API 层无错误。
+#     唯一相关测试是工具层的 internal/tools::TestImageDescribeNoAuxReturnsConfigError。
 - id: "G/VISION"
   package: "W1"
-  verdict: done
+  verdict: partial
   title: "能力声明 + 辅助模型 + turn 分流"
   acceptance: "主多模态：图直接通过消息内容到达；主非多模态+有辅助：占位+image_describe 走通；无辅助：error 而非静默"
-  evidence: "internal/agent/orchestrator::TestEventsWithHistoryOpts_ImagesDoNotMutateCallerHistory"
+  evidence: "internal/agent/orchestrator::TestE2E_MultimodalMainDirectlyUnderstandsImage; internal/agent/orchestrator::TestE2E_NonMultimodalMainUsesPlaceholderAndStore; internal/tools::TestImageDescribeByIDReturnsAuxDescription; internal/tools::TestImageDescribeNoAuxReturnsConfigError"
 
 # 与 B1/M04b 用同一把尺子：验收要求「五入口各自可产生图像附件」**且**「费用纳入 /cost」。
 # 入口 B 的 TUI 触发面移交 W8，/cost 移交 W7 —— 两条都未做，故保持 partial。

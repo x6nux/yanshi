@@ -26,7 +26,6 @@ import (
 	"github.com/x6nux/yanshi/internal/auth"
 	"github.com/x6nux/yanshi/internal/config"
 	"github.com/x6nux/yanshi/internal/features"
-	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/imagestore"
 	"github.com/x6nux/yanshi/internal/instruct"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
@@ -270,49 +269,6 @@ func parseCooldownDuration(s string) time.Duration {
 		return 0
 	}
 	return d
-}
-
-// DefaultOrchestratorProfile returns the factory-default permission profile
-// for the orchestrator. The orchestrator no longer falls back to
-// Tools={"*"}: when the operator did not configure profiles.orchestrator, we
-// ship this concrete "coding" profile naming the tools the orchestrator
-// actually uses, so a forgotten profile block stays least-privilege rather
-// than fail-open. Operators who need shell/net widening must declare it in
-// config.yaml.
-//
-// Exported so GOV5 (internal/bootstrap/wiring_test.go) can compare the
-// shipped allow list against the shipped tool registry without having to
-// reach into Build.
-func DefaultOrchestratorProfile() guard.PermissionProfile {
-	return guard.PermissionProfile{
-		Tools: guard.ToolsPerm{Allow: []string{
-			// NB: "fs_patch" and "fs_mkdir" used to be listed here and were
-			// dropped — neither has ever been a registered tool. The patch
-			// tool's real name is "apply_patch" (internal/tools/fs.go:99),
-			// which is already allowed below; there is no mkdir tool at all.
-			"fs_read", "fs_list", "fs_search", "fs_glob", "fs_write", "fs_edit",
-			"shell_run", "shell_start", "shell_read", "shell_write_stdin", "shell_wait", "shell_cancel",
-			"task_shell_start", "task_shell_wait", "task_shell_stdin", "task_shell_cancel",
-			"memory_search", "memory_recall", "memory_write",
-			"web_fetch", "web_search", "time_now", "skill_use", "vcs_*",
-			"agent_start", "workflow_start", "analysis", "summarize",
-			"apply_patch",
-			// B3 developer tools
-			"git_status", "git_diff", "run_tests", "diagnostics",
-			"github_pr_context", "github_comment", "github_approve", "github_merge",
-			"review",
-			// C1. Spelled out one by one rather than as "automation_*": GOV5's
-			// phantom-name check skips any entry containing a wildcard, so a
-			// glob here would silently re-open the hole W0 just closed. Note
-			// these eight are additionally approval-gated at call time
-			// (NewApprovalGuardedTool), so listing them here authorizes
-			// discovery, not unattended execution.
-			"automation_create", "automation_list", "automation_read", "automation_update",
-			"automation_pause", "automation_resume", "automation_delete", "automation_run",
-			"agent_batch", "rlm_query",
-		}},
-		Net: guard.NetPerm{Allow: true},
-	}
 }
 
 // Build loads configuration and wires every component together.
@@ -695,10 +651,18 @@ func Build(opts Options) (*App, error) {
 	allTools = append(allTools, agentTools.Review)
 
 	// Build orchestrator with a profile resolved from config.
+	//
+	// usingDefaultProfile records whether the operator overrode it: only the
+	// factory default gets extended with the conditionally-registered tools
+	// further down (see extendProfileWithConditionalTools). The extension must
+	// wait for the toolNames snapshot, which is not taken until the whole
+	// registry — C1 included — has been assembled.
 	profile := DefaultOrchestratorProfile()
+	usingDefaultProfile := true
 	if cfg.Profiles != nil {
 		if p, ok := cfg.Profiles["orchestrator"]; ok {
 			profile = p
+			usingDefaultProfile = false
 		}
 	}
 
@@ -867,6 +831,13 @@ func Build(opts Options) (*App, error) {
 			return nil, fmt.Errorf("tool registry: Info failed: %w", err)
 		}
 		toolNames = append(toolNames, info.Name)
+	}
+
+	// Authorize the conditionally-registered tools that this boot actually
+	// got. Derived from the snapshot above, so the allow list cannot name a
+	// tool the registry does not hold.
+	if usingDefaultProfile {
+		profile = extendProfileWithConditionalTools(profile, toolNames)
 	}
 
 	// Load project-level prompt file (AGENT.md > CLAUDE.md) as the default

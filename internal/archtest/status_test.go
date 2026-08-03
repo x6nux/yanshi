@@ -87,10 +87,16 @@ func testExistsInPkg(t *testing.T, pkgDir, testName string) bool {
 	return false
 }
 
-// checkEvidence validates one evidence string and returns "" when valid or a
+// checkEvidence validates an evidence string and returns "" when valid or a
 // human-readable reason when not.
 //
-// Two legal forms:
+// An entry may cite SEVERAL references separated by ";". That is not
+// cosmetic: acceptance criteria are conjunctions ("1-16 并发；顺序对应；cap
+// 生效"), and a single-reference field quietly encouraged citing the test for
+// the FIRST clause and calling the whole entry done. Splitting here means an
+// entry can name one test per clause and every one of them is checked.
+//
+// Each reference takes one of two legal forms:
 //
 //	internal/foo/bar.go:123   file reference — path must exist; the line
 //	                          number is NOT checked (it drifts with any
@@ -99,6 +105,20 @@ func testExistsInPkg(t *testing.T, pkgDir, testName string) bool {
 //	internal/foo::TestName    test reference — PACKAGE path, not file path
 func checkEvidence(t *testing.T, root, ev string) string {
 	t.Helper()
+	refs := strings.Split(ev, ";")
+	if len(refs) > 1 {
+		for _, ref := range refs {
+			ref = strings.TrimSpace(ref)
+			if ref == "" {
+				return "empty reference in a \";\"-separated evidence list"
+			}
+			if reason := checkEvidence(t, root, ref); reason != "" {
+				return reason
+			}
+		}
+		return ""
+	}
+	ev = strings.TrimSpace(ev)
 	if strings.Contains(ev, "::") {
 		parts := strings.SplitN(ev, "::", 2)
 		pkgDir := filepath.Join(root, filepath.FromSlash(parts[0]))

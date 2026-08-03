@@ -3,7 +3,9 @@ package bootstrap_test
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -49,8 +51,12 @@ func TestAppExposesToolNames(t *testing.T) {
 // than a config quirk: buildMinimalApp runs with FakeModel: true, and
 // SelectRLMModel returns the fake when batch.rlm_model is unset, so rlm_query
 // must register on this path. If it went missing, the fake model never reached
-// BuildC1 — and rlm_query would become a phantom name in the default profile,
-// which GOV5 forbids with no exemption available (the table is removal-only).
+// BuildC1.
+//
+// Note this is the FAKE shape. rlm_query does NOT register in the production
+// shape (no fake, no batch.rlm_model) — that asymmetry is precisely why it
+// lives in bootstrap.ConditionalProfileTools rather than in the static default
+// allow list, and why TestGOV5ProductionProfileHasNoPhantomNames exists.
 func TestC1ToolsAreRegistered(t *testing.T) {
 	app := buildMinimalApp(t)
 
@@ -79,35 +85,29 @@ func TestC1ToolsAreRegistered(t *testing.T) {
 // registered — fails the test.
 var toolWiringExceptions = map[string]string{}
 
-// TestGOV5ProfileAllowMatchesToolRegistry verifies the default orchestrator
-// profile does not authorize tools that were never registered.
-//
-// A name in the allow list that has no registered tool is worse than a
-// missing feature: anyone reading the profile concludes the capability
-// exists. The audit missed this entirely; the 2026-08-03 re-verification
-// found nine such names.
-//
-// The phantom set depends on the config buildMinimalApp uses — several tools
-// register conditionally (that config yields 59). A different config can
-// shift the set, so treat the exemption table as tied to this harness.
-func TestGOV5ProfileAllowMatchesToolRegistry(t *testing.T) {
-	app := buildMinimalApp(t)
-
-	registered := make(map[string]bool, len(app.ToolNames))
+// registeredSet indexes an App's tool registry snapshot for name lookup.
+func registeredSet(t *testing.T, app *bootstrap.App) map[string]bool {
+	t.Helper()
+	set := make(map[string]bool, len(app.ToolNames))
 	for _, n := range app.ToolNames {
-		registered[n] = true
+		set[n] = true
 	}
-	require.NotEmpty(t, registered, "tool registry must not be empty")
+	require.NotEmpty(t, set, "tool registry must not be empty")
+	return set
+}
 
-	allowed := bootstrap.DefaultOrchestratorProfile().Tools.Allow
-
+// phantomNames returns the sorted allow-list entries that name no registered
+// tool, skipping wildcards (unmatchable by exact name) and exempted entries.
+//
+// Shared by every GOV5 assertion so "what counts as a phantom" has exactly one
+// definition: the fake-shape check, the production-shape check, and any future
+// config shape must agree, or the strictest one is decorative.
+func phantomNames(allowed []string, registered map[string]bool) []string {
 	var phantom []string
-	concrete := make(map[string]bool)
 	for _, name := range allowed {
 		if strings.ContainsAny(name, "*?[") {
-			continue // wildcard entries cannot be checked by exact name
+			continue
 		}
-		concrete[name] = true
 		if registered[name] {
 			continue
 		}
@@ -117,6 +117,35 @@ func TestGOV5ProfileAllowMatchesToolRegistry(t *testing.T) {
 		phantom = append(phantom, name)
 	}
 	sort.Strings(phantom)
+	return phantom
+}
+
+// TestGOV5ProfileAllowMatchesToolRegistry verifies the default orchestrator
+// profile does not authorize tools that were never registered.
+//
+// A name in the allow list that has no registered tool is worse than a
+// missing feature: anyone reading the profile concludes the capability
+// exists. The audit missed this entirely; the 2026-08-03 re-verification
+// found nine such names.
+//
+// This is the FAKE shape (buildMinimalApp runs FakeModel: true), and it is
+// deliberately only half the check — a name that registers here but not in
+// production is invisible to it. TestGOV5ProductionProfileHasNoPhantomNames
+// covers the other half.
+func TestGOV5ProfileAllowMatchesToolRegistry(t *testing.T) {
+	app := buildMinimalApp(t)
+
+	registered := registeredSet(t, app)
+
+	allowed := bootstrap.DefaultOrchestratorProfile().Tools.Allow
+
+	concrete := make(map[string]bool)
+	for _, name := range allowed {
+		if !strings.ContainsAny(name, "*?[") {
+			concrete[name] = true
+		}
+	}
+	phantom := phantomNames(allowed, registered)
 	if len(phantom) > 0 {
 		t.Errorf("GOV5: default profile allows %d tool(s) that are NOT registered — "+
 			"the profile advertises capabilities that do not exist:\n  %s\n\n"+
@@ -148,6 +177,14 @@ func TestGOV5ProfileAllowMatchesToolRegistry(t *testing.T) {
 	// Wildcards are re-applied here (they were skipped in the phantom check
 	// above) so vcs_commit and friends are not reported as unauthorized when
 	// "vcs_*" already covers them.
+	//
+	// ConditionalProfileTools names are excluded: they are absent from the
+	// STATIC list by design and added to the EFFECTIVE profile by
+	// extendProfileWithConditionalTools, so reporting them here would be a
+	// standing false positive that trains readers to ignore this list.
+	for _, n := range bootstrap.ConditionalProfileTools() {
+		concrete[n] = true
+	}
 	var unauthorized []string
 	for _, n := range app.ToolNames {
 		if concrete[n] {
@@ -171,6 +208,157 @@ func TestGOV5ProfileAllowMatchesToolRegistry(t *testing.T) {
 			"forgotten authorization:\n  %s",
 			len(unauthorized), strings.Join(unauthorized, "\n  "))
 	}
+}
+
+// buildAppWithProviders boots an App in the PRODUCTION model shape and returns
+// it: Options.FakeModel is false AND cfg.llm.providers is non-empty, so
+// bootstrap.Build takes the real-provider branch and leaves fakeChatModel nil.
+//
+// That nil is the whole point. SelectRLMModel reads a non-nil fake as
+// permission to skip the cheap-provider requirement, so every test that boots
+// through buildMinimalApp (FakeModel: true) silently gets an RLM whether or
+// not batch.rlm_model is configured — which is exactly how a profile entry for
+// a tool that production never registers survived GOV5.
+//
+// ProviderBuilder is stubbed with fakeProviderBuilder so this needs no API
+// keys: it substitutes the provider TRANSPORT, not the fake-model BRANCH, so
+// the config-shaped decisions under test are the production ones.
+func buildAppWithProviders(t *testing.T, extraYAML string) *bootstrap.App {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgContent := `
+server:
+  http_addr: "127.0.0.1:0"
+storage:
+  sqlite_path: "` + toYAMLPath(filepath.Join(dir, "test.db")) + `"
+token: "test-token"
+` + extraYAML
+	require.NoError(t, os.WriteFile(cfgPath, []byte(cfgContent), 0o644))
+	app, err := bootstrap.Build(bootstrap.Options{
+		ConfigPath:      cfgPath,
+		ProviderBuilder: fakeProviderBuilder,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, app)
+	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
+	return app
+}
+
+// productionNoRLMYAML is the shape that broke: a real (non-fake) provider and
+// NO batch.rlm_model, which is what a deployment that never opted into RLM
+// looks like. BuildC1 then warns and leaves C1Components.RLM nil.
+const productionNoRLMYAML = `
+llm:
+  providers:
+    - name: main
+      model: main-model
+      cost_class: expensive
+`
+
+// TestGOV5ProductionProfileHasNoPhantomNames is GOV5 for the shape the
+// fake-model harness structurally cannot see.
+//
+// TestGOV5ProfileAllowMatchesToolRegistry builds with FakeModel: true, which
+// makes SelectRLMModel hand back the fake and register rlm_query no matter
+// what the config says. A production deployment that never set
+// batch.rlm_model gets no rlm_query at all — so a hard-coded "rlm_query" in
+// the default allow list was a phantom name in the majority deployment while
+// the governance test stayed green. This asserts on the EFFECTIVE profile
+// (what the orchestrator was actually handed) against the EFFECTIVE registry,
+// so it cannot be satisfied by filing a name under a different list.
+func TestGOV5ProductionProfileHasNoPhantomNames(t *testing.T) {
+	app := buildAppWithProviders(t, productionNoRLMYAML)
+	registered := registeredSet(t, app)
+
+	// Precondition: this really is the divergent shape. If rlm_query were
+	// registered here the test would pass vacuously and prove nothing.
+	require.False(t, registered["rlm_query"],
+		"harness broken: rlm_query registered without batch.rlm_model, so this is "+
+			"not the production shape and the assertion below is vacuous")
+	require.True(t, registered["agent_batch"],
+		"C1 must still be wired — only rlm_query degrades on a missing cheap provider")
+
+	effective := app.Orch.Profile().Tools.Allow
+	if phantom := phantomNames(effective, registered); len(phantom) > 0 {
+		t.Errorf("GOV5 (production shape): the orchestrator's EFFECTIVE profile allows "+
+			"%d tool(s) that this boot never registered:\n  %s\n\n"+
+			"Fix: move the name into bootstrap.ConditionalProfileTools so it is derived "+
+			"from the registry snapshot, or register the tool unconditionally. Do NOT "+
+			"register an always-failing stub just to occupy the name.",
+			len(phantom), strings.Join(phantom, "\n  "))
+	}
+	require.NotContains(t, effective, "rlm_query",
+		"rlm_query must not be authorized in a boot that never registered it")
+
+	// Generic invariant: nothing conditional may be hard-coded in the static
+	// default, whatever the set grows to.
+	static := bootstrap.DefaultOrchestratorProfile().Tools.Allow
+	for _, name := range bootstrap.ConditionalProfileTools() {
+		require.NotContainsf(t, static, name,
+			"%q is conditionally registered but hard-coded in DefaultOrchestratorProfile — "+
+				"that is the phantom-name bug this split exists to prevent", name)
+	}
+}
+
+// TestGOV5ConditionalToolAuthorizedWhenRegistered is the other direction: the
+// conditional split must not silently DE-authorize a tool that is present.
+//
+// Without this, "delete rlm_query from the allow list" would also pass
+// TestGOV5ProductionProfileHasNoPhantomNames — a profile that authorizes
+// nothing has no phantoms. Here a cheap provider is configured, so rlm_query
+// registers, and the effective profile must name it or the tool is dead on
+// arrival: guard denies it and the model gets a permission error for a
+// capability the operator explicitly paid to enable.
+func TestGOV5ConditionalToolAuthorizedWhenRegistered(t *testing.T) {
+	// name == model on purpose: einollm.BuildProviders keys the registry by
+	// model id while SelectRLMModel's cost_class check matches provider.Name,
+	// so equal values exercise BOTH halves of the selection.
+	app := buildAppWithProviders(t, `
+llm:
+  providers:
+    - name: cheap-model
+      model: cheap-model
+      cost_class: cheap
+batch:
+  rlm_model: "cheap-model"
+`)
+	registered := registeredSet(t, app)
+	require.True(t, registered["rlm_query"],
+		"batch.rlm_model names a cheap provider — rlm_query must register")
+
+	effective := app.Orch.Profile().Tools.Allow
+	require.Contains(t, effective, "rlm_query",
+		"rlm_query is registered but not authorized — extendProfileWithConditionalTools "+
+			"did not run, so the tool is unreachable behind guard")
+	require.Empty(t, phantomNames(effective, registered),
+		"the extended profile must still name only registered tools")
+}
+
+// TestGOV5OperatorProfileIsNotWidened proves the conditional extension applies
+// only to the factory default.
+//
+// An operator who writes profiles.orchestrator has made an explicit
+// least-privilege statement. Appending tools they did not name would turn a
+// deliberate restriction into a silent grant — the same fail-open posture the
+// concrete default profile replaced.
+func TestGOV5OperatorProfileIsNotWidened(t *testing.T) {
+	app := buildAppWithProviders(t, `
+llm:
+  providers:
+    - name: cheap-model
+      model: cheap-model
+      cost_class: cheap
+batch:
+  rlm_model: "cheap-model"
+profiles:
+  orchestrator:
+    tools:
+      allow: ["fs_read"]
+`)
+	require.True(t, registeredSet(t, app)["rlm_query"], "harness: rlm_query must be registered")
+	require.Equal(t, []string{"fs_read"}, app.Orch.Profile().Tools.Allow,
+		"an operator-declared profile must be used verbatim, never widened")
 }
 
 // TestGOV7EditToolsAreRegistered verifies every name in guard's allow-edits

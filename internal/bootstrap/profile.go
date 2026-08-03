@@ -1,0 +1,130 @@
+// Package bootstrap — the factory-default permission profile.
+//
+// This file holds DefaultOrchestratorProfile and the machinery that keeps its
+// allow list in step with the tool registry Build actually assembles. It lives
+// apart from bootstrap.go for the reason c1wiring.go gives: bootstrap.go is
+// within ~50 lines of the 1000-code-line GOV2 ceiling and lineExceptions is an
+// empty, removal-only map, so there is no exemption to spend on it.
+//
+// It is also the more cohesive home: authorization (the allow list) and
+// registration (App.ToolNames) are one invariant, and GOV5 exists precisely
+// because they used to drift.
+package bootstrap
+
+import (
+	"github.com/x6nux/yanshi/internal/guard"
+)
+
+// ConditionalProfileTools names the tools that bootstrap.Build registers only
+// when a runtime precondition holds, and that the default profile therefore
+// must NOT hard-code.
+//
+// Everything in DefaultOrchestratorProfile is a name Build registers on every
+// boot. A conditionally-registered tool listed there is a phantom name in the
+// exact deployments where the condition fails — GOV5 cannot see it, because
+// GOV5 builds one app and a phantom that only appears under another config is
+// structurally invisible to it.
+//
+// Today the set holds one name:
+//
+//   - rlm_query — needs an explicitly configured cheap provider
+//     (batch.rlm_model, see SelectRLMModel). Absent it, BuildC1 warns, leaves
+//     C1Components.RLM nil, and wireC1 registers automation_* and agent_batch
+//     without it. That is the DEFAULT config, so hard-coding "rlm_query" in
+//     the profile made the shipped default advertise a tool most deployments
+//     never get.
+//
+// The eight automation_* tools and agent_batch stay in the static list on
+// purpose: their only degradation path is a wireC1 error, which BuildC1 can
+// only produce from a nil registry or nil adapter — arguments Build always
+// supplies non-nil. If that ever stops being true, the production-shaped GOV5
+// assertion (TestGOV5ProductionProfileHasNoPhantomNames) reddens, because it
+// checks the EFFECTIVE profile against the EFFECTIVE registry rather than
+// trusting which list a name was filed under.
+//
+// Do NOT "fix" a conditional tool by registering an always-failing stub so the
+// name is always present: a tool that cannot do its job is a placeholder, and
+// an allow list that names it is lying in a second way.
+func ConditionalProfileTools() []string {
+	return []string{"rlm_query"}
+}
+
+// extendProfileWithConditionalTools returns p with every ConditionalProfileTools
+// name that is ACTUALLY in registered appended to the allow list.
+//
+// This is the single source that keeps authorization and registration in step:
+// a conditional tool can only be authorized in a boot where it exists, because
+// the allow entry is derived from the registry snapshot rather than written
+// down next to it.
+//
+// It is applied ONLY to the factory default. An operator who declares
+// profiles.orchestrator has made an explicit least-privilege statement, and
+// silently widening it with tools they did not name would defeat the point.
+func extendProfileWithConditionalTools(p guard.PermissionProfile, registered []string) guard.PermissionProfile {
+	have := make(map[string]bool, len(registered))
+	for _, n := range registered {
+		have[n] = true
+	}
+	// Copy before appending: p.Tools.Allow comes from DefaultOrchestratorProfile,
+	// whose slice literal has spare capacity in no defined amount — appending in
+	// place would be fine today and aliasing tomorrow.
+	allow := make([]string, len(p.Tools.Allow), len(p.Tools.Allow)+len(ConditionalProfileTools()))
+	copy(allow, p.Tools.Allow)
+	for _, name := range ConditionalProfileTools() {
+		if have[name] {
+			allow = append(allow, name)
+		}
+	}
+	p.Tools.Allow = allow
+	return p
+}
+
+// DefaultOrchestratorProfile returns the factory-default permission profile
+// for the orchestrator. The orchestrator no longer falls back to
+// Tools={"*"}: when the operator did not configure profiles.orchestrator, we
+// ship this concrete "coding" profile naming the tools the orchestrator
+// actually uses, so a forgotten profile block stays least-privilege rather
+// than fail-open. Operators who need shell/net widening must declare it in
+// config.yaml.
+//
+// INVARIANT: every concrete name here is registered by Build on EVERY boot.
+// Tools whose registration depends on config belong in ConditionalProfileTools
+// instead, where extendProfileWithConditionalTools adds them back only when
+// they were really registered.
+//
+// Exported so GOV5 (internal/bootstrap/wiring_test.go) can compare the
+// shipped allow list against the shipped tool registry without having to
+// reach into Build.
+func DefaultOrchestratorProfile() guard.PermissionProfile {
+	return guard.PermissionProfile{
+		Tools: guard.ToolsPerm{Allow: []string{
+			// NB: "fs_patch" and "fs_mkdir" used to be listed here and were
+			// dropped — neither has ever been a registered tool. The patch
+			// tool's real name is "apply_patch" (internal/tools/fs.go:99),
+			// which is already allowed below; there is no mkdir tool at all.
+			"fs_read", "fs_list", "fs_search", "fs_glob", "fs_write", "fs_edit",
+			"shell_run", "shell_start", "shell_read", "shell_write_stdin", "shell_wait", "shell_cancel",
+			"task_shell_start", "task_shell_wait", "task_shell_stdin", "task_shell_cancel",
+			"memory_search", "memory_recall", "memory_write",
+			"web_fetch", "web_search", "time_now", "skill_use", "vcs_*",
+			"agent_start", "workflow_start", "analysis", "summarize",
+			"apply_patch",
+			// B3 developer tools
+			"git_status", "git_diff", "run_tests", "diagnostics",
+			"github_pr_context", "github_comment", "github_approve", "github_merge",
+			"review",
+			// C1. Spelled out one by one rather than as "automation_*": GOV5's
+			// phantom-name check skips any entry containing a wildcard, so a
+			// glob here would silently re-open the hole W0 just closed. Note
+			// these eight are additionally approval-gated at call time
+			// (NewApprovalGuardedTool), so listing them here authorizes
+			// discovery, not unattended execution.
+			"automation_create", "automation_list", "automation_read", "automation_update",
+			"automation_pause", "automation_resume", "automation_delete", "automation_run",
+			"agent_batch",
+			// NB: "rlm_query" is deliberately NOT here — it registers only when
+			// batch.rlm_model names a cheap provider. See ConditionalProfileTools.
+		}},
+		Net: guard.NetPerm{Allow: true},
+	}
+}
