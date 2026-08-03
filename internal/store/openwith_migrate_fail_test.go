@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/x6nux/yanshi/internal/testutil"
 )
 
 // TestOpenWith_MigrateFailsOnReadOnlyDB exercises the migrate() error path
@@ -36,6 +38,7 @@ func TestOpenWith_MigrateFailsOnReadOnlyDB(t *testing.T) {
 	}
 
 	// Step 4: make the file read-only so schema creation fails.
+	testutil.SkipIfRoot(t) // root bypasses the 0444 guard below
 	if err := os.Chmod(path, 0444); err != nil {
 		t.Fatal(err)
 	}

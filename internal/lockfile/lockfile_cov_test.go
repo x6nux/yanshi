@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/x6nux/yanshi/internal/testutil"
 )
 
 // TestRead_DirectoryInsteadOfFile verifies that Read returns a non-ErrNotExist
@@ -88,6 +90,7 @@ func TestAcquire_StaleReclaimWriteFailure(t *testing.T) {
 	require.NoError(t, err)
 
 	// Make the lockfile read-only so the overwrite attempt fails.
+	testutil.SkipIfRoot(t) // root bypasses the 0444 guard below
 	require.NoError(t, os.Chmod(p, 0o444))
 	t.Cleanup(func() {
 		_ = os.Chmod(p, 0o644) // restore before removal

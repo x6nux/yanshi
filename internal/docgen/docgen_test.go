@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/x6nux/yanshi/internal/testutil"
 )
 
 func TestWrap(t *testing.T) {
@@ -108,6 +110,7 @@ func TestRewriteBlock_WriteReadOnlyTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Make the file read-only so WriteFile fails.
+	testutil.SkipIfRoot(t) // root bypasses the 0444 guard below
 	if err := os.Chmod(path, 0o444); err != nil {
 		t.Skipf("chmod failed: %v", err)
 	}

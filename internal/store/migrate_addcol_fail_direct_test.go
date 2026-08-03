@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/x6nux/yanshi/internal/testutil"
 )
 
 // TestMigrate_AddColumnFailurePaths exercises the return-err branches inside
@@ -77,6 +79,7 @@ func TestMigrate_AddColumnFailurePaths(t *testing.T) {
 			s := &Store{DB: rawDB}
 
 			// Step 4: make file read-only so ALTER TABLE ADD COLUMN fails.
+			testutil.SkipIfRoot(t) // root bypasses the 0444 guard below
 			require.NoError(t, os.Chmod(path, 0444))
 			t.Cleanup(func() { os.Chmod(path, 0644) })
 

@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/x6nux/yanshi/internal/testutil"
 )
 
 // ---- pure helpers --------------------------------------------------------
@@ -221,6 +223,7 @@ func TestWriteAllHelpSnapshotsRewriteBlockError(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(seed), 0o644))
 	// Make the file read-only so docgen.RewriteBlock's os.WriteFile fails. The
 	// cleanup restores write permission so t.TempDir's removal can delete it.
+	testutil.SkipIfRoot(t) // root bypasses the 0444 guard below
 	require.NoError(t, os.Chmod(path, 0o444))
 	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
 
