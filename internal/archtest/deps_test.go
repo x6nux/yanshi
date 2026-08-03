@@ -56,6 +56,13 @@ var portAllowlists = map[string]map[string]bool{
 // portExceptions maps (portPkg → forbiddenDep → remediation reason) for
 // known, time-boxed allowlist violations. Each entry must be removed when
 // the listed remediation is complete.
+//
+// Same semantics as the other exemption tables: entries may only be REMOVED,
+// and a dead entry — the port no longer imports the dep, so the exemption
+// excuses nothing — fails TestR2_PortAllowlist. Without that check a finished
+// remediation leaves a standing permit behind, and the next accidental import
+// of that dep is waved through by an exemption whose stated reason has already
+// been discharged.
 var portExceptions = map[string]map[string]string{
 	ip("internal/store"): {
 		ip("internal/auth"):    "store persists auth_metadata; pending type migration",
@@ -93,6 +100,15 @@ var serverCoreSet = []string{
 
 // fanOutExempt lists packages exempt from the 25-fan-out limit in R4(b).
 // These are naturally high-fan-out packages (composition root, tool hub).
+//
+// Unlike portExceptions / lineExceptions / assemblyExceptions this is NOT a
+// debt table and deliberately carries no dead-entry check. Those tables record
+// a violation someone intends to repair, so an entry that stops applying is
+// finished work and must go. This one records a permanent architectural role:
+// bootstrap is the composition root and tools is the tool hub, and both are
+// SUPPOSED to be hubs. Deleting an entry because the package momentarily
+// dipped under 25 dependencies would make the gate accuse the composition root
+// of being a second composition root as soon as it grew back.
 var fanOutExempt = map[string]bool{
 	ip("internal/bootstrap"): true,
 	ip("internal/tools"):     true,
@@ -160,9 +176,50 @@ func TestR2_PortAllowlist(t *testing.T) {
 	for _, v := range violations {
 		t.Error(v)
 	}
-	if len(violations) > 0 {
-		t.Fatalf("port allowlist violations: %d (see above)", len(violations))
+
+	dead := deadPortExceptions(graph, portExceptions, mp)
+	for _, d := range dead {
+		t.Error(d)
 	}
+
+	if len(violations)+len(dead) > 0 {
+		t.Fatalf("port allowlist problems: %d violation(s), %d dead exception(s) (see above)",
+			len(violations), len(dead))
+	}
+}
+
+// portImports reports whether portPkg directly imports dep in the graph.
+func portImports(graph map[string][]string, portPkg, dep string) bool {
+	for _, d := range graph[portPkg] {
+		if d == dep {
+			return true
+		}
+	}
+	return false
+}
+
+// deadPortExceptions returns one message per portExceptions entry whose
+// dependency no longer exists — the remediation landed and the permit outlived
+// it.
+func deadPortExceptions(
+	graph map[string][]string,
+	exceptions map[string]map[string]string,
+	mp string,
+) []string {
+	var dead []string
+	for portPkg, deps := range exceptions {
+		for dep, reason := range deps {
+			if portImports(graph, portPkg, dep) {
+				continue
+			}
+			dead = append(dead, fmt.Sprintf("GOV1: %s no longer imports %s, but "+
+				"portExceptions still permits it (%q) — DELETE the entry (no dead "+
+				"exemptions); leaving it standing re-authorises the dependency the "+
+				"remediation just removed", short(portPkg, mp), short(dep, mp), reason))
+		}
+	}
+	sort.Strings(dead)
+	return dead
 }
 
 // checkPortAllowlist examines each port package in allowlists against the
@@ -221,20 +278,19 @@ func checkPortAllowlist(
 //     exception MUST be removed (no dead entries).
 //  3. If config does NOT depend on guard and no exception exists, GOV1
 //     compliance is achieved.
+//
+// Invariant 2 is the named-pair case of the general dead-exemption check in
+// TestR2_PortAllowlist (deadPortExceptions); both share portImports so the two
+// can never disagree about what "still depends on" means. This test survives
+// as a distinct assertion because config→guard carries a specific remediation
+// (P3/P4) that deserves its own message.
 func TestR3_W2ConfigMustNotDependOnGuard(t *testing.T) {
 	graph := buildImportGraph(t)
 
 	configPkg := ip("internal/config")
 	guardPkg := ip("internal/guard")
 
-	deps := graph[configPkg]
-	dependsOnGuard := false
-	for _, dep := range deps {
-		if dep == guardPkg {
-			dependsOnGuard = true
-			break
-		}
-	}
+	dependsOnGuard := portImports(graph, configPkg, guardPkg)
 
 	exc := portExceptions[configPkg]
 	_, hasException := exc[guardPkg]

@@ -8,6 +8,7 @@ package archtest
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -45,10 +46,48 @@ func TestVSCodeExtensionRemoved(t *testing.T) {
 // reader always lands on the same sentence.
 const d2Tombstone = "D2/O12 已作废"
 
-// d2Mentions are the strings that name the deleted deliverable. "ide-vscode"
-// is deliberately absent: it is a commit scope in docs/commit-convention.md,
-// not a claim that the extension ships.
-var d2Mentions = []string{"ide/vscode", "scripts/check-d2", "VS Code 扩展"}
+// d2Mentions are the patterns that name the deleted deliverable.
+//
+// The first two are the removed paths. The rest name the extension in prose,
+// and they must cover ENGLISH: this repository's README, docs/vcs.md,
+// docs/commit-convention.md and several specs have English bodies, so an
+// English sentence re-advertising the extension is the most likely way the
+// deliverable comes back — and D2/O12's second acceptance clause ("文档无对其
+// 作为交付物的描述") has no evidence other than this test. A Chinese-only
+// pattern set made that clause vacuous for exactly the documents most likely
+// to break it.
+//
+// The prose patterns pair the product name with the words "extension"/"plugin"
+// (or 扩展/插件) rather than matching "vscode" alone, because "vscode" alone
+// has legitimate live uses: ".vscode" in docs/vcs.md's ignore list, and
+// "ide-vscode" as a commit scope in docs/commit-convention.md. Neither is a
+// claim that the extension ships, and a word-level match would redden on both.
+//
+// Known limit: a sentence that describes the deliverable without ever putting
+// the product name next to "extension" ("a third front end for VS Code") slips
+// through. Widening further trades this gate's precision for recall, and a
+// gate that reddens on unrelated editor notes gets deleted; the residual risk
+// is left to review.
+var d2Mentions = []*regexp.Regexp{
+	regexp.MustCompile(`ide/vscode`),
+	regexp.MustCompile(`scripts/check-d2`),
+	// "VS Code 扩展", "VSCode 插件"
+	regexp.MustCompile(`(?i)vs[ _-]?code\s*(扩展|插件)`),
+	// "VS Code extension", "vscode extensions", "VS-Code plugin"
+	regexp.MustCompile(`(?i)vs[ _-]?code\s+(extension|plugin)s?\b`),
+	// "extension for VS Code", "plugin for VSCode"
+	regexp.MustCompile(`(?i)\b(extension|plugin)s?\s+for\s+vs[ _-]?code\b`),
+}
+
+// mentionsD2 reports whether body advertises the removed VS Code extension.
+func mentionsD2(body string) bool {
+	for _, re := range d2Mentions {
+		if re.MatchString(body) {
+			return true
+		}
+	}
+	return false
+}
 
 // d2HistoricalDocs are the documents allowed to keep mentioning the extension
 // because they ARE the record of it — audits, plans and specs are dated
@@ -85,7 +124,11 @@ var d2HistoricalDocs = map[string]string{
 // acceptance criteria.
 //
 // docs/archive/ is excluded wholesale by directory: it is a declared archive of
-// superseded roadmaps, not a description of the current product.
+// superseded roadmaps, not a description of the current product. reference/ is
+// excluded for a stronger reason — it is gitignored working material (upstream
+// codex / deepseek-tui checkouts kept for comparison), so it is not yanshi's
+// documentation at all and its authors' VS Code extensions are not ours to
+// disown.
 func TestVSCodeExtensionNotAdvertisedInDocs(t *testing.T) {
 	root := moduleRoot(t)
 	mentioned := map[string]bool{}
@@ -99,6 +142,7 @@ func TestVSCodeExtensionNotAdvertisedInDocs(t *testing.T) {
 		if d.IsDir() {
 			switch {
 			case rel == ".git", rel == "docs/archive", rel == "third_party",
+				rel == "reference",
 				strings.HasSuffix(rel, "/node_modules"), rel == "node_modules":
 				return filepath.SkipDir
 			}
@@ -112,14 +156,7 @@ func TestVSCodeExtensionNotAdvertisedInDocs(t *testing.T) {
 			return err
 		}
 		body := string(data)
-		hit := false
-		for _, m := range d2Mentions {
-			if strings.Contains(body, m) {
-				hit = true
-				break
-			}
-		}
-		if !hit {
+		if !mentionsD2(body) {
 			return nil
 		}
 		mentioned[rel] = true

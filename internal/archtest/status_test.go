@@ -150,7 +150,6 @@ func checkEvidence(t *testing.T, root, ev string) string {
 // mode that would make every other governance assertion pointless: flipping
 // a verdict to a terminal state without doing the work.
 func TestFeatureStatusLedgerIntegrity(t *testing.T) {
-	root := moduleRoot(t)
 	entries := loadLedger(t)
 
 	if len(entries) != ledgerSize {
@@ -186,11 +185,14 @@ func TestFeatureStatusLedgerIntegrity(t *testing.T) {
 		if e.Evidence.Empty() {
 			problems = append(problems, e.ID+": verdict "+e.Verdict+
 				" requires non-empty evidence")
-			continue
 		}
 		// Clause-by-clause auditing (reference validity, per-clause coverage,
-		// and the test-side handshake) lives in the GOV8 gate.
-		problems = append(problems, checkTerminalEvidence(t, root, e)...)
+		// and the test-side handshake) is TestLedgerEvidenceIsClauseComplete's
+		// job and is deliberately not repeated here: this test asks "is the
+		// ledger well-formed", GOV8 asks "is the evidence sufficient". Calling
+		// checkTerminalEvidence from both printed every clause-level finding
+		// twice, which reads like two independent failures and doubles the
+		// output a reader has to reconcile.
 	}
 
 	sort.Strings(problems)

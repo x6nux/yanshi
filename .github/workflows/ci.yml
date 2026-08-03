@@ -105,14 +105,20 @@ jobs:
         shell: bash
         run: ${{ matrix.os == 'windows' && './yanshi.exe -h' || './yanshi -h' }}
 
-  # --- hard gates: governance (GOV1-GOV6 + ledger) and fuzz/property ----------
+  # --- hard gates: archtest governance and fuzz/property ---------------------
   # Both were soft ("continue-on-error") while the E3 and E2 assets were being
-  # built. Those assets landed, and governance now also carries GOV4/GOV5/GOV6
+  # built. Those assets landed, and governance now also carries GOV4/GOV6/GOV8
   # plus the feature-status ledger assertions — a regression there is exactly
   # the failure mode W0 exists to prevent, so it must fail the build.
+  #
+  # This job runs ./internal/archtest ONLY, so it covers GOV1-GOV4, GOV6, GOV8
+  # and the D2/O12 removal assertions. GOV5 and GOV7 live in
+  # internal/bootstrap/wiring_test.go (they need a really-assembled App) and are
+  # carried by the main `go test ./...` job — naming them here would claim
+  # coverage this job does not have.
 
   governance:
-    name: governance (GOV1-GOV6 + ledger)
+    name: governance (archtest GOV1-GOV4/GOV6/GOV8 + ledger)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

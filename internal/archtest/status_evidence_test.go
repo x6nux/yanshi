@@ -47,8 +47,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -136,19 +138,20 @@ func splitRefs(v string) []string {
 
 // ledgerMarker is one "ledger: <ID>#<n> <clause>" claim found in a test's doc
 // comment.
+//
+// It carries only what the marker line itself says. Where the marker was found
+// is the caller's context in both directions — checkTerminalEvidence already
+// holds the package and test name it looked them up under, and the backward
+// walk in TestLedgerMarkersAreLive holds the path it is visiting — so fields
+// for that provenance would be written by whoever already knows it and read by
+// nobody.
 type ledgerMarker struct {
-	// Pkg is the module-relative package path, e.g. "internal/tools".
-	Pkg string
-	// Test is the test function whose doc comment carried the marker.
-	Test string
 	// ID is the ledger entry claimed, e.g. "C1/AU1".
 	ID string
 	// Clause is the 1-based acceptance clause index claimed.
 	Clause int
 	// Text is the clause text as transcribed into the comment.
 	Text string
-	// File is the module-relative path of the test file.
-	File string
 }
 
 // markerRe matches a marker line inside a doc comment. The ID group excludes
@@ -168,11 +171,26 @@ func parseMarkers(doc string) []ledgerMarker {
 	return out
 }
 
+// testDocsCache memoises testDocs by package directory.
+//
+// Both halves of the handshake ask the same packages the same question — the
+// forward pass once per evidence reference, the backward walk once per
+// *_test.go file in a package it has already parsed whole — so without a cache
+// internal/tools (and every other large test package) is re-parsed a dozen
+// times. Uncached, GOV8 alone cost ~3.5s of the archtest package's ~4.2s.
+var testDocsCache sync.Map // pkgDir -> map[string]string
+
 // testDocs returns, for every top-level test function declared in pkgDir, its
 // doc comment body keyed by function name.
+//
+// The returned map is shared with other callers and must not be mutated.
 func testDocs(t *testing.T, pkgDir string) map[string]string {
 	t.Helper()
+	if cached, ok := testDocsCache.Load(pkgDir); ok {
+		return cached.(map[string]string)
+	}
 	docs := map[string]string{}
+	defer func() { testDocsCache.Store(pkgDir, docs) }()
 	matches, err := filepath.Glob(filepath.Join(pkgDir, "*_test.go"))
 	if err != nil {
 		return docs
@@ -333,16 +351,19 @@ func TestLedgerMarkersAreLive(t *testing.T) {
 		}
 	}
 
+	// The walk visits DIRECTORIES, not files: testDocs already answers for a
+	// whole package, so descending per file would ask the same question once
+	// per *_test.go and report every finding that many times (the reason a
+	// dedup pass used to be needed here).
 	var problems []string
 	for _, dir := range []string{"internal", "cmd"} {
-		root := root
 		base := filepath.Join(root, dir)
 		err := filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() || !strings.HasSuffix(path, "_test.go") {
+			if err != nil || !d.IsDir() {
 				return err
 			}
-			pkgRel := filepath.ToSlash(mustRel(t, root, filepath.Dir(path)))
-			for name, doc := range testDocs(t, filepath.Dir(path)) {
+			pkgRel := filepath.ToSlash(mustRel(t, root, path))
+			for name, doc := range testDocs(t, path) {
 				for _, mk := range parseMarkers(doc) {
 					key := fmt.Sprintf("%s#%d", mk.ID, mk.Clause)
 					ref := pkgRel + "::" + name
@@ -366,7 +387,7 @@ func TestLedgerMarkersAreLive(t *testing.T) {
 		}
 	}
 
-	problems = dedup(problems)
+	sort.Strings(problems)
 	if len(problems) > 0 {
 		t.Errorf("stale or mistranscribed ledger markers (%d):\n  %s",
 			len(problems), strings.Join(problems, "\n  "))
@@ -381,20 +402,4 @@ func mustRel(t *testing.T, base, target string) string {
 		t.Fatal(err)
 	}
 	return rel
-}
-
-// dedup removes repeated strings, preserving first-seen order. The walk visits
-// every *_test.go in a package but testDocs already covers the whole package,
-// so findings would otherwise repeat once per file.
-func dedup(in []string) []string {
-	seen := make(map[string]bool, len(in))
-	out := in[:0]
-	for _, s := range in {
-		if seen[s] {
-			continue
-		}
-		seen[s] = true
-		out = append(out, s)
-	}
-	return out
 }
