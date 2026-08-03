@@ -50,7 +50,7 @@ go run ./cmd/gendocs -config docs/user-guide/configuration.md
 go run ./cmd/gendocs -help-all docs/user-guide/tui.md docs/user-guide/entrypoints.md
 ```
 
-**其余 dev 工具（不参与运行时）：** `cmd/depsanalyze` 打印 internal 包的 fan-in/fan-out、分层与风险标记；`cmd/agent-worker` 是连接 Task API 的独立远程 worker。
+**其余 dev 工具（不参与运行时）：** `cmd/depsanalyze` 打印 internal 包的 fan-in/fan-out、分层与风险标记；`cmd/agent-worker` 是连接 Task API 的独立远程 worker；`cmd/featurestatus` 读 `docs/feature-status.yaml` 打印 S0 功能状态统计（`-open` 只列未结项）。
 
 **CI 硬门禁（`.github/workflows/ci.yml`）：** `go test ./...`（ubuntu/windows/macos）、`go vet`、`go test -race`（逐包、最多 3 次重试 —— 真实 race 会 3/3 全挂，时序 flake 通常重试即过）、以及 `CGO_ENABLED=0` 的构建矩阵（含 `-tags=nokeyring`）加 `yanshi -h` 冒烟。`governance` 与 `fuzz-seed` 目前是 `continue-on-error` 的软门禁。
 
