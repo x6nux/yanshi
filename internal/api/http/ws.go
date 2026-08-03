@@ -379,9 +379,7 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 		cs.startedAt = time.Now()
 		// Default display model: the first registry name (sorted), shown in
 		// status frames until the user picks one with /model.
-		if names := sortedModelNames(models); len(names) > 0 {
-			cs.defaultModel = names[0]
-		}
+		cs.defaultModel = einollm.ResolveModelName(models, "")
 		// Seed the cost-known flag from the price table (N/A when the default
 		// model isn't priced). Subsequent turns AND-fold against this so any
 		// single unknown model flips the whole session to N/A.
@@ -651,10 +649,18 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 			// write-capable tool set. Reading it here (not per tool call) keeps
 			// one turn on one runner even if the user switches mode mid-turn.
 			turnMode, _ := cs.perm.get()
+			// ModelID/Images are the client's attachments reaching the model.
+			// displayModel() is the registry NAME of the model this turn runs on
+			// (the /model selection, else the session default) — the orchestrator
+			// needs it to decide between a native image part and a stored
+			// placeholder. Both fields are read here, once per turn, for the same
+			// reason PlanMode is: TurnOpts is the single entry point.
 			opts := orchestrator.TurnOpts{
 				Model:               cs.selectModel(models),
+				ModelID:             cs.displayModel(),
 				ThinkingEffort:      cs.thinking,
 				OutputSchema:        cf.OutputSchema,
+				Images:              cf.Images,
 				PlanMode:            turnMode == guard.ModePlan,
 				ConnectionSessionID: connectionSessionID,
 			}
@@ -963,7 +969,7 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 			case cf := <-frames:
 				switch cf.Type {
 				case "list_models":
-					conn.write(proto.NewModels(sortedModelNames(models)))
+					conn.write(proto.NewModels(einollm.SortedModelNames(models)))
 				case "set_model":
 					// Only honor names present in the registry. A nil map (the
 					// FakeModel path) or an unknown name leaves the session on

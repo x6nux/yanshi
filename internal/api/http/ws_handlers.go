@@ -4,7 +4,9 @@
 // Split from ws.go to keep that file under the 1000 pure-code-line cap.
 // Contains session CRUD handlers (list/restore/fork/rename/archive/delete),
 // skill management handlers (list/install/mutation), the MCP action handler,
-// the wsConn write wrapper, and sortedModelNames.
+// and the wsConn write wrapper. The model-registry name helpers live in
+// internal/llm/eino (einollm.SortedModelNames / ResolveModelName) so the SSE
+// and /api/v1 turn paths share the same fallback rule.
 
 package http
 
@@ -12,11 +14,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 
-	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/gorilla/websocket"
 
@@ -395,20 +395,6 @@ func handleArchivedSessionList(s *Server, conn *wsConn) {
 		})
 	}
 	conn.write(proto.NewSessions(info))
-}
-
-// sortedModelNames returns the model registry keys in sorted order for the
-// list_models reply. Returns nil for a nil/empty map.
-func sortedModelNames(models map[string]model.BaseChatModel) []string {
-	if len(models) == 0 {
-		return nil
-	}
-	names := make([]string, 0, len(models))
-	for name := range models {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
 }
 
 // wsConn wraps a gorilla WebSocket connection with a write mutex. gorilla/

@@ -12,6 +12,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/x6nux/yanshi/internal/agent/orchestrator"
+	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/store"
 )
@@ -310,7 +311,18 @@ func (s *Service) runTurn(ctx context.Context, st *threadState, ts *turnState, h
 		}
 	}
 	if s.orch != nil {
-		opts := orchestrator.TurnOpts{ThinkingEffort: p.Thinking, OutputSchema: p.OutputSchema}
+		// ModelID/Images carry the turn's attachments into the orchestrator's
+		// single image fan-out point. ModelID is a registry NAME, resolved with
+		// the shared fallback (einollm.ResolveModelName: the requested model,
+		// else the first sorted registry name) so an unset Model still names the
+		// model the turn actually runs on — the orchestrator needs that name to
+		// decide between a native image part and a stored text placeholder.
+		opts := orchestrator.TurnOpts{
+			ThinkingEffort: p.Thinking,
+			OutputSchema:   p.OutputSchema,
+			ModelID:        einollm.ResolveModelName(s.models, p.Model),
+			Images:         p.Images,
+		}
 		if p.Model != "" && s.models[p.Model] != nil {
 			opts.Model = s.models[p.Model]
 		}

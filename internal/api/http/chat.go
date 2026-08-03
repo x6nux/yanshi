@@ -53,6 +53,13 @@ func (s *Server) handleSSEInternal(w http.ResponseWriter, r *http.Request,
 		OutputSchema json.RawMessage `json:"output_schema,omitempty"`
 		ThreadID     string          `json:"thread_id,omitempty"`
 		TurnID       string          `json:"turn_id,omitempty"`
+		// Images carries image attachments for this turn, matching the WS
+		// ClientFrame.Images wire form. SSE keeps its own request struct (the
+		// shared frame vocabulary is ServerFrame only), so this field has to be
+		// declared here explicitly: json.Decode silently ignores unknown keys,
+		// which is exactly how attachments POSTed to SSE used to disappear
+		// without even a parse error.
+		Images []proto.ImageAttach `json:"images,omitempty"`
 	}
 	if err := json.NewDecoder(limitBody(w, r)).Decode(&req); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
@@ -129,25 +136,29 @@ func (s *Server) handleSSEInternal(w http.ResponseWriter, r *http.Request,
 	// Per-request model + thinking. An unknown/empty model name falls back
 	// to the orchestrator default (models[name] is nil for a nil map or an
 	// absent name); an unrecognized thinking effort is a no-op downstream.
+	// turnModel is the registry NAME this turn runs on: the requested model, else
+	// the first sorted registry name (einollm.ResolveModelName — the same
+	// fallback the WS session default and the /api/v1 turn path use). It feeds
+	// both TurnOpts.ModelID (which decides native image parts vs. stored
+	// placeholders) and the billing ledger below, so the model we describe to
+	// the orchestrator is the model we charge.
+	turnModel := einollm.ResolveModelName(models, req.Model)
 	opts := orchestrator.TurnOpts{
 		ThinkingEffort: req.Thinking,
 		OutputSchema:   req.OutputSchema,
+		ModelID:        turnModel,
+		Images:         req.Images,
 	}
 	if req.Model != "" && models[req.Model] != nil {
 		opts.Model = models[req.Model]
 	}
 
 	// C4 COST1 SSE billing. SSE is stateless across POSTs, so the ledger is
-	// per-request (not per-session like WS). billingModel is the name we
-	// actually charge — req.Model if set, else the first sorted registry name
-	// so an unset model still bills the orchestrator's default pick. This
-	// matches the WS path's resetBilling-on-default behavior.
-	billingModel := req.Model
-	if billingModel == "" {
-		if names := sortedModelNames(models); len(names) > 0 {
-			billingModel = names[0]
-		}
-	}
+	// per-request (not per-session like WS). We charge the SAME resolved name
+	// the turn declares (turnModel), so an unset model still bills the
+	// orchestrator's default pick — matching the WS path's
+	// resetBilling-on-default behavior.
+	billingModel := turnModel
 	var sseLedger einollm.Ledger
 	sseCostUSD := 0.0
 	_, sseCostKnown := s.priceTab[billingModel]

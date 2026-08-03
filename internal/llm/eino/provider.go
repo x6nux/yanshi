@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
@@ -128,4 +129,46 @@ func buildOne(ctx context.Context, p config.ProviderConfig) (model.BaseChatModel
 			HTTPClient: &http.Client{Transport: http.DefaultTransport},
 		})
 	}
+}
+
+// SortedModelNames returns the registry keys of a name→model map in sorted
+// order. Returns nil for a nil or empty map.
+//
+// Sorted (not map-iteration) order is what makes "the first name" a stable,
+// reproducible choice across processes — see ResolveModelName.
+func SortedModelNames(models map[string]model.BaseChatModel) []string {
+	if len(models) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(models))
+	for name := range models {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ResolveModelName resolves the registry name of the model a turn actually runs
+// on: `requested` when the caller named one, else the first name in sorted order
+// ("" when the registry is empty).
+//
+// This is the ONE definition of the empty-model fallback, shared by every turn
+// entry point (WS session default, SSE per-request model, /api/v1 turn params).
+// Those paths use the resolved name for user-visible status, for cost
+// attribution, and — since the image fan-out landed — to decide whether the turn
+// runs on a multimodal model, so a fallback that drifted between transports
+// would show one model, bill another, and drop attachments on a third.
+//
+// Note it resolves a NAME, not a model: an unknown `requested` name is returned
+// as-is rather than replaced. Selecting the model instance stays with the caller
+// (an absent name means "orchestrator default"), so an unrecognized name keeps
+// its existing meaning on every path.
+func ResolveModelName(models map[string]model.BaseChatModel, requested string) string {
+	if requested != "" {
+		return requested
+	}
+	if names := SortedModelNames(models); len(names) > 0 {
+		return names[0]
+	}
+	return ""
 }
