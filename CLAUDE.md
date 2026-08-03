@@ -86,9 +86,15 @@ go run ./cmd/gendocs -help-all docs/user-guide/tui.md docs/user-guide/entrypoint
 - **default / allow-edits**：普通拒绝弹窗询问；profile 策略拒绝（`ProfileHardDeny`）**静默拒绝**（`policy: "deny"` = 不问，直接拦）。
 - **plan**：只读，写操作一律拒绝。
 
-### 两种传输、一套通信协议（`internal/proto/frame.go`）
+**子进程发射：`secproc` 是**不受信程序**的强制入口，不是唯一的 `exec.Command*` 调用点。** 非测试代码里 `exec.Command*` 有 27 处 —— `internal/lsp/manager.go`、`internal/mcp/manager.go`、`internal/acp/spawn.go`、`internal/skills/install.go`、`cmd/yanshi/pr.go`（直接起 `gh`）等。约束以 `internal/secproc/secproc.go` 的包头为准，且**只覆盖不受信程序**：`shell_run`、ACP agent 这类必须走 `tools.LaunchSecureProcess` → `secproc.Launch` 以统一过 Authorize 防火墙（Authorizer 是 `tools` 包 `init` 填充的函数变量，`secproc` 因此保持叶子包）。现状与该约束仍有差距，**收敛归 W6**：`shell_run` 只在 context 绑了 factory 时走 `secproc`，否则回落到直接 pipe（`tools/shell.go:171`）；ACP agent 完全不经 `secproc`（`acp/spawn.go:148`）。shell v2 则是**有意的另一条**路径：`shell.Manager` 用 `shell.Config.Factory`（`SecureLaunchFactory`，`internal/shell/procfactory.go`）—— 接口、spec、返回值都与 `secproc.Factory` 不同，一个类型无法同时实现两者，鉴权改由九个工具各自在工具层 `Authorize(guard.Action{...})` 完成。**新增 shell v2 工具时务必自己带上 `Authorize`**，那里没有 `secproc` 兜底。
 
-WebSocket（`/api/v1/chat/ws`，主）与 SSE（`/api/v1/chat`，备）共用**同一套** JSON 帧词表（`ClientFrame`/`ServerFrame`）。新增事件类型时在此处加，以保持两种传输同步。关键不对称点：**WS 在服务端持有历史**（单一持久连接、双向 —— 取消、控制帧、交互式权限、流式压缩）；**SSE 每次请求回放客户端持有的历史**，且始终使用静态权限 profile。SSE handler 通过 `ServerFrame.SSEEvent()` 输出 `event:`/`data:` 行。新增一种帧类型 → 同时更新 `ws.go` 与 `ssebackend.go`。
+### 两种传输、共享的只有 `ServerFrame`（`internal/proto/frame.go`）
+
+WebSocket（`/api/v1/chat/ws`，主）与 SSE（`/api/v1/chat`，备）共用的是**同一套 `ServerFrame` 词表** —— **只有服务端→客户端方向共享**。新增一种*事件*帧 → 在 `frame.go` 加，并同时更新 `ws.go` 与 `ssebackend.go`，以保持两种传输同步。SSE handler 通过 `ServerFrame.SSEEvent()` 输出 `event:`/`data:` 行。
+
+**请求方向不共享 —— `ClientFrame` 只有 WS 在用。** SSE 用的是 `chat.go` handler 内自己的匿名请求结构体，v1（`internal/api/v1/types.go`）是第三套，两者都**从不** unmarshal `proto.ClientFrame`。所以给 `ClientFrame` 加一个请求字段对 SSE/v1 **完全无效**，必须在各自的请求结构体里再声明一次（`Images` 就是这么加的三处）。`json.Decode` 静默忽略未知键，漏加**不报任何错**，字段只是无声消失 —— 这正是图像附件 POST 给 SSE 时曾经发生的事。
+
+关键不对称点：**WS 在服务端持有历史**（单一持久连接、双向 —— 取消、控制帧、交互式权限、流式压缩）；**SSE 每次请求回放客户端持有的历史**，且始终使用静态权限 profile。
 
 ### 后端发现（`internal/cli/session.go`、`internal/lockfile`）
 
