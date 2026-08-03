@@ -787,6 +787,35 @@ func TestEventsWithHistoryOpts_OutputSchemaPassesOption(t *testing.T) {
 	assert.Empty(t, fm.ReceivedOutputSchema, "empty OutputSchema must not forward a schema option")
 }
 
+// TestEventsWithHistoryOpts_ThinkingAndSchemaCoexist pins the two per-turn
+// options against each other. adk.WithChatModelOptions ASSIGNS rather than
+// appends (eino v0.9.12 adk/chatmodel.go:99 `t.chatModelOptions = opts`), so
+// calling it once per option silently drops all but the last — reasoning
+// effort vanished whenever a turn also carried an output schema. Both WS
+// (ws.go, set_thinking + output_schema on the same frame) and the v1 service
+// can produce that combination, and the single-option tests above each miss it
+// because neither sets both.
+func TestEventsWithHistoryOpts_ThinkingAndSchemaCoexist(t *testing.T) {
+	fm := einollm.NewFakeModel([]string{"ok", "ok"}, nil)
+	fm.RecordOpts = true
+	o, err := New(Config{Model: fm})
+	require.NoError(t, err)
+
+	msgs := []*schema.Message{{Role: schema.User, Content: "hi"}}
+	schemaDoc := json.RawMessage(`{"type":"object","properties":{"x":{"type":"integer"}}}`)
+
+	drainAgentChunks(t, o.EventsWithHistoryOpts(context.Background(), msgs, TurnOpts{}))
+	baseline := len(fm.ReceivedOpts)
+
+	drainAgentChunks(t, o.EventsWithHistoryOpts(context.Background(), msgs,
+		TurnOpts{ThinkingEffort: "medium", OutputSchema: schemaDoc}))
+
+	require.Equal(t, baseline+2, len(fm.ReceivedOpts),
+		"thinking effort and output schema must BOTH survive; a count of baseline+1 means one overwrote the other")
+	assert.Equal(t, string(schemaDoc), string(fm.ReceivedOutputSchema),
+		"output schema must still reach the model when thinking effort is also set")
+}
+
 // drainAgentChunks drains an ADK event iterator (via ClassifyEvents) and returns
 // the concatenation of agent_chunk frame text. Fails the test on an error frame.
 func drainAgentChunks(t *testing.T, iter *adk.AsyncIterator[*adk.AgentEvent]) string {

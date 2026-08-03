@@ -490,12 +490,20 @@ type TurnOpts struct {
 func (o *Orchestrator) EventsWithHistoryOpts(ctx context.Context, messages []*schema.Message, opts TurnOpts) *adk.AsyncIterator[*adk.AgentEvent] {
 	ctx = o.withTurnContext(ctx, opts)
 
-	var runOpts []adk.AgentRunOption
+	// adk.WithChatModelOptions ASSIGNS the option slice rather than appending
+	// to it, so calling it twice drops the first set. Accumulate every
+	// per-turn model option here and hand them over in a single call — a turn
+	// can legitimately carry both a reasoning effort and an output schema.
+	var modelOpts []model.Option
 	if optPtr := einollm.ReasoningEffortOption(opts.ThinkingEffort); optPtr != nil {
-		runOpts = append(runOpts, adk.WithChatModelOptions([]model.Option{*optPtr}))
+		modelOpts = append(modelOpts, *optPtr)
 	}
 	if optPtr := einollm.OutputSchemaOption(opts.OutputSchema); optPtr != nil {
-		runOpts = append(runOpts, adk.WithChatModelOptions([]model.Option{*optPtr}))
+		modelOpts = append(modelOpts, *optPtr)
+	}
+	var runOpts []adk.AgentRunOption
+	if len(modelOpts) > 0 {
+		runOpts = append(runOpts, adk.WithChatModelOptions(modelOpts))
 	}
 
 	selectedModel := o.rawModel
