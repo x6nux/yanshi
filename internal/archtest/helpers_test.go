@@ -1,10 +1,14 @@
 // Package archtest provides zero-dependency test helpers for architecture
-// governance tests (GOV1/GOV2/GOV3). All files in this package are _test.go
-// files and live in package archtest.
+// governance tests (GOV1/GOV2/GOV3/GOV4/GOV6).
 //
-// The helpers rely exclusively on the standard library (go/parser, go/token,
-// go/ast, encoding/json, os/exec) to avoid import-cycle risk with the
-// internal packages they are designed to test.
+// The helpers in THIS FILE rely exclusively on the standard library
+// (go/parser, go/token, go/ast, encoding/json, os/exec) to avoid import-cycle
+// risk with the internal packages they are designed to test.
+//
+// One test in the package steps outside that rule: status_test.go reads
+// docs/feature-status.yaml with gopkg.in/yaml.v3. That dependency is already
+// in go.mod (internal/config uses it) and it parses a docs file rather than
+// any internal package, so it carries no cycle risk.
 package archtest
 
 import (
