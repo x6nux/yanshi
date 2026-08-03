@@ -1662,7 +1662,15 @@ func TestBuildMcpServersMarshalError(t *testing.T) {
 
 // TestSpawnCmdStartFailure verifies that Spawn fails when the agent binary
 // is not on PATH (cmd.Start failure).
+//
+// PATH is emptied rather than trusted to lack "opencode": on a dev box that
+// actually has it installed the spawn SUCCEEDS, and the test then failed on
+// the later initialize error instead — a false red that never reproduced in
+// CI's clean container. exec.LookPath reads the process PATH at exec.Command
+// time (not cmd.Env), so t.Setenv is enough to make resolution deterministic.
 func TestSpawnCmdStartFailure(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

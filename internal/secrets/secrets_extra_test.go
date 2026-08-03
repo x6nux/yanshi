@@ -774,14 +774,35 @@ func TestReplaceEncryptedFileOS(t *testing.T) {
 // cover Set/Get/Delete success plus the Available probe hit branch.
 // ---------------------------------------------------------------------------
 
+// requireKeyringWritable gates the round-trip tests on the keyring being
+// *writable*, which Available() does not prove. Available() probes with a Get,
+// and on macOS reading a missing item succeeds without authorization while
+// `security add-generic-password` returns exit status 36 in any
+// non-interactive session — so Available() said yes and Set then failed.
+// Available() must stay a pure read (`yanshi doctor` calls it and documents it
+// as side-effect-free), so the write probe lives here instead.
+//
+// Set YANSHI_E2E=1 — the same gate the acp/vcs e2e tests use — to turn the
+// skip into a failure on hosts where the keyring is expected to work.
+func requireKeyringWritable(t *testing.T, s Store, svc, acct string) {
+	t.Helper()
+	if err := s.Available(); err != nil {
+		t.Skipf("OS keyring unavailable on this host: %v", err)
+	}
+	if err := s.Set(svc, acct, "__writeprobe__"); err != nil {
+		if os.Getenv("YANSHI_E2E") == "1" {
+			t.Fatalf("keyring write probe failed under YANSHI_E2E=1: %v", err)
+		}
+		t.Skipf("OS keyring readable but not writable here (non-interactive session?): %v", err)
+	}
+}
+
 func TestKeyring_RoundTripWhenAvailable(t *testing.T) {
 	s := NewOSKeyringStore()
-	if err := s.Available(); err != nil {
-		t.Skipf("OS keyring unavailable on this host; skipping real round-trip: %v", err)
-	}
 	const svc = "__yanshi_test_cov__"
 	const acct = "__roundtrip__"
 	t.Cleanup(func() { _ = s.Delete(svc, acct) })
+	requireKeyringWritable(t, s, svc, acct)
 
 	if err := s.Set(svc, acct, "roundtrip-secret"); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -807,11 +828,10 @@ func TestKeyring_RoundTripWhenAvailable(t *testing.T) {
 // NotFound) and Available reports success via that path.
 func TestKeyring_AvailableProbeHit(t *testing.T) {
 	s := NewOSKeyringStore()
-	if err := s.Available(); err != nil {
-		t.Skipf("OS keyring unavailable; skipping probe-hit test: %v", err)
-	}
 	const probe = "__yanshi_probe__"
 	t.Cleanup(func() { _ = s.Delete(probe, probe) })
+	requireKeyringWritable(t, s, probe, probe)
+
 	if err := s.Set(probe, probe, "x"); err != nil {
 		t.Fatalf("set probe: %v", err)
 	}
