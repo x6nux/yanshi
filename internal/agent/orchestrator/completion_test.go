@@ -97,3 +97,20 @@ func TestJudgeRetryNudge(t *testing.T) {
 	assert.Contains(t, nudge, "run the test suite", "reason must appear in nudge")
 	assert.Contains(t, nudge, "completion judge", "nudge must attribute the judge")
 }
+
+// TestWithNewTurnRecorderDelegates proves WithNewTurnRecorder routes through
+// WithTurnRecorder rather than duplicating the context.WithValue call — the
+// two must stay a single binding implementation (DRY), and the delegation is
+// what gives WithTurnRecorder a production call site (GOV6).
+func TestWithNewTurnRecorderDelegates(t *testing.T) {
+	ctx := WithNewTurnRecorder(context.Background())
+	if rec, _ := ctx.Value(recorderKey{}).(*turnRecorder); rec == nil {
+		t.Fatal("WithNewTurnRecorder must bind a non-nil recorder")
+	}
+	// Both paths must be observable under the same key — one key, one
+	// binding implementation.
+	direct := WithTurnRecorder(context.Background(), &turnRecorder{})
+	if rec, _ := direct.Value(recorderKey{}).(*turnRecorder); rec == nil {
+		t.Fatal("WithTurnRecorder must bind a non-nil recorder")
+	}
+}

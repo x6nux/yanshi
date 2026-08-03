@@ -71,10 +71,14 @@ func (r *turnRecorder) load() []*schema.Message {
 	return r.messages
 }
 
-// WithTurnRecorder binds a turnRecorder into ctx. Callers (ws.go's turn loop)
-// bind a fresh recorder per turn; the recorder middleware writes to it during
-// the turn, and Orchestrator.JudgeCompletion reads it after. Returns ctx
-// unchanged when rec is nil (nil makes the binding a no-op).
+// WithTurnRecorder binds a turnRecorder into ctx. The recorder middleware
+// writes to it during the turn, and Orchestrator.JudgeCompletion reads it
+// after. Returns ctx unchanged when rec is nil (nil makes the binding a
+// no-op).
+//
+// This is the single binding implementation; WithNewTurnRecorder delegates
+// here. Production callers use WithNewTurnRecorder (ws.go's turn loop);
+// tests use this form when they need to inject a specific recorder.
 func WithTurnRecorder(ctx context.Context, rec *turnRecorder) context.Context {
 	if rec == nil {
 		return ctx
@@ -88,7 +92,7 @@ func WithTurnRecorder(ctx context.Context, rec *turnRecorder) context.Context {
 // itself stays unexported. The recorder middleware populates it during the
 // turn; JudgeCompletion(ctx) reads it after.
 func WithNewTurnRecorder(ctx context.Context) context.Context {
-	return context.WithValue(ctx, recorderKey{}, &turnRecorder{})
+	return WithTurnRecorder(ctx, &turnRecorder{})
 }
 
 // AfterModelRewriteState captures the ADK state's messages into the per-turn
