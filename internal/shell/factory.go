@@ -71,7 +71,13 @@ func (f DefaultSecureFactory) Start(ctx context.Context, spec secproc.SecureProc
 	if err != nil {
 		return nil, err
 	}
+	// proc.Wait is the reaper: Process.Wait already guarantees the
+	// *exec.ExitError-on-non-zero contract StartedProcess.Wait documents, so
+	// it forwards verbatim. Dropping it here (as an earlier revision did)
+	// leaves callers with an unreapable process — see
+	// TestRunSecureCaptureWithProductionFactory.
 	return &secproc.StartedProcess{
+		Wait:   proc.Wait,
 		PID:    proc.PID(),
 		Stdout: consoleReader{console},
 		Stderr: discardReader{},

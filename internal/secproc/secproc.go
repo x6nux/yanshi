@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
 
 	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/sandbox"
@@ -44,11 +43,19 @@ type SecureProcessSpec struct {
 	UseSandboxTier sandbox.AccessTier
 }
 
-// StartedProcess is what Factory.Start returns: the underlying *exec.Cmd for
-// Wait/Kill, the PID for logging, and merged/-separated stdout/stderr readers
-// the caller can pump into a ring buffer or stream back to the TUI.
+// StartedProcess is what Factory.Start returns: a reaper the caller must
+// invoke to collect the exit status, the PID for logging, and
+// merged/-separated stdout/stderr readers the caller can pump into a ring
+// buffer or stream back to the TUI.
+//
+// Wait is a func rather than an *exec.Cmd because not every Factory is
+// exec-backed (the PTY path hands back a shell.Process implementation that
+// owns its own reaping). Factories MUST populate it: a nil Wait means the
+// process can never be reaped, and callers fail closed rather than deref it.
+// Contract: Wait returns nil on a clean exit and *exec.ExitError on a
+// non-zero one, so callers can recover the exit code via errors.As.
 type StartedProcess struct {
-	Cmd    *exec.Cmd
+	Wait   func() error
 	PID    int
 	Stdout io.Reader
 	Stderr io.Reader

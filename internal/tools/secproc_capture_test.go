@@ -87,7 +87,7 @@ func (f *scriptedFactory) Start(ctx context.Context, spec secproc.SecureProcessS
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	return &secproc.StartedProcess{Cmd: cmd, PID: cmd.Process.Pid, Stdout: stdout, Stderr: stderr}, nil
+	return &secproc.StartedProcess{Wait: cmd.Wait, PID: cmd.Process.Pid, Stdout: stdout, Stderr: stderr}, nil
 }
 
 func (f *scriptedFactory) lastSpec() secproc.SecureProcessSpec {

@@ -70,7 +70,7 @@ func (realGitFactory) Start(ctx context.Context, spec secproc.SecureProcessSpec)
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	return &secproc.StartedProcess{Cmd: cmd, PID: cmd.Process.Pid, Stdout: stdout, Stderr: stderr}, nil
+	return &secproc.StartedProcess{Wait: cmd.Wait, PID: cmd.Process.Pid, Stdout: stdout, Stderr: stderr}, nil
 }
 
 func realGitCtx(t *testing.T, root string) context.Context {

@@ -68,6 +68,12 @@ func runSecureCapture(ctx context.Context, spec secproc.SecureProcessSpec, timeo
 	if err != nil {
 		return commandResult{}, err
 	}
+	// Fail closed on a Factory that forgot the reaper. Dereferencing it would
+	// panic the whole agent process, and every tool on this path (git_status /
+	// git_diff / run_tests / diagnostics / github_*) is model-reachable.
+	if started.Wait == nil {
+		return commandResult{}, errors.New("tools: Factory returned a process with no reaper (fail-closed)")
+	}
 	stdout := &boundedCapture{limit: secureCaptureLimit}
 	stderr := &boundedCapture{limit: secureCaptureLimit}
 	stdoutDone := drain(stdout, started.Stdout)
@@ -82,7 +88,7 @@ func runSecureCapture(ctx context.Context, spec secproc.SecureProcessSpec, timeo
 	// stdout/stderr (on exit or on context-cancel kill), then Wait reaps it.
 	stdoutErr := <-stdoutDone
 	stderrErr := <-stderrDone
-	waitErr := started.Cmd.Wait()
+	waitErr := started.Wait()
 	if stdoutErr != nil && stdoutErr != io.EOF {
 		return commandResult{}, stdoutErr
 	}
