@@ -34,12 +34,14 @@
 # W1/Task 7：九个 shell v2 工具此前编译进二进制但从未注册，且 shell.Config.Factory
 # 为 nil（任何 Start 都返回 "no process factory configured"）—— 装配断裂已修复，
 # 端到端测试走的是生产 SecureLaunchFactory，不是 fake。
-# ⚠️ 遗留（不在 W1 范围内，未随本条翻牌而消失）：StartPTYProcess 在所有平台仍返回
+# ⚠️ 保持 partial：验收含「进程树取消干净」，而 StartPTYProcess 在所有平台仍返回
 #    ErrPTYUnavailable（Phase 0）；unix 的 CanKillTreeOnPlatform()=true 但
-#    internal/shell/process.go 未设 Setpgid，故「进程树取消干净」尚未真正成立。
+#    internal/shell/process.go 未设 Setpgid —— 杀直接子进程不会杀孙进程。
+#    装配断裂已修（这部分是真的），但两条验收未兑现，故不翻 done。
+#    与 B1/M04b、G/VISION-TOOL 用同一把尺子。PTY 与 setpgid 移交 W6。
 - id: "A1/T07/T08"
   package: "W1"
-  verdict: done
+  verdict: partial
   title: "Shell runtime v2 + 后台 /jobs"
   acceptance: "长进程返回 session id；可续读/stdin；yield/timeout/输出上限/显式关闭；进程树取消干净；session 关闭按策略回收"
   evidence: "internal/bootstrap::TestShellV2EndToEndSpawnsRealProcess"
