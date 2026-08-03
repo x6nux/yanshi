@@ -15,7 +15,7 @@ func TestShellV2Read(t *testing.T) {
 	defer func() { _ = manager.Close() }()
 	ctx := contextWithShellPerms(t, manager, []string{"shell_start", "shell_read"})
 
-	v := NewShellV2Tools()
+	v := NewShellV2Tools(t.TempDir())
 	// Start a session first.
 	startOut, err := runTool(ctx, v.Start, `{"command":"echo hi"}`)
 	if err != nil {
@@ -37,7 +37,7 @@ func TestShellV2Write(t *testing.T) {
 	defer func() { _ = manager.Close() }()
 	ctx := contextWithShellPerms(t, manager, []string{"shell_start", "shell_write_stdin"})
 
-	v := NewShellV2Tools()
+	v := NewShellV2Tools(t.TempDir())
 	startOut, err := runTool(ctx, v.Start, `{"command":"echo hi"}`)
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +57,7 @@ func TestShellV2Wait(t *testing.T) {
 	defer func() { _ = manager.Close() }()
 	ctx := contextWithShellPerms(t, manager, []string{"shell_start", "shell_wait"})
 
-	v := NewShellV2Tools()
+	v := NewShellV2Tools(t.TempDir())
 	startOut, err := runTool(ctx, v.Start, `{"command":"echo hi"}`)
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +79,7 @@ func TestShellV2Cancel(t *testing.T) {
 	defer func() { _ = manager.Close() }()
 	ctx := contextWithShellPerms(t, manager, []string{"shell_start", "shell_cancel"})
 
-	v := NewShellV2Tools()
+	v := NewShellV2Tools(t.TempDir())
 	startOut, err := runTool(ctx, v.Start, `{"command":"echo hi"}`)
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +99,7 @@ func TestShellV2TaskStart(t *testing.T) {
 	defer func() { _ = manager.Close() }()
 	ctx := contextWithShellPerms(t, manager, []string{"task_shell_start"})
 
-	v := NewShellV2Tools()
+	v := NewShellV2Tools(t.TempDir())
 	out, err := runTool(ctx, v.TaskStart, `{"command":"echo hi"}`)
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +114,7 @@ func TestShellV2TaskWait(t *testing.T) {
 	defer func() { _ = manager.Close() }()
 	ctx := contextWithShellPerms(t, manager, []string{"task_shell_start", "task_shell_wait"})
 
-	v := NewShellV2Tools()
+	v := NewShellV2Tools(t.TempDir())
 	startOut, err := runTool(ctx, v.TaskStart, `{"command":"echo hi"}`)
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +134,7 @@ func TestShellV2TaskWrite(t *testing.T) {
 	defer func() { _ = manager.Close() }()
 	ctx := contextWithShellPerms(t, manager, []string{"task_shell_start", "task_shell_stdin"})
 
-	v := NewShellV2Tools()
+	v := NewShellV2Tools(t.TempDir())
 	startOut, err := runTool(ctx, v.TaskStart, `{"command":"echo hi"}`)
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +154,7 @@ func TestShellV2TaskCancel(t *testing.T) {
 	defer func() { _ = manager.Close() }()
 	ctx := contextWithShellPerms(t, manager, []string{"task_shell_start", "task_shell_cancel"})
 
-	v := NewShellV2Tools()
+	v := NewShellV2Tools(t.TempDir())
 	startOut, err := runTool(ctx, v.TaskStart, `{"command":"echo hi"}`)
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +170,7 @@ func TestShellV2TaskCancel(t *testing.T) {
 }
 
 func TestShellV2AllDeniedWithoutProfile(t *testing.T) {
-	v := NewShellV2Tools()
+	v := NewShellV2Tools(t.TempDir())
 	ctx := context.Background()
 	// Without profile, all tools should return permission denied.
 	tt := []struct {

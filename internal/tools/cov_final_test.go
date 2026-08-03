@@ -125,7 +125,7 @@ func TestCov_WebFetchNoPolicy(t *testing.T) {
 func TestCov_ShellV2NoManager(t *testing.T) {
 	ctx := WithProfile(context.Background(), guard.PermissionProfile{Tools: guard.ToolsPerm{Allow: []string{"*"}}})
 	ctx = WithPermissionCallback(ctx, func(PermissionRequest) PermissionDecision { return PermissionAllow })
-	v := NewShellV2Tools()
+	v := NewShellV2Tools(t.TempDir())
 
 	cases := []struct {
 		name string
@@ -653,7 +653,7 @@ func TestCov_ShellV2AuthorizeDeny(t *testing.T) {
 	// Profile allows only unrelated tool, so all shell tools get denied.
 	profile := guard.PermissionProfile{Tools: guard.ToolsPerm{Allow: []string{"fs_read"}}}
 	ctx := WithProfile(context.Background(), profile)
-	v := NewShellV2Tools()
+	v := NewShellV2Tools(t.TempDir())
 
 	cases := []struct {
 		name string

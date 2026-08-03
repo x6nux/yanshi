@@ -42,12 +42,21 @@ type shellReadArgs struct {
 type ShellV2Tools struct {
 	Start, Read, Write, Wait, Cancel           *GuardedTool
 	TaskStart, TaskWait, TaskWrite, TaskCancel *GuardedTool
+
+	// root is the work root: the destructive-deletion baseline handed to the
+	// guard and the fallback launch directory for workdir-less calls.
+	root string
 }
 
-// NewShellV2Tools builds the nine-tool shell v2 surface. Tools share nothing
-// at construction time; per-call state (session id, job id) is in args.
-func NewShellV2Tools() *ShellV2Tools {
-	v := &ShellV2Tools{}
+// NewShellV2Tools builds the nine-tool shell v2 surface, anchored at the work
+// root. Tools share nothing else at construction time; per-call state (session
+// id, job id) is in args.
+//
+// root is load-bearing for safety, not cosmetics: it is the baseline the guard's
+// destructive-deletion dimension classifies deletions against, and the directory
+// a session runs in when the caller omits "workdir" (mirroring legacy shell_run).
+func NewShellV2Tools(root string) *ShellV2Tools {
+	v := &ShellV2Tools{root: root}
 	v.Start = NewGuardedTool("shell_start", "Shell", "Start a persistent shell session.", 30*time.Second,
 		params(map[string]*schema.ParameterInfo{
 			"command": {Type: schema.String, Required: true},
@@ -113,12 +122,31 @@ func (v *ShellV2Tools) manager(ctx context.Context) (*shell.Manager, error) {
 	return m, nil
 }
 
+// effectiveWorkdir resolves the directory a launch actually runs in: the
+// caller's "workdir" arg when given, otherwise the work root (legacy shell_run
+// parity — an omitted workdir must NOT inherit the server process's cwd).
+//
+// The same value is handed to guard.Action.Workdir, because the destructive
+// deletion dimension classifies "inside vs outside the working directory"
+// against it: with an empty Workdir the guard fails safe and treats EVERY
+// absolute path as out-of-scope (prompting on each one) while losing the
+// "deleting the work root itself" judgement entirely. Keeping the guard's
+// baseline identical to the launch directory is what makes that classification
+// mean what it says.
+func (v *ShellV2Tools) effectiveWorkdir(argWorkdir string) string {
+	if argWorkdir != "" {
+		return argWorkdir
+	}
+	return v.root
+}
+
 func (v *ShellV2Tools) start(ctx context.Context, raw string) (string, error) {
 	var a shellStartArgs
 	if err := json.Unmarshal([]byte(raw), &a); err != nil {
 		return "", err
 	}
-	if err := Authorize(ctx, guard.Action{Tool: "shell_start", Shell: a.Command}, raw); err != nil {
+	wd := v.effectiveWorkdir(a.Workdir)
+	if err := Authorize(ctx, guard.Action{Tool: "shell_start", Shell: a.Command, Workdir: wd}, raw); err != nil {
 		return "", err
 	}
 	m, err := v.manager(ctx)
@@ -134,7 +162,7 @@ func (v *ShellV2Tools) start(ctx context.Context, raw string) (string, error) {
 		Command:   a.Command,
 		Program:   prog,
 		Args:      args,
-		Dir:       a.Workdir,
+		Dir:       wd,
 		PTY:       a.PTY,
 	})
 	if err != nil {
@@ -226,7 +254,8 @@ func (v *ShellV2Tools) taskStart(ctx context.Context, raw string) (string, error
 	if err := json.Unmarshal([]byte(raw), &a); err != nil {
 		return "", err
 	}
-	if err := Authorize(ctx, guard.Action{Tool: "task_shell_start", Shell: a.Command}, raw); err != nil {
+	wd := v.effectiveWorkdir(a.Workdir)
+	if err := Authorize(ctx, guard.Action{Tool: "task_shell_start", Shell: a.Command, Workdir: wd}, raw); err != nil {
 		return "", err
 	}
 	m, err := v.manager(ctx)
@@ -241,7 +270,7 @@ func (v *ShellV2Tools) taskStart(ctx context.Context, raw string) (string, error
 		Command: a.Command,
 		Program: prog,
 		Args:    args,
-		Dir:     a.Workdir,
+		Dir:     wd,
 	})
 	if err != nil {
 		return "", err
