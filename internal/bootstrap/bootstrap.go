@@ -88,6 +88,13 @@ type App struct {
 	// error before registry construction. Exposed for tests and diagnostics.
 	Skills *skills.Registry
 
+	// ToolNames lists the names of every tool registered with the
+	// orchestrator, in registration order. Populated by Build from the
+	// tools' own Info(). Exposed so GOV5 can assert the permission
+	// profile's allow list and the registry agree — the audit found the
+	// profile allowing nine shell tools that were never registered.
+	ToolNames []string
+
 	// AgentAPI is the versioned thread/turn/item service shared by HTTP and
 	// JSON-RPC app-server transports. Non-nil after a successful Build; the
 	// `yanshi app` subcommand consumes it directly.
@@ -253,6 +260,40 @@ func parseCooldownDuration(s string) time.Duration {
 		return 0
 	}
 	return d
+}
+
+// DefaultOrchestratorProfile returns the factory-default permission profile
+// for the orchestrator. The orchestrator no longer falls back to
+// Tools={"*"}: when the operator did not configure profiles.orchestrator, we
+// ship this concrete "coding" profile naming the tools the orchestrator
+// actually uses, so a forgotten profile block stays least-privilege rather
+// than fail-open. Operators who need shell/net widening must declare it in
+// config.yaml.
+//
+// Exported so GOV5 (internal/bootstrap/wiring_test.go) can compare the
+// shipped allow list against the shipped tool registry without having to
+// reach into Build.
+func DefaultOrchestratorProfile() guard.PermissionProfile {
+	return guard.PermissionProfile{
+		Tools: guard.ToolsPerm{Allow: []string{
+			// NB: "fs_patch" and "fs_mkdir" used to be listed here and were
+			// dropped — neither has ever been a registered tool. The patch
+			// tool's real name is "apply_patch" (internal/tools/fs.go:99),
+			// which is already allowed below; there is no mkdir tool at all.
+			"fs_read", "fs_list", "fs_search", "fs_glob", "fs_write", "fs_edit",
+			"shell_run", "shell_start", "shell_read", "shell_write_stdin", "shell_wait", "shell_cancel",
+			"task_shell_start", "task_shell_wait", "task_shell_stdin", "task_shell_cancel",
+			"memory_search", "memory_recall", "memory_write",
+			"web_fetch", "web_search", "time_now", "skill_use", "vcs_*",
+			"agent_start", "workflow_start", "analysis", "summarize",
+			"apply_patch",
+			// B3 developer tools
+			"git_status", "git_diff", "run_tests", "diagnostics",
+			"github_pr_context", "github_comment", "github_approve", "github_merge",
+			"review",
+		}},
+		Net: guard.NetPerm{Allow: true},
+	}
 }
 
 // Build loads configuration and wires every component together.
@@ -617,28 +658,7 @@ func Build(opts Options) (*App, error) {
 	allTools = append(allTools, agentTools.Review)
 
 	// Build orchestrator with a profile resolved from config.
-	// Explicit profile: the orchestrator no longer falls back to Tools={"*"}.
-	// When the operator did not configure profiles.orchestrator, we ship a
-	// concrete "coding" profile naming the tools the orchestrator actually
-	// uses (so a forgotten profile block stays least-privilege rather than
-	// fail-open). Operators who need shell/net widening must declare it in
-	// config.yaml.
-	profile := guard.PermissionProfile{
-		Tools: guard.ToolsPerm{Allow: []string{
-			"fs_read", "fs_list", "fs_search", "fs_glob", "fs_write", "fs_edit", "fs_patch", "fs_mkdir",
-			"shell_run", "shell_start", "shell_read", "shell_write_stdin", "shell_wait", "shell_cancel",
-			"task_shell_start", "task_shell_wait", "task_shell_stdin", "task_shell_cancel",
-			"memory_search", "memory_recall", "memory_write",
-			"web_fetch", "web_search", "time_now", "skill_use", "vcs_*",
-			"agent_start", "workflow_start", "analysis", "summarize",
-			"apply_patch",
-			// B3 developer tools
-			"git_status", "git_diff", "run_tests", "diagnostics",
-			"github_pr_context", "github_comment", "github_approve", "github_merge",
-			"review",
-		}},
-		Net: guard.NetPerm{Allow: true},
-	}
+	profile := DefaultOrchestratorProfile()
 	if cfg.Profiles != nil {
 		if p, ok := cfg.Profiles["orchestrator"]; ok {
 			profile = p
@@ -759,6 +779,18 @@ func Build(opts Options) (*App, error) {
 			visionUsageSink.add(prompt, completion, total)
 		}))
 	allTools = append(allTools, tools.NewScreenshotTool(imageStore))
+
+	// GOV5 seam: snapshot the registered tool names while allTools is still
+	// in scope. Info() is pure metadata on every tool implementation, so the
+	// background context here can never block.
+	toolNames := make([]string, 0, len(allTools))
+	for _, tl := range allTools {
+		info, err := tl.Info(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("tool registry: Info failed: %w", err)
+		}
+		toolNames = append(toolNames, info.Name)
+	}
 
 	// Load project-level prompt file (AGENT.md > CLAUDE.md) as the default
 	// system instruction when present. This lets the project advertise custom
@@ -994,6 +1026,7 @@ func Build(opts Options) (*App, error) {
 		VisionUsage:     &visionUsageSink,
 		AgentAPI:        agentAPI,
 		Skills:          registry,
+		ToolNames:       toolNames,
 		VCS:             vcsInstance,
 		VCSRepoID:       vcsRepoID,
 		VCSDBPath:       cfg.Storage.SQLitePath,
