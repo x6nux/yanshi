@@ -11,8 +11,16 @@ import (
 	"github.com/x6nux/yanshi/internal/agent/automation"
 )
 
-// AutomationTools 聚合 AU1 的八个 GuardedTool。所有工具通过 NewGuardedTool →
-// Authorize；profile 必须显式列出工具名。
+// AutomationTools 聚合 AU1 的八个 GuardedTool。八个工具的描述都向模型承诺
+// "Approval required"，因此全部经 NewApprovalGuardedTool → AuthorizeApprovalRequired
+// 构造：每次调用都必须由用户逐次批准，profile 的 Tools.Allow（哪怕 "*"）、
+// approval.Manager 的历史规则、yolo/auto 模式都无法绕过。
+//
+// 后果（不是缺陷，是「人工批准」的必然结论）：AuthorizeApprovalRequired 在 context
+// 里没有 permission callback 时直接 DenyErr，而只有 WebSocket 传输会注入 callback，
+// 所以这八个工具在 SSE、v1、task-agent 三条非交互式路径上恒被拒绝，只在 WS/TUI 上可用。
+// 若将来要让它们在非交互式传输上可用，正确做法是加 profile 级预授权策略，而不是把这里
+// 改回 NewGuardedTool（那会让描述重新对用户撒谎）。
 type AutomationTools struct {
 	Create *GuardedTool
 	List   *GuardedTool
@@ -34,7 +42,7 @@ func NewAutomationTools(manager *automation.Manager) *AutomationTools {
 	})
 	set := &AutomationTools{}
 
-	set.Create = NewGuardedTool(
+	set.Create = NewApprovalGuardedTool(
 		"automation_create", "Create automation",
 		"Create a persistent scheduled automation. Approval required.",
 		time.Minute, jsonInput,
@@ -42,7 +50,7 @@ func NewAutomationTools(manager *automation.Manager) *AutomationTools {
 			return runAutomationCreate(ctx, manager, args)
 		},
 	)
-	set.List = NewGuardedTool(
+	set.List = NewApprovalGuardedTool(
 		"automation_list", "List automations",
 		"List persistent automations. Approval required even though this is read-only.",
 		time.Minute, jsonInput,
@@ -50,7 +58,7 @@ func NewAutomationTools(manager *automation.Manager) *AutomationTools {
 			return runAutomationList(ctx, manager, args)
 		},
 	)
-	set.Read = NewGuardedTool(
+	set.Read = NewApprovalGuardedTool(
 		"automation_read", "Read automation",
 		"Read an automation and recent runs. Approval required.",
 		time.Minute, jsonInput,
@@ -58,7 +66,7 @@ func NewAutomationTools(manager *automation.Manager) *AutomationTools {
 			return runAutomationRead(ctx, manager, args)
 		},
 	)
-	set.Update = NewGuardedTool(
+	set.Update = NewApprovalGuardedTool(
 		"automation_update", "Update automation",
 		"Update prompt, schedule, cwds, or active state. Approval required.",
 		time.Minute, jsonInput,
@@ -66,7 +74,7 @@ func NewAutomationTools(manager *automation.Manager) *AutomationTools {
 			return runAutomationUpdate(ctx, manager, args)
 		},
 	)
-	set.Pause = NewGuardedTool(
+	set.Pause = NewApprovalGuardedTool(
 		"automation_pause", "Pause automation",
 		"Pause future scheduling. Approval required.",
 		time.Minute, jsonInput,
@@ -74,7 +82,7 @@ func NewAutomationTools(manager *automation.Manager) *AutomationTools {
 			return runAutomationIDOp(ctx, manager, args, manager.Pause)
 		},
 	)
-	set.Resume = NewGuardedTool(
+	set.Resume = NewApprovalGuardedTool(
 		"automation_resume", "Resume automation",
 		"Resume scheduling from a newly computed next run. Approval required.",
 		time.Minute, jsonInput,
@@ -82,7 +90,7 @@ func NewAutomationTools(manager *automation.Manager) *AutomationTools {
 			return runAutomationIDOp(ctx, manager, args, manager.Resume)
 		},
 	)
-	set.Delete = NewGuardedTool(
+	set.Delete = NewApprovalGuardedTool(
 		"automation_delete", "Delete automation",
 		"Delete an automation and its run history. Approval required.",
 		time.Minute, jsonInput,
@@ -90,7 +98,7 @@ func NewAutomationTools(manager *automation.Manager) *AutomationTools {
 			return runAutomationIDOp(ctx, manager, args, manager.Delete)
 		},
 	)
-	set.Run = NewGuardedTool(
+	set.Run = NewApprovalGuardedTool(
 		"automation_run", "Run automation",
 		"Queue one durable task for an automation now. Approval required.",
 		time.Minute, jsonInput,

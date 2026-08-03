@@ -41,10 +41,10 @@ func TestAgentBatchCSVInputEndToEnd(t *testing.T) {
 	echo := func(_ context.Context, prompt string, _ []string, _ string) (string, error) {
 		return "ok-" + prompt, nil
 	}
-	ctx := tools.WithSubAgentRunner(
+	ctx := withApprovingUser(tools.WithSubAgentRunner(
 		tools.WithProfile(context.Background(), allowAllForBatch()),
 		echo,
-	)
+	))
 	payload := map[string]any{
 		"prompt": "DO",
 		"csv":    "name,city\nAlice,NYC\nBob,SF\n",
@@ -62,10 +62,10 @@ func TestAgentBatchStructuredInputEndToEnd(t *testing.T) {
 	echo := func(_ context.Context, prompt string, _ []string, _ string) (string, error) {
 		return "ok", nil
 	}
-	ctx := tools.WithSubAgentRunner(
+	ctx := withApprovingUser(tools.WithSubAgentRunner(
 		tools.WithProfile(context.Background(), allowAllForBatch()),
 		echo,
-	)
+	))
 	payload := map[string]any{
 		"prompt": "DO",
 		"rows":   []map[string]string{{"q": "a"}, {"q": "b"}},
@@ -79,10 +79,10 @@ func TestAgentBatchStructuredInputEndToEnd(t *testing.T) {
 func TestAgentBatchRejectsBothCSVAndRows(t *testing.T) {
 	set, _ := newBatchTools(t)
 	echo := func(_ context.Context, _ string, _ []string, _ string) (string, error) { return "", nil }
-	ctx := tools.WithSubAgentRunner(
+	ctx := withApprovingUser(tools.WithSubAgentRunner(
 		tools.WithProfile(context.Background(), allowAllForBatch()),
 		echo,
-	)
+	))
 	payload := map[string]any{
 		"prompt": "DO",
 		"csv":    "a\n1\n",
@@ -97,10 +97,10 @@ func TestAgentBatchRejectsBothCSVAndRows(t *testing.T) {
 func TestAgentBatchRejectsNeitherCSVNorRows(t *testing.T) {
 	set, _ := newBatchTools(t)
 	echo := func(_ context.Context, _ string, _ []string, _ string) (string, error) { return "", nil }
-	ctx := tools.WithSubAgentRunner(
+	ctx := withApprovingUser(tools.WithSubAgentRunner(
 		tools.WithProfile(context.Background(), allowAllForBatch()),
 		echo,
-	)
+	))
 	payload := map[string]any{"prompt": "DO"}
 	args := wrapInput(t, payload)
 	result, err := set.AgentBatch.InvokableRun(ctx, args)
@@ -110,7 +110,7 @@ func TestAgentBatchRejectsNeitherCSVNorRows(t *testing.T) {
 
 func TestAgentBatchRejectedWithoutSubAgentRunner(t *testing.T) {
 	set, _ := newBatchTools(t)
-	ctx := tools.WithProfile(context.Background(), allowAllForBatch())
+	ctx := withApprovingUser(tools.WithProfile(context.Background(), allowAllForBatch()))
 	payload := map[string]any{"prompt": "DO", "csv": "a\n1\n"}
 	args := wrapInput(t, payload)
 	result, err := set.AgentBatch.InvokableRun(ctx, args)

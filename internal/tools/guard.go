@@ -176,6 +176,20 @@ func NewApprovalGuardedTool(name, display, desc string, timeout time.Duration,
 	return &GuardedTool{name: name, display: display, desc: desc, timeout: timeout, params: params, stream: stream, approvalRequired: true}
 }
 
+// ApprovalRequired reports whether this tool goes through
+// AuthorizeApprovalRequired (mandatory per-call user approval) instead of the
+// ordinary profile-based Authorize.
+//
+// It exists because NewApprovalGuardedTool returns the very same *GuardedTool
+// type as NewGuardedTool — the only difference is an unexported field — so a
+// type assertion cannot tell the two apart. Several tools advertise "Approval
+// required" in their model-facing description; without this accessor that
+// promise is untestable and can silently drift away from the constructor
+// actually used (which is exactly how automation_*/agent_batch ended up lying
+// to users). Callers (tests, docs generators, TUI) use it to assert or render
+// the real gating.
+func (g *GuardedTool) ApprovalRequired() bool { return g.approvalRequired }
+
 // DisplayName returns the TUI-facing tool title.
 func (g *GuardedTool) DisplayName() string { return g.display }
 

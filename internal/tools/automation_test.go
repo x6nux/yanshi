@@ -3,6 +3,7 @@ package tools_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 
@@ -48,6 +49,19 @@ func allowAll(names ...string) guard.PermissionProfile {
 	return guard.PermissionProfile{Tools: guard.ToolsPerm{Allow: names}}
 }
 
+// withApprovingUser 绑定一个恒返回 PermissionAllow 的 permission callback，模拟 WS
+// 传输上用户逐次点"允许"。automation_* 与 agent_batch 是 approval 门禁工具，没有
+// callback 时恒被拒（见 TestApprovalGatedToolsDeniedWithoutCallback），所以任何要
+// 真正执行到工具体的测试都必须先过这一关。
+func withApprovingUser(ctx context.Context) context.Context {
+	return tools.WithPermissionCallback(ctx, func(req tools.PermissionRequest) tools.PermissionDecision {
+		if !req.ApprovalRequired {
+			return tools.PermissionDeny
+		}
+		return tools.PermissionAllow
+	})
+}
+
 func TestAutomationToolsAllEightPresent(t *testing.T) {
 	set, _ := setupAutomation(t)
 	seen := map[string]bool{}
@@ -65,13 +79,56 @@ func TestAutomationToolsAllEightPresent(t *testing.T) {
 	}
 }
 
-func TestAutomationCreateReadUpdatePauseResumeDeleteRun(t *testing.T) {
-	set, m := setupAutomation(t)
+// TestApprovalPromisedInDescriptionIsEnforced 守住「描述不撒谎」这条不变量：凡工具
+// 描述里写了 "Approval required"，就必须真的走 AuthorizeApprovalRequired 门禁。
+// 注意过滤串故意不带句点 —— automation_list 的描述是 "Approval required even though
+// this is read-only."，带句点过滤会把它静默跳过。
+func TestApprovalPromisedInDescriptionIsEnforced(t *testing.T) {
+	set, _ := setupAutomation(t)
+	batchSet, _ := newBatchTools(t)
+	all := []*tools.GuardedTool{
+		set.Create, set.List, set.Read, set.Update,
+		set.Pause, set.Resume, set.Delete, set.Run,
+		batchSet.AgentBatch,
+	}
+	checked := 0
+	for _, gt := range all {
+		info, err := gt.Info(context.Background())
+		require.NoError(t, err)
+		if !strings.Contains(info.Desc, "Approval required") {
+			continue
+		}
+		checked++
+		assert.True(t, gt.ApprovalRequired(),
+			"%s promises %q in its description but is not approval-gated", info.Name, "Approval required")
+	}
+	assert.Equal(t, len(all), checked, "every tool in this set is expected to promise approval")
+}
+
+// TestApprovalGatedToolsDeniedWithoutCallback 固化上一条测试的直接后果：approval 门禁
+// 工具在没有 permission callback 的 context 下恒被拒（AuthorizeApprovalRequired 在无
+// callback 时直接 DenyErr）。这意味着这九个工具只在 WS/TUI 这类交互式传输上可用，
+// SSE / v1 / task-agent 三条路径上一律拒绝 —— 这是「需要人工批准」的必然结果，不是缺陷。
+func TestApprovalGatedToolsDeniedWithoutCallback(t *testing.T) {
+	set, _ := setupAutomation(t)
 	ctx := tools.WithProfile(context.Background(), allowAll(
 		"automation_create", "automation_list", "automation_read",
 		"automation_update", "automation_pause", "automation_resume",
 		"automation_delete", "automation_run",
 	))
+	result, err := set.List.InvokableRun(ctx, `{"input":"{}"}`)
+	require.NoError(t, err)
+	assert.Contains(t, result, "permission denied")
+	assert.Contains(t, result, "requires explicit approval")
+}
+
+func TestAutomationCreateReadUpdatePauseResumeDeleteRun(t *testing.T) {
+	set, m := setupAutomation(t)
+	ctx := withApprovingUser(tools.WithProfile(context.Background(), allowAll(
+		"automation_create", "automation_list", "automation_read",
+		"automation_update", "automation_pause", "automation_resume",
+		"automation_delete", "automation_run",
+	)))
 
 	// create
 	createResp, err := set.Create.InvokableRun(ctx, mustJSON(t, map[string]any{

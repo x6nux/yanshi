@@ -39,3 +39,24 @@ yanshi 的安全核心是 guard：一个**无状态、fail-closed**的四维权�
 | `auto` | 自动模式 |
 
 > SSE 备用路径用静态 profile，**不支持**交互式弹窗（见 [../adr/0010-sse-static-profile-no-interactive-perm.md](../adr/0010-sse-static-profile-no-interactive-perm.md)）。
+
+## 强制批准工具（approval-required）：只在交互式传输上可用
+
+有一类工具的破坏力或成本高到不适合被任何静态策略预先放行，它们被标记为**强制批准**：每次调用都必须由用户当场点"允许"，**profile 的 `tools.allow`（哪怕是 `"*"`）、历史授权记录、`yolo` / `auto` 模式一律绕不过**，"始终允许"这个选项对它们也无效。
+
+当前的强制批准工具：
+
+| 工具 | 为什么 |
+|---|---|
+| `automation_create` / `list` / `read` / `update` / `pause` / `resume` / `delete` / `run` | 持久化定时任务：一次批准会让 agent 在未来无人值守地反复运行 |
+| `agent_batch` | 一次调用扇出 N 个子 agent，成本远高于普通工具调用 |
+| `github_comment` / `github_approve` / `github_merge` | 对外部仓库的不可撤销写操作 |
+| `screenshot` | 抓取屏幕内容 |
+
+**必然后果：这些工具只在 WebSocket / TUI 上可用。** 强制批准需要一条能把弹窗送达用户的双向通道，而只有 WS 传输具备。在 SSE、v1 REST、task-agent 这三条非交互式路径上调用它们，会**恒定**收到：
+
+```
+✗ permission denied: tool requires explicit approval
+```
+
+这不是缺陷，也不是配置错误 —— 没有人在场，就没有人能批准。若需要在非交互式路径上使用这类能力，正确做法是引入 profile 级的**预授权策略**，而不是把工具降级成普通门禁（那会让它的描述对用户撒谎）。

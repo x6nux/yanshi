@@ -14,6 +14,11 @@ import (
 
 // BatchTools 聚合 M07 的 agent_batch 工具。Manager 由 bootstrap 注入（B1 的
 // *registry.Manager）；SubAgentRunner 由 orchestrator 经 context 注入。
+//
+// agent_batch 的描述向模型承诺 "Approval required"，且它一次调用会扇出 N 个子 agent
+// （成本远高于单次工具调用），因此经 NewApprovalGuardedTool → AuthorizeApprovalRequired
+// 构造：每次调用都要用户逐次批准，profile allowlist 与 yolo/auto 模式都绕不过。
+// 后果同 AutomationTools：无 permission callback 时恒被拒，故只在 WS/TUI 上可用。
 type BatchTools struct {
 	AgentBatch *GuardedTool
 	Manager    *registry.Manager
@@ -22,7 +27,7 @@ type BatchTools struct {
 // NewBatchTools 构造 batch 工具集。manager 非 nil（B1 必须落地）。
 func NewBatchTools(manager *registry.Manager) *BatchTools {
 	set := &BatchTools{Manager: manager}
-	set.AgentBatch = NewGuardedTool(
+	set.AgentBatch = NewApprovalGuardedTool(
 		"agent_batch",
 		"Batch agent jobs",
 		"Run one sub-agent job per CSV or structured row through the B1 M04 lifecycle/registry and its unified concurrency cap (SpawnErrCap non-blocking backpressure). Returns per-row results and a summary; this is higher-cost than cost-class cheap rlm_query. Approval required.",
