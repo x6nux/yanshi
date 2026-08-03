@@ -1,0 +1,453 @@
+# yanshi 功能状态台账 — S0 的单一真相源。
+#
+# 本文件取代 docs/feature-status-audit.md 作为当前状态依据；审计文档降级为
+# 2026-07-31 的历史快照。63 项 = 审计 64 项 - A1/S08（已移出至 S1，见
+# docs/superpowers/specs/2026-08-03-yanshi-roadmap-design.md §4.1）。
+#
+# verdict: partial | missing | divergent | done | removed
+#   done / removed 是两档终态，都计入「S0 完成」。
+# evidence: 终态条目必填。两种合法形态（校验规则见 internal/archtest/status_test.go）：
+#   - 文件引用: internal/foo/bar.go:123   （只校验文件存在，不校验行号）
+#   - 测试引用: internal/foo::TestName    （包路径，非文件路径）
+
+- id: "A1/S06"
+  package: "W5"
+  verdict: partial
+  title: "结构化 Shell 策略 (execpolicy)"
+  acceptance: "能识别程序/参数/管道/重定向；规则结果可解释；已知绕过样例（IFS、$()、glob 注入）有回归测试"
+  evidence: ""
+
+- id: "A1/S07"
+  package: "W5"
+  verdict: partial
+  title: "持久审批规则"
+  acceptance: "规则含来源/scope/过期；每次命中可审计；用户可查看撤销；前缀规则有绕过回归测试"
+  evidence: ""
+
+- id: "A1/S09"
+  package: "W5"
+  verdict: partial
+  title: "子进程网络隔离"
+  acceptance: "未授权连接失败；host/port 规则生效；DNS/重定向不能绕过；决策入审计"
+  evidence: ""
+
+- id: "A1/T07/T08"
+  package: "W1"
+  verdict: missing
+  title: "Shell runtime v2 + 后台 /jobs"
+  acceptance: "长进程返回 session id；可续读/stdin；yield/timeout/输出上限/显式关闭；进程树取消干净；session 关闭按策略回收"
+  evidence: ""
+
+- id: "A2/DT1"
+  package: "W3"
+  verdict: partial
+  title: "Durable tasks (TaskManager)"
+  acceptance: "可创建/列出/读取/取消；状态机正确；thread/turn 关联准确；重启后持久恢复"
+  evidence: ""
+
+- id: "A2/DT2"
+  package: "W3"
+  verdict: divergent
+  title: "验证门 (task_gate_run + evidence)"
+  acceptance: "gate 证据结构完整；大输出成 artifact；挂到正确 task；退出码/duration 准确"
+  evidence: ""
+
+- id: "A2/G05"
+  package: "W1"
+  verdict: partial
+  title: "Plan mode + update_plan/checklist 工具"
+  acceptance: "plan 模式禁编辑类工具；计划可流式更新；确认后切执行且历史连续；checklist 状态持久"
+  evidence: ""
+
+- id: "A3/C13"
+  package: "W6"
+  verdict: partial
+  title: "`/mcp` 实化管理界面"
+  acceptance: "展示 server/tool/status/error；enable/disable 生效；状态与 client 实际连接一致"
+  evidence: ""
+
+- id: "A3/MCP1"
+  package: "W6"
+  verdict: partial
+  title: "MCP palette 发现"
+  acceptance: "palette 含 MCP 工具分组；disabled/failed 可见标灰；命名与模型可见一致"
+  evidence: ""
+
+- id: "A3/V16"
+  package: "W6"
+  verdict: partial
+  title: "通用 MCP Client"
+  acceptance: "stdio/HTTP server 可配可连；tools/resources 可用；启动超时/重连/权限检查有测试；命名冲突可诊断"
+  evidence: ""
+
+- id: "B0/TD1"
+  package: "W2"
+  verdict: partial
+  title: "SpentTokens 死代码 / goal loop token budget 失效"
+  acceptance: "路线图未给 B0 独立验收标准，仅在实测表里给出判定依据：'goalloop/usage.go 完整 UsageSink+addUsage/usageFromMeta；loop.go spent()→sink、overBudget() 在循环顶 & plan 后双检查；planner/evaluators/tier 全接 Sink；TestLoop_BudgetStopsOnAccumulatedUsage 等测试守护'；隐含目标为原缺口'budget 控制完全失效'被修复"
+  evidence: ""
+
+- id: "B1/M04"
+  package: "W3"
+  verdict: partial
+  title: "完整生命周期 (wait/result/send_input/resume/assign/list)"
+  acceptance: "全部生命周期操作可用；线程树/深度/并发/usage 可查；取消不泄漏；resume 跨重启可尝试"
+  evidence: ""
+
+- id: "B1/M04b"
+  package: "W1"
+  verdict: partial
+  title: "持久化 + 并发上限 + 输出契约"
+  acceptance: "重启后可 list/resume；并发上限生效；输出 5 段可解析；父可消费 EVIDENCE"
+  evidence: ""
+
+- id: "B1/M05"
+  package: "W1"
+  verdict: missing
+  title: "子代理 7 角色"
+  acceptance: "7 角色可选；权限矩阵符合；越权拒绝；别名大小写不敏感；未知值返回可接受集"
+  evidence: ""
+
+- id: "B2/LSP1"
+  package: "W6"
+  verdict: partial
+  title: "LSP 诊断回喂"
+  acceptance: "编辑后模型收到诊断；server 缺失安全降级；超时不阻塞 turn；Go/Python/TS 至少一种端到端可用"
+  evidence: ""
+
+- id: "B3/DT4"
+  package: "W6"
+  verdict: missing
+  title: "run_tests 工具"
+  acceptance: "至少 Go 解析正确；结构化计数+失败列表；超时/取消干净；大输出成 artifact"
+  evidence: ""
+
+- id: "B3/DT5"
+  package: "W6"
+  verdict: missing
+  title: "diagnostics 工具"
+  acceptance: "一次调用聚合；各子项可独立失败不拖垮；toolchain 版本准确"
+  evidence: ""
+
+- id: "B3/GH1"
+  package: "W6"
+  verdict: partial
+  title: "GitHub 工具集 (issue/PR context, comment, close)"
+  acceptance: "只读 context 可用；写操作需审批且需证据；大 body 成 artifact；未认证明确降级；注入内容不被当指令执行"
+  evidence: ""
+
+- id: "B3/T11"
+  package: "W6"
+  verdict: missing
+  title: "web_search 工具"
+  acceptance: "返回标题/摘要/URL；域名/时间过滤生效；重定向受策略约束；后端不可用降级"
+  evidence: ""
+
+- id: "B3/V13"
+  package: "W6"
+  verdict: partial
+  title: "结构化 code review"
+  acceptance: "支持三种 base；findings 结构化含 severity/file/line；clean 明确；只读不改"
+  evidence: ""
+
+- id: "B3/W07"
+  package: "W6"
+  verdict: missing
+  title: "git_status / git_diff 专用工具"
+  acceptance: "status/diff 结构化；不修改用户配置；大 diff 成 artifact；边界清晰"
+  evidence: ""
+
+- id: "C1/AU1"
+  package: "W1"
+  verdict: missing
+  title: "Automations（计划任务）"
+  acceptance: "可创建计划任务；按时触发入队；生命周期可控；持久化；approval 门禁"
+  evidence: ""
+
+- id: "C1/M07"
+  package: "W1"
+  verdict: missing
+  title: "CSV 批量 agent jobs"
+  acceptance: "可提交批量任务；限并发；逐项结果+汇总可查"
+  evidence: ""
+
+- id: "C1/RLM1"
+  package: "W1"
+  verdict: partial
+  title: "rlm_query 批量并行 LLM"
+  acceptance: "1-16 并发；顺序对应；cap 生效；成本显著低于 sub-agent"
+  evidence: ""
+
+- id: "C2/UX1"
+  package: "W8"
+  verdict: partial
+  title: "全局命令面板 Ctrl+K"
+  acceptance: "Ctrl+K 打开全局面板;fuzzy 过滤;覆盖命令/模式/模型/会话;Esc 关闭"
+  evidence: ""
+
+- id: "C2/UX2"
+  package: "W8"
+  verdict: partial
+  title: "F1 可搜索帮助"
+  acceptance: "F1 打开;可搜索;内容自动生成不漂移"
+  evidence: ""
+
+- id: "C2/UX3"
+  package: "W8"
+  verdict: missing
+  title: "@path 文件附加上下文"
+  acceptance: "`@` 触发补全;附加有界;越权拒绝;超大提示 fs_read"
+  evidence: ""
+
+- id: "C2/UX4"
+  package: "W8"
+  verdict: partial
+  title: "文件 frecency"
+  acceptance: "近期选择靠前;衰减合理;可禁用"
+  evidence: ""
+
+- id: "C2/UX8"
+  package: "W8"
+  verdict: partial
+  title: "思考流式展示"
+  acceptance: "思考模型可见流式思考;正文与思考分离;非思考模型无影响;可折叠"
+  evidence: ""
+
+- id: "C3/E03"
+  package: "W8"
+  verdict: partial
+  title: "skill 从 GitHub 安装 + 管理"
+  acceptance: "可安装/列出/启停/校验；恶意路径安全；重名可诊断；模型可 load 匹配技能"
+  evidence: ""
+
+- id: "C4/COST1"
+  package: "W7"
+  verdict: partial
+  title: "$ 成本估算"
+  acceptance: "/cost 显示 $;聚合正确;价格可配;缓存价区分"
+  evidence: ""
+
+- id: "C4/O07"
+  package: "W7"
+  verdict: partial
+  title: "doctor 增强"
+  acceptance: "覆盖各子系统;JSON 可机读;失败明确指引"
+  evidence: ""
+
+- id: "C4/OBS1"
+  package: "W7"
+  verdict: partial
+  title: "slog 结构化日志"
+  acceptance: "关键路径结构化日志;secret 不入日志;级别可配;采样不丢关键错误"
+  evidence: ""
+
+- id: "C4/OBS2"
+  package: "W7"
+  verdict: partial
+  title: "OTel 遥测"
+  acceptance: "trace 链可导出;latency/token/retry/error 可观测;可关闭;脱敏"
+  evidence: ""
+
+- id: "C4/OBS3"
+  package: "W7"
+  verdict: partial
+  title: "feature flags"
+  acceptance: "flag 注册/切换;strict mode 报错未知 flag;新功能可灰度"
+  evidence: ""
+
+- id: "D1/APS1"
+  package: "W9"
+  verdict: partial
+  title: "app-server (JSON-RPC)"
+  acceptance: "JSON-RPC thread/turn 可用;TS 类型可生成;与 HTTP 行为一致"
+  evidence: ""
+
+- id: "D1/V12"
+  package: "W9"
+  verdict: partial
+  title: "headless exec 增强"
+  acceptance: "stdin/JSONL 可用;退出码稳定;可 resume;CI 可脚本化"
+  evidence: ""
+
+- id: "D1/V14"
+  package: "W9"
+  verdict: divergent
+  title: "版本化 Agent API v1"
+  acceptance: "start/resume/interrupt + 流式 item 可用;有版本+Schema;兼容测试完善"
+  evidence: ""
+
+- id: "D2/O12"
+  package: "-"
+  verdict: missing
+  title: "IDE 扩展（VS Code）"
+  acceptance: "turn 发起/取消/流式；selection/open files 注入；断线恢复"
+  evidence: ""
+
+- id: "D2/V15"
+  package: "W9"
+  verdict: partial
+  title: "TS / Python SDK"
+  acceptance: "start/resume/run/stream/cancel 可用；类型生成；契约测试"
+  evidence: ""
+
+- id: "D3/C15"
+  package: "W8"
+  verdict: partial
+  title: "keymap 配置（重映射 / Vim 开关 / 高对比 / 冲突诊断）"
+  acceptance: "核心按键可重映射；Vim 开关；高对比主题；冲突可诊断"
+  evidence: ""
+
+- id: "D3/I18N1"
+  package: "W8"
+  verdict: partial
+  title: "locale / i18n（en / zh-Hans）"
+  acceptance: "至少 en/zh-Hans 切换；UI 与输出语言独立；自动检测"
+  evidence: ""
+
+- id: "D3/S10"
+  package: "W5"
+  verdict: partial
+  title: "secrets / keyring（OS keyring + 统一脱敏）"
+  acceptance: "secret 不入日志/DB 明文；keyring 读写删；无 keyring 安全降级"
+  evidence: ""
+
+- id: "E1/COV2"
+  package: "W10"
+  verdict: partial
+  title: "proto 覆盖 67% → 80%+"
+  acceptance: "覆盖率 ≥80%；全帧往返；SSE golden 稳定；WS/SSE 词表对称"
+  evidence: ""
+
+- id: "E1/COV3"
+  package: "W10"
+  verdict: partial
+  title: "bootstrap 集成测试 23% → 50%+"
+  acceptance: "覆盖率 ≥50%；最小 App 可构建并跑一轮 turn；软降级被验证"
+  evidence: ""
+
+- id: "E2/PROP1"
+  package: "W4"
+  verdict: partial
+  title: "ctxcompact 属性测试"
+  acceptance: "≥3 个属性；随机输入通过；工具对配对不变量成立"
+  evidence: ""
+
+- id: "F1/WAL1"
+  package: "W3"
+  verdict: partial
+  title: "WAL 模式 + 连接池 + busy_timeout"
+  acceptance: "WAL 启用；并发写不报 locked；性能不退化；旧 DB 平滑升级；WAL 文件有界（roadmap:295）。plan 另有 10 条细化验收：每条池连接 PRAGMA 生效、MaxOpenConns 按配置且 :memory: 强制 1、16×50 零 BUSY、读不阻塞写、双 Open 跨进程 busy_timeout、rollback→WAL 幂等零丢失、Close 执行 wal_checkpoint(TRUNCATE)、work/vcs/auth/bootstrap 现有测试全绿、Windows -r…"
+  evidence: ""
+
+- id: "F2/BENCH1"
+  package: "W7"
+  verdict: partial
+  title: "性能基准基线"
+  acceptance: "关键路径有基准；CI 记录趋势；大回归可发现"
+  evidence: ""
+
+- id: "F2/CCL1"
+  package: "W4"
+  verdict: missing
+  title: "mid-turn 压缩 cooldown"
+  acceptance: "同 turn 不重复压缩；逼近上限仍触发；keepRecent 文档清晰"
+  evidence: ""
+
+- id: "F2/LEAK2"
+  package: "W3"
+  verdict: partial
+  title: "子代理并发上限"
+  acceptance: "并发上限生效；满则拒绝；计数准确；与深度上限交互文档化"
+  evidence: ""
+
+- id: "F2/LEAK3"
+  package: "W2"
+  verdict: partial
+  title: "ACPImplementer usage 回流"
+  acceptance: "ACP turn usage 进 sink；budget 含子进程；解析失败安全降级"
+  evidence: ""
+
+- id: "G/VISION"
+  package: "W1"
+  verdict: partial
+  title: "能力声明 + 辅助模型 + turn 分流"
+  acceptance: "主多模态：图直接通过消息内容到达；主非多模态+有辅助：占位+image_describe 走通；无辅助：error 而非静默"
+  evidence: ""
+
+- id: "G/VISION-TOOL"
+  package: "W1"
+  verdict: partial
+  title: "image_describe + image store + 五入口"
+  acceptance: "五入口各自可产生图像附件；image_describe/id-ref+path-ref 走通；超限/越权被拒；费用纳入 /cost"
+  evidence: ""
+
+- id: "H1/PKG1"
+  package: "W10"
+  verdict: partial
+  title: "多平台打包分发"
+  acceptance: "多平台二进制可构建；release 产物完整；checksum；fork 行为保留"
+  evidence: ""
+
+- id: "H1/VER1"
+  package: "W10"
+  verdict: partial
+  title: "语义化版本 + CHANGELOG 自动化"
+  acceptance: "版本号来自 git tag；CHANGELOG 可生成；发布流程文档化"
+  evidence: ""
+
+- id: "H2/APIREF1"
+  package: "W9"
+  verdict: partial
+  title: "v1 API/协议参考"
+  acceptance: "v1 API 有参考；SDK 用法有示例；与 schema 一致"
+  evidence: ""
+
+- id: "H2/CONTRIB1"
+  package: "W10"
+  verdict: partial
+  title: "贡献指南 + docs 归档"
+  acceptance: "CONTRIBUTING 存在；约定可执行；docs 结构清晰"
+  evidence: ""
+
+- id: "H2/EX1"
+  package: "W10"
+  verdict: partial
+  title: "examples 目录"
+  acceptance: "≥5 个示例；可跑；覆盖主要集成点"
+  evidence: ""
+
+- id: "H2/UDOC1"
+  package: "W10"
+  verdict: partial
+  title: "用户指南"
+  acceptance: "覆盖主要用法；getting started 可零依赖跑通；与实际不漂移"
+  evidence: ""
+
+- id: "M1/G02"
+  package: "W2"
+  verdict: partial
+  title: "Goal Token 预算累计（UsageSink）"
+  acceptance: "SpentTokens 随 LLM 调用累计；预算耗尽可靠停止并把原因持久化"
+  evidence: ""
+
+- id: "M1/G03"
+  package: "W2"
+  verdict: partial
+  title: "T0–T4 难度路由接通"
+  acceptance: "每个 tier（T0–T4）都产生真实结果；auto/强制 tier 可测；升级不再静默退出"
+  evidence: ""
+
+- id: "M1/O07"
+  package: "W7"
+  verdict: partial
+  title: "yanshi doctor 自检子命令"
+  acceptance: "检查 config/DB/provider/ACP CLI/端口/lockfile/目录/sandbox；人类可读 + --json；退出码 0/1/2；不打印 secret；不完整环境不 panic"
+  evidence: ""
+
+- id: "M1/SPEC-TOOLIF"
+  package: "W6"
+  verdict: partial
+  title: "工具接口标准（Tool 接口 + ToolChunk 流）"
+  acceptance: "所有工具统一到 Tool 接口（DisplayName+DefaultTimeout+Stream）；输出走固定字段 ToolChunk；废弃 JSON 包装与 ToolProgressCallback/lineProgressWriter；subagent 进度喂 Status+Text；TUI 固定模板渲染"
+  evidence: ""
+
