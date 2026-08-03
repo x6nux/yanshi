@@ -19,7 +19,7 @@ go test ./...                                # 全量测试套件（缓存生效
 go test ./internal/tools -run TestName       # 跑单个测试（或 -run /TestSub/）
 go test -tags e2e_real ./internal/acp/...    # 真实 CLI 的端到端测试（构建标签）
 go vet ./...                                 # vet（仓库内不存在 golangci-lint 配置）
-go test ./internal/archtest                  # 架构治理测试（见下方"治理是机器强制的"）
+go test ./internal/archtest ./internal/bootstrap  # 架构治理测试（见下方"治理是机器强制的"）
 ./build.sh [release]                         # 带版本注入的构建（ldflags → internal/version）
 ```
 
@@ -35,11 +35,17 @@ go test ./internal/archtest                  # 架构治理测试（见下方"�
 
 **配置。** `config.yaml` 已被 gitignore —— 从被跟踪的 `config.example.yaml` 复制而来。YAML 由 `internal/config` 加载；`${VAR}` 环境变量在反序列化前展开。
 
-**治理是机器强制的（`internal/archtest`）。** 下方「约定」里的规则不是荣誉制，而是由测试执行的 —— 违反时 `go test ./internal/archtest` 会红：
+**治理是机器强制的（`internal/archtest` + `internal/bootstrap`）。** 下方「约定」里的规则不是荣誉制，而是由测试执行的 —— 违反时 `go test ./internal/archtest ./internal/bootstrap` 会红。**GOV1–GOV4、GOV6、GOV8 住在 `internal/archtest`；GOV5 与 GOV7 住在 `internal/bootstrap/wiring_test.go`** —— 后两条要拿真实装配出来的 `App.ToolNames` 跟 profile 对账，只有在组合根内部才拿得到，所以别去 archtest 里找它们。所有豁免表遵循同一套语义：**只能删不能加，且死条目（豁免项已经合规）也判失败**。
 
-- `lines_test.go`（GOV2）：非测试 `.go` 文件 ≤ 1000 纯代码行。豁免写在 `lineExceptions` map 里，**只能删不能加**；被豁免的文件一旦降到限额以下，不删除条目也会失败（禁止死条目）。用 `go run ./cmd/codelines` 做即时检查。
-- `deps_test.go`（GOV1）：六边形分层。`portAllowlists` 规定每个 port 包允许的 internal 依赖；`bootstrap` 是唯一组合根。新增跨包依赖前先看这里，否则 CI 直接红。
-- `docs_test.go`（GOV3）：`internal/` 与 `cmd/` 下所有导出符号必须有 doc 注释；豁免同样只减不增。
+- `deps_test.go`（GOV1，`TestR1_NoImportCycle`/`TestR2_PortAllowlist`/`TestR3_W2ConfigMustNotDependOnGuard`/`TestR4_SingleServerCompositionRoot`/`TestR5_PortsMustNotDependOnServiceLayer`）：六边形分层。`portAllowlists` 规定每个 port 包允许的 internal 依赖，已知的临时违规登记在 `portExceptions`（附整改工作包）；`bootstrap` 是唯一组合根。新增跨包依赖前先看这里，否则 CI 直接红。
+- `lines_test.go`（GOV2，`TestPureCodeLineGate`）：非测试 `.go` 文件 ≤ 1000 纯代码行。豁免写在 `lineExceptions` map 里。用 `go run ./cmd/codelines` 做即时检查。
+- `docs_test.go`（GOV3，`TestExportedDocs`）：`internal/` 与 `cmd/` 下所有导出符号必须有 doc 注释；豁免为 `docExceptionPkgs`（整包）与 `docExceptionSymbols`（单符号）。
+- `assembly_test.go`（GOV4，`TestGOV4BuildFunctionsReachable`）：`internal/bootstrap` 里每个导出的 `Build*` 必须能从 `Build` 经同包调用图到达。写完、测绿、却没接进组合根 = 运行时死代码 —— 审计里 53% 的「部分实现」是这个形状。豁免表 `assemblyExceptions` 的条目被当作**额外的 BFS 根**（而非跳过的节点），这样一次接线能让整条链同时转绿。
+- `internal/bootstrap/wiring_test.go`（GOV5，`TestGOV5ProfileAllowMatchesToolRegistry`/`TestGOV5ProductionProfileHasNoPhantomNames`/`TestGOV5ConditionalToolAuthorizedWhenRegistered`/`TestGOV5OperatorProfileIsNotWidened`）：默认 orchestrator profile 里 allow 的每个工具名都必须真的被注册。幻影名字让 profile 读起来比实际权限宽；两个方向都测（fake 形状与生产形状），豁免表是 `toolWiringExceptions`。
+- `ctxinject_test.go`（GOV6，`TestGOV6ContextInjectorsHaveCallSites`）：每个导出的 `With<X>(ctx, …) context.Context` 注入器都必须有生产调用点，否则整条消费链静默读零值（`registry.WithRole` 曾这样空跑）。豁免表 `ctxInjectExceptions`。
+- `internal/bootstrap/wiring_test.go`（GOV7，`TestGOV7EditToolsAreRegistered`）：guard 的 allow-edits 免提示自动批准集（`guard.EditToolNames()`）里的每个名字必须是已注册工具 —— 这是 GOV5 的消费侧孪生。该集合带**授权语义**，幻影名会白占一个「不弹窗」的槽位（`fs_mkdir` 就这样残留过）。**故意不设豁免表**：往这个集合里加名字是授权变更，该走工作包而不是治理逃生门。
+- `status_test.go` + `status_evidence_test.go`（GOV8，`TestFeatureStatusLedgerIntegrity`/`TestLedgerEvidenceIsClauseComplete`/`TestLedgerMarkersAreLive`）：`docs/feature-status.yaml` 的终态条目（`done`/`removed`）必须逐句对账 —— evidence 是**子句号 → 测试引用**的映射，key 恰好等于 acceptance 切出的子句数，且只接受测试引用；被引的测试还要在**自己的 doc 注释**里回写 `ledger: <ID>#<n> <子句原文>`（逐字一致），反向扫描则拒绝陈旧标记。看当前台账用 `go run ./cmd/featurestatus`（`-open` 只列未结项）。理由与边界见 [ADR-0011](docs/adr/0011-ledger-clause-level-evidence-handshake.md)。
+- `removal_test.go`（不带 GOV 编号，`TestVSCodeExtensionRemoved`/`TestVSCodeExtensionNotAdvertisedInDocs`）：以**删除**结项的审计项（D2/O12）必须保持删除状态 —— 路径不得回归，文档也不得再把它当作在售能力宣传。仍然提到它的历史文档（审计、计划、spec 这类有日期的档案）登记在 `d2HistoricalDocs` 并须带 `D2/O12 已作废` 墓碑。**这条门禁会扫描 `CLAUDE.md` 本身**：在这里描述那个被删的交付物会直接让测试变红，本条目就是这么被抓到过的。
 
 **生成的文档会被 CI diff-gate。** 改动 `internal/config.Config`、`internal/api` schema 或任何子命令的 `-h` 文本后，必须重跑生成器并提交结果，否则 `.github/workflows/docs.yml` 的 `git diff --exit-code` 会失败：
 
@@ -52,7 +58,7 @@ go run ./cmd/gendocs -help-all docs/user-guide/tui.md docs/user-guide/entrypoint
 
 **其余 dev 工具（不参与运行时）：** `cmd/depsanalyze` 打印 internal 包的 fan-in/fan-out、分层与风险标记；`cmd/agent-worker` 是连接 Task API 的独立远程 worker；`cmd/featurestatus` 读 `docs/feature-status.yaml` 打印 S0 功能状态统计（`-open` 只列未结项）。
 
-**CI 硬门禁（`.github/workflows/ci.yml`）：** `go test ./...`（ubuntu/windows/macos）、`go vet`、`go test -race`（逐包、最多 3 次重试 —— 真实 race 会 3/3 全挂，时序 flake 通常重试即过）、以及 `CGO_ENABLED=0` 的构建矩阵（含 `-tags=nokeyring`）加 `yanshi -h` 冒烟。`governance` 与 `fuzz-seed` 目前是 `continue-on-error` 的软门禁。
+**CI 硬门禁（`.github/workflows/ci.yml`）：** `go test ./...`（ubuntu/windows/macos）、`go vet`、`go test -race`（逐包、最多 3 次重试 —— 真实 race 会 3/3 全挂，时序 flake 通常重试即过）、以及 `CGO_ENABLED=0` 的构建矩阵（含 `-tags=nokeyring`）加 `yanshi -h` 冒烟。`governance`（跑 `go test ./internal/archtest`）与 `fuzz-seed` 在 W0 已从 `continue-on-error` 收紧为**硬门禁**。注意 governance job 只覆盖 archtest 包 —— 住在 `internal/bootstrap` 的 GOV5/GOV7 由主 `go test ./...` job 承担。
 
 ## 架构
 

@@ -22,6 +22,7 @@ ADR 不复制 `CLAUDE.md` 的内容：每条 ADR 的"关联"段指向 `CLAUDE.md
 | [0008](0008-autovcs-context-injection-overrides-scope.md) | autoVCS 经 context 注入并覆盖调用方 scope | accepted | synthesis §9.5 |
 | [0009](0009-sqlite-pseudogit-tree-merge.md) | autoVCS 用 SQLite 类 git 树级三方合并 | accepted | synthesis §9.5 |
 | [0010](0010-sse-static-profile-no-interactive-perm.md) | SSE 路径永久静态 profile，不支持交互式权限 | accepted | synthesis §9.2 |
+| [0011](0011-ledger-clause-level-evidence-handshake.md) | 台账终态证据逐句对账 + 测试侧双向握手（GOV8） | accepted | S0/W1 评审 |
 
 ## 状态图例
 
