@@ -235,15 +235,20 @@ func TestWorker_Run_DrainBackoff(t *testing.T) {
 	n := claimCount.Load()
 	assert.LessOrEqual(t, n, int64(3), "drain should not tight-loop on persistent errors (got %d claims in 300ms)", n)
 
-	// Wait for the drain to fully yield (5 errors with cumulative backoff
-	// ≈ 100+200+400+800 = 1500ms).
-	time.Sleep(2 * time.Second)
-	n = claimCount.Load()
-	assert.Equal(t, int64(5), n, "drain should make exactly 5 attempts then yield (got %d)", n)
+	// Poll for the 5th attempt rather than sleeping a fixed 2s and asserting
+	// equality: the drain's cumulative backoff is ~1500ms (100+200+400+800),
+	// which left only ~800ms of slack, and this package has no equivalent of
+	// api/http's raceDetectorEnabled scaling. A loaded windows/macos runner or
+	// a -race build eats that slack and the assertion sees 4. Polling is exact
+	// when healthy and patient when the machine is not.
+	require.Eventually(t, func() bool { return claimCount.Load() >= 5 },
+		30*time.Second, 10*time.Millisecond,
+		"drain should reach 5 attempts (got %d)", claimCount.Load())
 
-	// Verify no more claims arrive after yielding (poll interval is 10s).
+	// Having yielded, the count must STOP at 5 — the poll interval is 10s, so
+	// nothing legitimate can add a 6th within this window.
 	time.Sleep(300 * time.Millisecond)
-	assert.Equal(t, int64(5), claimCount.Load(), "no new claims expected after drain yields")
+	assert.Equal(t, int64(5), claimCount.Load(), "drain must yield after exactly 5 attempts, not keep retrying")
 }
 
 // slowExecutor sleeps for a configurable duration before returning, so we can

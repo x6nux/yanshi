@@ -142,12 +142,18 @@ func TestSpawn_FailureClosesClient(t *testing.T) {
 	// Close the agent-side write pipe so the client's readLoop reader sees EOF.
 	agentW.Close()
 
-	// Wait briefly for the readLoop goroutine to observe the cancelled context
-	// and exit.
-	time.Sleep(200 * time.Millisecond)
-	runtime.GC()
-
+	// Poll for the readLoop goroutine to exit rather than assuming a fixed
+	// 200ms is enough. Under -race, or on a loaded CI runner, the goroutine may
+	// not be scheduled to its exit point that fast, and the leak assertion
+	// below would fail for a scheduling reason rather than a real leak.
 	after := runtime.NumGoroutine()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+		runtime.GC()
+		if after = runtime.NumGoroutine(); after <= before+2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	// The readLoop goroutine should have exited. Allow +1 tolerance for
 	// the io.Copy drain goroutine which may not have exited yet.
 	assert.LessOrEqual(t, after, before+2,

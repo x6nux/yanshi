@@ -149,12 +149,12 @@ func TestWSBackend_SendFrame_ListMCP(t *testing.T) {
 	ch, err := b.SendFrame(context.Background(), proto.NewListMCP())
 	require.NoError(t, err)
 
-		var ev StreamEvent
-		for e := range ch {
-			ev = e
-		}
-		assert.Equal(t, "mcp_status", ev.Kind)
-		assert.Empty(t, ev.MCPServers, "mcp_status with no servers")
+	var ev StreamEvent
+	for e := range ch {
+		ev = e
+	}
+	assert.Equal(t, "mcp_status", ev.Kind)
+	assert.Empty(t, ev.MCPServers, "mcp_status with no servers")
 }
 
 // TestWSBackend_SendFrame_ControlThenTurn proves the backend cleanly transitions
@@ -255,9 +255,16 @@ func TestWSBackend_CancelDuringBurstyStream_NoPanic(t *testing.T) {
 		ch, err := b.Send(context.Background(), "hi")
 		require.NoErrorf(t, err, "round %d: send", round)
 
-		// Let readLoop reach the blocked send (burst small frames process in a
-		// few ms; the 17th parks immediately after).
-		time.Sleep(80 * time.Millisecond)
+		// Wait for the 16-slot buffer to fill instead of sleeping a fixed 80ms.
+		// A full buffer is the observable proxy for "readLoop is parked on the
+		// 17th cur<-ev", which is the exact state this test needs to exist
+		// before Cancel closes cur. Guessing with a sleep does not fail loudly
+		// when it guesses wrong — it silently cancels too early and the race
+		// this test exists to catch never happens.
+		for deadline := time.Now().Add(10 * time.Second); len(ch) < cap(ch) && time.Now().Before(deadline); {
+			time.Sleep(time.Millisecond)
+		}
+		require.Equalf(t, cap(ch), len(ch), "round %d: readLoop never filled the buffer", round)
 
 		// Cancel fires the watcher, which closes cur while readLoop is blocked
 		// on cur<-ev. Pre-fix this is a send-on-closed-channel PANIC that

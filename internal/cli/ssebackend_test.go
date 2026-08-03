@@ -182,7 +182,13 @@ func TestSSEBackend_CancelUnblocksStalledSend(t *testing.T) {
 	ch, err := b.Send(context.Background(), "hi")
 	require.NoError(t, err)
 
-	// Give the goroutine a moment to enter sc.Scan(), then cancel.
+	// This sleep only WIDENS the race window — it is not synchronization, and
+	// the assertion does not depend on it. Cancel must close the channel
+	// whether the scan goroutine has reached sc.Scan() yet or not, and the 3s
+	// select below is what actually enforces that. Kept (rather than deleted)
+	// so the stalled-Scan path is the one usually exercised; deliberately not
+	// converted to a polled signal, because there is nothing observable from
+	// here that proves the goroutine is inside Scan.
 	time.Sleep(50 * time.Millisecond)
 	require.NoError(t, b.Cancel())
 

@@ -22,7 +22,7 @@ type recordingSpawn struct {
 	mu       sync.Mutex
 	calls    int32
 	prompts  []string
-	failOn   int // -1 = 不失败(按全局调用序号;并发下与 row 映射不确定)
+	failOn   int    // -1 = 不失败(按全局调用序号;并发下与 row 映射不确定)
 	failRow  string // 非空时按 prompt 内容确定性失败(优先于 failOn)
 	failWith error
 }
@@ -359,8 +359,23 @@ func TestRunnerCtxCancelDuringSpawnBackoff(t *testing.T) {
 		done <- r
 	}()
 
-	// Give Row 0 spawn time to complete and Row 1 to enter the retry loop.
-	time.Sleep(200 * time.Millisecond)
+	// Wait for Row 0's agent to actually REACH a terminal state before
+	// cancelling, instead of guessing with a fixed 200ms sleep. Row 0 must be
+	// finished first: if cancel lands while it is still running, its Wait()
+	// reports the cancellation and report.Success drops to 0.
+	//
+	// Row 1 needs no separate signal — the spawn loop in runner.go is
+	// sequential, so once Row 0 holds the only slot (MaxConcurrent=1) Row 1 is
+	// necessarily parked in spawnWithRetry's backoff select, and CappedBackoff
+	// is 5s here, far longer than this poll takes.
+	require.Eventually(t, func() bool {
+		for _, rec := range mgr.List(true).Agents {
+			if rec.Status == registry.StatusCompleted {
+				return true
+			}
+		}
+		return false
+	}, 30*time.Second, 5*time.Millisecond, "Row 0's agent must complete before cancel")
 	cancel()
 
 	report := <-done
