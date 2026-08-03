@@ -37,7 +37,16 @@ func (m model) dispatchSend(text string, pasted bool) (model, tea.Cmd) {
 	if m.history != nil {
 		m.history.Add(text)
 	}
-	m.streamCh = m.sess.Send(text)
+	// Tier G entry-A: a turn with clipboard attachments goes out as a full
+	// user_message FRAME (buildSendFrame) rather than through the text-only
+	// Send. Draining here — the single point where a turn actually leaves the
+	// TUI — means every send path (manual submit and queue drain alike) both
+	// carries the images once and clears them once.
+	if imgs := m.takePendingImages(); len(imgs) > 0 {
+		m.streamCh = m.sess.SendFrame(buildSendFrame(text, imgs))
+	} else {
+		m.streamCh = m.sess.Send(text)
+	}
 	if m.history != nil {
 		m.enqueueSave(m.history.Save)
 	}

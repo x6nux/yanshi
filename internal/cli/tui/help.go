@@ -22,6 +22,7 @@ var keyBindings = []helpItem{
 	{Label: "Ctrl+K", Source: "key", Hint: "open action palette"},
 	{Label: "Ctrl+O", Source: "key", Hint: "expand/collapse last block"},
 	{Label: "Ctrl+S", Source: "key", Hint: "save draft to stash"},
+	{Label: "Ctrl+V", Source: "key", Hint: "attach clipboard image (silent if none)"},
 	{Label: "Ctrl+C", Source: "key", Hint: "cancel in-flight turn"},
 	{Label: "Alt+R", Source: "key", Hint: "search prompt history"},
 	{Label: "Alt+Up", Source: "key", Hint: "edit last queued message"},

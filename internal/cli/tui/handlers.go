@@ -8,6 +8,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -335,6 +336,16 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		m.growInput()
 		m.reflow()
 		return m, nil, true
+	case tea.KeyCtrlV:
+		// Tier G entry-A: paste a clipboard IMAGE as an attachment for the
+		// next turn. Ctrl+V is also the terminal's ordinary text-paste chord,
+		// so a clipboard without an image must be a SILENT no-op: no toast,
+		// no error, and the key falls through to the textarea handler. Only a
+		// real attach reports back (see clipboard.go).
+		if m.attachClipboardImage() {
+			m.reflow()
+			return m, m.pushToast("info", fmt.Sprintf("image attached (%d pending)", len(m.pendingImages))), true
+		}
 	case tea.KeyCtrlO:
 		// ctrl+o expands/collapses the most recent collapsible block — a
 		// thinking block, a resolved tool result, or a long user paste (the

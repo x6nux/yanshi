@@ -286,6 +286,14 @@ type model struct {
 	// history). historySearch is the popup state for Alt+R fuzzy search.
 	history       *History
 	historySearch *historyState
+
+	// Tier G entry-A: clipboard image paste (Ctrl+V). pendingImages holds
+	// attachments grabbed from the clipboard but not yet sent — they ride
+	// the NEXT user turn and are cleared by it (see clipboard.go).
+	// clipImage is the injectable grabber; nil means the real OS clipboard
+	// (internal/clipimg). Tests substitute a fake to stay off the desktop.
+	pendingImages []proto.ImageAttach
+	clipImage     clipImageFunc
 }
 
 func newModel(sess tuiSession, root string) model {
