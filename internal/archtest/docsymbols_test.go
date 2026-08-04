@@ -846,21 +846,35 @@ func TestGOV9ScansTheLedger(t *testing.T) {
 			"not the ledger", ledgerDoc)
 	}
 	// The floor on comment-line citations must be PROPORTIONAL to the corpus,
-	// and a constant cannot be: `fromComment >= 1` was satisfied by the two
-	// ASCII-only comment lines alone, so a degradation that dropped every
-	// citation sitting on a line containing Han characters — 26 of 28, i.e. the
-	// entire reason this file is in scope, since the ledger's prose is Chinese —
-	// left both this test and TestGOV9DocSymbolReferencesResolve reporting `ok`.
-	// Widening is one character away from silent reversal, and so is narrowing.
+	// and a constant cannot be: `fromComment >= 1` was satisfied by the
+	// pure-ASCII comment lines alone, so a degradation that dropped every
+	// citation sitting on a line carrying non-ASCII text — very nearly all of
+	// them, and the entire reason this file is in scope, since the ledger's
+	// prose is Chinese — left both this test and
+	// TestGOV9DocSymbolReferencesResolve reporting `ok`. Widening is one
+	// character away from silent reversal, and so is narrowing.
 	//
-	// A hardcoded `>= 20` only moves the arbitrary number: it rots the day the
-	// ledger legitimately shrinks, and it still cannot tell a 60% degradation
-	// from a real pass. So the expectation is DERIVED FROM THE CORPUS on every
-	// run by ledgerCommentCitationLines, an independently written byte scan that
-	// shares no code with docSymbolRefRe or stripMarkdownEmphasis, and every
-	// line it finds must also be recovered by the real parse. Extra lines in the
-	// parse are fine (emphasis-glued shapes the crude scan cannot see); missing
-	// ones are the regression.
+	// THIS PARAGRAPH DELIBERATELY CARRIES NO COUNTS, which is a correction and
+	// not a style preference. Its first draft argued that a hardcoded number
+	// rots while stating two of its own, and both were wrong on the day they
+	// were written: it said the old floor was met by "the two ASCII-only
+	// comment lines" and put the degradation at "26 of 28". Prose about a
+	// corpus rots at exactly the rate of a constant in the code, so the only
+	// durable form is a reproduction rather than a figure. Run it: make
+	// parseDocSymbolRefs `continue` on any line containing a rune > 127, then
+	// run this test. The failure message reports, for the ledger as it stands
+	// at that moment, how many of its comment-line citations an ASCII-only
+	// parse still recovers — which is the measurement the sentence above used
+	// to assert from memory.
+	//
+	// A hardcoded floor only moves the arbitrary number: it rots the day the
+	// ledger legitimately shrinks, and it still cannot tell a partial
+	// degradation from a real pass. So the expectation is DERIVED FROM THE
+	// CORPUS on every run by ledgerCommentCitationLines, an independently
+	// written byte scan that shares no code with docSymbolRefRe or
+	// stripMarkdownEmphasis, and every line it finds must also be recovered by
+	// the real parse. Extra lines in the parse are fine (emphasis-glued shapes
+	// the crude scan cannot see); missing ones are the regression.
 	want := ledgerCommentCitationLines(lines)
 	if len(want) == 0 {
 		t.Fatalf("the independent scan found no `#` comment line in %s carrying a "+
@@ -911,6 +925,19 @@ func TestGOV9ScansTheLedger(t *testing.T) {
 // and it deliberately UNDER-matches: emphasis-glued spellings the real parse
 // repairs are invisible here, which is safe because the assertion direction is
 // "everything this finds must also be found", never the reverse.
+//
+// UNDER-matching is not the whole story, though, and the residual OVER-match
+// runs the other way — recorded here because the sentence above reads as a
+// promise that it cannot. stripMarkdownEmphasis treats a lone `_` as an
+// emphasis delimiter and strips it, so the real parse sees `path::` with an
+// empty symbol side and yields nothing, while this scan accepts `_` as an
+// identifier-start character and reports a hit. Measured: `# internal/tools::_`
+// and `# foo.go::_` both give crude=true, real=false. No such line exists in
+// the ledger today, and if one ever appears the failure mode is the loud kind
+// (TestGOV9ScansTheLedger names the line as "missed" and prints it), so this is
+// left as a documented boundary. Closing it would mean calling
+// stripMarkdownEmphasis from here, which is precisely the shared implementation
+// this function exists to not have.
 func ledgerCommentCitationLines(lines []string) []int {
 	pathChar := func(b byte) bool {
 		return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' ||
@@ -955,7 +982,9 @@ func ledgerCommentCitationLines(lines []string) []int {
 // `len(want) == 0` guard would fire with a message blaming the ledger, and a
 // checker that matched everything would make the comparison vacuous. Both
 // directions are pinned here, including the three shapes the real ledger
-// contains that must NOT count.
+// contains that must NOT count, and the mixed line where a disqualified `::`
+// precedes a real citation — the one shape whose verdict depends on the inner
+// loop continuing rather than breaking.
 func TestLedgerCommentCitationScanHitsKnownTruth(t *testing.T) {
 	cases := []struct {
 		name string
@@ -972,6 +1001,14 @@ func TestLedgerCommentCitationScanHitsKnownTruth(t *testing.T) {
 		{"not a comment line", `  evidence: "internal/foo::TestA"`, false},
 		{"comment without any ::", "# 这一行没有任何引用", false},
 		{"digits-only path", "#   1234::Foo", false},
+		// These two are the only cover the inner loop's `continue` has. Swap it
+		// for `break` and the scan stops at the first disqualified `::` on the
+		// line, silently losing every citation written to its right — and since
+		// the assertion in TestGOV9ScansTheLedger is one-directional ("everything
+		// the crude scan finds must also be parsed"), losing lines here makes
+		// that test MORE green, not less.
+		{"disqualified :: first, real citation later", "#   见 ::error:: 和 internal/tools::TestFoo", true},
+		{"digits-only path first, real citation later", "#   1234::Foo 但 internal/tools::TestFoo", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

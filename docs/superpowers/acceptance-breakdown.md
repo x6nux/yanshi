@@ -961,7 +961,7 @@
 - 证据形状：断言流式路径下每个 chunk 的字段集合恰为规范字段，且 `Err` 与 `Text` 的互斥/组合语义被钉死。
 
 **3. 废弃 JSON 包装与 ToolProgressCallback/lineProgressWriter** — 现状已满足，但**不翻牌**
-- 依据：这句是**「废弃」类要求** —— 只要生产代码里还有调用点就不算兑现。上一版自陈「未完成清点」，现已补上（2026-08-05 实测，命令可重跑；注意这两个名字在本文件与台账里也各有一次出现，grep 结果要减掉文档自身）：
+- 依据：这句是**「废弃」类要求** —— 只要生产代码里还有调用点就不算兑现。上一版自陈「未完成清点」，现已补上（2026-08-05 实测，命令可重跑）：
 
   ```
   $ grep -rn 'ToolProgressCallback' --include='*.go' . | wc -l
@@ -1276,7 +1276,7 @@
 - 证据形状：`Bindings{"ctrl+g":"scroll_up"}` 经**生产构造**建 model，`Update(KeyMsg{KeyCtrlG})` 后断言 `viewport.YOffset` 变化，同时断言默认键不再触发旧行为。**骗过去**：任何只在 `internal/keymap` 内 `Build().Lookup()` 的测试。
 
 **2. Vim 开关** — 未兑现（**虚报：连第 1 句都没有**）
-- 依据：状态机 `internal/keymap/vim.go::VimMachine`/`::VimMachine.HandleKey` 存在但**零生产消费者**；`vim.go::effectiveVimMode` 的注释自称「production TUI calls this through (EffectivePreferences).Vim」—— **该路径不存在**。`commandTable`（`commands.go`）无 `/vim`；model struct 无 vim 字段。`config.go::Config` 的注释宣称「可通过 /keymap、/vim、/contrast 运行时设置」，**这三个命令都不存在**。`internal/keymap/vim_test.go` 的 `TestVim_*` 与 `internal/keymap/keymap_cov_test.go` 的 `TestCov_Vim_*` 两组测试完整覆盖一个无调用方的状态机（**纯函数孤岛**）；现存条数用 `grep -rhoE '^func Test[A-Za-z0-9_]*[Vv]im[A-Za-z0-9_]*' --include='*_test.go' . | sort -u | wc -l` 现算。
+- 依据：状态机 `internal/keymap/vim.go::VimMachine`/`::VimMachine.HandleKey` 存在但**零生产消费者**；`vim.go::effectiveVimMode` 的注释自称「production TUI calls this through (EffectivePreferences).Vim」—— **该路径不存在**。`commandTable`（`commands.go`）无 `/vim`；model struct 无 vim 字段。`/keymap`、`/vim`、`/contrast` **三个命令都不存在**，这一点现在是机器强制的（`internal/archtest/slashcmd_test.go::phantomSlashCommands` 是一张永久幻影命令黑名单，由 `internal/archtest/slashcmd_test.go::TestPhantomSlashCommandsNotAdvertised` 扫全部文本载体）；曾经宣称它们可运行时设置的那批 Go doc 注释已在 `cf088f7`（标题即 "retire the phantom-command comments"）删除，取而代之的 `internal/cli/tui/model.go::model` 字段注释现在明说这条 cascade 未接线、这些命令未注册。`internal/keymap/vim_test.go` 的 `TestVim_*` 与 `internal/keymap/keymap_cov_test.go` 的 `TestCov_Vim_*` 两组测试完整覆盖一个无调用方的状态机（**纯函数孤岛**）；现存条数用 `grep -rhoE '^func Test[A-Za-z0-9_]*[Vv]im[A-Za-z0-9_]*' --include='*_test.go' . | sort -u | wc -l` 现算。
 - 证据形状：`/vim on` 后 `Update(KeyMsg{Runes:['j']})` 使 viewport 下移且 textarea 不含 `j`；`/vim off` 后同一按键使 `input.Value()=="j"`。
 
 **3. 高对比主题** — 部分
