@@ -873,12 +873,25 @@ func Build(opts Options) (*App, error) {
 		fmt.Fprintf(os.Stderr, "yanshi: sandbox phase0 (%s): %s; OS/network isolation NOT enforced\n",
 			report.Effective, report.Reason)
 	}
+	// networkPolicy is enforced for yanshi's OWN in-process HTTP (web_fetch /
+	// http_request, via netpolicy.PolicyDialer). It is NOT enforced for
+	// subprocesses: no netpolicy.Proxy is started here, so the launch posture
+	// publishes HTTP_PROXY=http://127.0.0.1:0 to every child instead — a dead
+	// port that consults none of these fields. See shell.childLaunchPosture's
+	// proxy() for the full account; closing the gap is W5.
 	networkPolicy := &netpolicy.Policy{
 		Default:      cfg.Security.Network.Default,
 		Allow:        append([]string(nil), cfg.Security.Network.Allow...),
 		Deny:         append([]string(nil), cfg.Security.Network.Deny...),
 		AllowPrivate: cfg.Security.Network.AllowPrivate,
 	}
+	// Say it out loud, next to the sandbox phase0 line. Without this the
+	// failure reaches the operator as a bare "connect to 127.0.0.1 port 0
+	// failed" from gh / go mod download / npm, with nothing tying it back to
+	// security.network — and the tool that broke looks broken rather than
+	// blocked.
+	fmt.Fprintf(os.Stderr, "yanshi: network phase0: subprocess egress is blocked by a dead-port proxy "+
+		"(security.network.allow is NOT applied to subprocesses); in-process web_fetch/http_request use the real policy\n")
 
 	// Approval manager + audit bus: one process-wide manager mirrors persistent
 	// (allow_persistent) rules to the store; one bus fans the manager's emit

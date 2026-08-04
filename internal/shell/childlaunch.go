@@ -35,6 +35,26 @@ type childLaunchPosture struct {
 // endpoint configured must still not let the child talk directly, so it points
 // at a dead local port rather than leaving the vars empty (which exec would
 // hand to the child as "no proxy").
+//
+// ⚠️ Phase 0: that dead port is the ONLY case in production. bootstrap.Build
+// constructs a netpolicy.Policy unconditionally and leaves ProxyURL empty, and
+// netpolicy.Proxy is never started, so every child gets
+// HTTP_PROXY=http://127.0.0.1:0. This is a BLACK HOLE, not an egress policy:
+//
+//   - It consults nothing. security.network's default/allow/deny/allow_private
+//     do not reach this decision — `default: allow` with `allow: ["*"]` still
+//     gets the dead port.
+//   - It only stops programs that honor the proxy variables (curl, gh, go mod
+//     download, npm, git-over-HTTP). Anything speaking raw sockets, SSH or its
+//     own DNS is unaffected, so it blocks the well-behaved tools and leaves the
+//     actual exfiltration paths open.
+//   - It produces no decision record, so a blocked fetch surfaces to the
+//     operator only as "connect to 127.0.0.1 port 0 failed".
+//
+// The policy IS enforced for yanshi's own in-process HTTP (web_fetch /
+// http_request go through netpolicy.PolicyDialer) — the gap is subprocess-only.
+// Closing it means actually starting netpolicy.Proxy and setting ProxyURL,
+// which is W5's work package; do not paper over it here.
 func (p childLaunchPosture) proxy() string {
 	if p.Policy != nil && p.ProxyURL == "" {
 		return "http://127.0.0.1:0"
@@ -49,9 +69,13 @@ func (p childLaunchPosture) proxy() string {
 //
 // Starting from the host is deliberate and is the whole point of this helper:
 // a child that cannot resolve `go`, `node` or `gh` through PATH — or read
-// ~/.config/gh through HOME — is not "sandboxed", it is broken. The isolation
-// boundary yanshi enforces today is the guard layer plus the network policy,
-// neither of which depends on an empty environment.
+// ~/.config/gh through HOME — is not "sandboxed", it is broken.
+//
+// The isolation boundary yanshi enforces today is the guard layer, and that is
+// the whole list. It does not depend on an empty environment, which is why
+// inheriting the host env costs nothing. The proxy variables this function
+// appends are NOT a second boundary: see proxy() for why they are a black hole
+// rather than an egress policy in Phase 0.
 func (p childLaunchPosture) env(callerEnv []string) []string {
 	proxy := p.proxy()
 	env := netpolicy.ManagedEnv(proxy)
