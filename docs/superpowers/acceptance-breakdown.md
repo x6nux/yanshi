@@ -1,5 +1,11 @@
 # S0 验收子句级拆解
 
+> ⚠️ **D2/O12 已作废** —— VS Code 扩展（`ide/vscode/`）与 `scripts/check-d2.sh` 已于 2026-08
+> 以移除方式结案（spec `docs/superpowers/specs/2026-08-03-yanshi-roadmap-design.md` §3.2 ④），
+> 由 `internal/archtest::TestVSCodeExtensionRemoved` 守住。本文「无工作包 — 已删除项」一节为
+> 记录 `d2Mentions` 召回漏洞而**逐字抄录了重新宣传该交付物的若干写法**（产品官方全称、打包
+> 制品名、括号倒装词序）。那些句子是门禁的测试语料，**不是**产品承诺，**不要照做**。
+
 **用途**：`docs/feature-status.yaml` 的 63 条验收全部拆到子句级，每一子句显式标注「证据形状 / 当前状态 / 归属工作包」。
 
 **为什么存在**：台账的 acceptance 是分号分隔的多子句，而 GOV8 只在**翻终态时**才按子句数对账。七轮评审下来主导错误始终是同一个 —— 实现满足了第 1 句，就把 verdict 翻成 `done`；已经回退过 7 条。根因不是评审不认真，而是**子句从未被显式拆开过**：每次翻牌都要临时重新切分、临时判断每句需要什么证据，于是每次都漏同一批。这份文档把切分与「每句要什么证据」固化下来，让翻牌变成查表而不是重新推理。
@@ -111,8 +117,8 @@
 | [H2/CONTRIB1](#h2contrib1) | W10 | `partial` | 3 | 1/2/0 |
 | [H2/EX1](#h2ex1) | W10 | `partial` | 3 | 1/2/0 |
 | [H2/UDOC1](#h2udoc1) | W10 | `partial` | 3 | 1/2/0 |
-| [D2/O12](#d2o12) | - | `removed` | 2 | 1/1/0 |
-| **合计** | | | **230** | **62/103/61 +4?** |
+| [D2/O12](#d2o12) | - | `removed` | 2 | 2/0/0 |
+| **合计** | | | **230** | **63/102/61 +4?** |
 
 ---
 ## W1 — 装配断裂与工具接线
@@ -1526,7 +1532,7 @@
 
 ### D2/O12 — IDE 扩展（VS Code） · 台账 `removed`
 
-> ⚠️ **本节的字面量被刻意打断。** `internal/archtest::TestVSCodeExtensionNotAdvertisedInDocs` 会扫描全仓 `*.md`，**包括本文件**；本文档初稿逐字复制了那两条被删路径与一句示例，提交前直接把门禁跑红了。为保留可读性又不触发扫描，下文在若干字面量中间插入了空 HTML 注释 `<!---->` —— 它在渲染后不可见，因此**渲染出来的文本与台账 acceptance 逐字一致**，但原始字节不再匹配那组正则。这既是权宜之计，也是这道门禁确实生效的现场证据。
+> ⚠️ **本节的字面量被刻意打断（现已不再必需，保留作现场证据）。** `internal/archtest::TestVSCodeExtensionNotAdvertisedInDocs` 会扫描全仓 `*.md`，**包括本文件**；本文档初稿逐字复制了那两条被删路径与一句示例，提交前直接把门禁跑红了。为保留可读性又不触发扫描，下文在若干字面量中间插入了空 HTML 注释 `<!---->` —— 它在渲染后不可见，因此**渲染出来的文本与台账 acceptance 逐字一致**，但原始字节不再匹配那组正则。后来加宽正则时，本文件下方那张候选表里的写法**正是被加宽的那几类**，于是本文件被登记进 `d2HistoricalDocs` 并在文首带上墓碑 —— 转义从那一刻起变成冗余，但它是这道门禁真的会红的现场证据，删掉就少一份物证。
 
 > acceptance：ide/vs<!---->code/ 与 scripts/check<!---->-d2.sh 不存在；文档无对其作为交付物的描述
 
@@ -1534,25 +1540,27 @@
 - 依据：两条路径均已删除（`ls ide` → No such file；`scripts/` 只剩 `bench.sh`）。`internal/archtest::TestVSCodeExtensionRemoved`（`removal_test.go`）直接 `os.Stat` 两条路径，回归即红。
 - 证据形状：路径存在性断言（现状即是）。已知边界：只钉这两条**字面路径**，改名重来（`ide/vs<!---->code-ext/`、`extensions/vs<!---->code/`）能绕过 —— 但 acceptance 本身就是逐字点名这两条路径，测试忠实于措辞。
 
-**2. 文档无对其作为交付物的描述** — 部分（**结构设计成立，但 grep 语义有可测出的召回漏洞**）
-- 依据：`removal_test.go` `d2Mentions`（5 条正则）+ `d2HistoricalDocs`（8 份带日期档案）+ `d2Tombstone`。`TestVSCodeExtensionNotAdvertisedInDocs`（`::TestVSCodeExtensionNotAdvertisedInDocs`）**是真证据，且结构上是这条子句唯一能被机器判的形态**：活文档零提及 / 档案文档必须带墓碑 / 死豁免判失败 —— 三个方向都实现了，当前 PASS。
-- ⚠️ **实测召回漏洞**（用同一组正则跑候选句子）：
+**2. 文档无对其作为交付物的描述** — 已兑现（**曾因召回漏洞退回 `partial`，漏洞已按下表逐条关闭**）
+- 依据：`removal_test.go` 的 `d2Mentions` + `d2HistoricalDocs` + `d2Tombstone`。`TestVSCodeExtensionNotAdvertisedInDocs`（`::TestVSCodeExtensionNotAdvertisedInDocs`）**是真证据，且结构上是这条子句唯一能被机器判的形态**：活文档零提及 / 档案文档必须带墓碑 / 死豁免判失败 —— 三个方向都实现了，当前 PASS。
+- **召回率实测**（同一组候选句子，逐条拿正则跑；「曾」列是加宽前的结果）：
 
-  | 候选表述 | 结果 |
-  |---|---|
-  | `yanshi ships a VS<!----> Code extension.`（缩写紧邻 extension） | HIT |
-  | `yanshi ships a Visual Studio Code extension.` | **MISS** |
-  | `yanshi 提供 Visual Studio Code 扩展` | **MISS** |
-  | `IDE extension (VS Code) is available.` | **MISS** |
-  | `Third front end: the VS Code integration.` | **MISS** |
-  | `yanshi.vsix is published on each release.` | **MISS** |
-  | `Run \`code --install-extension yanshi.vsix\`` | **MISS** |
-  | `Install the Yanshi extension from the Visual Studio Marketplace.` | **MISS** |
+  | 候选表述 | 曾 | 现 |
+  |---|---|---|
+  | `yanshi ships a VS<!----> Code extension.`（缩写紧邻 extension） | HIT | HIT |
+  | `yanshi ships a Visual Studio Code extension.` | MISS | **HIT** |
+  | `yanshi 提供 Visual Studio Code 扩展` | MISS | **HIT** |
+  | `IDE extension (VS Code) is available.` | MISS | **HIT** |
+  | `IDE 扩展（VS Code）` | MISS | **HIT** |
+  | `yanshi.vsix is published on each release.` | MISS | **HIT** |
+  | `Run \`code --install-extension yanshi.vsix\`` | MISS | **HIT** |
+  | `Third front end: the VS Code integration.` | MISS | MISS（有意） |
+  | `Install the Yanshi extension from the Visual Studio Marketplace.` | MISS | MISS（有意） |
 
-  两个漏洞最要命：① **`vs[ _-]?code` 永远匹配不到 `Visual Studio Code`** —— 那是这个产品的官方全称，也是英文文档最自然的写法；测试注释花了大段论证「必须覆盖英文」，但覆盖的只是缩写形态。② **词序反转不认**：`IDE 扩展（VS Code）` / `IDE extension (VS Code)` 全 MISS —— 而这**正是台账自己给这一项起的标题**，任何人照抄标题写进文档就能溜过去。
-- ⚠️ **扫描范围漏洞**：只扫 `*.md`（`::TestVSCodeExtensionNotAdvertisedInDocs`）；`docs/archive/` 整目录跳过（`::TestVSCodeExtensionNotAdvertisedInDocs`）。因此 `docs/feature-status.yaml`（含该字样）、Go doc 注释、`sdk/*/package.json`、`--help` 文本、`.github/` 都在射程外。
-- 另注：`docs/commit-convention.md:29` 与 `docs/superpowers/plans/2026-07-22-h1-release-engineering.md:441` 在**活文档**里把 `ide-vscode` 列为合法 commit scope。测试注释把这个明确列为有意放行的精度取舍，但它确实是「已删交付物仍在活文档里占位」的残留。
-- 证据形状：正则组需补产品全称、制品名（`.vsix`）与词序反转形式；扫描范围应至少扩到 `*.yaml` / `*.json` / Go doc 注释。**骗过去**：任何用产品全称、用制品名、或把限定词写在产品名前面的句子。
+  关闭方式：产品名抽成 `d2Product`（缩写 + 官方全称，四条短语模式共用），补一条「名词 + 括号里的产品名」的倒装模式（中英文括号都认 —— **这正是本条目自己 title 的形状**，照抄标题即可绕过，是三个洞里最该关的），再补一条打包制品 token 的裸匹配。加宽后全仓 `*.md` 重扫，命中集合与 `d2HistoricalDocs` 恰好一一对应，零活文档误报。
+  末两行仍 MISS 是**有意的精度取舍**，写在 `d2Mentions` 注释里：不把产品名与名词相邻放的描述句、只提商店不提产品名的句子，一旦收进来就会误伤无关编辑器笔记，而会误伤的门禁活不长。
+- ⚠️ **扫描范围漏洞（未关闭）**：只扫 `*.md`（`::TestVSCodeExtensionNotAdvertisedInDocs`）；`docs/archive/` 整目录跳过（`::TestVSCodeExtensionNotAdvertisedInDocs`）。因此 `docs/feature-status.yaml`（含该字样）、Go doc 注释、`sdk/*/package.json`、`--help` 文本、`.github/` 都在射程外。这是**范围**而非**召回**问题：acceptance 说的是「文档」，`*.md` 是文档的主体，扩范围会把台账与测试源码自身卷进来，需要另一套豁免。
+- 另注：`docs/commit-convention.md` 与 `docs/superpowers/plans/2026-07-22-h1-release-engineering.md` 在**活文档**里把 `ide-vscode` 列为合法 commit scope（就近搜该字符串）。测试注释把这个明确列为有意放行的精度取舍，也是反向探针的固定一条。
+- 证据形状：正则组 + 档案豁免 + 墓碑三件套（现状即是），配一次全仓重扫做零误报核对。**骗过去**：任何不把产品名与名词相邻放的句子 —— 这条边界是显式声明的，不是遗漏。
 
 ---
 
@@ -1572,10 +1580,10 @@
 | W8 | 8 | 29 | 9 | 11 | 9 | 0 |
 | W9 | 5 | 16 | 3 | 10 | 3 | 0 |
 | W10 | 7 | 23 | 5 | 15 | 3 | 0 |
-| —（D2/O12） | 1 | 2 | 1 | 1 | 0 | 0 |
-| **合计** | **63** | **230** | **62** | **103** | **61** | **4** |
+| —（D2/O12） | 1 | 2 | 2 | 0 | 0 | 0 |
+| **合计** | **63** | **230** | **63** | **102** | **61** | **4** |
 
-**读法**：62 条子句（27%）有真正驱动它的可执行断言；103 条（45%）实现存在但关键分支无测试或只覆盖外延的一部分；61 条（27%）无实现或实现是残桩；4 条（W1 的 G/VISION-TOOL#3、W6 的 M1/SPEC-TOOLIF#3·#4·#5）本轮未查证，**翻牌前必须补查**。
+**读法**：63 条子句（27%）有真正驱动它的可执行断言；102 条（44%）实现存在但关键分支无测试或只覆盖外延的一部分；61 条（27%）无实现或实现是残桩；4 条（W1 的 G/VISION-TOOL#3、W6 的 M1/SPEC-TOOLIF#3·#4·#5）本轮未查证，**翻牌前必须补查**。
 
 **W5 全 0 已兑现**是本表最刺眼的一格：安全维度 14 条子句里没有一条有真正驱动它的证据。W4 的 4/6 与 W1 的 14/37 是密度最高的两块。
 

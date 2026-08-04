@@ -25,6 +25,8 @@ import (
 //
 // This is the evidence backing that ledger entry — if either path reappears,
 // it must come with a decision to reverse §3.2 ④.
+//
+// ledger: D2/O12#1 ide/vscode/ 与 scripts/check-d2.sh 不存在
 func TestVSCodeExtensionRemoved(t *testing.T) {
 	root := moduleRoot(t)
 	for _, rel := range []string{
@@ -67,37 +69,56 @@ const d2Tombstone = "D2/O12 已作废"
 // by a single character, and the earlier `\s*` matched only the bare one. That
 // is a recall hole in the phrasing this repository is most likely to produce.
 //
-// KNOWN LIMITS, all measured rather than assumed. This gate still misses:
+// Three holes that earlier revisions of this list documented as open are now
+// closed, and the reason they stayed open is worth keeping: every pattern that
+// closes them also matches ONE live document — the clause-level acceptance
+// breakdown under docs/superpowers/, which transcribed the missed phrasings
+// verbatim in order to record the holes. Widening the regexes alone reddened
+// the build, so the widening had to land together with a tombstone in that
+// document and an entry for it in d2HistoricalDocs. It now has. What is closed:
 //
-//	the product's official full name        the abbreviation is hard-coded
-//	the packaged artefact's file extension  never named
-//	the inverted word order, product name   only the "<noun> for <product>"
-//	in trailing parentheses                 inversion is covered
+//	the product's official full name        d2Product spells both forms
+//	the packaged artefact's name            the last pattern below
+//	the inverted word order, product name   d2Mentions' parenthetical pattern
+//	in trailing parentheses                 (the ledger's own title shape)
 //
-// Each is a natural way to re-advertise the deliverable, so these are real
-// holes, not theoretical ones. They are NOT closed here because the patterns
-// that close them all match one live document — the clause-level acceptance
-// breakdown under docs/superpowers/, which spells the missed phrasings out
-// verbatim in order to document these very holes. Closing them therefore has
-// to land together with a tombstone in that document and an entry for it in
-// d2HistoricalDocs; doing the regex half alone reddens the build. That work is
-// out of scope for this change set, and D2/O12 is held at a non-terminal
-// verdict in docs/feature-status.yaml until it happens — an unenforced clause
-// does not get to sit behind a terminal one.
+// The last one mattered most: the parenthesised inversion is exactly how the
+// ledger titles this item, so anyone copying the title into a document was
+// walking straight through the gate.
 //
 // A further limit, unchanged: a sentence that describes the deliverable without
 // ever putting the product name next to the noun ("a third front end for that
-// editor") slips through. Widening that far trades precision for recall, and a
-// gate that reddens on unrelated editor notes gets deleted.
+// editor"), or that names a storefront rather than the product ("install it
+// from the marketplace"), slips through. Widening that far trades precision for
+// recall, and a gate that reddens on unrelated editor notes gets deleted.
+const (
+	// d2Product matches the product name in both spellings. Hard-coding the
+	// abbreviation was the widest hole in this list: the official full name is
+	// the more natural spelling in English prose and in any sentence that reads
+	// like an announcement, and it matched none of the phrase patterns.
+	d2Product = `(?:vs[ _-]?code|visual\s+studio\s+code)`
+	// d2Noun matches the nouns that turn a bare product mention into a claim
+	// that yanshi delivers something for it, in both languages.
+	d2Noun = `(?:扩展|插件|extensions?|plugins?)`
+)
+
 var d2Mentions = []*regexp.Regexp{
 	regexp.MustCompile(`ide/vscode`),
 	regexp.MustCompile(`scripts/check-d2`),
 	// Chinese: product name, optional possessive particle, then the noun.
-	regexp.MustCompile(`(?i)vs[ _-]?code\s*(的|之)?\s*(扩展|插件)`),
+	regexp.MustCompile(`(?i)` + d2Product + `\s*(的|之)?\s*(扩展|插件)`),
 	// English: product name then the noun.
-	regexp.MustCompile(`(?i)vs[ _-]?code\s+(extension|plugin)s?\b`),
+	regexp.MustCompile(`(?i)` + d2Product + `\s+(extension|plugin)s?\b`),
 	// English, inverted: the noun, then "for", then the product name.
-	regexp.MustCompile(`(?i)\b(extension|plugin)s?\s+for\s+vs[ _-]?code\b`),
+	regexp.MustCompile(`(?i)\b(extension|plugin)s?\s+for\s+` + d2Product + `\b`),
+	// Either language, inverted: the noun, then the product name parenthesised
+	// as a qualifier. Both bracket shapes, because Chinese prose uses the
+	// full-width pair and this repository's prose is Chinese by convention.
+	regexp.MustCompile(`(?i)` + d2Noun + `\s*[（(]\s*` + d2Product + `\s*[)）]`),
+	// The packaged artefact. Matched bare rather than as a file suffix so that
+	// both the file name and prose about publishing the package are caught; the
+	// token has no other meaning, so precision costs nothing here.
+	regexp.MustCompile(`(?i)\bvsix\b`),
 }
 
 // mentionsD2 reports whether body advertises the removed VS Code extension.
@@ -121,6 +142,7 @@ func mentionsD2(body string) bool {
 // fails.
 var d2HistoricalDocs = map[string]string{
 	"docs/feature-status-audit.md":                                         "2026-07-31 审计快照",
+	"docs/superpowers/acceptance-breakdown.md":                             "子句级拆解，逐字抄录了本门禁曾漏掉的写法",
 	"docs/superpowers/notes/2026-08-03-w9-w10-verification.md":             "W9/W10 核查记录",
 	"docs/superpowers/plans/2026-07-21-d2-sdk-ide.md":                      "D2 原始计划，交付物已作废",
 	"docs/superpowers/plans/2026-08-03-s0-w0-governance.md":                "执行删除的那份计划",
@@ -148,6 +170,8 @@ var d2HistoricalDocs = map[string]string{
 // codex / deepseek-tui checkouts kept for comparison), so it is not yanshi's
 // documentation at all and its authors' VS Code extensions are not ours to
 // disown.
+//
+// ledger: D2/O12#2 文档无对其作为交付物的描述
 func TestVSCodeExtensionNotAdvertisedInDocs(t *testing.T) {
 	root := moduleRoot(t)
 	mentioned := map[string]bool{}

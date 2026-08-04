@@ -550,12 +550,27 @@
 #
 # 结论：第 2 句真正兑现之前，本条不回终态。这与 C1/AU1、E2/PROP1 是同一把尺子 ——
 # 证据挡不住掏空/绕过，就不算证据。
+#
+# 2026-08-04 三复核：partial → removed。上一条注释里挂起的那三个洞已全部关闭，并且
+# 是按它指出的方式关的 —— 先给 docs/superpowers/acceptance-breakdown.md 补墓碑、把它
+# 登记进 d2HistoricalDocs，再加宽正则，两半同一次落地。新增覆盖：产品官方全称（抽成
+# d2Product，四条短语模式共用，不再各自硬编码缩写）、打包制品名（裸 token 匹配，文件
+# 名与「发布该包」的散文都认）、以及把产品名放进尾部括号的倒装词序 —— 最后这个形态
+# 正是本条目自己的 title 形状，照抄标题即可绕过，是三者里最该关的一个。中英文括号都
+# 认。正向探针 4 类新形态各一条，全部命中；反向探针 5 条（忽略项列表、提交 scope、
+# 无关编辑器、非相邻提及、测试函数名）全部不误伤；加宽后全仓 *.md 重扫，唯一新增命中
+# 就是刚补墓碑的那份拆解文档。
+# 仍然漏的：不把产品名与名词相邻放的描述句、以及只提商店不提产品名的写法 —— 这两条
+# 写在 d2Mentions 的注释里，是刻意的精度取舍（会误伤无关编辑器笔记的门禁活不长），
+# 不是待办。
 - id: "D2/O12"
   package: "-"
-  verdict: partial
+  verdict: removed
   title: "IDE 扩展（VS Code）"
   acceptance: "ide/vscode/ 与 scripts/check-d2.sh 不存在；文档无对其作为交付物的描述"
-  evidence: "internal/archtest::TestVSCodeExtensionRemoved"
+  evidence:
+    "1": "internal/archtest::TestVSCodeExtensionRemoved"
+    "2": "internal/archtest::TestVSCodeExtensionNotAdvertisedInDocs"
 
 - id: "D2/V15"
   package: "W9"
