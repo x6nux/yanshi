@@ -167,11 +167,22 @@ func (s *ShellTools) stream(ctx context.Context, argsJSON string) <-chan ToolChu
 				pushErrChunk(ch, fmt.Errorf("shell: Factory returned a process with no reaper (fail-closed)"))
 				return
 			}
-			// Drain stdout to EOF BEFORE Wait: (*exec.Cmd).Wait closes the
-			// stdout pipe, so reading after it races into "file already closed"
-			// and silently truncates the output.
-			if started.Stdout != nil {
-				if err := streamFromReader(ctx, ch, started.Stdout); err != nil {
+			// shell_run is a DISPLAY consumer: the model must see what a
+			// terminal would, stderr interleaved with stdout — a compiler
+			// error or a "permission denied" is the whole answer for most
+			// commands, and the legacy pipe path below merges them for exactly
+			// that reason. The factory hands the two streams back separately
+			// (so the capture path's parsers get an unpolluted stdout), so
+			// re-merge them here rather than dropping stderr on the floor.
+			//
+			// Drain to EOF BEFORE Wait: (*exec.Cmd).Wait closes the child's
+			// pipes, so reading after it races into "file already closed" and
+			// silently truncates the output.
+			if started.Stdout != nil || started.Stderr != nil {
+				merged := started.MergedOutput()
+				err := streamFromReader(ctx, ch, merged)
+				_ = merged.Close()
+				if err != nil {
 					pushErrChunk(ch, err)
 					return
 				}

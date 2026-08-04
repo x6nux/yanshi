@@ -47,6 +47,15 @@ type LaunchSpec struct {
 	// cmd.Env. This is a []string to match SecureProcessSpec.Env.
 	Env []string
 	PTY bool
+	// SeparateStderr asks the factory to keep the child's stderr on its own
+	// pipe instead of folding it into the Console. Callers that PARSE the
+	// child's stdout (git porcelain, `go test -json`) must set it; callers
+	// that DISPLAY the output (the Manager pumping a session into its ring
+	// buffer) leave it false and get the interleaved stream a terminal shows.
+	//
+	// A factory that honors it returns a Console satisfying StderrConsole.
+	// Ignoring it is safe but lossy — see StderrConsole.
+	SeparateStderr bool
 }
 
 // Session describes a persistent shell session at a point in time. The
@@ -114,6 +123,22 @@ type Console interface {
 	io.ReadWriteCloser
 	Resize(rows, cols uint16) error
 	PTY() bool
+}
+
+// StderrConsole is the Console a factory returns when it honored
+// LaunchSpec.SeparateStderr: Read serves stdout only, and Stderr() hands back
+// the child's stderr as its own stream.
+//
+// It is a separate interface rather than a Console method so the existing
+// Console implementations (PTY backends, test doubles) stay valid: a PTY has
+// exactly one stream by construction and can never satisfy this. Consumers
+// type-assert and fall back to "everything arrived on stdout", which is lossy
+// but never wrong — the bytes are not duplicated.
+type StderrConsole interface {
+	Console
+	// Stderr returns the separated stderr stream, or nil if this console
+	// merged the two after all (so callers can tell "empty" from "merged").
+	Stderr() io.Reader
 }
 
 // Process is the OS-level process seam. Wait MUST return *exec.ExitError on

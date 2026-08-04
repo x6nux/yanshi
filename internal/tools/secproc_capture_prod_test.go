@@ -70,8 +70,10 @@ func TestRunSecureCaptureWithProductionFactory(t *testing.T) {
 			if got.ExitCode != tc.exitCode {
 				t.Fatalf("ExitCode = %d, want %d", got.ExitCode, tc.exitCode)
 			}
-			// OSProcessFactory merges stderr into stdout via io.MultiReader,
-			// so the payload always lands on Stdout regardless of exit code.
+			// The helper writes the payload to stdout, and the production
+			// factory keeps the two streams apart, so it lands on Stdout —
+			// not "wherever the merge happened to put it" — for both exit
+			// codes.
 			if !strings.Contains(got.Stdout, tc.stdout) {
 				t.Fatalf("Stdout = %q, want it to contain %q", got.Stdout, tc.stdout)
 			}

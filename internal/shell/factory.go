@@ -38,6 +38,13 @@ type DefaultSecureFactory struct {
 //  3. Delegate to the OS factory and wrap the Console into the io.Reader
 //     shape secproc.StartedProcess exposes.
 //
+// Step 3 requests SeparateStderr: every secproc caller on this path either
+// parses the child's stdout (git_status, git_diff, run_tests, diagnostics,
+// github_*) or re-merges the two itself for display (shell_run). This factory
+// used to report Stderr as a discardReader while the OS factory concatenated
+// stderr onto stdout, so commandResult.Stderr was permanently empty in
+// production and git's warnings were parsed as porcelain records.
+//
 // Step 1 previously started from spec.Env alone. No secproc caller populates
 // Env, so the child ended up with three proxy variables and nothing else — no
 // PATH, no HOME, no GOMODCACHE — which is why `go version` used to answer
@@ -51,13 +58,14 @@ func (f DefaultSecureFactory) Start(ctx context.Context, spec secproc.SecureProc
 	}
 	posture := childLaunchPosture{Policy: f.Policy, ProxyURL: f.ProxyURL, Sandbox: f.Sandbox}
 	launch, err := posture.prepare(ctx, LaunchSpec{
-		ShellName: spec.Shell,
-		Env:       spec.Env,
-		Command:   spec.Shell,
-		Program:   spec.Program,
-		Args:      spec.Args,
-		Dir:       spec.Dir,
-		PTY:       false,
+		ShellName:      spec.Shell,
+		Env:            spec.Env,
+		Command:        spec.Shell,
+		Program:        spec.Program,
+		Args:           spec.Args,
+		Dir:            spec.Dir,
+		PTY:            false,
+		SeparateStderr: true,
 	}, spec.UseSandboxTier)
 	if err != nil {
 		return nil, err
@@ -75,13 +83,31 @@ func (f DefaultSecureFactory) Start(ctx context.Context, spec secproc.SecureProc
 		Wait:   proc.Wait,
 		PID:    proc.PID(),
 		Stdout: consoleReader{console},
-		Stderr: discardReader{},
+		Stderr: separatedStderr(console),
 	}, nil
 }
 
-// discardReader is the no-op stderr sink for spawns that merge stdout+stderr
-// at the OS layer (the OSProcessFactory path uses io.MultiReader). It
-// satisfies io.Reader so StartedProcess.Stderr stays a uniform type.
+// separatedStderr returns the child's own stderr stream when the OS factory
+// honored LaunchSpec.SeparateStderr, and an empty stream otherwise.
+//
+// The fallback is correct rather than merely tolerable: a factory that ignored
+// the flag put BOTH streams on the console, so those bytes already reach the
+// caller through StartedProcess.Stdout. Returning a second live reader here
+// would duplicate them; returning the empty one keeps
+// secproc.StartedProcess's "Stderr is never a copy" contract.
+func separatedStderr(console Console) io.Reader {
+	if sc, ok := console.(StderrConsole); ok {
+		if r := sc.Stderr(); r != nil {
+			return r
+		}
+	}
+	return discardReader{}
+}
+
+// discardReader is the empty stderr stream handed to callers when the OS
+// factory merged both halves into the console (PTY backends, test doubles
+// that ignore LaunchSpec.SeparateStderr). It satisfies io.Reader so
+// StartedProcess.Stderr stays a uniform, never-nil type.
 type discardReader struct{}
 
 func (discardReader) Read(p []byte) (int, error) { return 0, io.EOF }

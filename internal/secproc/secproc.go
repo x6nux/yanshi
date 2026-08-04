@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/sandbox"
@@ -44,9 +45,21 @@ type SecureProcessSpec struct {
 }
 
 // StartedProcess is what Factory.Start returns: a reaper the caller must
-// invoke to collect the exit status, the PID for logging, and
-// merged/-separated stdout/stderr readers the caller can pump into a ring
-// buffer or stream back to the TUI.
+// invoke to collect the exit status, the PID for logging, and the child's two
+// output streams.
+//
+// Stdout and Stderr are SEPARATE on purpose, because this type has two classes
+// of consumer with incompatible needs:
+//
+//   - Parsers (git porcelain-v2 -z, `go test -json`, `gh --json`) read Stdout
+//     alone. A single byte of stderr spliced into that buffer is not noise, it
+//     is a fabricated record: git's own "warning: …" line, split on NUL by the
+//     porcelain parser, becomes an extra changed file that does not exist.
+//   - Display (shell_run streaming to the TUI) wants exactly what a terminal
+//     would show, stderr interleaved. Those callers use MergedOutput.
+//
+// A Factory that cannot separate the two MUST put everything on Stdout rather
+// than duplicating it — Stderr is allowed to be an empty stream, never a copy.
 //
 // Wait is a func rather than an *exec.Cmd because not every Factory is
 // exec-backed (the PTY path hands back a shell.Process implementation that
@@ -59,6 +72,53 @@ type StartedProcess struct {
 	PID    int
 	Stdout io.Reader
 	Stderr io.Reader
+}
+
+// MergedOutput returns the display stream: stdout and stderr interleaved as
+// they arrive, for callers that render the child's output rather than parse
+// it. See MergeOutput for the concurrency contract, and StartedProcess for why
+// parsers must not use this.
+func (p *StartedProcess) MergedOutput() io.ReadCloser {
+	return MergeOutput(p.Stdout, p.Stderr)
+}
+
+// MergeOutput interleaves two process streams into the single line stream a
+// human (or a model) reads.
+//
+// Reading them CONCURRENTLY is the whole point. io.MultiReader(stdout, stderr)
+// does not merge, it concatenates: stderr is not read at all until stdout hits
+// EOF. That reorders every diagnostic to the end of the output, and a child
+// that fills its stderr pipe buffer (64 KiB on Linux) before closing stdout
+// blocks forever on write — the caller only notices when its timeout fires and
+// kills the process. Copying both halves into an io.Pipe reads each as it
+// arrives; io.Pipe serializes Writes, so one stream's chunk is never spliced
+// into the middle of the other's.
+//
+// The returned reader reaches EOF only after BOTH sources have, which is what
+// preserves the drain-to-EOF-then-Wait ordering callers rely on: (*exec.Cmd).
+// Wait closes the child's pipes, so a caller that reaps before draining reads
+// "file already closed" and silently truncates the output.
+//
+// Closing the returned reader unblocks the copiers, so an abandoned stream
+// cannot leak goroutines. A nil source is skipped.
+func MergeOutput(stdout, stderr io.Reader) io.ReadCloser {
+	pr, pw := io.Pipe()
+	var wg sync.WaitGroup
+	for _, src := range []io.Reader{stdout, stderr} {
+		if src == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(r io.Reader) {
+			defer wg.Done()
+			_, _ = io.Copy(pw, r)
+		}(src)
+	}
+	go func() {
+		wg.Wait()
+		_ = pw.Close()
+	}()
+	return pr
 }
 
 // Factory is the per-process-launch strategy. The production implementation

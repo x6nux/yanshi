@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+
+	"github.com/x6nux/yanshi/internal/secproc"
 )
 
 // OSProcessFactory is the legacy ProcessFactory implementation used when a
@@ -17,13 +19,21 @@ import (
 // real PTY backend lands (Task 18+), it plugs in via the same entry point.
 type OSProcessFactory struct{}
 
-// Start spawns spec.Program with spec.Args. The returned Console is a
-// pipe-pair (stdout + stderr merged); stdin is not connected in Phase 0
+// Start spawns spec.Program with spec.Args. stdin is not connected in Phase 0
 // (shell v2 callers that need stdin set spec.PTY=true, which fails closed
 // for now). cmd.Env is populated from spec.Env when non-empty so the child
 // does not inherit the parent's environment — netpolicy.PrepareEnv is what
 // populates that slice, so stripping the parent's HTTP_PROXY happens once at
 // the boundary rather than via fragile parent-env scrubbing here.
+//
+// The child's two streams are routed per spec.SeparateStderr: false yields a
+// Console carrying both, concurrently interleaved (secproc.MergeOutput);
+// true yields a StderrConsole whose Read is stdout only.
+//
+// This used to be io.MultiReader(stdout, stderr) unconditionally, which is a
+// concatenation, not a merge: it made stderr unreadable until stdout closed
+// (deadlocking any child that filled its stderr buffer first) and left every
+// stdout consumer parsing a stream with diagnostics glued onto its tail.
 func (OSProcessFactory) Start(ctx context.Context, spec LaunchSpec) (Process, Console, error) {
 	if spec.PTY {
 		return StartPTYProcess(ctx, spec)
@@ -46,13 +56,18 @@ func (OSProcessFactory) Start(ctx context.Context, spec LaunchSpec) (Process, Co
 		_ = stdout.Close()
 		return nil, nil, err
 	}
-	combined := io.NopCloser(io.MultiReader(stdout, stderr))
+	// Start before wiring the readers: the merge copies eagerly in
+	// goroutines, and a failed Start must not leave them racing the pipes it
+	// is closing.
 	if err := cmd.Start(); err != nil {
 		_ = stdout.Close()
 		_ = stderr.Close()
 		return nil, nil, err
 	}
-	return &osProcess{cmd: cmd}, &pipeConsole{r: combined}, nil
+	if spec.SeparateStderr {
+		return &osProcess{cmd: cmd}, &pipeConsole{r: stdout, stderr: stderr}, nil
+	}
+	return &osProcess{cmd: cmd}, &pipeConsole{r: secproc.MergeOutput(stdout, stderr)}, nil
 }
 
 // Capabilities reports what the OS factory can do without launching a process.
@@ -90,15 +105,42 @@ func (p *osProcess) Capabilities() ProcessCapabilities {
 // returns an error (Phase 0 does not wire stdin for non-PTY spawns); Resize
 // is a no-op (no PTY to resize); PTY() reports false so callers know to
 // render in line-buffered rather than terminal mode.
+//
+// stderr is non-nil only for a LaunchSpec.SeparateStderr spawn, in which case
+// r carries stdout alone and this console satisfies StderrConsole.
 type pipeConsole struct {
-	r io.ReadCloser
+	r      io.ReadCloser
+	stderr io.ReadCloser
 }
 
-func (c *pipeConsole) Read(b []byte) (int, error)  { return c.r.Read(b) }
-func (c *pipeConsole) Write([]byte) (int, error)   { return 0, fmt.Errorf("pipe console is read-only") }
-func (c *pipeConsole) Resize(uint16, uint16) error { return fmt.Errorf("pipe console cannot resize") }
-func (c *pipeConsole) Close() error                { return c.r.Close() }
-func (c *pipeConsole) PTY() bool                   { return false }
+func (c *pipeConsole) Read(b []byte) (int, error) { return c.r.Read(b) }
+func (c *pipeConsole) Write([]byte) (int, error)  { return 0, fmt.Errorf("pipe console is read-only") }
+func (c *pipeConsole) Resize(uint16, uint16) error {
+	return fmt.Errorf("pipe console cannot resize")
+}
+func (c *pipeConsole) PTY() bool { return false }
+
+// Close releases both halves. The stderr pipe is closed too (when separated)
+// so abandoning the console cannot strand the child writing into a pipe
+// nobody reads.
+func (c *pipeConsole) Close() error {
+	err := c.r.Close()
+	if c.stderr != nil {
+		if serr := c.stderr.Close(); err == nil {
+			err = serr
+		}
+	}
+	return err
+}
+
+// Stderr implements StderrConsole. nil means this console merged the streams,
+// so the caller must treat Read as carrying both.
+func (c *pipeConsole) Stderr() io.Reader {
+	if c.stderr == nil {
+		return nil
+	}
+	return c.stderr
+}
 
 // ErrPTYUnavailable is the single sentinel every platform returns from
 // StartPTYProcess in Phase 0. Tests assert errors.Is(err, ErrPTYUnavailable)
