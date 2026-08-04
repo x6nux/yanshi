@@ -81,16 +81,26 @@ const d2Tombstone = "D2/O12 已作废"
 //	the packaged artefact's name            the last pattern below
 //	the inverted word order, product name   d2Mentions' parenthetical pattern
 //	in trailing parentheses                 (the ledger's own title shape)
+//	the hyphenated noun, "plug-in"          d2NounEN, composed into every
+//	                                        phrase pattern
 //
-// The last one mattered most: the parenthesised inversion is exactly how the
-// ledger titles this item, so anyone copying the title into a document was
-// walking straight through the gate.
+// The parenthesised inversion mattered because it is exactly how the ledger
+// titles this item, so anyone copying the title into a document was walking
+// straight through the gate. The hyphenated noun mattered for a different
+// reason, and it is the one worth remembering: the paragraph below USED to end
+// at the storefront case and call itself the complete list of what slips
+// through, while "VS Code plug-in" — the dictionary spelling, product name
+// adjacent to noun — slipped through anyway. The enumeration was not merely
+// incomplete, it was contradicted by a case it claimed to cover. An enumeration
+// of a gate's blind spots is load-bearing exactly as long as it is true; when it
+// is wrong it is worse than absent, because it stops the next reader looking.
 //
-// A further limit, unchanged: a sentence that describes the deliverable without
-// ever putting the product name next to the noun ("a third front end for that
-// editor"), or that names a storefront rather than the product ("install it
-// from the marketplace"), slips through. Widening that far trades precision for
-// recall, and a gate that reddens on unrelated editor notes gets deleted.
+// A further limit, now accurate: a sentence that describes the deliverable
+// without ever putting the product name next to the noun ("a third front end
+// for that editor"), or that names a storefront rather than the product
+// ("install it from the marketplace"), slips through. Widening that far trades
+// precision for recall, and a gate that reddens on unrelated editor notes gets
+// deleted.
 //
 // The limit in the OTHER direction is worth stating too, because everything
 // above is about recall and it would be easy to read this list as precise. It
@@ -109,20 +119,34 @@ const (
 	// the more natural spelling in English prose and in any sentence that reads
 	// like an announcement, and it matched none of the phrase patterns.
 	d2Product = `(?:vs[ _-]?code|visual\s+studio\s+code)`
+	// d2NounCN matches the Chinese nouns. 拓展 is not the standard word (扩展
+	// is), but it is a common enough mis-spelling that excluding it buys
+	// nothing.
+	d2NounCN = `(?:扩展|拓展|插件)`
+	// d2NounEN matches the English nouns. The hyphen and space variants are not
+	// optional extras: "plug-in" is the dictionary head-word, so a pattern set
+	// that only knows the closed-up spelling misses the MORE standard one. The
+	// alternation carries `s?` outside the group so every spelling pluralises.
+	d2NounEN = `(?:extension|plug[ -]?in)s?`
 	// d2Noun matches the nouns that turn a bare product mention into a claim
-	// that yanshi delivers something for it, in both languages.
-	d2Noun = `(?:扩展|插件|extensions?|plugins?)`
+	// that yanshi delivers something for it, in both languages. Every phrase
+	// pattern below composes from these three constants rather than inlining an
+	// alternation of its own — the inlined copies are how the hyphenated
+	// spelling survived: d2Noun already listed `plugins?`, but the three English
+	// phrase patterns each spelled `(extension|plugin)s?` by hand, so widening
+	// the shared constant would have fixed one of four sites and looked done.
+	d2Noun = `(?:` + d2NounCN + `|` + d2NounEN + `)`
 )
 
 var d2Mentions = []*regexp.Regexp{
 	regexp.MustCompile(`ide/vscode`),
 	regexp.MustCompile(`scripts/check-d2`),
 	// Chinese: product name, optional possessive particle, then the noun.
-	regexp.MustCompile(`(?i)` + d2Product + `\s*(的|之)?\s*(扩展|插件)`),
+	regexp.MustCompile(`(?i)` + d2Product + `\s*(的|之)?\s*` + d2NounCN),
 	// English: product name then the noun.
-	regexp.MustCompile(`(?i)` + d2Product + `\s+(extension|plugin)s?\b`),
+	regexp.MustCompile(`(?i)` + d2Product + `\s+` + d2NounEN + `\b`),
 	// English, inverted: the noun, then "for", then the product name.
-	regexp.MustCompile(`(?i)\b(extension|plugin)s?\s+for\s+` + d2Product + `\b`),
+	regexp.MustCompile(`(?i)\b` + d2NounEN + `\s+for\s+` + d2Product + `\b`),
 	// Either language, inverted: the noun, then the product name parenthesised
 	// as a qualifier. Both bracket shapes, because Chinese prose uses the
 	// full-width pair and this repository's prose is Chinese by convention.
