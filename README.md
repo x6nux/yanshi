@@ -176,7 +176,15 @@ compaction are WS-only; SSE stays on the static permission profile.
 
 Every tool call is mediated by the guard (`internal/guard`), which checks the
 acting agent's permission profile (tool allowlist, filesystem read/write globs,
-shell policy, and net hosts) before dispatch. Available tools:
+shell policy, and net hosts) before dispatch.
+
+The groups below are the **core tools an operator meets first**, not the full
+registry — a built server registers several times this many (sub-agent and
+workflow delegation, task/checklist/todo bookkeeping, shell sessions,
+automations, VCS, code review, diagnostics, GitHub, artifacts, and more). This
+list is prose and is deliberately not kept in sync one-for-one; for the
+authoritative set, read the registration calls under `internal/tools` (a built
+`App` reports them in `ToolNames`). The groups below:
 
 **Memory**
 - `memory_search` — full-text search over stored memories.
@@ -185,6 +193,7 @@ shell policy, and net hosts) before dispatch. Available tools:
 
 **Web**
 - `web_fetch` — HTTP GET a URL and return the response body as text.
+- `web_search` — search the web and return a list of result titles and URLs.
 
 **Filesystem** (scoped to a work root)
 - `fs_read` — read a file, optionally from a line offset with a line limit.

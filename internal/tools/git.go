@@ -236,21 +236,29 @@ func collectGitDiffFiles(ctx context.Context, root string, args gitDiffArgs) ([]
 // is not a no-op that leaves a validated-but-unmarked argv, it is an argument
 // git does not know. `git diff --end-of-options <ref>` there fails outright,
 // and the two scopes fail in two different voices because they run two
-// different commands: `git diff` answers `error: invalid option:
-// --end-of-options` followed by its usage block, while `git show` (the commit
-// scope) goes through setup_revisions and answers `fatal: unrecognized
-// argument: --end-of-options`. Both are measurable today by feeding either
-// command any option it does not know. So git_diff's base_ref and commit
-// scopes do not degrade on those versions, they stop working — the tool
-// returns the git error for every call. Only the working_tree scope, which
-// emits no marker, keeps running. That makes git 2.24 (Nov 2019) a hard
-// floor for two of the three scopes, and the git_diff tool description says so
-// where the operator and the model can actually see it. Do not "fix" a pre-2.24
-// report by dropping the marker: that reopens the ref hole for everyone.
+// different commands: the base_ref scope's `git diff` prints its usage block
+// and exits non-zero, while `git show` (the commit scope) goes through
+// setup_revisions and answers `fatal: unrecognized argument:
+// --end-of-options`. Both are measurable today by substituting any unknown
+// option for the marker in the exact argv this file builds.
 //
-// Note the placement
-// rule: `--end-of-options` must come after all real options and before the
-// first revision, and `--` still separates revisions from pathspecs after it.
+// Note which voice base_ref does NOT get, because the obvious guess is wrong:
+// `git diff` also has an `error: invalid option: <opt>` line, but it comes
+// from the no-revision path (builtin_diff_files), and base_ref always passes
+// `<ref>...HEAD`, so that line is structurally unreachable here. Predicting it
+// in a bug report would send the reader looking for a message git never prints.
+//
+// So git_diff's base_ref and commit scopes do not degrade on those versions,
+// they stop working — the tool returns the git error for every call. Only the
+// working_tree scope, which emits no marker, keeps running. That makes git 2.24
+// (Nov 2019) a hard floor for two of the three scopes, and the git_diff tool
+// description says so where the operator and the model can actually see it. Do
+// not "fix" a pre-2.24 report by dropping the marker: that reopens the ref hole
+// for everyone.
+//
+// Note the placement rule: `--end-of-options` must come after all real options
+// and before the first revision, and `--` still separates revisions from
+// pathspecs after it.
 //
 // Pathspec operands are NOT protected by this marker and do not need to be:
 // every path in this file is already emitted after the `--` separator, where

@@ -55,14 +55,46 @@ import (
 // GOV8's reconciliation half: the escape hatch above is principled and costs
 // one edit, so an exemption table would only be a way to keep a wrong name.
 //
+// WHAT IS NOT SCANNED, and cannot be: a BARE symbol name in backticks, with no
+// path in front of it. That half of the checklist's F3 rule stays manual, and
+// the reason is measured rather than assumed. A trial gate over backticked
+// `Test*` names found 5 unresolvable ones among 256 in the live docs, and all
+// 5 were legitimate: two were deliberately-quoted OLD names inside rename
+// records, two were illustrative placeholders (`TestX` and friends), and one
+// was a real Go type that simply is not a test function. Zero true positives,
+// five false ones — and a gate that reddens on honest history is a gate that
+// gets deleted, which is the larger hole (same trade-off `unconditionalSkip`
+// records in ADR-0011).
+//
+// The asymmetry is structural, not incidental. Writing the path prefix IS the
+// signal "I am pointing at this, and it is supposed to exist"; omitting it is
+// how a document says "I am naming something that does not exist, on purpose".
+// Strip the prefix and both intents produce identical text, so no analysis can
+// separate a dead pointer from a deliberate record. A bare name is therefore
+// unprotected by construction — and it has already cost this repository a real
+// miss: a rename left two live pointers to the ctxcompact property-test entry
+// helper standing in ADR-0011 and in the acceptance breakdown, written as bare
+// backticked names, and this gate stayed green through all of it.
+//
 // Lookup is file-scoped with a package-scoped fallback. Splitting a file is
 // routine here (the 1000-line rule forces it) and moving a symbol to a sibling
 // file in the same package does not break a grep, so it must not redden.
 
 // docSymbolRefRe matches a `<path>::<Symbol>` reference. The symbol side allows
-// a dotted qualifier (Type.Method, Type.Field) and an optional trailing `*`,
-// which the acceptance breakdown uses to name a family of subtests.
-var docSymbolRefRe = regexp.MustCompile(`([A-Za-z0-9_./-]+)::([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)(\*?)`)
+// a dotted qualifier (Type.Method, Type.Field).
+//
+// There is deliberately NO trailing-`*` prefix form. The first version had one
+// — `path::Family_*` was meant to name a family of sibling tests — and it made
+// the gate's verdict depend on TYPOGRAPHY: markdown bold is `**`, so writing
+// `**pkg::Symbol**` fed the closing asterisks straight into that capture and
+// silently demoted the name to a prefix, which then matched any longer real
+// symbol that started with it. Bold is this repository's dominant emphasis
+// style, so a purely decorative edit could strip a citation of its protection
+// forever. The feature had zero users repo-wide when it was removed (the one
+// real prefix citation was retired in the same commit that added the gate), so
+// the cost of dropping it is nil and the cost of keeping it is a bypass. Cite a
+// family by naming one concrete member, or by naming the package.
+var docSymbolRefRe = regexp.MustCompile(`([A-Za-z0-9_./-]+)::([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)`)
 
 // docSymbolRef is one `path::Symbol` citation found in a document.
 type docSymbolRef struct {
@@ -70,7 +102,6 @@ type docSymbolRef struct {
 	Line   int
 	Path   string // left of "::"
 	Symbol string // right of "::"
-	Prefix bool   // reference ended in "*": Symbol is a prefix, not a full name
 	Raw    string
 }
 
@@ -218,7 +249,7 @@ func parseDocSymbolRefs(doc, body string) []docSymbolRef {
 		for _, m := range docSymbolRefRe.FindAllStringSubmatch(line, -1) {
 			refs = append(refs, docSymbolRef{
 				Doc: doc, Line: i + 1,
-				Path: m[1], Symbol: m[2], Prefix: m[3] == "*", Raw: m[0],
+				Path: m[1], Symbol: m[2], Raw: m[0],
 			})
 		}
 	}
@@ -256,18 +287,8 @@ func (idx *goSymbolIndex) candidates(path string) []string {
 // resolves reports whether sym is declared in any of files, or — failing that —
 // anywhere in those files' packages. The package-wide fallback keeps routine
 // file splits from reddening the gate; see the GOV9 comment.
-func (idx *goSymbolIndex) resolves(files []string, sym string, prefix bool) bool {
-	match := func(names map[string]bool) bool {
-		if prefix {
-			for n := range names {
-				if strings.HasPrefix(n, sym) {
-					return true
-				}
-			}
-			return false
-		}
-		return names[sym]
-	}
+func (idx *goSymbolIndex) resolves(files []string, sym string) bool {
+	match := func(names map[string]bool) bool { return names[sym] }
 	for _, f := range files {
 		if match(idx.byFile[f]) {
 			return true
@@ -299,7 +320,7 @@ func unresolvedDocSymbols(idx *goSymbolIndex, refs []docSymbolRef) []docSymbolRe
 		if len(files) == 0 {
 			continue // not a citation of this module — see GOV9 comment
 		}
-		if !idx.resolves(files, r.Symbol, r.Prefix) {
+		if !idx.resolves(files, r.Symbol) {
 			bad = append(bad, r)
 		}
 	}
@@ -353,6 +374,34 @@ func TestGOV9DetectsRenamedSymbol(t *testing.T) {
 	}
 }
 
+// TestGOV9DetectsRenamedSymbolUnderMarkdownEmphasis is the forward probe for
+// the bypass that killed the trailing-`*` prefix form: a citation wrapped in
+// markdown emphasis must be judged exactly like a bare one.
+//
+// The failure this pins was real and silent. With the old regexp the closing
+// `**` of a bold span landed in the prefix capture, so `**pkg::NewNam**` was
+// read as "any symbol starting with NewNam", which the real NewName satisfied
+// — the gate went green on a dead citation because somebody bolded it. Every
+// asterisk emphasis form is probed, since the verdict must not depend on how
+// many of them an author wrapped the citation in.
+func TestGOV9DetectsRenamedSymbolUnderMarkdownEmphasis(t *testing.T) {
+	dir := withSyntheticModule(t, map[string]string{
+		"internal/pkg/thing.go": "package pkg\n\nfunc NewName() {}\n",
+	})
+	idx := buildGoSymbolIndex(t, dir)
+
+	for _, body := range []string{
+		"bold: **internal/pkg/thing.go::NewNam**",
+		"italic: *internal/pkg/thing.go::NewNam*",
+		"bold+italic: ***internal/pkg/thing.go::NewNam***",
+	} {
+		bad := unresolvedDocSymbols(idx, parseDocSymbolRefs("d.md", body))
+		if len(bad) != 1 {
+			t.Errorf("emphasis form went undetected in %q: got %+v", body, bad)
+		}
+	}
+}
+
 // TestGOV9AcceptsLegitimateShapes is the reverse probe. Every entry here is a
 // shape that exists in this repository's live docs today; a gate that reddened
 // on any of them would be deleted rather than obeyed.
@@ -371,7 +420,8 @@ func TestGOV9AcceptsLegitimateShapes(t *testing.T) {
 		"thing.go::T.Field",                  // bare file name + struct field
 		"internal/pkg::Plain",                // package directory
 		"internal/pkg/thing.go::Sibling",     // moved to a sibling file in the package
-		"internal/pkg::TestFamily_*",         // subtest family, prefix form
+		"**internal/pkg/thing.go::Plain**",   // bold emphasis around a live citation
+		"*internal/pkg::TestFamily_A*",       // italic emphasis around a live citation
 		"pkg/path::TestName",                 // template placeholder: path unresolvable
 		"std::thread",                        // a foreign language's separator
 		"tests/tests/t.py::TestClass",        // pytest node id

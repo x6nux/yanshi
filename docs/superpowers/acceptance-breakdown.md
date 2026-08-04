@@ -558,25 +558,30 @@
 
 > **重点复核**：外部指控「第 3 句的三条证据全是变异盲的空壳」，**对当前树不成立**。掏空实验（`EnforceToolCallPairs` 直接返回入参，用 `go test -overlay` 在副本上跑，工作树零写入）：`TestProperty_ToolCallPairingFixpointHolds` / `TestProperty_ToolCallPairFixpointIsIdempotent` / `TestProperty_ToolCallPairFixpointRepairsCorruption` **三个全 FAIL**。测试文件自身注释（`plan_property_test.go`）记录了这个空壳形态**曾经存在并已被修复** —— `pinnedSetIsConsistent` 被降级为 oracle、skip 守卫换成只读生成输入的 `skipAlreadyCompacted`、并加了 60% 执行率下限。指控针对的是修复前的版本。
 
-**1. ≥3 个属性** — 已兑现（按数量），但引用的 3 条证据里有 2 条自身空心
-- 依据：`internal/ctxcompact/` 共 8 个 `TestProperty_*`，互相独立的性质 ≥3。但 ledger 挂的三条中：
-  - `TestProperty_PinSetIsSubsetOfOutput` — **真**（见 #2）
-  - `TestProperty_RunReducesTokens` — **假证据**（见 #2）
-  - `TestProperty_EachSummaryCallWithinWindow` — **吞错**。掏空实验：让 `RunSummary` 无条件返回 error → 四个 window 子测试全部落进 `if err != nil { t.Logf(...); return }`（`summarize_property_test.go::TestProperty_EachSummaryCallWithinWindow`）→ **PASS**。一个永远失败的 `RunSummary` 满足这条"属性"。
-- 证据形状：这是计数主张，应该挂「互不重复**且各自变异敏感**」的 3 个测试。**骗过去**：把 8 个测试名都列上而不管其中几个是空的。
+> **本段曾经记录了两条空心证据（`TestProperty_RunReducesTokens`、`TestProperty_EachSummaryCallWithinWindow`），那两条已在 `8dcc7d2` 修好**，本段随之改写。改写前的版本一度自相矛盾：§1/§2 与处置段说三处引用空心，§3 与本框却说全部变异敏感。留这行是因为「已修复的缺陷被文档继续记成未修复」本身是一种虚报 —— 它让下一个读者去修一个不存在的问题，或据此下调对台账的信任。
 
-**2. 随机输入通过** — 已兑现（**由 `TestProperty_PinSetIsSubsetOfOutput` 单独扛起**）
+**1. ≥3 个属性** — 已兑现，三条引用**各自变异敏感**（实测）
+- 依据：`internal/ctxcompact/` 共 8 个 `TestProperty_*`，互相独立的性质 ≥3。ledger 挂的三条逐条掏空实测（全部 `go test -overlay`，工作树零写入）：
+  - `TestProperty_PinSetIsSubsetOfOutput` — **真**（见 #2）
+  - `TestProperty_RunReducesTokens` — **真**（见 #2）
+  - `TestProperty_EachSummaryCallWithinWindow` — **真**。它曾经是「吞错」形态（`if err != nil { t.Logf(...); return }`，一个永远失败的 `RunSummary` 也满足这条属性），现在有三道独立防线，逐道实测：
+    - 掏空成「返回常量 summary，从不调 summarizer」→ 四个 window 子测试全 FAIL：`summarize_property_test.go:88: RunSummary returned success but summarizer was never called`
+    - 掏空成「无条件返回 `ErrNoWindowRoom`」→ FAIL：`summarize_property_test.go:105: only 0 of 4 windows produced summarizer calls (want ≥3)`
+    - 掏空成「返回任何别的 error」→ 落进 `t.Fatalf("RunSummary failed for a reason this property does not tolerate")`，只有 `ErrNoWindowRoom` 被容忍
+- 证据形状：这是计数主张，应该挂「互不重复**且各自变异敏感**」的 3 个测试（现状即是）。**骗过去**：把 8 个测试名都列上而不管其中几个是空的。
+
+**2. 随机输入通过** — 已兑现（`TestProperty_PinSetIsSubsetOfOutput` 与 `TestProperty_RunReducesTokens` 两条同时扛）
 - 依据：`gen_test.go` `genHistory` 随机生成含孤儿 tool_call / 孤儿 tool_result / working-set / error / diff 标记 / summary 尾的历史，`planPropertyGen` 每属性 30–50 trial。
   - `TestProperty_PinSetIsSubsetOfOutput` — **真证据**：50 个随机历史，断言的是**指针恒等**（`out[i] != msgs[idx]` 即失败）+ 索引升序。掏空实验：把 `Assemble` 改成复制 message（内容相同、指针不同）→ FAIL。
-  - `TestProperty_RunReducesTokens` — **假证据：守卫用被测函数自己的产物**。断言是 `if after >= before && len(rs.GenerateCalls)+len(rs.StreamCalls) > 0` —— 调用次数由被测的 `Run` 自己决定。掏空实验：`Run` 改成「永不 summarize，原样返回」→ **PASS**。一个彻底不压缩的 `Run` 满足「压缩会减少 token」。
-- 证据形状：随机输入 + 守卫只对**输入侧可算的前提**成立（`plan_property_test.go` 已把这条规矩写成注释，`run_property_test.go` 没跟上）。应改成：把 `len(GenerateCalls)>0` 当作**硬要求**而非条件。**骗过去**：任何把被测函数的调用计数当 skip 条件的写法。
+  - `TestProperty_RunReducesTokens` — **真证据**。它曾经是「守卫用被测函数自己的产物」的坏形态（`if after >= before && calls > 0`，调用次数由被测的 `Run` 自己决定，`Run` 一掏空条件恒假、测试全绿）。现在调用次数是**跨 trial 的硬下限**而非每 trial 的条件：测试体走 `plan_property_test.go::runGeneratedProperty`，末尾用 `::requireTrialFloor` 断言「至少 60% 的 trial 真的 summarize 了东西」。掏空实验：`Run` 改成「原样返回入参、永不 summarize」→ FAIL：`run_property_test.go:97: only 0/30 trials summarized anything (need ≥18): the property is vacuous, not passing`
+- 证据形状：随机输入 + 守卫只对**输入侧可算的前提**成立，且把「被测函数真的干活了」写成跨 trial 的硬下限而非 per-trial 条件（现状即是，`run_property_test.go` 与 `plan_property_test.go` 走同一个入口）。**骗过去**：任何把被测函数的调用计数当 skip 条件、又不数执行率的写法。
 
 **3. 工具对配对不变量成立** — 已兑现（**指控不成立**）
-- 依据：`internal/ctxcompact/pairs.go` `EnforceToolCallPairs`（call_id/result_id 双索引 + `permanentlyRemoved` 防振荡 + 不动点循环），调用点 `plan.go::Plan`。三个测试**全部变异敏感**（见上）。三道防空壳机制都在位：① `skipAlreadyCompacted`只读**生成输入**的 `lastMessageIsSummary(msgs)`，不读 `Plan` 输出；② `runPairingProperty`强制执行率 ≥60%（`minPairingTrials`），把「全 skip 也算 PASS」变红；③ `RepairsCorruption` 末尾 `if injected == 0 { t.Fatal }`。
+- 依据：`internal/ctxcompact/pairs.go` `EnforceToolCallPairs`（call_id/result_id 双索引 + `permanentlyRemoved` 防振荡 + 不动点循环），调用点 `plan.go::Plan`。三个测试**全部变异敏感**（见上）。三道防空壳机制都在位：① `plan_property_test.go::skipAlreadyCompacted` 只读**生成输入**的 `lastMessageIsSummary(msgs)`，不读 `Plan` 输出；② `plan_property_test.go::runGeneratedProperty` 强制执行率 ≥60%（`::minExecutedTrials`，由 `::requireTrialFloor` 断言），把「全 skip 也算 PASS」变红，且它是**包内所有生成型属性的统一入口**（跨文件的 `run_property_test.go` 也调它），不是只接配对属性；③ `RepairsCorruption` 末尾 `if injected == 0 { t.Fatal }`。
 - 已知弱点（不足以推翻 done，与台账注释一致）：种子固定（`propSeed=42`/`123`/`777`），是「确定性重放的属性测试」，覆盖来自 trial 数而非跨运行随机性。
 - 证据形状：不动点成立 + 幂等 + 人为破坏可修复三角度；且**守卫只读生成输入 + 有执行率下限**。**骗过去**：用 `pinnedSetIsConsistent(msgs, pinned)` 当 skip 条件 —— 那正是历史上的坏形态。
 
-> **处置**：`done` 保留。但 evidence 列表里 `TestProperty_RunReducesTokens`（#1、#2 各引一次）与 `TestProperty_EachSummaryCallWithinWindow`（#1）共 **3 处引用是空心的**，应修测试或改挂别的引用。
+> **处置**：`done` 保留，三句的 evidence 引用**全部有效**。曾经空心的两条（`TestProperty_RunReducesTokens` 在 #1、#2 各引一次，`TestProperty_EachSummaryCallWithinWindow` 在 #1 引一次，共 3 处）已在 `8dcc7d2` 由测试侧修复 —— 不是改挂别的引用，是把这两条测试本身改成变异敏感的：调用计数从「条件」升级为「跨 trial 硬下限」，错误分支从 `t.Logf` 升级为按错误类型分流的 `t.Fatalf`。本条无遗留动作。
 
 ---
 
@@ -698,7 +703,7 @@
 **3. 无 keyring 安全降级** — 部分（两半：Manager 半真，build-tag 半**完全不执行**）
 - 依据：
   - **(b) Manager 半 —— 真且无条件执行**：`manager.go::NewManager` 的 `"auto"` 分支（`Available()` 失败 → 有 passphrase 则 `fileStore`，否则 store=nil + warn，**从不 fatal**）。`internal/secrets::TestManager_NewManagerAllModes` 的四个子测试通过 `withFakeKeyring(t, &fakeStore{avail: ErrKeyringUnavailable})` 注入 `newKeyringStore` seam，断言 `*FileStore` 类型回退与两条 warn 文本。**这是本条的实质证据。**
-  - **(a) build-tag 半 —— 零测试**：`keyring_disabled.go`（`//go:build nokeyring`）的 `noKeyringStore` 四个方法全返回 `ErrKeyringUnavailable`，但全仓 grep `nokeyring` 只命中实现文件与注释；`ci.yml:83-106` 的 `tags: [default, nokeyring]` 矩阵**只做 `go build` + `./yanshi -h` 冒烟，不跑 `go test`** → **`noKeyringStore` 的四个方法在任何环境下都从未被执行过**（假证据类别：**不会被执行（`//go:build` tag）**）。
+  - **(a) build-tag 半 —— 零测试**：`keyring_disabled.go`（`//go:build nokeyring`）的 `noKeyringStore` 四个方法全返回 `ErrKeyringUnavailable`，但全仓 grep `nokeyring` 只命中实现文件与注释；`ci.yml` 的 `build` job（`tags: [default, nokeyring]` 矩阵）**只做 `go build` + `./yanshi -h` 冒烟，不跑 `go test`** → **`noKeyringStore` 的四个方法在任何环境下都从未被执行过**（假证据类别：**不会被执行（`//go:build` tag）**）。
 - 证据形状：CI 增一个 `go test -tags=nokeyring ./internal/secrets/...` 作业；或把 (a) 半的断言写成不依赖 tag 的形式（当前 `Store` 接口已足以做到）。
 
 ---
@@ -804,7 +809,9 @@
 - 证据形状：scripted factory 返回 `Block:true`，以 `{"timeout_s":1}` 走 `runTool`，断言 (a) 墙钟 < 5s，(b) 结果串含 `"run_tests: "` + deadline 文本，(c) 子进程已被回收（Wait 已返回 / pid 不再存活）。另需一条钉住「默认 10 分钟」的断言（把 timeout 传进可捕获的 runner），否则改回 `clampInt(0,1,1800)` 那个 1 秒 bug 不会让任何测试变红。
 
 **4. 大输出成 artifact** — 未兑现
-- 依据：实现在 `testrun.go::runTests`，但**无测试**。`SpillThreshold` 的全部测试在 `spillover_test.go` / `artifact_output_test.go`，直接调用 `writeArtifactOrSpill` **通用 helper**，其中 `"git-diff"` / `"task-7"` 只是**字符串字面量当 label**，不经过 run_tests。
+- 依据：实现在 `testrun.go::runTests`，但**这条路径无测试**。`internal/tools` 里碰 `SpillThreshold` 的测试文件共 7 个（`spillover_test.go`、`spillover_coverage_test.go`、`artifact_output_test.go`、`fs_test.go`、`gate_test.go`、`guard_test.go`、`review_test.go`），分两种形状，**没有一种经过 run_tests**：
+  - 直接调 `writeArtifactOrSpill` 这个**通用 helper**，其中 `"git-diff"` / `"task-7"` 只是**字符串字面量当 label**；
+  - 或者走真实 `GuardedTool` 的溢出路径（`guard_test.go::TestGuardedTool_SpillsOversizedResult` / `::TestSpillRoundTrip_FsReadReadsSpilledFile` 用一个返回 `SpillThreshold+1` 字节的**合成工具**）—— 这一种证明的是 GuardedTool 的溢出层通用可用，仍然不触及 `runTests` 自己怎么处理大 stdout。
 - 证据形状：factory 返回 > 64 KiB 的 stdout，断言 `ArtifactRef` 非空、`FakeManager.ReadArtifact` 能读回**全量字节**、`Summary` 长度被截到 4096。
 
 ---
@@ -1308,7 +1315,7 @@
 
 **1. stdin/JSONL 可用** — 部分（**`--file` 路径实测有 bug**）
 - 依据：`internal/cli/headless_input.go` `ReadHeadlessInputs`（text/lines/jsonl 三模式，真实）。**但 `cmd/yanshi/headless.go::runHeadlessCommand` 的 `--file` 分支把整个文件当一条 prompt**（`inputs = []cli.HeadlessInput{{Prompt: strings.TrimSpace(string(data))}}`），**完全绕过 `cfg.Input`、从不调用 `ReadHeadlessInputs`**。**实测复核**：`exec --input jsonl --file examples/headless-batch/sample.jsonl`（3 行）→ 输出 `(no real model configured)` **1 次**；同一文件走 stdin → **3 次**。bug 确认。`internal/cli::TestReadHeadlessInputs_JSONL` 等 5 个是真断言但覆盖不到出 bug 的分支；`cmd/yanshi::TestRunHeadlessCommandStdinJSONL` / `TestRunHeadlessCommandFileInput` 是**吞错** —— 只 `assert.Equal(exitOK, code)`，一个吞掉全部输入的实现照样返回 0。
-- 证据形状：断言**产出的 turn 条数**（或 stdout 上 assistant 段落数 / JSONL 行数）等于输入 prompt 条数，且对 `--file × {text,lines,jsonl}` 三组各测一次。**骗过去**：任何只看 exit code 或「输出非空」的断言 —— `docs.yml:105` 的 CI smoke 跑的正是这条 bug 命令但把输出丢给 `/dev/null`。
+- 证据形状：断言**产出的 turn 条数**（或 stdout 上 assistant 段落数 / JSONL 行数）等于输入 prompt 条数，且对 `--file × {text,lines,jsonl}` 三组各测一次。**骗过去**：任何只看 exit code 或「输出非空」的断言 —— `docs.yml` 的「Headless smoke」步骤跑的正是这条 bug 命令但把输出丢给 `/dev/null`。
 
 **2. 退出码稳定** — 部分
 - 依据：`cmd/yanshi/main.go::exitOK/mapExecError`（0/1/2/124/130）。`cmd/yanshi::TestHeadlessExitCode` 是**对常量断言（变异盲于数值）** —— 它比对 `mapExecError(err)` 与 `exitTimeout` / `exitCancel` **常量本身**，所以把 `exitTimeout = 124` 改成 `99` 测试照样绿。它只钉住「哪个错误走哪个分支」，**没钉住脚本真正依赖的那五个数字**，而 doc 注释与 `getting-started.md` 都在对外承诺 124/130。
@@ -1319,7 +1326,7 @@
 - 证据形状：端到端 —— 第一次 exec 说「记住 X」拿到 sessionID，第二次 `--resume <id>` 问「X 是什么」，断言**服务端喂给 model 的历史里含第一轮的消息**（fake model 可记录收到的 history）。**骗过去**：任何用 fake backend 自造 `session_restored` 回复的测试。
 
 **4. CI 可脚本化** — 部分（**现成门禁可以顶，但有两个洞**）
-- 依据：`.github/workflows/docs.yml:100-105`「Headless smoke」：`out=$(./yanshi exec --fake-model -p "hi"); [ -n "$out" ]` + jsonl 那条。两个洞：① 第二条命令**零断言**（`>/dev/null`），正好掩盖了 #1 的 bug；② `docs.yml` 的 `paths:` 触发器是 `docs/** examples/** cmd/api-schema/** cmd/gendocs/** internal/docgen/** internal/config/** internal/api/v1/**` —— **`cmd/yanshi/**` 与 `internal/cli/**` 都不在里面**，改 headless 实现本身不会触发这道 smoke。
+- 依据：`.github/workflows/docs.yml` 的「Headless smoke」步骤：`out=$(./yanshi exec --fake-model -p "hi"); [ -n "$out" ]` + jsonl 那条。两个洞：① 第二条命令**零断言**（`>/dev/null`），正好掩盖了 #1 的 bug；② `docs.yml` 的 `paths:` 触发器是 `docs/** examples/** cmd/api-schema/** cmd/gendocs/** internal/docgen/** internal/config/** internal/api/v1/**` —— **`cmd/yanshi/**` 与 `internal/cli/**` 都不在里面**，改 headless 实现本身不会触发这道 smoke。
 - 证据形状：把 headless smoke 挪进 `ci.yml`（无条件跑），或给 `docs.yml` 的 paths 加上 `cmd/yanshi/**`、`internal/cli/**`；且第二条命令必须断言输出条数。
 
 ---
@@ -1367,11 +1374,11 @@
 > acceptance：v1 API 有参考；SDK 用法有示例；与 schema 一致
 
 **1. v1 API 有参考** — 已兑现
-- 依据：`docs/api/README.md`（索引）、`resources.md`（生成）、`schema.md`（生成）、`events.md`、`jsonrpc.md`。**现成门禁够顶**：`.github/workflows/docs.yml:52-58` 的生成快照 diff-gate（`api-schema -markdown` × 2 + `gendocs` × 2，再 `git diff --exit-code docs/api/ docs/user-guide/`），触发路径含 `internal/api/v1/**`。
+- 依据：`docs/api/README.md`（索引）、`resources.md`（生成）、`schema.md`（生成）、`events.md`、`jsonrpc.md`。**现成门禁够顶**：`.github/workflows/docs.yml` 的「Generated snippet gate」步骤（生成快照 diff-gate）（`api-schema -markdown` × 2 + `gendocs` × 2，再 `git diff --exit-code docs/api/ docs/user-guide/`），触发路径含 `internal/api/v1/**`。
 - 证据形状：CI diff-gate 形状正确（现状即是）。
 
 **2. SDK 用法有示例** — 部分（示例存在但**Python 侧实测崩溃**）
-- 依据：`docs/api/sdk-ts.md`、`docs/api/sdk-python.md` 存在。**实测复核**：`docs/api/sdk-python.md:20` 与 `examples/sdk-python/main.py:25` 都写 `item.text or item.toolName`。pydantic v2 的字段名是 `tool_name`，`toolName` 只是 alias，**不产生属性别名** —— 实测 `Item(...).toolName` → `AttributeError`。而 v1 的 `turn.started` / `turn.completed` item 没有 text，所以 `or` 右侧会在**第一条 item 上**就被求值 → **文档里的示例必崩**。CI 的 `docs.yml:113` 只做 `python -m py_compile`（纯语法）+ `import yanshi_sdk`，**吞掉运行时错误**。
+- 依据：`docs/api/sdk-ts.md`、`docs/api/sdk-python.md` 存在。**实测复核**：`docs/api/sdk-python.md:20` 与 `examples/sdk-python/main.py:25` 都写 `item.text or item.toolName`。pydantic v2 的字段名是 `tool_name`，`toolName` 只是 alias，**不产生属性别名** —— 实测 `Item(...).toolName` → `AttributeError`。而 v1 的 `turn.started` / `turn.completed` item 没有 text，所以 `or` 右侧会在**第一条 item 上**就被求值 → **文档里的示例必崩**。CI 的 `docs.yml`「Python parse + import」步骤只做 `python -m py_compile`（纯语法）+ `import yanshi_sdk`，**吞掉运行时错误**。
 - 证据形状：CI 必须**真跑**示例（起 `yanshi serve --fake-model` 后 `python examples/sdk-python/main.py`），或至少加一条 pytest 断言 `Item` 的公开读取属性名。**骗过去**：`py_compile` / `tsc --noEmit` 这类只看编译期的检查。
 
 **3. 与 schema 一致** — 部分
@@ -1458,7 +1465,7 @@
 > acceptance：版本号来自 git tag；CHANGELOG 可生成；发布流程文档化
 
 **1. 版本号来自 git tag** — 部分
-- 依据：`build.sh:20-27`（`git describe --tags --abbrev=0 --match 'v[0-9]*'` → ldflags 注入）；`.goreleaser.yaml` 的 `-X …version.Version={{.Version}}`；`internal/version/version.go` `var Version = "0.4.0"`。`internal/version::TestVersionIsOverridable` 是**恒真空壳**：测试体是 `version.Version = "1.0.0"; assert.Equal("1.0.0", version.Version)` —— **给包级 var 赋值再读回来**。它唯一的信息量是「Version 不是 const」，而那本来就是编译期事实（对 const 赋值根本不通过编译）。**它与 git tag 毫无关系**。`TestParseRejectsMilestoneTags` 是好测试但只覆盖解析器。
+- 依据：`build.sh` 的 release 分支（`git describe --tags --abbrev=0 --match 'v[0-9]*'` → ldflags 注入）；`.goreleaser.yaml` 的 `-X …version.Version={{.Version}}`；`internal/version/version.go` `var Version = "0.4.0"`。`internal/version::TestVersionIsOverridable` 的**第二半是恒真空壳**：`version.Version = "1.0.0"; assert.Equal("1.0.0", version.Version)` —— **给包级 var 赋值再读回来**，唯一的信息量是「Version 不是 const」，而那本来就是编译期事实（对 const 赋值根本不通过编译）。**第一行不是恒真的**：`require.Equal(t, "0.4.0", version.Version, "dev default must stay 0.4.0")` 钉住了未注入 ldflags 时的源码内默认值，改 `version.go` 的字面量会让它变红 —— 这条有效，只是它守的是「默认值没被误改」而非「版本号来自 git tag」。**整条测试与 git tag 仍无关系**。`TestParseRejectsMilestoneTags` 是好测试但只覆盖解析器。
 - 证据形状：起子进程 `go build -ldflags "-X …Version=9.9.9"` 后跑 `yanshi version` 并断言输出含 `9.9.9`；或至少断言 `build.sh` 的 `--match` 模式与 `cliff.toml:36` 的 `tag_pattern` 一致（两处都是 `v[0-9]*`，目前只靠注释同步）。**骗过去**：现在这条自赋值断言。
 
 **2. CHANGELOG 可生成** — 部分（**N 类：从未真跑过**）
@@ -1519,11 +1526,11 @@
 - 证据形状：**这是 N 类子句被正确行为化的范本** —— 把「覆盖主要用法」翻译成「子命令清单双向对账 + 生成物 diff-gate」。
 
 **2. getting started 可零依赖跑通** — 部分
-- 依据：`docs/user-guide/getting-started.md` 4 步（build / cp config / TUI / headless），全程 `--fake-model`，并显式提示 `${VAR}` 展开会触发 raw-literal 校验、给了最小 config 替代方案 —— 内容质量高。门禁只覆盖 1/4~2/4：`docs.yml:100-105` 的 Headless smoke 覆盖第 4 步；`ci.yml` 的 build job 覆盖第 1 步 + `yanshi -h`。**第 2、3 步（`cp config.example.yaml config.yaml` 后能否加载、TUI 能否启动）无门禁** —— 而文档自己承认第 2 步在有 `OPENAI_API_KEY` 环境时会失败。
+- 依据：`docs/user-guide/getting-started.md` 4 步（build / cp config / TUI / headless），全程 `--fake-model`，并显式提示 `${VAR}` 展开会触发 raw-literal 校验、给了最小 config 替代方案 —— 内容质量高。门禁只覆盖 1/4~2/4：`docs.yml` 的「Headless smoke」步骤覆盖第 4 步；`ci.yml` 的 build job 覆盖第 1 步 + `yanshi -h`。**第 2、3 步（`cp config.example.yaml config.yaml` 后能否加载、TUI 能否启动）无门禁** —— 而文档自己承认第 2 步在有 `OPENAI_API_KEY` 环境时会失败。
 - 证据形状：一条测试**逐字执行** getting-started 的命令序列（`cp config.example.yaml` → `bootstrap.Build` 断言成功），以及 `timeout 5 ./yanshi --fake-model -inprocess` 的启动自检。**骗过去**：只跑最容易的那一步（现状）。
 
 **3. 与实际不漂移** — 部分（**实测已漂移一处**）
-- 依据：已有门禁都是真的 —— `docs.yml` 的生成快照 diff-gate（configuration.md / tui.md / entrypoints.md）、`cmd/gendocs::TestConfigSkeletonFieldsMatchStruct`、`TestSubcommandListMatchesDispatch`、`TestRenderConfigSkeletonCoversExampleYAMLKeys`。**实测漂移**：`README.md:40` 写「type a message and press **Ctrl+J (Ctrl+Enter) to send**」，而 `docs/user-guide/getting-started.md` 写「**Enter 发送**，**Ctrl+Enter 换行**」，CLAUDE.md 与 `internal/cli/tui::TestModel_CtrlEnterInsertsNewline` 证实后者为真 —— **README 的按键说明是错的**，且它不在任何 diff-gate 的覆盖范围内（`docs.yml` 只 diff `docs/api/` 与 `docs/user-guide/`）。
+- 依据：已有门禁都是真的 —— `docs.yml` 的生成快照 diff-gate（configuration.md / tui.md / entrypoints.md）、`cmd/gendocs::TestConfigSkeletonFieldsMatchStruct`、`TestSubcommandListMatchesDispatch`、`TestRenderConfigSkeletonCoversExampleYAMLKeys`。**实测漂移**：README 的「Quick start」段写「type a message and press **Ctrl+J (Ctrl+Enter) to send**」，而 `docs/user-guide/getting-started.md` 写「**Enter 发送**，**Ctrl+Enter 换行**」，CLAUDE.md 与 `internal/cli/tui::TestModel_CtrlEnterInsertsNewline` 证实后者为真 —— **README 的按键说明是错的**，且它不在任何 diff-gate 的覆盖范围内（`docs.yml` 只 diff `docs/api/` 与 `docs/user-guide/`）。
 - 证据形状：手写散文里的行为主张要么被生成器接管（把按键表从 `internal/keymap` 生成），要么加一条 grep 式一致性测试（README 与 getting-started 对同一按键的描述必须一致）。**骗过去**：只 diff-gate 生成区块 —— **漂移恰恰发生在生成区块之外的散文里**。
 
 ---
@@ -1647,7 +1654,7 @@
 5. **`item.toolName` AttributeError**（H2/APIREF1#2 / H2/EX1#2）：pydantic 字段是 `tool_name`，`toolName` 只是 alias。首条 item 无 text 故必然触发。CI 的 `py_compile` 吞掉它。
 6. **`BenchmarkOrchestratorTurn` 在 `b.N ≥ 2` 下必挂**（F2/BENCH1#1）：FakeModel 只脚本 1 条响应且未设 `Repeat`。失败被 `nightly.yml` 缺 `pipefail` + `continue-on-error` **吞掉两层**。
 7. **`/help` 快捷键表已与实际绑定不符**（C2/UX2#3）：`Ctrl+K`/`Ctrl+S` 描述错误，`Ctrl+E` 根本不存在，漏 Ctrl+V/F1/Alt+R；`commands.go::commandTable` 还有逐字重复的 `/features` 条目。
-8. **README 按键说明是错的**（H2/UDOC1#3）：`README.md:40` 写「Ctrl+J (Ctrl+Enter) to send」，实际是 Enter 发送、Ctrl+Enter 换行。它在所有 diff-gate 覆盖范围之外。
+8. **README 按键说明是错的**（H2/UDOC1#3）：README 的「Quick start」段写「Ctrl+J (Ctrl+Enter) to send」，实际是 Enter 发送、Ctrl+Enter 换行。它在所有 diff-gate 覆盖范围之外。
 
 ---
 

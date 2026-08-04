@@ -69,7 +69,11 @@
     - **静态检测不可行。** 判据是「某个 `t.Skip` 的条件传递依赖于被测包返回的值」，需要跨函数数据流分析。合法的条件 skip（`os.Getenv`、`runtime.GOOS`、由被测包构造的配置对象）与病态 skip 在 AST 上同形，误报会红掉诚实的平台门测试；按 `unconditionalSkip` 已经写下的权衡，会被删掉的门禁是更大的洞。
     - **动态检测不可行。** 「跑被引测试、量 skip 率」要编译执行全部被引包，突破 ADR-0011「同一个问题，不编译」的预算；且台账引用了 `internal/archtest` 自身的测试，GOV8 会自我递归。
 
-    因此责任落在**属性测试作者**身上，约定是：*凡带前置条件守卫的属性测试，必须断言实际执行的 trial 数下限*。`internal/ctxcompact` 的 `runPairingProperty` / `minPairingTrials` 是参考实现 —— 守卫只读生成的输入，执行率低于阈值直接 fail。这条约定不是机器强制的，评审时要看。
+    因此责任落在**属性测试作者**身上，约定是：*凡带前置条件守卫的属性测试，必须断言实际执行的 trial 数下限，且这个下限统一在一个入口上*。`internal/ctxcompact/plan_property_test.go::runGeneratedProperty` / `::minExecutedTrials` / `::requireTrialFloor` 是参考实现 —— 守卫（`::skipAlreadyCompacted`）只读生成的输入、绝不读被测函数的输出，执行率低于阈值直接 fail。
+
+    **参考实现的关键是作用域，不只是那个下限。** 第一版只把这套守卫接进三条配对属性，作用域本身就是缺陷：被漏在外面的两条属性（pin 集合子集、token 缩减）继续拿被测函数自己的产物当守卫，掏空后依旧全绿。正确形态是**包内所有生成型属性一律走同一个入口**，包括跨文件的（`internal/ctxcompact/run_property_test.go` 也调它）。照第一版那个只接配对属性的形状实现，等于把已经判定过的缺陷复制回来。
+
+    这条约定不是机器强制的，评审时要看 —— 展开成可执行动作的是 [`docs/superpowers/review-checklist.md`](../superpowers/review-checklist.md) 的 A 段。
   - **`go list` 是包集合的权威，但它答的是「是不是包」，不是「健不健康」**。`defaultTestPackages` 用 `-e`，编译坏掉的包仍在集合里：那是 CI 自己该报的红，让它顺带把台账门禁也打黑只会把一处失败读成两处不相干的失败。
   - **非终态 evidence 只校验「解析得开」，不校验「够不够」**。它是线索不是证据；`partial` 条目写 5 条引用也不代表覆盖了 5 条子句。台账文件头（`docs/feature-status.yaml` 开头的注释）已在 `6a1a2f0` 改成如实描述这条规则，与门禁一致。
 
