@@ -2,6 +2,11 @@
 
 本指南让你**不需要任何 LLM API key**、不需要安装额外工具，三步跑通 yanshi。全程使用内置的 `--fake-model`——一个确定性 fake model，`llm.providers` 为空时也会被自动选中。
 
+## 0. 前置依赖
+
+- **Go 1.26.4+**（`go.mod`）—— 本指南全程只需要它。
+- **git 2.24+**（2019-11）—— **本指南用不到**，只有 `git_diff` 工具的 `base_ref` / `commit` 两个 scope 需要：它们向 `git` 传 `--end-of-options`，而更老的 git 不认这个参数、会直接拒绝整条命令（不是「保护退化」，是每次调用都失败）。`working_tree` scope 不传该标记，任何 git 都能用。理由与边界见 [../../README.md](../../README.md#prerequisites)。autoVCS 与 git 无关，它是自带的 SQLite 存储。
+
 ## 1. 构建
 
 ```sh

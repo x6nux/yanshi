@@ -17,6 +17,18 @@ that discovers a running backend for the current project or embeds one in-proces
 
 Yanshi 造的是会自己动的编码 agent：自驱动 goal loop、ReAct 编排、子代理委派、ACP 拉起外部 agent。名字就是产品语义。
 
+## Prerequisites
+
+- **Go 1.26.4+** (`go.mod`) — needed to build the binary.
+- **git 2.24+** (2019-11) — optional, and needed only by the `git_diff` tool's
+  `base_ref` and `commit` scopes. Those two pass `--end-of-options` to `git` so
+  that a ref beginning with `-` can never be read as a flag. Older git does not
+  recognise the marker and **rejects the command outright**, so on git < 2.24
+  those two scopes fail on every call rather than silently losing the
+  protection. The `working_tree` scope does not pass the marker and works with
+  any git. Nothing else in yanshi requires git — autoVCS is a SQLite store of
+  its own, not a git wrapper.
+
 ## Quick start
 
 ```sh
@@ -165,6 +177,11 @@ shell policy, and net hosts) before dispatch. Available tools:
 
 **Shell**
 - `shell_run` — run a single shell command; returns combined output, exit code, and duration. Shell metacharacters (`&&`, `||`, `;`, `|`, backticks, `$()`, `>`, `<`, newlines) are rejected — issue sequential commands instead.
+
+**Git** (read-only; see [Prerequisites](#prerequisites) for the version floor)
+- `git_status` — structured working-tree status.
+- `git_diff` — per-file structured diff. Scopes: `working_tree` (any git),
+  `base_ref` and `commit` (git 2.24+).
 
 **Time**
 - `time_now` — current time as ISO 8601, unix epoch, and UTC offset seconds.
