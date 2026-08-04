@@ -39,6 +39,11 @@
 - **不可违反的约束**：**终态条目（`done`/`removed`）的 evidence 必须是子句 → 测试的映射，key 数恰好等于 acceptance 切出的子句数** —— 不允许缺（未证明的承诺），也不允许多（引用了不存在的子句）。
 - **不可违反的约束**：**终态证据只接受测试引用（`pkg/path::TestName`），不接受文件引用** —— 终态断言的是**行为**，只有可执行的断言能承载这个声明；文件路径只能证明文件存在。（非终态条目仍可用 `checkEvidence` 支持的文件引用形态做线索；线索是**可选**的，但一旦写了就必须解析得开 —— 悬空的线索比没有线索更坏，它读起来像佐证。）
   - **勘误（首版在这一点上也虚报）**：这条约束**声称**的是「只有可执行的断言能承载声明」，首版**实现**的却是「某个 `_test.go` 里存在同名顶层函数」。两者差得很远，评审用三条探针径直穿了过去：一个建库 helper（`newTestStore`，没有 `Test` 前缀）、一个 `Test` 后接小写字母的名字（`go test` 根本不跑）、以及一个 `//go:build e2e_real` 挡住、CI 从不编译的测试 —— 三条全绿。**已收紧**（`internal/archtest/status_test.go` 的 `resolveTestRef`）：名字必须满足 `go test` 的命名规则（`Test` + 非小写字母开头），签名必须是 `func(*testing.T)`，包路径必须落在 `internal/`/`cmd/` 之内。一道门实现的谓词弱于它宣称的谓词，比没有这道门更坏 —— 它把弱检查当强检查洗白了。
+  - **勘误其二（收紧之后仍剩三条，同一个形状）**：第二轮评审又造了三条探针，全部 `Problem="" Constrained=false` 通过。三条的共同病根是**这道门在问文件系统，而它宣称问的是工具链**：
+    1. **`testdata/` 下的测试** —— `go list ./internal/archtest/...` 不列 `testdata`（工具链按约定跳过），CI 的 `go test ./...` 永远不编译它；而 `filepath.Glob(pkgDir/*_test.go)` 照收不误。
+    2. **文件名式 GOOS 约束** —— `plat_windows_test.go` 在 darwin 上不编译，实测 `go test ./... -run TestZZProbe -v` 里它从不出现；而 `buildConstraintOf` 只扫 `//go:build` 注释，报 `Constrained=false`。当时仓库里每一个 GOOS 后缀测试文件都恰好还额外带了一行冗余的 `//go:build`，所以这是**潜在**洞而非已被利用的洞 —— 但文件名后缀单独即可生效是 Go 的常规写法，第一个不写那行注释的人就会打开它。（评审给这批文件报的数是 10，实测是 8：`_unix` 不是文件名层面的 GOOS 记号——`go tool dist list` 里没有 `unix`，它只能写进 `//go:build`——而 `..._windows_cov_test.go` 的末位元素是 `cov` 也不构成约束。**连清点这个洞的那次清点本身都数错了**，这正是本 ADR 反复要求「别在文档里存别处文件的计数」的理由。）**这一条尤其该记下来**：上一版 ADR 在下方边界里写的是「build 约束一律按未执行处理，**包括 GOOS/GOARCH 约束**」，而实现根本看不见文件名后缀 —— **文档比实现强了一档**，正是本 ADR 通篇在追的那类失败，只不过这次发生在本 ADR 自己身上。
+    3. **无条件 `t.Skip`** —— 编译了、跑了、报 `--- SKIP` 也就是「非失败」，零断言。规则 4 的立论（「断言从未被执行过」）对它同样成立。
+    **已收紧**：判据统一改成「**默认的 `go test ./...` 会不会编译并执行它**」。包集合改由 `go list -e ./...` 给出（`defaultTestPackages`）而不再自己猜目录约定 —— 工具链跳过什么，这道门就跳过什么，包括以后新加的规则；文件名约束由 `filenameConstraintOf` 按 `go/build` 的 `goodOSArchFile` 规则解析，GOOS/GOARCH 名单来自 `go tool dist list` 而非硬编码；无条件 skip 由 `unconditionalSkip` 检出（边界见下）。三条探针改后分别得到 `Problem`、`Constrained=true [file name suffix _windows]`、`Problem`。
 - **不可违反的约束**：**没有任何子句可以只靠带 build 约束的测试成立**。`//go:build e2e_real` 这类测试**任何 CI job 都不提供对应 tag**，所以「它证明了这条子句」这句话在仓库里从未被执行过一次。它们可以作为**补充**证据与一条无约束测试并列（`internal/acp`、`internal/vcs` 的真实 CLI 覆盖是本仓最深的一层，一刀切禁掉只会把那些子句推向更弱的证据），但不能独自撑起一条终态子句。
 - **不可违反的约束**：**证据的包路径必须在反向扫描的根之内**（`evidenceScanRoots = {internal, cmd}`，正反两侧共用同一个变量）。首版正向用 `filepath.Join(root, pkg)` 接受任意路径、反向只遍历 `internal`/`cmd`：证据指向 `sdk/` 的话，marker 进门时被校验一次，此后**永远**不会被陈旧检测看到 —— 台账撤回引用，那句认领就烂在原地，而它本是这道门的另一半。
 - **不可违反的约束**：**被引用的测试必须在自己的 doc 注释里回写 `ledger: <ID>#<n> <子句原文>` 标记，且与台账逐字一致**。声明必须落在可被证伪的位置；文本漂移视为「两者必有一错」而非可容忍差异。
@@ -54,13 +59,15 @@
   - **只钉 `acceptance`，不钉 `title`**。title 是散文，改它不影响任何门禁。
   - **pin 是本地的、无历史的**。它记「上次评审时是什么样」，不记「历来最严的版本是什么样」；连续几次各自看似合理的削减，每一步都能通过。防线是 diff 评审，不是这道门。
   - **「可执行」判到「`go test` 会不会跑它」为止，判不到「它跑的时候断言了什么」**。空壳测试仍然能过（见上一条边界）；`resolveTestRef` 只保证被引的东西是一个会被执行的 `func TestX(*testing.T)`，不保证它跑起来有意义。
-  - **build 约束一律按「未执行」处理，包括 GOOS/GOARCH 约束**。`//go:build windows` 其实会在 CI 的 windows leg 上跑，但这道门不区分 —— 判定标准是「默认 `go test ./...` 编不编译它」，好让规则只有一句话。代价是这类测试也必须配一条无约束测试才能撑起子句；因为它只是**补充**限制而非禁用，代价可接受。
-  - **非终态 evidence 只校验「解析得开」，不校验「够不够」**。它是线索不是证据；`partial` 条目写 5 条引用也不代表覆盖了 5 条子句。（台账文件头目前仍写着非终态条目写 `""`，与实际的 5 条 partial 不符 —— 该改的是台账那句注释，门禁按更宽松也更诚实的规则执行。）
+  - **build 约束一律按「未执行」处理，包括 GOOS/GOARCH 约束，也包括只写在文件名里的那种**。`//go:build windows` 与 `foo_windows_test.go` 其实都会在 CI 的 windows leg 上跑，但这道门不区分 —— 判定标准是「默认 `go test ./...` 编不编译它」，好让规则只有一句话。**这条一致性是有代价换来的**：判定必须与运行门禁的机器无关，否则同一份台账在 ubuntu/windows/macos 三条 leg 上会给出三种结论，「GOV8 绿」就不再是一句能被引用的话。代价是这类测试也必须配一条无约束测试才能撑起子句；因为它只是**补充**限制而非禁用，代价可接受。
+  - **无条件 `t.Skip` 的检测是窄的，而且只能是窄的**。`unconditionalSkip` 只在 skip **可证明支配整个函数体**时报警：函数体的每条顶层语句都是对本测试 `*testing.T` 的方法调用，skip 之前的那些取自一张不可能失败的白名单（`Helper`/`Parallel`/`Log`/`Logf`），出现任何别的东西（一个 `if`、一次赋值、一个 helper 调用）就放弃分析并返回「没有」。**藏在条件里、子测试闭包里、或 helper 里的 skip 检不出来**，要检出就得做可达性分析，那不是这道门该背的东西。这是**故意选的偏向**：漏检留一个洞，误检会让诚实的平台门控测试无故变红，而无故变红的门禁会被删掉 —— 那是更大的洞。
+  - **`go list` 是包集合的权威，但它答的是「是不是包」，不是「健不健康」**。`defaultTestPackages` 用 `-e`，编译坏掉的包仍在集合里：那是 CI 自己该报的红，让它顺带把台账门禁也打黑只会把一处失败读成两处不相干的失败。
+  - **非终态 evidence 只校验「解析得开」，不校验「够不够」**。它是线索不是证据；`partial` 条目写 5 条引用也不代表覆盖了 5 条子句。台账文件头（`docs/feature-status.yaml` 开头的注释）已在 `6a1a2f0` 改成如实描述这条规则，与门禁一致。
 
 ## 关联
 
 - 来源：S0/W1 三轮评审的 12 条阻塞（其中 9 条同类）；`CLAUDE.md`「治理是机器强制的」段 GOV8 条目。
-- 代码落点：`internal/archtest/status_evidence_test.go`（GOV8 双向握手：`checkTerminalEvidence`、`TestLedgerEvidenceIsClauseComplete`、`TestLedgerMarkersAreLive`）；`internal/archtest/acceptance_pin_test.go`（分母 pin：`acceptancePins`、`TestLedgerAcceptanceIsPinned`）；`internal/archtest/status_test.go`（台账完整性与 `checkEvidence` 引用解析）；台账本体 `docs/feature-status.yaml`；统计工具 `cmd/featurestatus`。
+- 代码落点：`internal/archtest/status_evidence_test.go`（GOV8 双向握手：`checkTerminalEvidence`、`TestLedgerEvidenceIsClauseComplete`、`TestLedgerMarkersAreLive`）；`internal/archtest/acceptance_pin_test.go`（分母 pin：`acceptancePins`、`TestLedgerAcceptanceIsPinned`）；`internal/archtest/status_test.go`（台账完整性、`checkEvidence` 引用解析，以及「这条引用会不会被执行」的三个谓词：`defaultTestPackages`、`filenameConstraintOf`、`unconditionalSkip`，由 `TestResolveTestRefExecutabilityPredicates` 单测钉住 —— 台账自己只走通过路径，谓词若退化成「一律放行」整套门禁会静默全绿）；台账本体 `docs/feature-status.yaml`；统计工具 `cmd/featurestatus`。
 - 被否决的替代方案：
   - **单纯的条数比较（evidence 条数 ≥ 子句数）** —— 一行代码就能写出来，但也一行代码就能被满足：贴五个不相关的测试名即可凑数。它把「哪条测试证明哪条子句」这个关键映射留在台账作者的脑子里，等于把洞挪了个位置而没有堵上。逐句映射 + 测试侧回写才让「哪条证明哪条」变成可被 diff 审视的公开断言。
   - **人工评审 checklist（不上门禁）** —— 这正是发现 9 条问题的方式，代价是三轮评审；它能发现问题但不能防止问题重现，且成本随台账规模线性增长。
