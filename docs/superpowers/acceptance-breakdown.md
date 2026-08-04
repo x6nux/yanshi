@@ -577,7 +577,7 @@
 - 证据形状：随机输入 + 守卫只对**输入侧可算的前提**成立，且把「被测函数真的干活了」写成跨 trial 的硬下限而非 per-trial 条件（现状即是，`run_property_test.go` 与 `plan_property_test.go` 走同一个入口）。**骗过去**：任何把被测函数的调用计数当 skip 条件、又不数执行率的写法。
 
 **3. 工具对配对不变量成立** — 已兑现（**指控不成立**）
-- 依据：`internal/ctxcompact/pairs.go` `EnforceToolCallPairs`（call_id/result_id 双索引 + `permanentlyRemoved` 防振荡 + 不动点循环），调用点 `plan.go::Plan`。三个测试**全部变异敏感**（见上）。三道防空壳机制都在位：① `plan_property_test.go::skipAlreadyCompacted` 只读**生成输入**的 `lastMessageIsSummary(msgs)`，不读 `Plan` 输出；② `plan_property_test.go::runGeneratedProperty` 强制执行率 ≥60%（`::minExecutedTrials`，由 `::requireTrialFloor` 断言），把「全 skip 也算 PASS」变红，且它是**包内所有生成型属性的统一入口**（跨文件的 `run_property_test.go` 也调它），不是只接配对属性；③ `RepairsCorruption` 末尾 `if injected == 0 { t.Fatal }`。
+- 依据：`internal/ctxcompact/pairs.go` `EnforceToolCallPairs`（call_id/result_id 双索引 + `permanentlyRemoved` 防振荡 + 不动点循环），调用点 `plan.go::Plan`。三个测试**全部变异敏感**（见上）。三道防空壳机制都在位：① `plan_property_test.go::skipAlreadyCompacted` 只读**生成输入**的 `lastMessageIsSummary(msgs)`，不读 `Plan` 输出；② `plan_property_test.go::runGeneratedProperty` 强制执行率 ≥60%（`::minExecutedTrials`，由 `::requireTrialFloor` 断言），把「全 skip 也算 PASS」变红，且它是**包内所有生成型属性的统一入口** —— 现在是 8 条属性对 8 个调用点，跨文件的 `run_property_test.go` 与 `summarize_property_test.go` 都走它（这句曾在只接了 5/8 时就被写成「全覆盖」，核对方法见 review-checklist A 段：数 `^func TestProperty_` 与数 `runGeneratedProperty(t,`，两个数相等才算数）；③ `RepairsCorruption` 末尾 `if injected == 0 { t.Fatal }`。
 - 已知弱点（不足以推翻 done，与台账注释一致）：种子固定（`propSeed=42`/`123`/`777`），是「确定性重放的属性测试」，覆盖来自 trial 数而非跨运行随机性。
 - 证据形状：不动点成立 + 幂等 + 人为破坏可修复三角度；且**守卫只读生成输入 + 有执行率下限**。**骗过去**：用 `pinnedSetIsConsistent(msgs, pinned)` 当 skip 条件 —— 那正是历史上的坏形态。
 
@@ -686,7 +686,7 @@
 > acceptance：secret 不入日志/DB 明文；keyring 读写删；无 keyring 安全降级
 
 **1. secret 不入日志/DB 明文** — 部分
-- 依据：`internal/secrets/secrets.go::NewRedactor/NewSafeOutput`（Redactor / SafeLogger / SafeOutput / RedactJSON）；接线为真（`bootstrap.go::Build` MergeRedactors、`::Build` 注册已解析 provider key、`::Build` `st.SetRedactor`、`::Build` `httpCfg.Redactor`）。**缺口**：`store.redact` 只覆盖 **3 条写路径** —— `CreateSession` / `AppendMessage` / `UpdateSessionTitle`（`store.go::Store/Store.redact` 注释即列此三条）。**`WriteMemory`（`internal/store/memory.go`）、tasks、VCS blob 内容都不脱敏** → 「不入 DB 明文」只对会话标题与消息成立。`internal/store::TestStore_RedactsAllWritePaths` 名叫 "All" 但只测那三条（名实不符，断言本身是真的）；`internal/secrets::TestSecurity_NoPlaintextInEncryptedFile`（真，读原始文件字节）、`TestSecurity_RawLiteralFailsClosedWithoutLegacyOptIn`、`internal/tools::TestAuthorizeLogsDecisionWithoutArguments`（真，断言 `sk-test` 不出现在 slog）。
+- 依据：`internal/secrets/secrets.go::NewRedactor/NewSafeOutput`（Redactor / SafeLogger / SafeOutput / RedactJSON）；接线为真 —— `bootstrap.go::Build` 里四处：MergeRedactors、注册已解析 provider key、`st.SetRedactor`、`httpCfg.Redactor`。**缺口**：`store.redact` 只覆盖 **3 条写路径** —— `CreateSession` / `AppendMessage` / `UpdateSessionTitle`（`store.go::Store/Store.redact` 注释即列此三条）。**`WriteMemory`（`internal/store/memory.go`）、tasks、VCS blob 内容都不脱敏** → 「不入 DB 明文」只对会话标题与消息成立。`internal/store::TestStore_RedactsAllWritePaths` 名叫 "All" 但只测那三条（名实不符，断言本身是真的）；`internal/secrets::TestSecurity_NoPlaintextInEncryptedFile`（真，读原始文件字节）、`TestSecurity_RawLiteralFailsClosedWithoutLegacyOptIn`、`internal/tools::TestAuthorizeLogsDecisionWithoutArguments`（真，断言 `sk-test` 不出现在 slog）。
 - 证据形状：补 `WriteMemory` / task artifact 路径的脱敏断言；或把子句范围缩到会话表。
 
 **2. keyring 读写删** — 未兑现（**测试维度；本包最关键的取证点**）
@@ -1153,7 +1153,7 @@
 - 依据：`help.go::model.collectHelpEntries` 的 commands/modes/themes 三段确为动态派生，**但键位段是三张互相独立的手工静态表**：
   - `help.go` `keyBindings`（F1 面板用，目前是准的），其上 `::keyBindings` 注释自认「Go 无法反射 keybinding，新增分支时同步更新此表」；
   - `commands.go::newCmdHelpEntry`（`/help` 命令的 "Keyboard shortcuts" 段）**已经错了**：`Ctrl+K → "clear input"`（真实是打开 action palette）、`Ctrl+S → "toggle spinner/sound"`（真实是存草稿）、`Ctrl+E → "toggle history view"`（`tea.KeyCtrlE` 在整个 TUI **不存在**）；并漏掉 Ctrl+V / F1 / Alt+R。
-  - 台账外真实缺陷：`commands.go::commandTable` 与 `::commandTable` 是**逐字重复的 `/features` 条目**，F1 面板与 Ctrl+K 面板都会显示两遍，无测试拦截。
+  - 台账外真实缺陷：`commands.go::commandTable` 里有**两条逐字相同的 `/features` 条目**（`name`/`help`/`run` 三个字段完全一致，相邻两行），F1 面板与 Ctrl+K 面板都会显示两遍，无测试拦截。
   `TestHelp_KeybindingsCoreEntries` 是**恒真空壳**：它断言 `renderHelp()` 含 `"Enter"/"Ctrl+K"/"F1"`，而这些字符串正来自同文件的 `keyBindings` 字面量表；它对 `handlers.go` 的真实 `case tea.Key*` 分支一无所知（测试自己的 doc 注释也承认这点）。
 - 证据形状：一条**防漂移门禁** —— 用 `go/ast` 解析 `handlers.go` 里的 `case tea.KeyCtrl*/KeyF*` 集合，断言它与 `keyBindings` 和 `/help` 的 shortcuts 表**双向**一一对应（多一条、少一条都红）；外加断言 `commandTable` 内 `name` 无重复。**骗过去**：拿静态表里的字符串去断言同一张静态表渲染出的字符串（现状）。
 

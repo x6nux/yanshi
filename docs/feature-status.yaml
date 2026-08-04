@@ -186,7 +186,7 @@
 #     自己的 10min 超时从未被驱动。⚠️ internal/tools::TestRunTestsDefaultTimeout
 #     是**空壳**：它把 error 用 t.Logf 吞掉、结果 `_ = out`，无论超时行为对错都会绿，
 #     不能当这条的证据。
-#   4 大输出成 artifact ——【缺】testrun.go:89 有 SpillThreshold 分支，但没有任何
+#   4 大输出成 artifact ——【缺】testrun.go::runTests 有 SpillThreshold 分支，但没有任何
 #     测试让 raw 超过阈值。与 B3/W07 第 3 条同一个形状。
 # 第 1、2 条已覆盖（TestParseGoJSONCountsPassFailSkip /
 # TestRunTestsExecutesGoTestJSONWithWorkspaceWriteTier /
@@ -201,7 +201,7 @@
 # 2026-08-04 复核：missing → done。「missing」是台账**低报**：diagnostics 工具一直
 # 存在（internal/tools/diagnostics.go）、一直被装配（bootstrap.go:648
 # tools.NewDiagnosticsTool(nil)）、也一直在出厂 profile 的 allow 列表里
-# （bootstrap/profile.go:113）。W1 的 10a2762 / 3d7dabc 修的正是这个工具的
+# （bootstrap/profile.go::DefaultOrchestratorProfile）。W1 的 10a2762 / 3d7dabc 修的正是这个工具的
 # toolchain 探针 argv —— 修不了一个不存在的工具。
 # 三条子句逐条对账后全部有可执行断言，故直接翻终态而不是停在 partial：
 #   1 一次调用聚合 —— 一次 runTool 同时拿到 git / toolchain / lsp 三段结果
@@ -278,7 +278,9 @@
 # W1 的 32217b6（git 退出码）修的就是它们。
 # 不翻 done 的原因只有第 3 条：「大 diff 成 artifact」。runGitDiff 里确实有
 # writeArtifactOrSpill（git.go:214），但**没有任何测试让 patch 超过 SpillThreshold**
-# —— internal/tools::TestWriteArtifactOrSpill* 测的是通用 helper，那里的 "git-diff"
+# —— internal/tools::TestWriteArtifactOrSpillUsesTaskManager /
+#   ::TestWriteArtifactOrSpillMarksFallbackDegraded / ::TestWriteArtifactOrSpillNoWorkRoot
+#   测的是通用 helper，那里的 "git-diff"
 # 只是一个字符串字面量当 label，不经过 git 工具。溢出阈值这条路径在 git_diff 上
 # 从未被执行过。补这条测试归 W6。
 # 另三条已覆盖：
@@ -707,7 +709,7 @@
 
 # 2026-08-04 复核：missing → partial。「missing」是台账**低报**：cooldown 实现完整
 # 且已接通配置链 —— config.Compaction.CooldownFraction / CooldownDuration /
-# HardForceFraction（默认 0.05 / "" / 0.95）→ bootstrap.go:967-969 →
+# HardForceFraction（默认 0.05 / "" / 0.95）→ bootstrap.go::Build →
 # orchestrator.wrapCompaction → einollm.CompactingModel.inCooldown。
 # 不翻 done 的原因是第 3 条「keepRecent 文档清晰」**没有可执行证据**：
 #   唯一沾边的 internal/llm/eino::TestCompactingModel_KeepRecentBridge 是**恒真的

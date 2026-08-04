@@ -71,7 +71,9 @@
 
     因此责任落在**属性测试作者**身上，约定是：*凡带前置条件守卫的属性测试，必须断言实际执行的 trial 数下限，且这个下限统一在一个入口上*。`internal/ctxcompact/plan_property_test.go::runGeneratedProperty` / `::minExecutedTrials` / `::requireTrialFloor` 是参考实现 —— 守卫（`::skipAlreadyCompacted`）只读生成的输入、绝不读被测函数的输出，执行率低于阈值直接 fail。
 
-    **参考实现的关键是作用域，不只是那个下限。** 第一版只把这套守卫接进三条配对属性，作用域本身就是缺陷：被漏在外面的两条属性（pin 集合子集、token 缩减）继续拿被测函数自己的产物当守卫，掏空后依旧全绿。正确形态是**包内所有生成型属性一律走同一个入口**，包括跨文件的（`internal/ctxcompact/run_property_test.go` 也调它）。照第一版那个只接配对属性的形状实现，等于把已经判定过的缺陷复制回来。
+    **参考实现的关键是作用域，不只是那个下限，而作用域收敛了两次。** 第一版只把这套守卫接进三条配对属性，作用域本身就是缺陷：被漏在外面的两条属性（pin 集合子集、token 缩减）继续拿被测函数自己的产物当守卫，掏空后依旧全绿。第二版接到 5 条，却把描述改成了「已经全覆盖」—— 剩下的 3 条里有 2 条掏空后仍绿（`TestProperty_NoDoubleCompaction` 报 PASS、`TestProperty_NoEmptySummaryMessage` 报 SKIP）。**改范围和改描述是两件事。**
+
+    正确形态是**包内所有生成型属性一律走同一个入口**，包括跨文件的（`internal/ctxcompact/run_property_test.go` 与 `internal/ctxcompact/summarize_property_test.go` 都调它）。核对靠数，不靠读：`^func TestProperty_` 的条数必须等于 `runGeneratedProperty(t,` 的调用点条数。形状不同的属性用**嵌套**接入而不是留在外面 —— `internal/ctxcompact/summarize_property_test.go::TestProperty_EachSummaryCallWithinWindow` 的界是「窗口大小 × 历史」二维的，窗口扫描在外、入口在内，它自己的内联下限与共享下限并存。照第一版那个只接配对属性的形状实现，等于把已经判定过的缺陷复制回来。
 
     这条约定不是机器强制的，评审时要看 —— 展开成可执行动作的是 [`docs/superpowers/review-checklist.md`](../superpowers/review-checklist.md) 的 A 段。
   - **`go list` 是包集合的权威，但它答的是「是不是包」，不是「健不健康」**。`defaultTestPackages` 用 `-e`，编译坏掉的包仍在集合里：那是 CI 自己该报的红，让它顺带把台账门禁也打黑只会把一处失败读成两处不相干的失败。

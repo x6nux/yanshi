@@ -2,50 +2,62 @@ package ctxcompact
 
 import (
 	"context"
-	"math/rand/v2"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
 )
 
+// TestProperty_NoDoubleCompaction is the "summary of a summary" property:
+// running Run over its own output must not summarize again. Compacting an
+// already-compacted history destroys the one message the first pass promised to
+// keep, and does it while burning a model call.
+//
+// It used to run against a SINGLE fixed history and bail with `t.Log(...);
+// return` when the first Run made no summarizer calls — a guard computed from
+// the code under test's own output, which is the exact shape the review
+// checklist's section A calls vacuous. A Run gutted to return its input
+// verbatim made zero calls, the guard fired, and the test printed PASS while
+// asserting nothing:
+//
+//	run_property_test.go:31: first Run had nothing to summarize — skipping P5
+//	--- PASS: TestProperty_NoDoubleCompaction (0.00s)
+//
+// It now goes through runGeneratedProperty like every other generated property
+// in this package, and the "did the first pass actually compact" condition is a
+// cross-trial floor rather than a per-trial escape.
 func TestProperty_NoDoubleCompaction(t *testing.T) {
-	rng := rand.New(rand.NewPCG(777, 0))
-	msgs := genHistory(rng, 30)
-	if len(msgs) == 0 {
-		return
-	}
-
-	rs1 := &recordingSummarizer{Return: "first summary"}
+	const trials = 30
+	compacted := 0
 	planOpts := PlanOpts{KeepRecent: 3}
 	runOpts := RunOpts{
 		ModelWindow:      2000,
 		ChunkThreshold:   0.9,
 		SummaryWordLimit: 200,
 	}
+	runGeneratedProperty(t, trials, 60, func(t *testing.T, msgs []*schema.Message) {
+		rs1 := &recordingSummarizer{Return: "first summary"}
+		result1, err := Run(context.Background(), msgs, planOpts, runOpts, rs1, nil)
+		if err != nil {
+			t.Fatalf("first Run failed on a %d-message history: %v", len(msgs), err)
+		}
+		if len(rs1.GenerateCalls)+len(rs1.StreamCalls) == 0 {
+			return // nothing to summarize in this trial; the floor below covers it
+		}
+		compacted++
 
-	result1, err := Run(context.Background(), msgs, planOpts, runOpts, rs1, nil)
-	if err != nil {
-		t.Fatalf("first Run failed: %v", err)
-	}
-	if len(rs1.GenerateCalls)+len(rs1.StreamCalls) == 0 {
-		t.Log("first Run had nothing to summarize — skipping P5")
-		return
-	}
-
-	rs2 := &recordingSummarizer{Return: "re-summary"}
-	result2, err := Run(context.Background(), result1.Messages, planOpts, runOpts, rs2, nil)
-	if err != nil {
-		t.Fatalf("second Run failed: %v", err)
-	}
-
-	calls2 := len(rs2.GenerateCalls) + len(rs2.StreamCalls)
-	if calls2 > 0 {
-		t.Fatalf("summary-of-summary: second Run made %d summarizer calls, want 0", calls2)
-	}
-
-	if len(result2.Messages) != len(result1.Messages) {
-		t.Logf("second Run output length %d != first %d (informational)", len(result2.Messages), len(result1.Messages))
-	}
+		rs2 := &recordingSummarizer{Return: "re-summary"}
+		result2, err := Run(context.Background(), result1.Messages, planOpts, runOpts, rs2, nil)
+		if err != nil {
+			t.Fatalf("second Run failed: %v", err)
+		}
+		if calls2 := len(rs2.GenerateCalls) + len(rs2.StreamCalls); calls2 > 0 {
+			t.Fatalf("summary-of-summary: second Run made %d summarizer calls, want 0", calls2)
+		}
+		if len(result2.Messages) != len(result1.Messages) {
+			t.Logf("second Run output length %d != first %d (informational)", len(result2.Messages), len(result1.Messages))
+		}
+	})
+	requireTrialFloor(t, "compacted on the first Run", compacted, trials)
 }
 
 // TestProperty_RunReducesTokens is a second, independent property: whenever

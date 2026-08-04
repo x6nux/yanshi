@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ---------------------------------------------------------------------------
@@ -58,13 +60,28 @@ import (
 // WHAT IS NOT SCANNED, and cannot be: a BARE symbol name in backticks, with no
 // path in front of it. That half of the checklist's F3 rule stays manual, and
 // the reason is measured rather than assumed. A trial gate over backticked
-// `Test*` names found 5 unresolvable ones among 256 in the live docs, and all
-// 5 were legitimate: two were deliberately-quoted OLD names inside rename
+// `Test*` names in the live docs found exactly 5 unresolvable ones, and all 5
+// were legitimate: two were deliberately-quoted OLD names inside rename
 // records, two were illustrative placeholders (`TestX` and friends), and one
 // was a real Go type that simply is not a test function. Zero true positives,
 // five false ones — and a gate that reddens on honest history is a gate that
 // gets deleted, which is the larger hole (same trade-off `unconditionalSkip`
-// records in ADR-0011).
+// records in ADR-0011). The denominator is deliberately not recorded here: it
+// moves every time anybody cites a test, which is exactly the rot the
+// checklist's F1 rule is about.
+//
+// ALSO NOT SCANNED, and easy to miss because it looks protected: the `::Symbol`
+// SHORTHAND, written with no path at all when the previous citation on the same
+// line already established one. The regexp below requires at least one path
+// character before the separator, so every one of these falls outside the gate
+// — they are neither a protected `path::Symbol` citation nor a bare name
+// carrying the "I mean a phantom" signal, and the acceptance breakdown is full
+// of them. They were audited by hand when this note was written and all
+// resolved; there is no machine check, and inventing one would mean guessing
+// which earlier citation on the line a shorthand inherits from. Treat them like
+// bare names during a review: read them, do not trust them. (An audit script
+// must also expect one false positive that is not ours — GitHub Actions
+// workflow annotations are spelled `::error::`.)
 //
 // The asymmetry is structural, not incidental. Writing the path prefix IS the
 // signal "I am pointing at this, and it is supposed to exist"; omitting it is
@@ -81,7 +98,9 @@ import (
 // file in the same package does not break a grep, so it must not redden.
 
 // docSymbolRefRe matches a `<path>::<Symbol>` reference. The symbol side allows
-// a dotted qualifier (Type.Method, Type.Field).
+// a dotted qualifier (Type.Method, Type.Field). It is applied to a line that
+// stripMarkdownEmphasis has already run over — see that function for why the
+// two cannot be separated.
 //
 // There is deliberately NO trailing-`*` prefix form. The first version had one
 // — `path::Family_*` was meant to name a family of sibling tests — and it made
@@ -95,6 +114,74 @@ import (
 // the cost of dropping it is nil and the cost of keeping it is a bypass. Cite a
 // family by naming one concrete member, or by naming the package.
 var docSymbolRefRe = regexp.MustCompile(`([A-Za-z0-9_./-]+)::([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)`)
+
+// emphasisRunRe matches a run of markdown emphasis delimiters. Markdown has
+// exactly two of them, `*` and `_`, and `_` is also a legal Go identifier and
+// path character — that overlap is the whole problem stripMarkdownEmphasis
+// exists to solve.
+var emphasisRunRe = regexp.MustCompile(`[*_]+`)
+
+// stripMarkdownEmphasis removes emphasis delimiter runs from a line before
+// citations are extracted from it, keeping only the runs that sit INSIDE a word.
+//
+// Deleting the trailing-`*` prefix form fixed the bold bypass for asterisks and
+// only for asterisks, because `*` is not a path or identifier character: the
+// regexp simply stopped at it. `_` is a different animal — it is in both
+// character classes — so an underscore-emphasized citation was swallowed whole
+// rather than merely demoted:
+//
+//	_internal/pkg/thing.go::NewNam_
+//	  path   -> "_internal/pkg/thing.go"   (leading _ eaten by the path class)
+//	  symbol -> "NewNam_"                  (trailing _ eaten by the symbol class)
+//
+// candidates() then resolves nothing for that path, and unresolvedDocSymbols
+// treats an unresolvable path as "not a citation of this module" and skips it.
+// So `_..._` and `__...__` were not weakened citations, they were INVISIBLE
+// ones — strictly worse than the `**` bypass that motivated removing the prefix
+// form, and reachable by the same purely decorative edit.
+//
+// Fixing this by dropping `_` from the path class is not available: real paths
+// here are full of it (plan_property_test.go, feature_status.go). So emphasis is
+// removed lexically instead, which also repairs a third shape the old regexp
+// missed entirely — `**path**::Symbol`, where the delimiters land between the
+// path and the separator and no match was produced at all.
+//
+// The keep rule is "intraword runs stay": a run whose neighbours on BOTH sides
+// are letters or digits is part of an identifier, never emphasis (CommonMark
+// forbids intraword `_` emphasis for the same reason). Everything else goes.
+// That preserves plan_property_test.go and TestFamily_A while stripping the
+// leading and trailing runs of every emphasis form. Runs of `*` are covered by
+// the same rule at no extra cost.
+//
+// One shape it does rewrite: a glob such as `tools/*.go::Foo` loses its
+// asterisk, because the neighbours are `/` and `.` rather than word characters.
+// The VERDICT is unaffected — "tools/.go" resolves to no file, just as the old
+// regexp's ".go" did — so the rewrite is cosmetic in the only place it is
+// observable. TestStripMarkdownEmphasisKeepsIntrawordRuns pins that as an
+// outcome rather than as unchanged text, so the distinction cannot rot into an
+// assumption.
+func stripMarkdownEmphasis(line string) string {
+	locs := emphasisRunRe.FindAllStringIndex(line, -1)
+	if locs == nil {
+		return line
+	}
+	wordAt := func(r rune, ok bool) bool {
+		return ok && (unicode.IsLetter(r) || unicode.IsDigit(r))
+	}
+	var b strings.Builder
+	prev := 0
+	for _, loc := range locs {
+		before, beforeOK := utf8.DecodeLastRuneInString(line[:loc[0]])
+		after, afterOK := utf8.DecodeRuneInString(line[loc[1]:])
+		if wordAt(before, beforeOK > 0) && wordAt(after, afterOK > 0) {
+			continue // intraword: part of an identifier, not emphasis
+		}
+		b.WriteString(line[prev:loc[0]])
+		prev = loc[1]
+	}
+	b.WriteString(line[prev:])
+	return b.String()
+}
 
 // docSymbolRef is one `path::Symbol` citation found in a document.
 type docSymbolRef struct {
@@ -246,7 +333,7 @@ func liveDocs(t *testing.T, root string) []string {
 func parseDocSymbolRefs(doc, body string) []docSymbolRef {
 	var refs []docSymbolRef
 	for i, line := range strings.Split(body, "\n") {
-		for _, m := range docSymbolRefRe.FindAllStringSubmatch(line, -1) {
+		for _, m := range docSymbolRefRe.FindAllStringSubmatch(stripMarkdownEmphasis(line), -1) {
 			refs = append(refs, docSymbolRef{
 				Doc: doc, Line: i + 1,
 				Path: m[1], Symbol: m[2], Raw: m[0],
@@ -376,14 +463,24 @@ func TestGOV9DetectsRenamedSymbol(t *testing.T) {
 
 // TestGOV9DetectsRenamedSymbolUnderMarkdownEmphasis is the forward probe for
 // the bypass that killed the trailing-`*` prefix form: a citation wrapped in
-// markdown emphasis must be judged exactly like a bare one.
+// markdown emphasis, or in any other decoration this repository's documents
+// use, must be judged exactly like a bare one.
 //
-// The failure this pins was real and silent. With the old regexp the closing
-// `**` of a bold span landed in the prefix capture, so `**pkg::NewNam**` was
-// read as "any symbol starting with NewNam", which the real NewName satisfied
-// — the gate went green on a dead citation because somebody bolded it. Every
-// asterisk emphasis form is probed, since the verdict must not depend on how
-// many of them an author wrapped the citation in.
+// The failure this pins was real and silent, and it had two layers. With the
+// old regexp the closing `**` of a bold span landed in the prefix capture, so
+// `**pkg::NewNam**` was read as "any symbol starting with NewNam", which the
+// real NewName satisfied. Removing that prefix form fixed only the asterisk
+// half: `_` is BOTH an emphasis delimiter and a legal path/identifier
+// character, so `_pkg::NewNam_` did not get demoted to a prefix, it got eaten —
+// the leading underscore joined the path, the path stopped resolving, and
+// unresolvedDocSymbols dropped the whole citation as "not ours". The first
+// version of this probe enumerated three asterisk spellings and missed the one
+// other character markdown uses for emphasis, which was also the one character
+// the path class contained.
+//
+// The table is therefore an ENUMERATION, not a sample: markdown has exactly two
+// emphasis characters, and every decoration this repository's live documents
+// put around a citation is listed. Anything that reddens here is a bypass.
 func TestGOV9DetectsRenamedSymbolUnderMarkdownEmphasis(t *testing.T) {
 	dir := withSyntheticModule(t, map[string]string{
 		"internal/pkg/thing.go": "package pkg\n\nfunc NewName() {}\n",
@@ -391,14 +488,88 @@ func TestGOV9DetectsRenamedSymbolUnderMarkdownEmphasis(t *testing.T) {
 	idx := buildGoSymbolIndex(t, dir)
 
 	for _, body := range []string{
+		// baseline
+		"plain: internal/pkg/thing.go::NewNam",
+		// asterisk emphasis — all three spellings
 		"bold: **internal/pkg/thing.go::NewNam**",
 		"italic: *internal/pkg/thing.go::NewNam*",
 		"bold+italic: ***internal/pkg/thing.go::NewNam***",
+		// underscore emphasis — the half the first probe missed
+		"underscore italic: _internal/pkg/thing.go::NewNam_",
+		"underscore bold: __internal/pkg/thing.go::NewNam__",
+		"underscore bold+italic: ___internal/pkg/thing.go::NewNam___",
+		"mixed delimiters: *__internal/pkg/thing.go::NewNam__*",
+		// emphasis that covers only the path, so the delimiters land between
+		// the path and the separator — no match at all under the old regexp
+		"partial bold: **internal/pkg/thing.go**::NewNam",
+		"partial underscore: __internal/pkg/thing.go__::NewNam",
+		// non-emphasis decorations: these never overlapped the character
+		// classes, and the table exists so a future widening cannot break them
+		// without saying so
+		"strikethrough: ~~internal/pkg/thing.go::NewNam~~",
+		"code span: `internal/pkg/thing.go::NewNam`",
+		"html bold: <b>internal/pkg/thing.go::NewNam</b>",
+		"html em: <em>internal/pkg/thing.go::NewNam</em>",
+		"html code: <code>internal/pkg/thing.go::NewNam</code>",
+		"link text: [internal/pkg/thing.go::NewNam](x.md)",
+		"> blockquote: internal/pkg/thing.go::NewNam",
+		"- dash bullet: internal/pkg/thing.go::NewNam",
+		"* star bullet: internal/pkg/thing.go::NewNam",
+		"+ plus bullet: internal/pkg/thing.go::NewNam",
+		"1. ordered item: internal/pkg/thing.go::NewNam",
+		"### heading: internal/pkg/thing.go::NewNam",
+		"| table cell | internal/pkg/thing.go::NewNam |",
+		"parenthesised: (internal/pkg/thing.go::NewNam)",
+		"CJK quotes: 「internal/pkg/thing.go::NewNam」",
+		"CJK full stop: internal/pkg/thing.go::NewNam。",
+		"footnote marker: internal/pkg/thing.go::NewNam[^1]",
 	} {
 		bad := unresolvedDocSymbols(idx, parseDocSymbolRefs("d.md", body))
 		if len(bad) != 1 {
-			t.Errorf("emphasis form went undetected in %q: got %+v", body, bad)
+			t.Errorf("decoration bypassed the gate in %q: got %+v", body, bad)
 		}
+	}
+}
+
+// TestStripMarkdownEmphasisKeepsIntrawordRuns is the reverse probe for the
+// emphasis stripper, and it guards the reason `_` could not simply be dropped
+// from the path character class: underscores inside words are load-bearing here.
+//
+// Both directions are checked on the same inputs — the text must survive
+// unchanged, and a real citation dressed in emphasis must still resolve rather
+// than merely stop being invisible.
+func TestStripMarkdownEmphasisKeepsIntrawordRuns(t *testing.T) {
+	for _, keep := range []string{
+		"internal/ctxcompact/plan_property_test.go::runGeneratedProperty",
+		"internal/pkg/thing_test.go::TestFamily_A",
+		"snake_case_all_over::Some_Name",
+		"a*b and 2*3",
+	} {
+		if got := stripMarkdownEmphasis(keep); got != keep {
+			t.Errorf("stripMarkdownEmphasis(%q) = %q, want it unchanged", keep, got)
+		}
+	}
+
+	dir := withSyntheticModule(t, map[string]string{
+		"internal/pkg/thing_test.go": "package pkg\n\nfunc TestFamily_A() {}\n",
+	})
+	idx := buildGoSymbolIndex(t, dir)
+	for _, ref := range []string{
+		"internal/pkg/thing_test.go::TestFamily_A",
+		"_internal/pkg/thing_test.go::TestFamily_A_",
+		"__internal/pkg/thing_test.go::TestFamily_A__",
+		"**internal/pkg/thing_test.go::TestFamily_A**",
+	} {
+		if bad := unresolvedDocSymbols(idx, parseDocSymbolRefs("d.md", ref)); len(bad) != 0 {
+			t.Errorf("false positive on a live citation %q: %+v", ref, bad)
+		}
+	}
+
+	// A glob path is the one shape the stripper rewrites. Its verdict is what
+	// matters and it must stay "not a citation of this module", exactly as it
+	// was when the regexp simply stopped at the asterisk.
+	if bad := unresolvedDocSymbols(idx, parseDocSymbolRefs("d.md", "internal/pkg/*.go::Nope")); len(bad) != 0 {
+		t.Errorf("a glob path must stay unresolvable, not become a finding: %+v", bad)
 	}
 }
 
