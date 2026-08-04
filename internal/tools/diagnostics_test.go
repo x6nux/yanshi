@@ -3,7 +3,10 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +26,26 @@ func (s stubLSPManager) Diagnostics(path string, _ time.Duration) []lsp.Diagnost
 }
 func (s stubLSPManager) DidChange(path, content string) {}
 
+// toolchainProbeReply answers a toolchain probe the way the real binary does —
+// INCLUDING refusing the argv the real binary refuses.
+//
+// The fake this replaces keyed on spec.Program alone and handed back a version
+// string no matter what arguments it was given, which is exactly why `go
+// --version` (a parse error the real Go tool rejects with exit 2) survived a
+// green test suite for three separate rounds of "the toolchain probes are
+// empty" bug fixing. A fake that cannot reproduce the failure cannot protect
+// the call site; this one refuses anything not in toolchainProbeArgv.
+func toolchainProbeReply(spec secproc.SecureProcessSpec, version string) cannedResult {
+	want, known := toolchainProbeArgv[spec.Program]
+	if !known || !slices.Equal(spec.Args, want) {
+		return cannedResult{
+			ExitCode: 2,
+			Stderr:   fmt.Sprintf("flag provided but not defined: %s", strings.Join(spec.Args, " ")),
+		}
+	}
+	return cannedResult{Stdout: version + "\n"}
+}
+
 func TestDiagnosticsAggregatesIndependentProbes(t *testing.T) {
 	src := stubLSPManager{enabled: true, byPath: map[string][]lsp.Diagnostic{"a.go": {{Severity: lsp.SeverityError, Message: "bad"}}}}
 	diagLSPSourceOverride = src
@@ -30,7 +53,7 @@ func TestDiagnosticsAggregatesIndependentProbes(t *testing.T) {
 
 	factory := newScriptedFactory(t, func(spec secproc.SecureProcessSpec) cannedResult {
 		if spec.Program == "go" {
-			return cannedResult{Stdout: "go version go1.26.4 linux/amd64\n"}
+			return toolchainProbeReply(spec, "go version go1.26.4 linux/amd64")
 		}
 		return cannedResult{Stdout: ""}
 	})
@@ -83,7 +106,7 @@ func TestDiagnosticsGitFailureDoesNotHideOthers(t *testing.T) {
 		if spec.Program == "git" {
 			return cannedResult{ExitCode: 128, Stderr: "not a repo"}
 		}
-		return cannedResult{Stdout: "go version go1.26.4\n"}
+		return toolchainProbeReply(spec, "go version go1.26.4")
 	})
 	ctx := WithWorkRoot(secureTestContext(t, factory), t.TempDir())
 	out, err := runTool(ctx, NewDiagnosticsTool(diagTestProbe{files: nil}), `{}`)
@@ -95,6 +118,60 @@ func TestDiagnosticsGitFailureDoesNotHideOthers(t *testing.T) {
 	}
 	if !strings.Contains(out, `"git":{"available":false`) {
 		t.Fatalf("out=%s", out)
+	}
+}
+
+// TestDiagnosticsProbesEachToolchainWithItsOwnVersionArgv pins the argv table
+// against the only thing that can validate it: the real binaries.
+//
+// The three probes are answered by a fake here, so nothing in the unit suite
+// knows that `go --version` is a parse error while `cargo --version` is
+// correct. This test asserts the exact argv sent to each program, so changing
+// the table (or "simplifying" it back to a shared --version) fails loudly
+// instead of quietly emptying a row of the diagnostics result — which is the
+// failure mode that has now recurred three times.
+func TestDiagnosticsProbesEachToolchainWithItsOwnVersionArgv(t *testing.T) {
+	diagLSPSourceOverride = stubLSPManager{enabled: false}
+	t.Cleanup(func() { diagLSPSourceOverride = nil })
+
+	var mu sync.Mutex
+	seen := map[string][]string{}
+	factory := newScriptedFactory(t, func(spec secproc.SecureProcessSpec) cannedResult {
+		if spec.Program == "git" {
+			return cannedResult{}
+		}
+		mu.Lock()
+		seen[spec.Program] = append([]string(nil), spec.Args...)
+		mu.Unlock()
+		return toolchainProbeReply(spec, spec.Program+" 1.0")
+	})
+	ctx := WithWorkRoot(secureTestContext(t, factory), t.TempDir())
+	out, err := runTool(ctx, NewDiagnosticsTool(diagTestProbe{}), `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for program, want := range map[string][]string{
+		"go":    {"version"},
+		"cargo": {"--version"},
+		"node":  {"--version"},
+	} {
+		mu.Lock()
+		got, probed := seen[program]
+		mu.Unlock()
+		if !probed {
+			t.Fatalf("%s was never probed", program)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("%s probed with %q, want %q (%[1]s rejects the other spelling, "+
+				"and runToolchainProbes drops any probe that exits non-zero)", program, got, want)
+		}
+	}
+	// Every row must be populated: a probe that exits non-zero is dropped, so
+	// an empty row is exactly how a wrong argv presents to the operator.
+	for _, want := range []string{`"go":"go 1.0"`, `"cargo":"cargo 1.0"`, `"node":"node 1.0"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("diagnostics is missing %s: %s", want, out)
+		}
 	}
 }
 

@@ -114,13 +114,33 @@ func sandboxProbe(ctx context.Context) sandboxDiag {
 	}
 }
 
+// toolchainProbeArgv is the argv each toolchain answers its version on.
+//
+// It is a table rather than a shared []string{"--version"} because the three
+// toolchains genuinely disagree: the Go tool spells it as a SUB-COMMAND, and
+// `go --version` is not an alias but a parse failure —
+//
+//	$ go --version
+//	flag provided but not defined: -version   (exit 2)
+//
+// runToolchainProbes skips any probe that exits non-zero, so sending the GNU
+// flag to `go` made the Go row silently disappear from every diagnostics
+// result — including, most uselessly, every result produced inside a Go
+// repository. Adding a toolchain here means looking up ITS spelling, not
+// copying a neighbour's.
+var toolchainProbeArgv = map[string][]string{
+	"go":    {"version"},
+	"cargo": {"--version"},
+	"node":  {"--version"},
+}
+
 func runToolchainProbes(ctx context.Context) toolchainDiag {
 	out := toolchainDiag{}
 	for _, entry := range []struct{ name, program string }{
 		{"Go", "go"}, {"Cargo", "cargo"}, {"Node", "node"},
 	} {
 		spec := secproc.SecureProcessSpec{Tool: "diagnostics", Program: entry.program,
-			Args: []string{"--version"}, UseSandboxTier: sandbox.ReadOnly}
+			Args: toolchainProbeArgv[entry.program], UseSandboxTier: sandbox.ReadOnly}
 		res, err := secureCommandRunner(ctx, spec, 3*time.Second)
 		if err != nil || res.ExitCode != 0 {
 			continue
