@@ -102,9 +102,8 @@ type Config struct {
 	// ("auto" re-resolves from LC_ALL/LANG at every startup), OutputLanguage
 	// independently steers the model's response language.
 	I18N I18NConfig `yaml:"i18n"`
-	// TUI configures C15 keymap / Vim / theme preferences that can also be
-	// set at runtime via /keymap, /vim, /contrast. *bool fields distinguish
-	// unset (follow preferences.json) from explicitly disabled.
+	// TUI carries C15 keymap / Vim / theme preferences. See TUIConfig for the
+	// wiring status — these are read by `yanshi doctor` only, not by the TUI.
 	TUI TUIConfig `yaml:"tui"`
 }
 
@@ -164,9 +163,18 @@ type I18NConfig struct {
 	OutputLanguage string `yaml:"output_language"`
 }
 
-// TUIConfig configures TUI preferences that can also be set via /keymap,
-// /vim, /contrast at runtime. Vim is *bool so we can distinguish unset
-// (follow preferences.json) from explicitly disabled (force off).
+// TUIConfig holds C15 keymap / Vim / theme preferences. Vim and HighContrast
+// are *bool so an explicit false stays distinguishable from unset.
+//
+// WIRING STATUS, stated here because this is the authoritative doc comment for
+// the shape and an earlier version of it advertised capabilities that do not
+// exist: every field below is consumed by `yanshi doctor` alone
+// (internal/cli/doctor.go, the checkKeymapConfig / checkHighContrastConfig
+// pair). The TUI does not read them — it hardcodes its theme and keymap
+// defaults — no runtime command writes them back, and no preferences file is
+// loaded (internal/cli/tui/preferences.go is not wired into the TUI). So these
+// keys are validated and reported, not applied. Do not describe them as
+// runtime-settable or as persisted until a consumer exists.
 type TUIConfig struct {
 	Vim          *bool             `yaml:"vim"`
 	KeymapName   string            `yaml:"keymap"`

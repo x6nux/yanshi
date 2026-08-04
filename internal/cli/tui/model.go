@@ -64,11 +64,15 @@ type model struct {
 	status                string
 
 	// I18N1 (Task 11) + C15 (Task 13): bundle localizes the visible TUI
-	// surfaces; prefs + effective are the four-level merge result; prefsPath
-	// is the disk path preferences were loaded from (and where /locale,
-	// /vim, /contrast, /keymap reset persist). empty prefsPath means the
-	// model was built by the legacy NewProgram constructor and persistence
-	// is a no-op.
+	// surfaces; prefs + effective would hold the preference-cascade result
+	// and prefsPath the file it came from.
+	//
+	// The cascade is NOT wired. prefsPath has no production assignment, so it
+	// is always empty and nothing is ever loaded from or persisted to disk;
+	// newModel hardcodes the theme and keymap names instead. No slash command
+	// mutates any of this either — /locale, /vim, /contrast and /keymap are
+	// not registered in commandTable. See internal/cli/tui/preferences.go for
+	// the unwired half.
 	bundle    *i18n.Bundle
 	prefs     Preferences
 	effective EffectivePreferences

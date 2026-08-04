@@ -1,7 +1,7 @@
 # v1 JSON Schema
 
 > 以下为 `sdk/schema/v1/agent-api.schema.json` 的完整 JSON Schema，由
-> `go run ./cmd/api-schema -markdown` 从 `internal/api/v1/schemaDocument` 生成。
+> `go run ./cmd/api-schema -markdown` 从 `internal/api/v1/schema.go::schemaDocument` 生成。
 > 修改 schema 后重生成；不要手改本区块。
 
 <!-- BEGIN GENERATED: api-schema-full -->

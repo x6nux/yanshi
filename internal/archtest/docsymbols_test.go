@@ -770,7 +770,8 @@ func TestGOV9AcceptsLegitimateShapes(t *testing.T) {
 }
 
 // goLineCiteRe matches a Go source citation carrying a line number, in either
-// the `file.go:88` or the `file.go:645-646` spelling. It is written as a
+// the `<file>.go:<line>` or the `<file>.go:<line>-<line>` spelling (written
+// with placeholders here for the same reason the pattern is). It is written as a
 // concatenation so that this very file does not contain a literal instance of
 // the pattern it forbids — the scan below reads two data files, not this one,
 // but a reviewer grepping the repository for the shape should not land here.
@@ -807,6 +808,19 @@ var goLineCiteFreeDocs = []string{
 // this test was written, which is exactly when to remove the rot source —
 // afterwards there is no way to tell drift from a citation that was always
 // wrong.
+//
+// KNOWN OVER-REACH, recorded because it has no instance yet and would be
+// mistaken for a real finding if one appeared: the pattern also matches QUOTED
+// COMPILER AND TEST OUTPUT, where the line number is part of the transcript
+// rather than a citation of anything — a pasted `<file>.go:<line>:<col>:
+// undefined: x` diagnostic is reported exactly like a hand-written pointer.
+// (Spelled with placeholders on purpose: this file must not contain a literal
+// instance of the shape it forbids, for the reason goLineCiteRe records.)
+// Neither of the two documents
+// contains such a transcript today. If one ever needs to, the fix is to exempt
+// the shape (a `:col:` suffix, or a fenced block), not to weaken the pattern:
+// the surrounding-context test that would tell a transcript from a citation is
+// the same guessing game the `::Symbol` shorthand was left out of.
 func TestNoGoLineCitationsInLedgerInputs(t *testing.T) {
 	root := moduleRoot(t)
 	for _, doc := range goLineCiteFreeDocs {

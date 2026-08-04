@@ -294,7 +294,7 @@ func sortedKeys(m map[string]map[string]any) []string {
 // regenerated in place without touching the prose.
 const schemaDocHeader = "# v1 JSON Schema\n\n" +
 	"> 以下为 `sdk/schema/v1/agent-api.schema.json` 的完整 JSON Schema，由\n" +
-	"> `go run ./cmd/api-schema -markdown` 从 `internal/api/v1/schemaDocument` 生成。\n" +
+	"> `go run ./cmd/api-schema -markdown` 从 `internal/api/v1/schema.go::schemaDocument` 生成。\n" +
 	"> 修改 schema 后重生成；不要手改本区块。\n\n"
 
 // runMarkdown is the -markdown generator entry point. It renders every block

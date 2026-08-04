@@ -626,10 +626,22 @@ func checkLocaleConfig(cfg *config.Config, cfgErr error) CheckResult {
 }
 
 // checkKeymapConfig validates the configured TUI keymap name and the raw
-// binding overrides against the keymap core's Builder. Diagnostic detail is
-// intentionally not echoed — a raw key or action in YAML is untrusted text
-// and may carry attacker-controlled content; the TUI's /keymap diagnostics
-// render the typed breakdown.
+// binding overrides against the keymap core's Builder.
+//
+// The remedy this check points at is the YAML itself — `tui.bindings` in the
+// config file named by DoctorOptions.ConfigPath — and that is deliberate
+// rather than a fallback. There is no runtime surface that repairs a keymap:
+// internal/keymap has exactly one production consumer, this function, and the
+// TUI never builds a Map from config at all. An earlier message told the
+// operator to run a `/keymap diagnostics` command; no such command is
+// registered, so the one actionable instruction the product gave typed
+// straight into "unknown command".
+//
+// Raw keys and actions are still NOT echoed: they are untrusted YAML text and
+// may carry attacker-controlled content. Only the diagnostic Kind is surfaced,
+// which internal/keymap draws from a closed set of four literals, so the
+// operator learns WHICH class of mistake to look for without the message
+// becoming an echo channel.
 func checkKeymapConfig(cfg *config.Config, cfgErr error) CheckResult {
 	if cfgErr != nil {
 		return skipped("keymap", cfgErr)
@@ -640,15 +652,46 @@ func checkKeymapConfig(cfg *config.Config, cfgErr error) CheckResult {
 	}
 	if name != "default" {
 		return CheckResult{Name: "keymap", Status: StatusFail,
-			Message: "unsupported keymap name"}
+			Message: `unsupported keymap name; set tui.keymap to "default" in the config file`}
 	}
-	if _, err := corekeymap.NewDefaultBuilder(cfg.TUI.Bindings).Build(); err != nil {
+	if m, err := corekeymap.NewDefaultBuilder(cfg.TUI.Bindings).Build(); err != nil {
 		return CheckResult{Name: "keymap", Status: StatusFail,
-			Message: "key bindings are invalid; use /keymap diagnostics"}
+			Message: "invalid key bindings; edit tui.bindings in the config file (" +
+				keymapDiagSummary(m.Diagnostics()) + ")"}
 	}
 	return CheckResult{Name: "keymap", Status: StatusOK,
 		Message: fmt.Sprintf("default keymap, %d override(s), no conflicts",
 			len(cfg.TUI.Bindings))}
+}
+
+// keymapDiagSummary renders a per-kind tally of keymap diagnostics, e.g.
+// "1 conflict, 2 unknown_action".
+//
+// Only Diagnostic.Kind is read. Kind is produced by internal/keymap from a
+// closed set of four literals and never contains user input, whereas Key and
+// RawKeys are verbatim YAML — see checkKeymapConfig for why that distinction
+// is what makes this summary safe to print.
+func keymapDiagSummary(ds []corekeymap.Diagnostic) string {
+	counts := map[string]int{}
+	for _, d := range ds {
+		counts[d.Kind]++
+	}
+	kinds := make([]string, 0, len(counts))
+	for k := range counts {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	parts := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		parts = append(parts, fmt.Sprintf("%d %s", counts[k], k))
+	}
+	if len(parts) == 0 {
+		// Build only errors when it produced diagnostics, so this is
+		// unreachable today; it keeps the message grammatical if that
+		// invariant is ever loosened.
+		return "no diagnostic detail"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // checkHighContrastConfig surfaces the *bool high-contrast posture so the

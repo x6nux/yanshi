@@ -92,9 +92,10 @@ func (v *VimMachine) HandleKey(key string, configured Action) VimResult {
 //   - false (explicit): force off
 //   - true (explicit): force on
 //
-// Exposed for tests; production TUI calls this through
-// (EffectivePreferences).Vim which already collapsed the tri-state during
-// mergeTUIPrefs.
+// It has no production caller: the TUI does not consume the preference
+// cascade that would collapse this tri-state (see the wiring note on
+// internal/cli/tui/preferences.go's preferencesPath), so this is exercised by
+// tests only.
 func effectiveVimMode(flag *bool, prefsDefault bool) bool {
 	if flag == nil {
 		return prefsDefault

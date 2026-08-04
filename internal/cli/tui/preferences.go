@@ -21,14 +21,17 @@ type Preferences struct {
 	KeymapName   string `json:"keymap,omitempty"`
 	HighContrast *bool  `json:"high_contrast,omitempty"`
 	Vim          *bool  `json:"vim,omitempty"`
-	// KeymapReset is a sparse user-level tombstone for project tui.bindings.
-	// /keymap reset stores true so defaults survive the next startup; nil
-	// means project bindings may still apply.
+	// KeymapReset is a sparse user-level tombstone for project tui.bindings:
+	// a stored true would let defaults survive the next startup, nil means
+	// project bindings may still apply. Nothing writes it outside tests —
+	// see the package note on preferencesPath.
 	KeymapReset *bool `json:"keymap_reset,omitempty"`
 }
 
-// EffectivePreferences is the fully merged, non-sparse result consumed by
-// the TUI. It never contains tri-state values.
+// EffectivePreferences is the fully merged, non-sparse result of the cascade.
+// It never contains tri-state values. newModel populates one from hardcoded
+// defaults but never reads it back, so nothing in the TUI is driven by these
+// values yet — see the wiring note on preferencesPath.
 type EffectivePreferences struct {
 	UILocale     string
 	ThemeName    string
@@ -105,8 +108,8 @@ func randomSuffix() (string, error) {
 // mergeTUIPrefs applies sparse layers from lowest to highest priority:
 // defaults < project config < user prefs < env < flags. All five fields are
 // merged uniformly; pointer booleans make explicit false override lower
-// true. KeymapReset participates in the same cascade so /keymap reset
-// (written to user prefs) survives a project config with tui.bindings.
+// true. KeymapReset participates in the same cascade so a stored keymap-reset
+// tombstone would survive a project config carrying tui.bindings.
 func mergeTUIPrefs(flags, env, user, project Preferences) EffectivePreferences {
 	out := EffectivePreferences{
 		UILocale:   "auto",
@@ -142,6 +145,12 @@ func mergeTUIPrefs(flags, env, user, project Preferences) EffectivePreferences {
 
 // preferencesPath mirrors permModeFile: os.UserConfigDir()/yanshi/prefs.json.
 // Tests override via t.TempDir + direct call to loadPreferences/persistPreferences.
+//
+// NOT WIRED: loadPreferences, persistPreferences and mergeTUIPrefs have no
+// production call site, and model.prefsPath is never assigned, so no prefs.json
+// is read or written by a running TUI. The cascade is implemented and tested
+// but inert; treat everything in this file as pending assembly rather than as
+// live behaviour, and do not document it as persistence that happens.
 func preferencesPath() string {
 	dir, err := os.UserConfigDir()
 	if err != nil {

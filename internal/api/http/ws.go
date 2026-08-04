@@ -343,7 +343,7 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 		//     WithUserCancelCtx) to tell user-initiated cancel apart from a
 		//     network/transport cancel of the request's own ctx — so a transient
 		//     gateway drop does NOT suppress retry while a real user stop
-		//     (Ctrl-C / /cancel) does.
+		//     (Ctrl-C, or a client cancel frame) does.
 		//
 		//   turnCtx — the request lifetime, derived from userCancelCtx so a user
 		//     cancel cascades into the in-flight model call.

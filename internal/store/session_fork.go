@@ -25,7 +25,7 @@ import (
 // faithful prefix sum. To avoid crediting the fork with the source's full
 // cumulative totals, fork rows reset TokensIn/TokensOut/Turns/CachedTokens/
 // ReasoningTokens to 0 and let subsequent turns re-accumulate from scratch.
-// Model/Thinking are preserved so /model and /thinking reflect the active
+// Model/Thinking are preserved so /model and /think reflect the active
 // provider config.
 //
 // The local variable name `forkID` is deliberately NOT `newID` — that would

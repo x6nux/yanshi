@@ -128,13 +128,44 @@ func TestCheckKeymapConfig_UnsupportedNameFails(t *testing.T) {
 }
 
 // TestCheckKeymapConfig_InvalidBindingsFail proves a binding override that fails
-// validation (unknown action) is a fail with a bounded message.
+// validation is a fail whose message is (a) actionable and (b) still bounded.
+//
+// Both halves are pinned because they pull against each other and the message
+// has already failed one of them: it used to send the operator to a `/keymap
+// diagnostics` command that is not registered anywhere, so the single piece of
+// advice the product gave was itself the dead end. The remedy named here must
+// stay something a user can actually do — edit tui.bindings in the YAML — while
+// the raw key and action, which are untrusted config text, must stay out of the
+// output. The closed-set diagnostic Kind is the one detail allowed through.
 func TestCheckKeymapConfig_InvalidBindingsFail(t *testing.T) {
+	const rawAction = "this-is-not-a-real-key!!!"
 	c := checkKeymapConfig(&config.Config{TUI: config.TUIConfig{
-		Bindings: map[string]string{"send": "this-is-not-a-real-key!!!"},
+		Bindings: map[string]string{"send": rawAction},
 	}}, nil)
 	require.Equal(t, StatusFail, c.Status)
-	assert.Contains(t, c.Message, "key bindings are invalid")
+	assert.Contains(t, c.Message, "tui.bindings",
+		"the message must name the field the operator edits")
+	assert.Contains(t, c.Message, "invalid_key",
+		"the diagnostic kind is a closed-set literal and is what tells the operator what to look for")
+	assert.NotContains(t, c.Message, rawAction,
+		"untrusted binding text must never be echoed")
+	assert.NotContains(t, c.Message, "/keymap",
+		"no such command is registered; advertising it makes the only remedy a dead end")
+}
+
+// TestCheckKeymapConfig_UnknownActionIsTallied proves the per-kind tally reports
+// the kind that actually fired, not a fixed string: a spelling error in the
+// ACTION reads unknown_action, where a spelling error in the KEY read
+// invalid_key above. Without this the summary could be a constant and both
+// tests would still pass.
+func TestCheckKeymapConfig_UnknownActionIsTallied(t *testing.T) {
+	c := checkKeymapConfig(&config.Config{TUI: config.TUIConfig{
+		Bindings: map[string]string{"ctrl+g": "teleport"},
+	}}, nil)
+	require.Equal(t, StatusFail, c.Status)
+	assert.Contains(t, c.Message, "1 unknown_action")
+	assert.NotContains(t, c.Message, "invalid_key")
+	assert.NotContains(t, c.Message, "teleport")
 }
 
 // TestCheckKeymapConfig_OKAndSkipped proves the happy path (default keymap, no

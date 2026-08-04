@@ -1272,7 +1272,26 @@
 > acceptance：至少 en/zh-Hans 切换；UI 与输出语言独立；自动检测
 
 **1. 至少 en/zh-Hans 切换** — 未兑现（**虚报：连第 1 句都没有**）
-- 依据：catalog 齐全（`internal/i18n/catalog/{en,zh-Hans}.json` + `i18n.go::NewBundle`），**但 TUI 运行时 locale 恒为 `"en"`** —— `internal/cli/tui/state.go::defaultBundle` 写死 `i18n.NewBundle("en")`，是 `newModel`（`model.go`）的唯一 bundle 来源；`cfg.I18N.UILocale` 从不到达 TUI（唯一消费者是 `doctor.go::checkLocaleConfig`）；无 `/locale` 命令。**走 i18n 的 UI 字符串只有 3 处**（`model.go::newModel` placeholder、`commands.go::newCmdHelpEntry` 的 /help），catalog 里 67 个 key 约 55 个零引用。`TestCmdHelpEntry_NoHardcodedEnglish` 是**恒真空壳（断言选的字面量恰好避开硬编码）** —— 它用 zh-Hans bundle 渲染 /help 只断言输出**不含 `"Commands"`**，而同一函数（`commands.go::newCmdHelpEntry`）硬编码的 `"▌ Keyboard shortcuts"` 与 10 条英文描述原封不动进了 zh-Hans 输出，测试照绿。`TestCmdHelpEntry_PreRendered` 断言 `Contains(out, b.Get(c.helpKey))` —— 用同一 bundle 查同一 key 比对自身。两条都从参数注入 bundle，**绕开生产里 bundle 恒为 en 的事实**。
+- 依据：catalog 齐全（`internal/i18n/catalog/{en,zh-Hans}.json` + `i18n.go::NewBundle`），**但 TUI 运行时 locale 恒为 `"en"`** —— `internal/cli/tui/state.go::defaultBundle` 写死 `i18n.NewBundle("en")`，是 `newModel`（`model.go`）的唯一 bundle 来源；`cfg.I18N.UILocale` 从不到达 TUI（唯一消费者是 `doctor.go::checkLocaleConfig`）；无 `/locale` 命令。**走 i18n 的 UI 字符串只有 3 处**（`model.go::newModel` 的 placeholder，`commands.go::newCmdHelpEntry` 的标题键与 `b.Get(c.helpKey)`），catalog 里绝大多数 key 零引用 —— 总数与零引用数按 F1 **现算**而不写死：
+
+```sh
+python3 - <<'PY'
+import json, os
+cat = json.load(open('internal/i18n/catalog/en.json'))
+src = {}
+for root, dirs, files in os.walk('.'):
+    dirs[:] = [d for d in dirs if d not in ('.git', 'third_party', 'node_modules')]
+    for f in files:
+        p = os.path.join(root, f)
+        # internal/i18n 自己排除在外：那里的 key 清单是登记，不是消费
+        if f.endswith('.go') and not f.endswith('_test.go') and not p.startswith('./internal/i18n/'):
+            src[p] = open(p, encoding='utf8', errors='replace').read()
+zero = [k for k in cat if not any('"' + k + '"' in t for t in src.values())]
+print('keys', len(cat), 'zero-ref', len(zero))
+PY
+```
+
+上次实测输出：`keys 65 zero-ref 44`。原稿写的「67 个 key 约 55 个零引用」**两个数都是错的**，且不是漂移而是初稿就写错：`en.json` 只有过一次提交，落地时就是 65 个 key；55 那个数把 `commandTable` 的全部 `helpKey` 当成了零引用，而它们无一例外经 `newCmdHelpEntry` 里那一个 `b.Get(c.helpKey)` 点消费 —— 这正是 F1 说的「写死的计数在写下的那一刻就开始腐烂」的更坏形态：写下的那一刻就已经不对。`TestCmdHelpEntry_NoHardcodedEnglish` 是**恒真空壳（断言选的字面量恰好避开硬编码）** —— 它用 zh-Hans bundle 渲染 /help 只断言输出**不含 `"Commands"`**，而同一函数（`commands.go::newCmdHelpEntry`）硬编码的 `"▌ Keyboard shortcuts"` 与 10 条英文描述原封不动进了 zh-Hans 输出，测试照绿。`TestCmdHelpEntry_PreRendered` 断言 `Contains(out, b.Get(c.helpKey))` —— 用同一 bundle 查同一 key 比对自身。两条都从参数注入 bundle，**绕开生产里 bundle 恒为 en 的事实**。
 - 证据形状：从**生产构造路径**（`ui_locale: zh-Hans`）建 model，断言 `View()`/placeholder 含中文值且与 `en` 构造不等；再加反向断言「zh-Hans 渲染的 /help 不含任何 `helpKey==""` 项的静态英文」（现在会红，正因如此才有价值）。
 
 **2. UI 与输出语言独立** — 部分（输出侧真接线，UI 侧不存在 → 「独立」是以「一维缺席」的方式成立）

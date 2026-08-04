@@ -62,7 +62,6 @@ var commandTable = []command{
 	{name: "mcp", help: "list MCP servers", helpKey: "tui.command.help.mcp", run: cmdMCP},
 	{name: "sessions", help: "list stored sessions", helpKey: "tui.command.help.sessions", run: cmdSessions},
 	{name: "features", help: "list / enable / disable feature flags", run: cmdFeatures},
-	{name: "features", help: "list / enable / disable feature flags", run: cmdFeatures},
 	{name: "restore", help: "restore a stored session by ID", helpKey: "tui.command.help.restore", run: cmdRestore},
 	{name: "rename", help: "rename a session: /rename <id> <title>", helpKey: "tui.command.help.rename", run: cmdRename},
 	{name: "archive", help: "hide a session: /archive <id>", helpKey: "tui.command.help.archive", run: cmdArchive},

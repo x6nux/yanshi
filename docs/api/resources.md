@@ -1,6 +1,6 @@
 # 资源参考（Thread / Turn / Item）
 
-v1 Agent API 的三类核心资源与请求/响应形状。字段表由 `go run ./cmd/api-schema -markdown` 从 `internal/api/v1` 生成；不要手改本页的生成区块（修改 types.go / schemaDocument 后重生成，CI 守门）。
+v1 Agent API 的三类核心资源与请求/响应形状。字段表由 `go run ./cmd/api-schema -markdown` 从 `internal/api/v1` 生成；不要手改本页的生成区块（修改 `internal/api/v1/types.go` 或 `internal/api/v1/schema.go::schemaDocument` 后重生成，CI 守门）。
 
 ## Thread
 
