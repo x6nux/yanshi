@@ -137,11 +137,17 @@ Profile 来自 `profiles:` 配置 map（见 `config.example.yaml` 中的 `coding
 **子进程发射：`secproc` 是**不受信程序**的强制入口，不是唯一的 `exec.Command*` 调用点。** 非测试代码里 `exec.Command*` 的调用点散落在十几个文件里 —— `internal/lsp/manager.go`、`internal/mcp/manager.go`、`internal/acp/spawn.go`、`internal/skills/install.go`、`cmd/yanshi/pr.go`（直接起 `gh`）等。**这里刻意不写具体条数**，要当前数字自己跑：
 
 ```sh
+# 调用点（排掉纯注释行里的提及）
 grep -rn 'exec\.Command' --include='*.go' internal cmd | grep -v _test.go \
-  | grep -vE ':[0-9]+:[[:space:]]*(//|\*)' | wc -l          # 调用点
+  | grep -vE ':[0-9]+:[[:space:]]*(//|\*)' | wc -l
+# 文件数（同一口径：只算有真实调用点的文件）
+grep -rn 'exec\.Command' --include='*.go' internal cmd | grep -v _test.go \
+  | grep -vE ':[0-9]+:[[:space:]]*(//|\*)' | cut -d: -f1 | sort -u | wc -l
+# 文件数（不排注释行的口径 —— 它与上一条的差就是本段说的那个分歧）
+grep -rl 'exec\.Command' --include='*.go' internal cmd | grep -v _test.go | wc -l
 ```
 
-**那条 `grep -vE` 不是可选的，它就是本条的教训。** 这段话原先写"27 处"，后来一次自我更正说"写下它的那次提交里实际就已经是 32 处"，据此断言数字腐烂了。实测：32 是**不排注释行**的口径，排掉 5 行纯注释里的提及后恰好是 27，而本段开头用的词就是**调用点** —— 原来那个 27 在它自己的口径下**一直是对的**，"腐烂"是换了口径量出来的。所以真正的结论不是"数字会腐烂"，而是**不写口径的数字无法被复核**：同一句话里"文件数"也有同样的分歧（不排注释 22 个，只算调用点 19 个）。要写数字就把命令一起写上，否则别写。约束以 `internal/secproc/secproc.go` 的包头为准，且**只覆盖不受信程序**：`shell_run`、ACP agent 这类必须走 `tools.LaunchSecureProcess` → `secproc.Launch` 以统一过 Authorize 防火墙（Authorizer 是 `tools` 包 `init` 填充的函数变量，`secproc` 因此保持叶子包）。现状与该约束仍有差距，**收敛归 W6**：`shell_run` 只在 context 绑了 factory 时走 `secproc`（`internal/tools/shell.go` 里 `SecureProcessFactoryFromContext` 那个分支），否则回落到同一函数后半段的直接 pipe 路径；ACP agent 完全不经 `secproc`（`internal/acp/spawn.go` 的 `exec.CommandContext` 调用）。**这里同样只给符号名不给行号** —— 上一版写的 `tools/shell.go:171` 早已漂进 factory 分支内部，指向了它想描述的那条路径的反面。shell v2 则是**有意的另一条**路径：`shell.Manager` 用 `shell.Config.Factory`（`SecureLaunchFactory`，`internal/shell/procfactory.go`）—— 接口、spec、返回值都与 `secproc.Factory` 不同，一个类型无法同时实现两者，鉴权改由九个工具各自在工具层 `Authorize(guard.Action{...})` 完成。**新增 shell v2 工具时务必自己带上 `Authorize`**，那里没有 `secproc` 兜底。
+**那条 `grep -vE` 不是可选的，它就是本条的教训。** 这段话原先写"27 处"，后来一次自我更正说"写下它的那次提交里实际就已经是 32 处"，据此断言数字腐烂了。实测：32 是**不排注释行**的口径，排掉 5 行纯注释里的提及后恰好是 27，而本段开头用的词就是**调用点** —— 原来那个 27 在它自己的口径下**一直是对的**，"腐烂"是换了口径量出来的。所以真正的结论不是"数字会腐烂"，而是**不写口径的数字无法被复核**：同一句话里"文件数"也有同样的分歧（写本段时实测：不排注释 22 个，只算调用点 19 个 —— 上面那个块的第二、三条命令就是这两个口径，差值即 5 行纯注释所在的那几个文件）。要写数字就把命令一起写上，否则别写 —— **本段自己曾只给了"调用点"那一条命令，把这两个文件数裸着留在正文里**。约束以 `internal/secproc/secproc.go` 的包头为准，且**只覆盖不受信程序**：`shell_run`、ACP agent 这类必须走 `tools.LaunchSecureProcess` → `secproc.Launch` 以统一过 Authorize 防火墙（Authorizer 是 `tools` 包 `init` 填充的函数变量，`secproc` 因此保持叶子包）。现状与该约束仍有差距，**收敛归 W6**：`shell_run` 只在 context 绑了 factory 时走 `secproc`（`internal/tools/shell.go` 里 `SecureProcessFactoryFromContext` 那个分支），否则回落到同一函数后半段的直接 pipe 路径；ACP agent 完全不经 `secproc`（`internal/acp/spawn.go` 的 `exec.CommandContext` 调用）。**这里同样只给符号名不给行号** —— 上一版写的 `tools/shell.go:171` 早已漂进 factory 分支内部，指向了它想描述的那条路径的反面。shell v2 则是**有意的另一条**路径：`shell.Manager` 用 `shell.Config.Factory`（`SecureLaunchFactory`，`internal/shell/procfactory.go`）—— 接口、spec、返回值都与 `secproc.Factory` 不同，一个类型无法同时实现两者，鉴权改由九个工具各自在工具层 `Authorize(guard.Action{...})` 完成。**新增 shell v2 工具时务必自己带上 `Authorize`**，那里没有 `secproc` 兜底。
 
 ### 两种传输、共享的只有 `ServerFrame`（`internal/proto/frame.go`）
 
