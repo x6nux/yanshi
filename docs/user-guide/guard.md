@@ -45,7 +45,7 @@ shell 维度按顺序过三层，任一层给出结论就短路：
 - **结构性 HardDeny**（`Overridable=false`）—— **任何模式都越不过**：shell 元字符、execpolicy parse-error、未知 shell policy、灾难性批量删除。
 - **可覆盖 HardDeny**（`Overridable=true`）—— profile 能说"不"的一切：空的 tools/fs allowlist、空的 mcp allowlist、`shell.policy: "deny"`、denylist 命中、execpolicy `hard_deny` 规则、`net.allow: false`。`yolo` 直接越过，`auto` 交给 AI 风险评分。
 
-> **本页列 4 条，`CLAUDE.md` 列 5 条，两边都对。** 源码里 `checkShell` 还有第 5 个结构性分支（`switch result.Verdict` 的 `default`），但它是**防御性的、从任何配置都到不了**：`execpolicy.Evaluate` 的出口集合是 `allow` / `prompt` / `hard_deny`，三个都被前面的 `case` 接住了。规则里把 `decision` 写错（比如 `decision: warn`）不会走到那里 —— `Evaluate` 自己先把它转成 `hard_deny`，落进 `case "hard_deny", "deny":`，那是**可覆盖**的一档，`yolo` 能越过。本页不列它，`CLAUDE.md` 那份枚举面向改 guard 源码的人，把源码分支也数进去。这个"出口集合到不了 default"由 `internal/guard::TestExecPolicyVerdictsAreHandledByCheckShell` 钉住。
+> **本页这份枚举比 `CLAUDE.md` 的同名枚举短一项，两边都对**（两边的当前条数都别从这里读，`CLAUDE.md` 那份自带现场清点命令）。少的那一项是源码里 `checkShell` 的另一个结构性分支（`switch result.Verdict` 的 `default`），它是**防御性的、从任何配置都到不了**：`execpolicy.Evaluate` 的出口集合是 `allow` / `prompt` / `hard_deny`，三个都被前面的 `case` 接住了。规则里把 `decision` 写错（比如 `decision: warn`）不会走到那里 —— `Evaluate` 自己先把它转成 `hard_deny`，落进 `case "hard_deny", "deny":`，那是**可覆盖**的一档，`yolo` 能越过。本页不列它，`CLAUDE.md` 那份枚举面向改 guard 源码的人，把源码分支也数进去。这个"出口集合到不了 default"由 `internal/guard::TestExecPolicyVerdictsAreHandledByCheckShell` 钉住。
 >
 > ⚠️ **别把这个差别读成「不可达就不数」——那个判据不成立。** 上面第 3 条「未知 shell policy」同样从 yaml 走不到：`rules` 为空时 `internal/config::Config.validateProfiles` 让 `config.Load` 当场拒绝加载，`rules` 非空时 `checkShell` 在 execpolicy 分支里就 return 了、policy switch 根本不可达（那个函数的 doc 注释写了为什么两条都不留活口）。按「不可达就不数」这条也该删，本页就只剩 3 条。**在两个都不可达的分支之间**，判据是**有没有对应的配置面**：`shell.policy` 是操作者会亲手写进 yaml 的键，所以即使当前不可达也留在本页；execpolicy 的 verdict 词表不是任何配置字段，写规则的人碰不到它，所以只留在 `CLAUDE.md`。
 

@@ -49,6 +49,8 @@
 
 ⚠️ 「未兑现」不等于「文件不存在」。本仓最常见的形状是**残桩**：工具已注册、已装配、在出厂 profile 里，但输出字段恒为空。判 `missing` 时要写明是哪一种，否则下一轮评审会把它误读为低报。
 
+⚠️ **「事实已满足但没有门禁看守」一律归 `部分`，不是第四档、更不是 `已兑现`。** 这类子句（覆盖率数值已达标、废弃物今天数出来是 0）的**实现侧已经完备，缺的只是把事实钉住的那条断言**，恰好落在 `部分` 的前半句定义上；`已兑现` 的第二个合取项「有测试真正驱动它」它不满足。**判它「未查证」尤其是错的** —— 未查证的含义是**本轮没去看**，一旦有人去看过并写下了可重跑的复核命令，这一格就必须离开「未查证」，否则汇总那句「翻牌前必须补查」会变成一条要求重做已完成工作的活指令，正是上面「否定式断言与计数的约定」里登记的「虚增的缺口会直接变成工作包」同形。已按此定档的实例：E1/COV2#1、E1/COV3#1（数值达标、无覆盖率门禁）与 M1/SPEC-TOOLIF#3（废弃物零命中、无防回流门禁）。**新写这种子句时不要发明第四个标记** —— 四桶交叉校验（各桶之和 = 子句数、`+N?` 跨行加总）对一个桶外标记完全无感，索引与汇总会同时读起来自洽而实际错位。
+
 ---
 
 ## 索引：63 条 × 230 子句
@@ -91,7 +93,7 @@
 | [B3/T11](#b3t11) | W6 | `missing` | 4 | 1/1/2 |
 | [B3/V13](#b3v13) | W6 | `partial` | 4 | 3/0/1 |
 | [B3/W07](#b3w07) | W6 | `partial` | 4 | 1/2/1 |
-| [M1/SPEC-TOOLIF](#m1spectoolif) | W6 | `partial` | 5 | 0/2/0 +3? |
+| [M1/SPEC-TOOLIF](#m1spectoolif) | W6 | `partial` | 5 | 0/3/0 +2? |
 | [C4/COST1](#c4cost1) | W7 | `partial` | 4 | 1/3/0 |
 | [C4/O07](#c4o07) | W7 | `partial` | 3 | 1/1/1 |
 | [C4/OBS1](#c4obs1) | W7 | `partial` | 4 | 1/2/1 |
@@ -120,7 +122,7 @@
 | [H2/EX1](#h2ex1) | W10 | `partial` | 3 | 1/2/0 |
 | [H2/UDOC1](#h2udoc1) | W10 | `partial` | 3 | 1/2/0 |
 | [D2/O12](#d2o12) | - | `removed` | 2 | 2/0/0 |
-| **合计** | | | **230** | **63/102/61 +4?** |
+| **合计** | | | **230** | **63/103/61 +3?** |
 
 ---
 ## W1 — 装配断裂与工具接线
@@ -960,7 +962,7 @@
 - 依据：`SyncStream` 把返回值包成 `ToolChunk`。只有间接覆盖（各工具测试断言最终结果串），**无对 `ToolChunk` 字段契约本身的断言**。
 - 证据形状：断言流式路径下每个 chunk 的字段集合恰为规范字段，且 `Err` 与 `Text` 的互斥/组合语义被钉死。
 
-**3. 废弃 JSON 包装与 ToolProgressCallback/lineProgressWriter** — 现状已满足，但**不翻牌**
+**3. 废弃 JSON 包装与 ToolProgressCallback/lineProgressWriter** — 部分（**事实已满足，缺的只是防回流门禁** —— 定档理由见「状态三档」那条 ⚠️）
 - 依据：这句是**「废弃」类要求** —— 只要生产代码里还有调用点就不算兑现。上一版自陈「未完成清点」，现已补上（2026-08-05 实测，命令可重跑）：
 
   ```
@@ -1356,7 +1358,7 @@ PY
 > acceptance：stdin/JSONL 可用;退出码稳定;可 resume;CI 可脚本化
 
 **1. stdin/JSONL 可用** — 部分（**`--file` 路径实测有 bug**）
-- 依据：`internal/cli/headless_input.go` `ReadHeadlessInputs`（text/lines/jsonl 三模式，真实）。**但 `cmd/yanshi/headless.go::runHeadlessCommand` 的 `--file` 分支把整个文件当一条 prompt**（`inputs = []cli.HeadlessInput{{Prompt: strings.TrimSpace(string(data))}}`），**完全绕过 `cfg.Input`、从不调用 `ReadHeadlessInputs`**。**实测复核**：`exec --input jsonl --file examples/headless-batch/sample.jsonl`（3 行）→ 输出 `(no real model configured)` **1 次**；同一文件走 stdin → **3 次**。bug 确认。`internal/cli::TestReadHeadlessInputs_JSONL` 等 5 个是真断言但覆盖不到出 bug 的分支；`cmd/yanshi::TestRunHeadlessCommandStdinJSONL` / `TestRunHeadlessCommandFileInput` 是**吞错** —— 只 `assert.Equal(exitOK, code)`，一个吞掉全部输入的实现照样返回 0。
+- 依据：`internal/cli/headless_input.go` `ReadHeadlessInputs`（text/lines/jsonl 三模式，真实）。**但 `cmd/yanshi/headless.go::runHeadlessCommand` 的 `--file` 分支把整个文件当一条 prompt**（`inputs = []cli.HeadlessInput{{Prompt: strings.TrimSpace(string(data))}}`），**完全绕过 `cfg.Input`、从不调用 `ReadHeadlessInputs`**。**实测复核**：`exec --input jsonl --file examples/headless-batch/sample.jsonl`（3 行）→ 输出 `(no real model configured)` **1 次**；同一文件走 stdin → **3 次**。bug 确认。`internal/cli::TestReadHeadlessInputs_JSONL` 及同族的其余各条（现算：`grep -rn '^func TestReadHeadlessInputs' internal/cli/*_test.go`，**注意这一族横跨 `headless_input_test.go` 与 `headless_extra_test.go` 两个文件** —— 只看前一个文件会少数一半）是真断言，但它们全部直接调 `ReadHeadlessInputs`，**覆盖不到出 bug 的那条 `--file` 分支**（那条根本不调用它，所以这一族无论有多少条都不可能变红）；`cmd/yanshi::TestRunHeadlessCommandStdinJSONL` / `TestRunHeadlessCommandFileInput` 是**吞错** —— 只 `assert.Equal(exitOK, code)`，一个吞掉全部输入的实现照样返回 0。
 - 证据形状：断言**产出的 turn 条数**（或 stdout 上 assistant 段落数 / JSONL 行数）等于输入 prompt 条数，且对 `--file × {text,lines,jsonl}` 三组各测一次。**骗过去**：任何只看 exit code 或「输出非空」的断言 —— `docs.yml` 的「Headless smoke」步骤跑的正是这条 bug 命令但把输出丢给 `/dev/null`。
 
 **2. 退出码稳定** — 部分
@@ -1535,7 +1537,7 @@ PY
 - 证据形状：起子进程 `go build -ldflags "-X …Version=9.9.9"` 后跑 `yanshi version` 并断言输出含 `9.9.9`；或至少断言 `build.sh` 的 `--match` 模式与 `cliff.toml:36` 的 `tag_pattern` 一致（两处都是 `v[0-9]*`，目前只靠注释同步）。**骗过去**：现在这条自赋值断言。
 
 **2. CHANGELOG 可生成** — 部分（**N 类：从未真跑过**）
-- 依据：`cliff.toml`（`tag_pattern = "v[0-9]*"`，10 组 `commit_parsers`）；`release.yml:32-44` 装 git-cliff v2.6.1 并生成。**无测试**。`CHANGELOG.md` 目前只有 18 行，自述「The first tagged release (v1.0.0) will replace this seed」—— 即**这条流程从未被真跑过一次**。
+- 依据：`cliff.toml`（`tag_pattern = "v[0-9]*"`，10 组 `commit_parsers`）；`release.yml:32-44` 装 git-cliff v2.6.1 并生成。**无测试**。`CHANGELOG.md` 仍是**种子文件**，自述「The first tagged release (v1.0.0) will replace this seed」（复核用 `grep -n 'replace this seed' CHANGELOG.md`，有输出即仍未被 git-cliff 真正生成过）—— 即**这条流程从未被真跑过一次**。⚠️ 这里此前写的是行数，而 `CHANGELOG.md` 由 `git-cliff` 生成：**这条子句一旦被兑现，那个行数就会变**，于是「文件很短」这个论据会在它最该继续成立的时刻先失效。判据换成种子自述句，兑现时它自己会消失。
 - 证据形状：CI 里跑一次 `git-cliff --config cliff.toml --unreleased` 并断言退出 0 且输出非空（不需要 tag）。**骗过去**：断言 `cliff.toml` 存在。
 
 **3. 发布流程文档化** — 已兑现
@@ -1651,15 +1653,15 @@ PY
 | W3 | 5 | 21 | 2 | 12 | 7 | 0 |
 | W4 | 2 | 6 | 4 | 0 | 2 | 0 |
 | W5 | 4 | 14 | 0 | 9 | 5 | 0 |
-| W6 | 11 | 43 | 10 | 14 | 16 | 3 |
+| W6 | 11 | 43 | 10 | 15 | 16 | 2 |
 | W7 | 7 | 26 | 9 | 11 | 6 | 0 |
 | W8 | 8 | 29 | 9 | 11 | 9 | 0 |
 | W9 | 5 | 16 | 3 | 10 | 3 | 0 |
 | W10 | 7 | 23 | 5 | 15 | 3 | 0 |
 | —（D2/O12） | 1 | 2 | 2 | 0 | 0 | 0 |
-| **合计** | **63** | **230** | **63** | **102** | **61** | **4** |
+| **合计** | **63** | **230** | **63** | **103** | **61** | **3** |
 
-**读法**：63 条子句（27%）有真正驱动它的可执行断言；102 条（44%）实现存在但关键分支无测试或只覆盖外延的一部分；61 条（27%）无实现或实现是残桩；4 条（W1 的 G/VISION-TOOL#3、W6 的 M1/SPEC-TOOLIF#3·#4·#5）本轮未查证，**翻牌前必须补查**。
+**读法**：63 条子句（27%）有真正驱动它的可执行断言；103 条（45%）实现存在但关键分支无测试或只覆盖外延的一部分；61 条（27%）无实现或实现是残桩；3 条（W1 的 G/VISION-TOOL#3、W6 的 M1/SPEC-TOOLIF#4·#5）本轮未查证，**翻牌前必须补查**。M1/SPEC-TOOLIF#3 曾也列在这里，**它已经查证过**（正文附了两条可重跑命令）—— 缺的是防回流门禁不是复核，按上面「状态三档」那条 ⚠️ 归入「部分」。
 
 **W5 全 0 已兑现**是本表最刺眼的一格：安全维度 14 条子句里没有一条有真正驱动它的证据。W4 的 4/6 与 W1 的 14/37 是密度最高的两块。
 
