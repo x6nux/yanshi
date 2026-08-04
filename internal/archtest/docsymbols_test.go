@@ -364,12 +364,25 @@ func addTypeMembers(names map[string]bool, ts *ast.TypeSpec) {
 // symbols exactly the way the breakdown does. A review probe made the gap
 // concrete: appending `internal/bootstrap/bootstrap.go::NoSuchSymbolZZZ` to
 // this file left TestGOV9DocSymbolReferencesResolve green, while the same text
-// in any live .md reddened it. Six citations here had been written with
-// ABBREVIATED path prefixes (`bootstrap.go::Build`, `testrun.go::runTests`, …)
-// whose paths did not resolve — under GOV9's rules an unresolvable path is
-// discarded unconditionally, so completing them would have bought nothing at
-// all while reading exactly like protection. Completing the prefixes and
-// widening the scan are therefore one change, not two.
+// in any live .md reddened it.
+//
+// One attribution about this file has now been wrong three times running, so it
+// is corrected at the source rather than in prose somewhere else. Citations here
+// were written with ABBREVIATED path prefixes (`bootstrap.go::Build`,
+// `testrun.go::runTests`, …), and the claim that those prefixes "did not
+// resolve, so GOV9 discarded them" is FALSE. candidates() matches a `.go` path
+// as a FILE-PATH SUFFIX — `strings.HasSuffix(f, "/"+path)` — so a bare filename
+// anchors onto internal/bootstrap/bootstrap.go by itself. deglued() is not what
+// does this and structurally cannot be: it returns nil for any path without a
+// `/`, precisely so a deliberate phantom bare filename is never re-anchored.
+//
+// The consequence that matters to anyone writing docs: an abbreviated prefix is
+// FULLY PROTECTED the moment its file is in scan scope. `bootstrap.go::Phantom`
+// is not an escape hatch — it reddens the gate exactly like a fully-spelled
+// path would. The only escape hatch is a symbol with NO resolvable path prefix
+// at all. Widening the scan was therefore the entire fix; spelling the prefixes
+// out was cosmetic, and is worth doing only because a full path survives a file
+// move that a suffix match would silently re-aim.
 const ledgerDoc = "docs/feature-status.yaml"
 
 // liveDocs returns the module-relative paths of every document GOV9 holds to
@@ -813,14 +826,35 @@ func TestGOV9ScansTheLedger(t *testing.T) {
 	// also survive parseDocSymbolRefs, which was written for markdown and runs
 	// stripMarkdownEmphasis over every line. A yaml comment is not markdown, so
 	// assert a real citation from this very file still parses out.
+	//
+	// It has to be a citation from a COMMENT line specifically, and `len(refs) >
+	// 0` does not say that. Most citations in this file sit on `evidence:` VALUE
+	// lines, which GOV8's resolveTestRef has covered all along; the marginal
+	// value of GOV9 reading the ledger is exactly the minority that live in `#`
+	// comments, and a count over both halves cannot tell them apart. Measured:
+	// teaching parseDocSymbolRefs to skip `#`-leading lines left this test
+	// GREEN under the old assertion.
 	body, err := os.ReadFile(filepath.Join(root, ledgerDoc))
 	if err != nil {
 		t.Fatal(err)
 	}
+	lines := strings.Split(string(body), "\n")
 	refs := parseDocSymbolRefs(ledgerDoc, string(body))
 	if len(refs) == 0 {
 		t.Fatalf("no path::Symbol citations parsed out of %s — the parse is broken, "+
 			"not the ledger", ledgerDoc)
+	}
+	var fromComment int
+	for _, r := range refs {
+		if r.Line >= 1 && r.Line <= len(lines) &&
+			strings.HasPrefix(strings.TrimSpace(lines[r.Line-1]), "#") {
+			fromComment++
+		}
+	}
+	if fromComment == 0 {
+		t.Fatalf("%d path::Symbol citations parsed out of %s but NONE from a `#` "+
+			"comment line — the comment blocks are what GOV8 does not already "+
+			"cover, so the scan is buying nothing here", len(refs), ledgerDoc)
 	}
 }
 

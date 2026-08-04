@@ -1176,7 +1176,7 @@
 > acceptance：`@` 触发补全;附加有界;越权拒绝;超大提示 fs_read
 
 **1. `@` 触发补全** — 未兑现
-- 依据：**无实现**。`internal/cli/tui` 全包非测试代码里 `@` 字符**零出现**（唯一提及在 `images.go::buildSendFrame` 的注释里）；弹层只有 `pickerKind ∈ {"", model, mode, theme}` + Ctrl+K + F1 + Alt+R + sessionPicker，**无任何文件路径补全器**。`internal/tools/pathref.go` 确为**同名不同物**：服务端、只处理图片的展开器（`pathref.go::ResolveImagePathRefs` `if !IsImagePath(ref) { continue }`），挂在 `orchestrator.go::Orchestrator.EventsWithHistoryOpts`，是「用户已经打完字之后」的解析，不是补全。
+- 依据：**无实现**。`internal/cli/tui` 全包非测试代码里 `@` 字符只出现**一次**，且在注释里：`grep -rn '@' internal/cli/tui/ --include='*.go' | grep -v '_test.go'` 恰好输出一行 —— `images.go::buildSendFrame` doc 注释中的 "@path detection"，**零处可执行代码**读写这个字符。（本条上一版写「零出现」，与紧随其后的「唯一提及」自相矛盾；实质结论不变。）弹层只有 `pickerKind ∈ {"", model, mode, theme}` + Ctrl+K + F1 + Alt+R + sessionPicker，**无任何文件路径补全器**。`internal/tools/pathref.go` 确为**同名不同物**：服务端、只处理图片的展开器（`pathref.go::ResolveImagePathRefs` `if !IsImagePath(ref) { continue }`），挂在 `orchestrator.go::Orchestrator.EventsWithHistoryOpts`，是「用户已经打完字之后」的解析，不是补全。
 - 证据形状：断言 textarea 值为 `"看 @sh"` 时 model 进入文件补全态且候选含 `shots/a.png`，↑↓ 可移动、Enter 写回 textarea。
 
 **2. 附加有界** — 部分
@@ -1372,12 +1372,21 @@ PY
 - ⚠️ **一个对外契约谎报**：`ThreadSnapshot.Items`（`internal/api/v1/types.go::ThreadSnapshot/ThreadResumeResponse`）**永远为空** —— `service.go snapshot()` 返回 `ThreadSnapshot{Version, Thread}`，两条 Resume 路径都走它，无人填 Items；而 `agent_v1.go::Server.AgentV1` 与 `appserver/server.go::Server.dispatch` **都在转发 `snapshot.Items`**。两条传输同时转发同一个恒空切片 —— 但**恒空只暴露在类型 / schema / SDK / 生成文档层，不在 wire 层**：两处 Items 字段都**已经**带 `omitempty`，键在 JSON 里根本不出现，客户端看到的是「服务端没给」而不是「给了空数组」。核对命令与输出：
 
   ```sh
-  $ grep -n 'Items \[\]Item' internal/api/v1/types.go
+  $ grep -nE 'Items +\[\]Item' internal/api/v1/types.go
   101:	Items   []Item `json:"items,omitempty"`
   154:	Items   []Item `json:"items,omitempty"`
   ```
 
-  所以恒空真正可见的地方是 `internal/api/v1/types.go::ThreadSnapshot`、`sdk/schema/v1/agent-api.schema.json` 的 `ThreadSnapshot.items`、`sdk/python/src/yanshi_sdk/generated.py` 的 `ThreadSnapshot.items`、以及 `docs/api/resources.md` 的 ThreadSnapshot 字段表 —— 这四处承诺了一个 wire 上永不出现的字段。
+  （模式必须写成 `Items +\[\]Item`：gofmt 把字段名与类型对齐成多个空格，单空格的字面模式返回**空输出**，读者会据此得出与本段相反的结论。）
+
+  所以恒空真正可见的地方，Go 侧是 `internal/api/v1/types.go::ThreadSnapshot`。**跨出 Go 之后这个类型就改了名** —— schema / SDK / 生成文档里它一律叫 `ThreadResumeResponse`，`ThreadSnapshot` 是**纯 Go 内部名**（在 `sdk/` 与 `docs/` 下 grep 它是零命中，照这个名字去找 W9 要改哪几处会一无所获）。逐层：
+
+  - `sdk/schema/v1/agent-api.schema.json` 的 `$defs.ThreadResumeResponse.properties.items`
+  - `sdk/python/src/yanshi_sdk/generated.py` 的 `class ThreadResumeResponse` 的 `items: Optional[list[Item]]`
+  - `sdk/ts/v1.ts` 的 `export interface ThreadResumeResponse` 的 `items?: Item[]`（`sdk/ts/src/generated.ts` 只是 `export * from "../v1.js"` 的转发口，`sdk/ts/src/client.ts` 拿它当 `resume()` 的返回类型 —— 这一层是本条上一版整个漏掉的）
+  - `docs/api/resources.md` 的 `### ThreadResumeResponse` 字段表里 `| items | Item[] |` 那一行（在 `api-defs:ThreadResumeResponse` 生成块内，改完要重跑 `go run ./cmd/api-schema -markdown docs/api/resources.md`）
+
+  这几处承诺了一个 wire 上永不出现的字段。
 - ℹ️ **纠正过时结论**：W9 旧核验 note 里「`TurnStartParams.Images` 是死字段」**已过时** —— `service.go::Service.runTurn` 现在真的把 `p.Images` 填进 `TurnOpts`，`internal/api/v1::TestServiceTurnCarriesImagesToTheOrchestrator` 是端到端断言（fake vision model 回 `fake-vision(1 image)`）。
 - 证据形状（针对 Items）：断言 resume 一个有历史的 thread 后 `len(resp.Items) > 0` 且 sequence 单调；或从 wire 契约里删掉该字段（连带上面那四处镜像）。**骗过去**：任何只在 JSON 层看这个键的测试 —— 因为 `omitempty` **已经在了**，「响应体里没有 `items` 键」和「`resp.Items == nil`」这两条断言**今天就是绿的**，它们证明的恰好是缺陷本身。⚠️ 别把这条读成「可以事后加 `omitempty` 来掩盖」：它不是一条待防范的作弊路径，而是**已经生效的现状**，W9 照这句去加 tag 只会重复一次无操作，并对「为什么这个恒空字段一直没人发现」得出错误因果。
 
