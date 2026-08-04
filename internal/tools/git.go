@@ -104,7 +104,7 @@ func gitCommandLabel(spec secproc.SecureProcessSpec) string {
 func NewGitTools() *GitTools {
 	return &GitTools{
 		Status: NewGuardedTool("git_status", "Git status", "Return structured working-tree status.", 10*time.Second, nil, SyncStream(runGitStatus)),
-		Diff: NewGuardedTool("git_diff", "Git diff", "Return per-file structured diff.", 30*time.Second,
+		Diff: NewGuardedTool("git_diff", "Git diff", "Return per-file structured diff. The base_ref and commit scopes require git 2.24+ (they pass --end-of-options); working_tree has no such requirement.", 30*time.Second,
 			params(map[string]*schema.ParameterInfo{
 				"scope": {Type: schema.Object, Required: true, SubParams: map[string]*schema.ParameterInfo{
 					"kind": {Type: schema.String, Required: true, Enum: []string{"working_tree", "base_ref", "commit"}},
@@ -226,10 +226,24 @@ func collectGitDiffFiles(ctx context.Context, root string, args gitDiffArgs) ([]
 // as an option, no matter what it starts with.
 //
 // It is the SECOND layer under validateGitRef, and the two are deliberately
-// not redundant. validateGitRef is enforced by yanshi and therefore also
-// covers the git versions that predate this marker; gitEndOfOptions is
-// enforced by git and therefore survives a future call site here that forgets
-// to validate — which is exactly how the ref hole got in. Note the placement
+// not redundant. validateGitRef is enforced by yanshi and therefore still runs
+// on the git versions that predate this marker; gitEndOfOptions is enforced by
+// git and therefore survives a future call site here that forgets to validate
+// — which is exactly how the ref hole got in.
+//
+// Say the pre-2.24 half precisely, because "validateGitRef still covers those
+// versions" is true and misleading at the same time: on git < 2.24 the marker
+// is not a no-op that leaves a validated-but-unmarked argv, it is an argument
+// git does not know. `git diff --end-of-options <ref>` there fails outright
+// ("unknown option" / "ambiguous argument"), so git_diff's base_ref and commit
+// scopes do not degrade on those versions, they stop working — the tool
+// returns the git error for every call. Only the working_tree scope, which
+// emits no marker, keeps running. That makes git 2.24 (Nov 2019) a hard
+// floor for two of the three scopes, and the git_diff tool description says so
+// where the operator and the model can actually see it. Do not "fix" a pre-2.24
+// report by dropping the marker: that reopens the ref hole for everyone.
+//
+// Note the placement
 // rule: `--end-of-options` must come after all real options and before the
 // first revision, and `--` still separates revisions from pathspecs after it.
 //

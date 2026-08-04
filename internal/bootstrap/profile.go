@@ -100,7 +100,9 @@ func DefaultOrchestratorProfile() guard.PermissionProfile {
 		Tools: guard.ToolsPerm{Allow: []string{
 			// NB: "fs_patch" and "fs_mkdir" used to be listed here and were
 			// dropped — neither has ever been a registered tool. The patch
-			// tool's real name is "apply_patch" (internal/tools/fs.go:99),
+			// tool's real name is "apply_patch" (registered in
+			// internal/tools.NewFSTools; line numbers are omitted on purpose,
+			// they drift silently while symbol names do not),
 			// which is already allowed below; there is no mkdir tool at all.
 			"fs_read", "fs_list", "fs_search", "fs_glob", "fs_write", "fs_edit",
 			"shell_run", "shell_start", "shell_read", "shell_write_stdin", "shell_wait", "shell_cancel",

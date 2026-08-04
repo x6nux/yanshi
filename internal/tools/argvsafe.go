@@ -10,11 +10,21 @@ import (
 // package pattern, a `cargo test` filter.
 //
 // The bug class it exists to close is ARGUMENT injection, which is not shell
-// injection and is not fixed by the defences that stop shell injection. Every
-// launch in this package goes through exec without a shell, so quoting,
-// metacharacter rejection (guard's `&&`/`|`/`$()` denial) and NUL stripping
-// are all irrelevant here: the value already arrives at the callee as one
-// intact argv element. The problem is that argv carries no types. The callee
+// injection and is not fixed by the defences that stop shell injection. The
+// slots this function guards — git_diff's revisions, run_tests' `go` package
+// patterns and `cargo test` filter — reach git/go/cargo through an explicit
+// argv with no shell in between, so FOR THESE SLOTS quoting, metacharacter
+// rejection (guard's `&&`/`|`/`$()` denial) and NUL stripping buy nothing:
+// the value already arrives at the callee as one intact argv element.
+//
+// Read that as a claim about these operand slots only, never about the
+// package. `shell_run` lives in this same package and deliberately hands its
+// command to `sh -c` / `bash -c` / `cmd /c` (see shellCommand), and there
+// guard's metacharacter HardDeny is the load-bearing defence rather than an
+// irrelevance. The two statements coexist because they describe different
+// argv slots, not different opinions about the same one.
+//
+// The problem this function does solve is that argv carries no types. The callee
 // alone decides what each element MEANS, and essentially every Unix CLI
 // decides it by looking at the first byte: a leading dash makes the element an
 // option instead of data. A ref the model chose therefore stops being a ref
