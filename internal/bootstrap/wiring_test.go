@@ -406,6 +406,15 @@ profiles:
 // apply_patch), survived here long after it was dropped from the default
 // profile.
 //
+// The gate is deliberately ONE-DIRECTIONAL, and the missing direction is not an
+// oversight to be closed later. It asks "is every name here registered?", never
+// "is every registered write tool here?" — apply_patch is a real, registered
+// file-writing tool that is intentionally absent. The reverse check would be a
+// gate that FORCES names into an authorization set, i.e. one whose only way to
+// go green is to auto-approve more without prompting. Widening this set is a
+// deliberate authorization decision; a governance test must never be the thing
+// that demands it. See guard.EditToolNames for the set itself.
+//
 // Why there is no exemption table (unlike GOV5's toolWiringExceptions): after
 // the cleanup the set is {fs_write, fs_edit}, both of which FSTools always
 // registers, so the violation set is identically empty. An exemption table with

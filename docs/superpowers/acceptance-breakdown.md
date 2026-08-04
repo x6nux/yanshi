@@ -786,14 +786,14 @@
 
 **1. 编辑后模型收到诊断** — 部分
 - 依据：`internal/tools/fs_patch.go::diagForStaged`（编辑后取 `LSPFromContext` 拉诊断）、`internal/tools/lspctx.go::diagFor`、注入点 `orchestrator.go::Orchestrator.bindExecutionContext`。有「编辑工具返回值里带上诊断文本」的断言；**没有**测试证明诊断进入了**模型实际读到的消息**（工具返回值 → ADK → 模型这一段未被驱动）。
-- 证据形状：跑一个完整 turn，用 `FakeModel` 记录它收到的消息序列，断言 tool_result 消息体中**逐字**含 stub LSP 给出的 diagnostic message。**骗过去**：只断言 `fs_patch` 的返回字符串含诊断。
+- 证据形状：跑一个完整 turn，用 `FakeModel` 记录它收到的消息序列，断言 tool_result 消息体中**逐字**含 stub LSP 给出的 diagnostic message。**骗过去**：只断言编辑工具（真实注册名是 `apply_patch`，实现在 `internal/tools/fs_patch.go`）的返回字符串含诊断。
 
 **2. server 缺失安全降级** — 已兑现（台账 evidence 为空，属**低报**）
 - 依据：`lspctx.go::LSPFromContext`（未绑定则 ok=false）、`diagnostics.go::runLSPProbe`（source==nil 或 !Enabled 返回空 lspDiag）；`internal/tools::TestDiagnosticsLSPUnavailableIsLocalDegradation` 真断言（JSON 中 `"lsp":{"available":false,...}`）。
 - 证据形状：已满足。加强方向：断言 server 缺失时编辑工具**照常返回成功结果**而非报错。
 
 **3. 超时不阻塞 turn** — 未兑现
-- 依据：参数存在（`diagnostics.go::runLSPProbe` 传 2s、fs_patch 侧传入 timeout），但**没有任何测试让 LSP source 卡住超过 timeout**。
+- 依据：参数存在（`diagnostics.go::runLSPProbe` 传 2s、`internal/tools/fs_patch.go` 侧传入 timeout），但**没有任何测试让 LSP source 卡住超过 timeout**。
 - 证据形状：stub 的 `Diagnostics` 阻塞 10s，断言整个 turn 在 timeout+ε 内完成、且结果里诊断段缺失但其余段完整。**骗过去**：断言 timeout 参数值等于 `2*time.Second`（对字面量断言）。
 
 **4. Go/Python/TS 至少一种端到端可用** — 未兑现
@@ -960,8 +960,18 @@
 - 依据：`SyncStream` 把返回值包成 `ToolChunk`。只有间接覆盖（各工具测试断言最终结果串），**无对 `ToolChunk` 字段契约本身的断言**。
 - 证据形状：断言流式路径下每个 chunk 的字段集合恰为规范字段，且 `Err` 与 `Text` 的互斥/组合语义被钉死。
 
-**3. 废弃 JSON 包装与 ToolProgressCallback/lineProgressWriter** — 未查证到已完成
-- 依据：这句是**「废弃」类要求** —— 只要生产代码里还有调用点就不算兑现。本轮未完成对残留调用点的完整清点。**翻牌前必须补查。**
+**3. 废弃 JSON 包装与 ToolProgressCallback/lineProgressWriter** — 现状已满足，但**不翻牌**
+- 依据：这句是**「废弃」类要求** —— 只要生产代码里还有调用点就不算兑现。上一版自陈「未完成清点」，现已补上（2026-08-05 实测，命令可重跑；注意这两个名字在本文件与台账里也各有一次出现，grep 结果要减掉文档自身）：
+
+  ```
+  $ grep -rn 'ToolProgressCallback' --include='*.go' . | wc -l
+  0
+  $ grep -rln 'lineProgressWriter' --include='*.go' .
+  internal/tools/shell.go
+  ```
+
+  即：一个全仓零命中，另一个只剩 `internal/tools/shell.go` 里的一行**注释**（提到旧名字，不构成声明或调用），零调用点、零声明。
+- **为什么仍不翻**：「废弃」类要求的兑现物不是「今天数出来是 0」，而是**防回流**。当前没有任何门禁阻止这两个名字重新出现，所以翻成「已兑现」等于把一条无人看守的事实写进台账 —— 正是本文件反复点名的「断言与被断言物脱钩」。翻牌与那道禁止性扫描测试应当同一个提交落地（归 W6）。顺带：本条所属台账项还有第 4、5 两条「未查证」，它无论如何都到不了终态，翻这一条也解不开任何东西。
 - 证据形状：一条 archtest 风格的**禁止性**扫描测试，断言非测试 `.go` 文件中 `ToolProgressCallback` / `lineProgressWriter` 的出现次数为 0（或只出现在一张只减不增的豁免表里）—— 这是唯一能防止废弃物回流的形状。功能测试对「废弃」类要求无效。
 
 **4. subagent 进度喂 Status+Text** — 未查证
@@ -1379,7 +1389,14 @@ PY
 
   （模式必须写成 `Items +\[\]Item`：gofmt 把字段名与类型对齐成多个空格，单空格的字面模式返回**空输出**，读者会据此得出与本段相反的结论。）
 
-  所以恒空真正可见的地方，Go 侧是 `internal/api/v1/types.go::ThreadSnapshot`。**跨出 Go 之后这个类型就改了名** —— schema / SDK / 生成文档里它一律叫 `ThreadResumeResponse`，`ThreadSnapshot` 是**纯 Go 内部名**（在 `sdk/` 与 `docs/` 下 grep 它是零命中，照这个名字去找 W9 要改哪几处会一无所获）。逐层：
+  所以恒空真正可见的地方，Go 侧是 `internal/api/v1/types.go::ThreadSnapshot`。**跨出 Go 之后这个类型就改了名** —— schema / SDK / 生成文档里它一律叫 `ThreadResumeResponse`，`ThreadSnapshot` 是**纯 Go 内部名**，在 **`sdk/` 下**零命中：
+
+  ```
+  $ grep -rn 'ThreadSnapshot' sdk/ | wc -l
+  0
+  ```
+
+  所以照这个名字去 `sdk/` 里找要改哪几处会一无所获，得按 `ThreadResumeResponse` 找。**`docs/` 不在此列** —— `grep -rln 'ThreadSnapshot' docs/` 是有命中的，其中就有 W9 自己的计划 `docs/superpowers/plans/2026-08-03-s0-w9-contracts.md`（Task 3 的标题与那条验收勾选项用的都是 `ThreadSnapshot.Items` 这个名字）。把上面那条 grep 读成「全仓零命中」会把实施者从自己的任务清单上引开。逐层：
 
   - `sdk/schema/v1/agent-api.schema.json` 的 `$defs.ThreadResumeResponse.properties.items`
   - `sdk/python/src/yanshi_sdk/generated.py` 的 `class ThreadResumeResponse` 的 `items: Optional[list[Item]]`
@@ -1532,15 +1549,18 @@ PY
 > acceptance：CONTRIBUTING 存在；约定可执行；docs 结构清晰
 
 **1. CONTRIBUTING 存在** — 已兑现
-- 依据：`/CONTRIBUTING.md`（66 行，8 个承重约定小节 + ADR 指针 + commit 约定）。**纯存在性主张**，`docs.yml` 的「Cross-doc relative links reachable」步骤已间接守住它（CONTRIBUTING 被 getting-started.md 相对链接引用，文件消失即断链失败）。
+- 依据：`/CONTRIBUTING.md`（「承重架构约定」H2 下若干 `###` 小节 + ADR 指针 + 与之平级的 commit 约定 H2；条数别写死，用下面子句 2 里那条 `grep` 现数）。**纯存在性主张**，`docs.yml` 的「Cross-doc relative links reachable」步骤已间接守住它（CONTRIBUTING 被 getting-started.md 相对链接引用，文件消失即断链失败）。
 - 证据形状：现成门禁已顶。
 
 **2. 约定可执行** — 部分
-- 依据：CONTRIBUTING 列的 8 条约定里 **6 条真的机器强制**（六边形/唯一组合根 = GOV1；context 注入 = GOV6；guard fail-closed = fuzz + ADR；≤1000 纯代码行 = GOV2；注释密度 = GOV3；两传输一套协议 = 部分）。**不可执行的**：「Fake 优先于 mock」（无门禁，也难自动化）、「conventional commit」（`docs/commit-convention.md:5-7` 诚实承认无 commit-lint，`.github/` 与 `.git/hooks/` 零命中）、「两传输一套协议」（CONTRIBUTING 写「新增帧类型必须同时更新 ws.go 与 SSE handler」—— 这正是 E1/COV2#4 证明**没有**门禁的那条）。
+- 依据：分母是 CONTRIBUTING「承重架构约定」这个 H2 下的 `###` 小节，现数（`grep -nE '^### ' CONTRIBUTING.md`，别按印象数）。**每一条都给出裁决，两桶相加恰好等于分母**：
+  - **机器强制**：六边形 / 唯一组合根 = GOV1；context 注入是横切模式 = GOV6；Guard fail-closed = `internal/guard::TestGuard_DeniesEmptyTools` + `internal/guard::TestCheckEmptyToolsAllowIsOverridableHardDeny`，外加 `ci.yml` 的 `fuzz-seed` 硬门禁；单文件 ≤1000 纯代码行 = GOV2；注释是承重文档 = GOV3；**本地 fork = 编译器**（最强的一档：生产代码 `internal/cli/tui/handlers.go` 直接引用 fork-only 标识符 `tea.KeyCtrlEnter`，实测把 `go.mod` 里那条 `replace` 拿掉后 `go build ./internal/cli/tui` 报 `undefined: tea.KeyCtrlEnter` / `undefined: tea.Repaint`；上游 v1.3.10 的 `key.go` 里 `KeyCtrlEnter` 零命中）。
+  - **不可执行**：「Fake 优先于 mock」（无门禁，也难自动化）；「单 binary + 两种传输一套协议」（「单 binary」由构建形态天然成立，但承重的那半句「新增帧类型必须同时更新 `ws.go` 与 SSE handler」**没有任何门禁** —— 正是 E1/COV2#4 证明的那条）。
+- ⚠️ **「conventional commit」不在这个分母里**：它住在 CONTRIBUTING 里与「承重架构约定」**平级的另一个 H2**「提交 / PR 约定」下。它同样不可执行（`docs/commit-convention.md` 开头诚实承认「enforced by review … **not** by a commit-lint tool」，`.github/` 下无 commitlint、`.git/hooks/` 无非 sample 钩子），但把它算进上面那两桶会让分母对不上，也会让「本地 fork」这条真正需要裁决的约定被挤掉 —— 这正是本条上一版发生过的事。
 - 证据形状：一条「CONTRIBUTING 承诺的每条硬约定都有对应门禁」的对账测试（形如 GOV8 的台账镜像：约定条目 → 测试引用的映射）；或**改写 acceptance**，把「约定可执行」限定为「架构约定由 GOV1–GOV8 强制」，把 commit 约定明确划为 review 责任。
 
 **3. docs 结构清晰** — 部分（**N 类：质量主张，不可直接断言**）
-- 依据：`docs/` = `adr/` + `api/` + `archive/` + `superpowers/` + `user-guide/` + 7 个散落 `.md`；**`docs/` 下无顶层 README 索引**（`user-guide/` 与 `api/` 各自有）。`docs.yml` 有三道**真门禁**可部分顶：「ADR code-path reachability」（ADR 里引用的 `internal/...` 路径必须存在）、「Archive no dead path refs」（活文档不得引用已归档路径）、「Cross-doc relative links reachable」；另有 `internal/archtest::TestVSCodeExtensionNotAdvertisedInDocs` 守归档墓碑。
+- 依据：`docs/` = `adr/` + `api/` + `archive/` + `superpowers/` + `user-guide/` + 若干散落 `.md`（`ls docs/*.md` 现数）；**`docs/` 下无顶层 README 索引** —— `ls docs/*/README.md` 的输出是 `adr/ api/ archive/ user-guide/` 四个，**只有 `superpowers/` 没有**，所以缺的是顶层那一层索引，不是子目录索引。`docs.yml` 有三道**真门禁**可部分顶：「ADR code-path reachability」（ADR 里引用的 `internal/...` 路径必须存在）、「Archive no dead path refs」（活文档不得引用已归档路径）、「Cross-doc relative links reachable」；另有 `internal/archtest::TestVSCodeExtensionNotAdvertisedInDocs` 守归档墓碑。
 - 证据形状：「结构清晰」本身不可断言。可断言的替代物是**链接完整性 + 归档隔离 + 索引完备性**（每个 `docs/` 顶层目录必须被某个索引页链接到）—— 前两项已有门禁，第三项没有。建议**改写 acceptance** 为这三项。
 
 ---

@@ -183,9 +183,12 @@
 # 不翻 done 的原因是第 3、4 两条：
 #   3 超时/取消干净 ——【缺】只有下一层的 internal/tools::
 #     TestRunSecureCaptureCancellationStopsWait 覆盖通用 capture 路径；run_tests
-#     自己的 10min 超时从未被驱动。⚠️ internal/tools::TestRunTestsDefaultTimeout
-#     是**空壳**：它把 error 用 t.Logf 吞掉、结果 `_ = out`，无论超时行为对错都会绿，
-#     不能当这条的证据。
+#     自己的 10min 超时从未被驱动。internal/tools::TestRunTestsDefaultTimeout
+#     曾是**空壳**（error 用 t.Logf 吞掉、结果 `_ = out`），2026-08-05 已改为真断言：
+#     stub 掉 secureCommandRunner，钉住交给 runner 的 duration（省略 = 10m、
+#     timeout_s=0 不塌成 1s、显式值、1800s 上限），把默认值改回 clampInt 后实测变红。
+#     ⚠️ 但它断的是**传参**而不是**到期行为**，超时/取消路径依旧没被驱动，
+#     仍不能当这条的证据。
 #   4 大输出成 artifact ——【缺】internal/tools/testrun.go::runTests 有 SpillThreshold 分支，但没有任何
 #     测试让 raw 超过阈值。与 B3/W07 第 3 条同一个形状。
 # 第 1、2 条已覆盖（TestParseGoJSONCountsPassFailSkip /

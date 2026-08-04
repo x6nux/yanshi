@@ -1,6 +1,7 @@
 package archtest
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -844,17 +845,152 @@ func TestGOV9ScansTheLedger(t *testing.T) {
 		t.Fatalf("no path::Symbol citations parsed out of %s — the parse is broken, "+
 			"not the ledger", ledgerDoc)
 	}
-	var fromComment int
+	// The floor on comment-line citations must be PROPORTIONAL to the corpus,
+	// and a constant cannot be: `fromComment >= 1` was satisfied by the two
+	// ASCII-only comment lines alone, so a degradation that dropped every
+	// citation sitting on a line containing Han characters — 26 of 28, i.e. the
+	// entire reason this file is in scope, since the ledger's prose is Chinese —
+	// left both this test and TestGOV9DocSymbolReferencesResolve reporting `ok`.
+	// Widening is one character away from silent reversal, and so is narrowing.
+	//
+	// A hardcoded `>= 20` only moves the arbitrary number: it rots the day the
+	// ledger legitimately shrinks, and it still cannot tell a 60% degradation
+	// from a real pass. So the expectation is DERIVED FROM THE CORPUS on every
+	// run by ledgerCommentCitationLines, an independently written byte scan that
+	// shares no code with docSymbolRefRe or stripMarkdownEmphasis, and every
+	// line it finds must also be recovered by the real parse. Extra lines in the
+	// parse are fine (emphasis-glued shapes the crude scan cannot see); missing
+	// ones are the regression.
+	want := ledgerCommentCitationLines(lines)
+	if len(want) == 0 {
+		t.Fatalf("the independent scan found no `#` comment line in %s carrying a "+
+			"path::Symbol citation — either the ledger stopped citing Go symbols "+
+			"from its comment blocks (the scan is then buying nothing here) or "+
+			"ledgerCommentCitationLines is broken", ledgerDoc)
+	}
+	got := make(map[int]bool, len(refs))
 	for _, r := range refs {
-		if r.Line >= 1 && r.Line <= len(lines) &&
-			strings.HasPrefix(strings.TrimSpace(lines[r.Line-1]), "#") {
-			fromComment++
+		got[r.Line] = true
+	}
+	var missing []int
+	for _, ln := range want {
+		if !got[ln] {
+			missing = append(missing, ln)
 		}
 	}
-	if fromComment == 0 {
-		t.Fatalf("%d path::Symbol citations parsed out of %s but NONE from a `#` "+
-			"comment line — the comment blocks are what GOV8 does not already "+
-			"cover, so the scan is buying nothing here", len(refs), ledgerDoc)
+	if len(missing) > 0 {
+		var b strings.Builder
+		for _, ln := range missing {
+			fmt.Fprintf(&b, "\n  %s:%d\t%s", ledgerDoc, ln, strings.TrimSpace(lines[ln-1]))
+		}
+		t.Fatalf("parseDocSymbolRefs recovered %d of the %d `#` comment lines in %s "+
+			"that carry a path::Symbol citation; it missed %d:%s\n\n"+
+			"The comment blocks are exactly what GOV8's resolveTestRef does not "+
+			"already cover (those citations sit on `evidence:` VALUE lines), so a "+
+			"parse that drops them silently reduces this file's Go citations to "+
+			"the half that was already protected.",
+			len(want)-len(missing), len(want), ledgerDoc, len(missing), b.String())
+	}
+}
+
+// ledgerCommentCitationLines returns the 1-based numbers of the lines in a yaml
+// document that are `#` comments AND carry something shaped like a
+// `path::Symbol` citation.
+//
+// It exists to give TestGOV9ScansTheLedger an expectation computed from the
+// current corpus instead of a hardcoded floor, so it is deliberately written
+// WITHOUT regexp and without calling any of the production scan's helpers: a
+// mutation inside docSymbolRefRe or stripMarkdownEmphasis must move only one
+// side of that comparison. Reusing either would make the two sides degrade
+// together, which is the failure this replaced.
+//
+// The shape rule is the crude one on purpose — "`::` with a path-class run on
+// its left that starts with an ASCII letter, and an identifier-start character
+// on its right". It mirrors docSymbolRefRe's letter anchor (a path of pure
+// digits is not one this module can name) without sharing its implementation,
+// and it deliberately UNDER-matches: emphasis-glued spellings the real parse
+// repairs are invisible here, which is safe because the assertion direction is
+// "everything this finds must also be found", never the reverse.
+func ledgerCommentCitationLines(lines []string) []int {
+	pathChar := func(b byte) bool {
+		return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' ||
+			b == '_' || b == '.' || b == '/' || b == '-'
+	}
+	letter := func(b byte) bool { return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' }
+	var out []int
+	for i, line := range lines {
+		if !strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		for at := 0; ; {
+			j := strings.Index(line[at:], "::")
+			if j < 0 {
+				break
+			}
+			j += at
+			at = j + 2
+			if at >= len(line) || !(letter(line[at]) || line[at] == '_') {
+				continue // right side is not an identifier start
+			}
+			k := j
+			for k > 0 && pathChar(line[k-1]) {
+				k--
+			}
+			if k == j || !letter(line[k]) {
+				continue // no path run, or one this module cannot name
+			}
+			out = append(out, i+1)
+			break
+		}
+	}
+	return out
+}
+
+// TestLedgerCommentCitationScanHitsKnownTruth proves ledgerCommentCitationLines
+// answers correctly on inputs whose verdict is known by inspection, before
+// TestGOV9ScansTheLedger trusts it against the real ledger.
+//
+// A checker written for a review is subject to the same failure as the code it
+// checks: if this one silently matched nothing, TestGOV9ScansTheLedger's
+// `len(want) == 0` guard would fire with a message blaming the ledger, and a
+// checker that matched everything would make the comparison vacuous. Both
+// directions are pinned here, including the three shapes the real ledger
+// contains that must NOT count.
+func TestLedgerCommentCitationScanHitsKnownTruth(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"cjk comment with citation", "#   见 internal/tools::TestFoo 的断言。", true},
+		{"ascii comment with citation", `#       "1": "internal/foo::TestA"`, true},
+		{"citation glued to han text", "# 判据是internal/bootstrap/bootstrap.go::Build。", true},
+		{"file path prefix", "#  internal/tools/testrun.go::runTests 有 SpillThreshold 分支", true},
+		{"bare ::Symbol shorthand", "#   ::TestWriteArtifactOrSpillNoWorkRoot", false},
+		{"cjk path is not ours", "#   终态证据只接受测试引用（包路径::测试名，不是文件路径）", false},
+		{"truncated path with nothing after", "#   3 超时/取消干净 —— 只有下一层的 internal/tools::", false},
+		{"not a comment line", `  evidence: "internal/foo::TestA"`, false},
+		{"comment without any ::", "# 这一行没有任何引用", false},
+		{"digits-only path", "#   1234::Foo", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ledgerCommentCitationLines([]string{tc.line})
+			if (len(got) == 1) != tc.want {
+				t.Fatalf("ledgerCommentCitationLines(%q) = %v, want match=%v",
+					tc.line, got, tc.want)
+			}
+		})
+	}
+
+	// The multi-line path: a matching line is reported by its 1-based number
+	// even when non-matching lines precede it, since the caller uses the number
+	// to index back into the document.
+	got := ledgerCommentCitationLines([]string{
+		"# 无引用", "  evidence: \"\"", "# 见 internal/tools::TestFoo",
+	})
+	if len(got) != 1 || got[0] != 3 {
+		t.Fatalf("line numbering is 1-based and skips non-matches: got %v, want [3]", got)
 	}
 }
 
