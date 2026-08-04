@@ -77,19 +77,24 @@ security:
     tier: read-only            # read-only | workspace-write | full-access
     network_deny: true         # Phase 0 hint for the future OS-isolation backend
   # ⚠️ Phase 0 scope: these four keys apply to yanshi's OWN in-process HTTP
-  # (web_fetch / http_request) and NOTHING ELSE. They are not consulted for
+  # (web_fetch / web_search) and NOTHING ELSE. They are not consulted for
   # subprocesses at all.
   #
-  # What subprocesses get instead: HTTP_PROXY/HTTPS_PROXY pointing at a dead
-  # port (http://127.0.0.1:0), unconditionally — the policy proxy that would
-  # honor these rules is written but never started (W5). So today:
-  #   * `allow` does nothing for shell_run / run_tests / github_* / ACP agents;
+  # What subprocesses get instead: http_proxy/https_proxy (both cases) pointing
+  # at a dead port (http://127.0.0.1:0), unconditionally — the policy proxy that
+  # would honor these rules is written but never started (W5). So today:
+  #   * `allow` does nothing for shell_run / run_tests / github_* / git_*;
   #     widening it grants those no egress whatsoever.
   #   * `default: allow` does not restore their network either — the dead port
   #     is published regardless of this value.
   #   * Only proxy-aware clients are affected (curl, gh, git-over-HTTP, go mod
   #     download, npm). Raw sockets, SSH and custom DNS are untouched, so this
   #     is not a containment boundary — treat the guard layer as the boundary.
+  #   * It reaches only children launched through the shell/secproc factories.
+  #     ACP agent CLIs, stdio MCP servers and LSP servers are spawned with the
+  #     host environment: they get NO managed proxy and DO inherit whatever
+  #     http_proxy/https_proxy the operator's shell had. If that upstream proxy
+  #     is untrusted, those subprocesses route through it.
   # Symptom to recognize: a subprocess failing with
   #   "Failed to connect to 127.0.0.1 port 0".
   network:

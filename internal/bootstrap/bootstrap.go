@@ -873,12 +873,13 @@ func Build(opts Options) (*App, error) {
 		fmt.Fprintf(os.Stderr, "yanshi: sandbox phase0 (%s): %s; OS/network isolation NOT enforced\n",
 			report.Effective, report.Reason)
 	}
-	// networkPolicy is enforced for yanshi's OWN in-process HTTP (web_fetch /
-	// http_request, via netpolicy.PolicyDialer). It is NOT enforced for
-	// subprocesses: no netpolicy.Proxy is started here, so the launch posture
-	// publishes HTTP_PROXY=http://127.0.0.1:0 to every child instead — a dead
-	// port that consults none of these fields. See shell.childLaunchPosture's
-	// proxy() for the full account; closing the gap is W5.
+	// networkPolicy is enforced for yanshi's OWN in-process HTTP (web_fetch and
+	// web_search, via netpolicy.NewTransport/PolicyDialer). It is NOT enforced
+	// for subprocesses: no netpolicy.Proxy is started here, so the launch
+	// posture publishes proxy variables pointing at http://127.0.0.1:0 to
+	// factory-launched children instead — a dead port that consults none of
+	// these fields. See shell.childLaunchPosture's proxy() for the full
+	// account, including which launchers bypass it; closing the gap is W5.
 	networkPolicy := &netpolicy.Policy{
 		Default:      cfg.Security.Network.Default,
 		Allow:        append([]string(nil), cfg.Security.Network.Allow...),
@@ -890,8 +891,27 @@ func Build(opts Options) (*App, error) {
 	// failed" from gh / go mod download / npm, with nothing tying it back to
 	// security.network — and the tool that broke looks broken rather than
 	// blocked.
-	fmt.Fprintf(os.Stderr, "yanshi: network phase0: subprocess egress is blocked by a dead-port proxy "+
-		"(security.network.allow is NOT applied to subprocesses); in-process web_fetch/http_request use the real policy\n")
+	//
+	// The wording is deliberately narrow, because the previous version of this
+	// line ("subprocess egress is blocked by a dead-port proxy") was three
+	// different kinds of false and an operator would have read it as a
+	// containment guarantee:
+	//
+	//  1. It is a PROXY VARIABLE, not a block. Only clients that honor
+	//     http_proxy/https_proxy are affected; raw sockets, SSH, DNS
+	//     tunnelling and any client that ignores the variables are untouched.
+	//  2. It reaches only children launched through the shell/secproc
+	//     factories. ACP agent CLIs (internal/acp), stdio MCP servers
+	//     (internal/mcp), LSP servers (internal/lsp) and `gh`/`git` spawned
+	//     directly build their env from os.Environ() and are NOT covered —
+	//     they also inherit the operator's real proxy.
+	//  3. It consults none of the security.network fields, so `allow` does not
+	//     widen it and `default: allow` does not disable it.
+	fmt.Fprintf(os.Stderr, "yanshi: network phase0: factory-launched subprocesses get "+
+		"http(s)_proxy=http://127.0.0.1:0, which stops only proxy-aware clients "+
+		"(curl/gh/go/npm) and is not a containment boundary — raw sockets, SSH and "+
+		"ACP/MCP/LSP subprocesses are unaffected; security.network is applied only to "+
+		"in-process web_fetch/web_search\n")
 
 	// Approval manager + audit bus: one process-wide manager mirrors persistent
 	// (allow_persistent) rules to the store; one bus fans the manager's emit

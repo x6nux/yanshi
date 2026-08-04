@@ -31,6 +31,40 @@ func TestPrepareEnvRemovesInheritedProxyVariants(t *testing.T) {
 	}
 }
 
+// TestPrepareEnvPublishesLowercaseProxyVariants pins the case coverage of the
+// managed set. curl ignores uppercase HTTP_PROXY for plain http:// URLs (the
+// httpoxy mitigation) and honors only lowercase http_proxy there, so an
+// uppercase-only set lets `curl http://…` out of a subprocess unimpeded while
+// appearing to block it. Dropping either case here is a silent egress hole.
+func TestPrepareEnvPublishesLowercaseProxyVariants(t *testing.T) {
+	got := PrepareEnv([]string{"PATH=x"}, "http://127.0.0.1:0")
+	want := []string{
+		"HTTP_PROXY=http://127.0.0.1:0", "HTTPS_PROXY=http://127.0.0.1:0", "NO_PROXY=",
+		"http_proxy=http://127.0.0.1:0", "https_proxy=http://127.0.0.1:0", "no_proxy=",
+	}
+	joined := strings.Join(got, "\n")
+	for _, w := range want {
+		if !strings.Contains(joined, w) {
+			t.Fatalf("managed env missing %q: %v", w, got)
+		}
+	}
+	if !strings.Contains(joined, "PATH=x") {
+		t.Fatalf("host env dropped: %v", got)
+	}
+}
+
+// TestPrepareEnvStripsLowercaseInheritedVariants guards the other half: the
+// strip must be case-insensitive, or a host-configured lowercase http_proxy
+// would survive alongside the managed uppercase one and (for plain HTTP under
+// curl) win — handing the child the operator's real upstream proxy.
+func TestPrepareEnvStripsLowercaseInheritedVariants(t *testing.T) {
+	got := PrepareEnv([]string{"http_proxy=http://host-proxy:9999", "ALL_PROXY=socks5://host:1080"}, "http://127.0.0.1:0")
+	joined := strings.Join(got, "\n")
+	if strings.Contains(joined, "host-proxy") || strings.Contains(joined, "socks5") {
+		t.Fatalf("inherited proxy vars survived: %v", got)
+	}
+}
+
 func TestProxyForwardsResponseBody(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "proxied-body")

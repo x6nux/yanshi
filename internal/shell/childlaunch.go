@@ -38,8 +38,9 @@ type childLaunchPosture struct {
 //
 // ⚠️ Phase 0: that dead port is the ONLY case in production. bootstrap.Build
 // constructs a netpolicy.Policy unconditionally and leaves ProxyURL empty, and
-// netpolicy.Proxy is never started, so every child gets
-// HTTP_PROXY=http://127.0.0.1:0. This is a BLACK HOLE, not an egress policy:
+// netpolicy.Proxy is never started, so every child launched through these two
+// factories gets http(s)_proxy=http://127.0.0.1:0. This is a BLACK HOLE, not
+// an egress policy:
 //
 //   - It consults nothing. security.network's default/allow/deny/allow_private
 //     do not reach this decision — `default: allow` with `allow: ["*"]` still
@@ -50,11 +51,25 @@ type childLaunchPosture struct {
 //     actual exfiltration paths open.
 //   - It produces no decision record, so a blocked fetch surfaces to the
 //     operator only as "connect to 127.0.0.1 port 0 failed".
+//   - It reaches only THESE launchers. ACP agent CLIs (internal/acp/spawn.go),
+//     stdio MCP servers (internal/mcp/manager.go), LSP servers
+//     (internal/lsp/manager.go), the skills installer and `gh`/`git` spawned
+//     from cmd/yanshi all build their env from os.Environ() directly, so they
+//     see no managed proxy AND inherit whatever proxy the operator's shell had.
+//     Two of those (ACP, MCP-over-stdio to a remote model) need real egress to
+//     function at all, which is why the dead port is not simply applied there.
 //
-// The policy IS enforced for yanshi's own in-process HTTP (web_fetch /
-// http_request go through netpolicy.PolicyDialer) — the gap is subprocess-only.
-// Closing it means actually starting netpolicy.Proxy and setting ProxyURL,
-// which is W5's work package; do not paper over it here.
+// Even within these launchers it only reaches those that use env at all: an
+// invocation that sets its own proxy via a config file or CLI flag wins.
+//
+// The variables are published in both upper and lower case — that is a
+// correctness requirement rather than caution, because curl ignores uppercase
+// HTTP_PROXY for plain http:// URLs. See netpolicy.PrepareEnv.
+//
+// The policy IS enforced for yanshi's own in-process HTTP (web_fetch and
+// web_search go through netpolicy.NewTransport/PolicyDialer) — the gap is
+// subprocess-only. Closing it means actually starting netpolicy.Proxy and
+// setting ProxyURL, which is W5's work package; do not paper over it here.
 func (p childLaunchPosture) proxy() string {
 	if p.Policy != nil && p.ProxyURL == "" {
 		return "http://127.0.0.1:0"

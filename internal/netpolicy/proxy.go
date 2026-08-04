@@ -171,19 +171,39 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // PrepareEnv returns a new environment slice derived from `in` with all
 // inherited proxy-related variables (HTTP_PROXY/HTTPS_PROXY/NO_PROXY/ALL_PROXY
-// in any case) stripped, then appends the managed HTTP_PROXY/HTTPS_PROXY/NO_PROXY
-// entries pointing at proxyURL. Returning a new slice (rather than mutating in
+// in any case) stripped, then appends the managed proxy entries pointing at
+// proxyURL in BOTH cases. Returning a new slice (rather than mutating in
 // place) keeps the caller's slice clean for reuse.
 //
 // The case-insensitive strip is deliberate: child processes inherit envs in
 // arbitrary case depending on the parent (Windows cmd.exe uppercases; POSIX
 // shells preserve). Without the strip, a stale HTTPS_PROXY from the parent
 // would shadow the managed URL and the policy would be silently bypassed.
+//
+// Publishing BOTH cases is equally deliberate and is a correctness fix, not
+// belt-and-braces. curl (and therefore libcurl, git-over-HTTP, and everything
+// shelling out to curl) deliberately IGNORES uppercase HTTP_PROXY for plain
+// http:// requests — it honors only lowercase http_proxy there, because a CGI
+// script's inbound "Proxy:" header arrives as HTTP_PROXY and would otherwise
+// redirect the script's own egress (CVE-2016-5385, "httpoxy"). https_proxy is
+// honored in both cases; http_proxy is not. Publishing only the uppercase set
+// therefore left plain-HTTP egress WIDE OPEN for the single most common client
+// in a shell tool:
+//
+//	env HTTP_PROXY=http://127.0.0.1:0 curl http://example.com/  -> 200
+//	env http_proxy=http://127.0.0.1:0 curl http://example.com/  -> connect refused
+//
+// The two cases always carry the SAME value here, so the duplicate keys are
+// inert on Windows (exec dedups env case-insensitively, last wins) and are two
+// distinct, consistent variables on POSIX.
+//
+// This publishes proxy variables; it does not enforce them. See
+// shell.childLaunchPosture.proxy for what that buys and what it does not.
 func PrepareEnv(in []string, proxyURL string) []string {
 	blocked := map[string]bool{
 		"http_proxy": true, "https_proxy": true, "no_proxy": true, "all_proxy": true,
 	}
-	out := make([]string, 0, len(in)+3)
+	out := make([]string, 0, len(in)+len(managedProxyKeys))
 	for _, item := range in {
 		key := item
 		if i := strings.IndexByte(key, '='); i >= 0 {
@@ -194,8 +214,22 @@ func PrepareEnv(in []string, proxyURL string) []string {
 		}
 		out = append(out, item)
 	}
-	out = append(out, "HTTP_PROXY="+proxyURL, "HTTPS_PROXY="+proxyURL, "NO_PROXY=")
+	for _, key := range managedProxyKeys {
+		if key == "NO_PROXY" || key == "no_proxy" {
+			out = append(out, key+"=")
+			continue
+		}
+		out = append(out, key+"="+proxyURL)
+	}
 	return out
+}
+
+// managedProxyKeys is the exact set PrepareEnv publishes. Both cases of each
+// name are present on purpose — see PrepareEnv for why the lowercase spellings
+// are load-bearing rather than redundant.
+var managedProxyKeys = []string{
+	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+	"http_proxy", "https_proxy", "no_proxy",
 }
 
 // ManagedEnv is the convenience wrapper for child-process spawning: it
