@@ -61,6 +61,32 @@ func drain(dst io.Writer, src io.Reader) <-chan error {
 	return done
 }
 
+// exitCodeFromWaitErr translates the error returned by a process reaper into
+// an exit code. A clean exit and a non-zero exit are both NORMAL outcomes the
+// caller must report to the model; only a non-ExitError (pipe failure, context
+// kill, a Factory-level error) is a real failure and comes back as err.
+//
+// Shared by every reaping call site (runSecureCapture, shell_run's factory
+// path and shell_run's legacy pipe path) so "non-zero exit is not an error"
+// is decided in exactly one place.
+func exitCodeFromWaitErr(waitErr error) (int, error) {
+	if waitErr == nil {
+		return 0, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(waitErr, &exitErr) {
+		return exitErr.ExitCode(), nil
+	}
+	return 0, waitErr
+}
+
+// waitExitCode reaps the process through wait and returns its exit code.
+// Callers MUST invoke this (or Wait directly) exactly once per started
+// process: skipping it leaves a zombie behind on every launch.
+func waitExitCode(wait func() error) (int, error) {
+	return exitCodeFromWaitErr(wait())
+}
+
 func runSecureCapture(ctx context.Context, spec secproc.SecureProcessSpec, timeout time.Duration) (commandResult, error) {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -98,13 +124,9 @@ func runSecureCapture(ctx context.Context, spec secproc.SecureProcessSpec, timeo
 	if err := runCtx.Err(); err != nil {
 		return commandResult{}, err
 	}
-	exitCode := 0
-	if waitErr != nil {
-		var exitErr *exec.ExitError
-		if !errors.As(waitErr, &exitErr) {
-			return commandResult{}, waitErr
-		}
-		exitCode = exitErr.ExitCode()
+	exitCode, err := exitCodeFromWaitErr(waitErr)
+	if err != nil {
+		return commandResult{}, err
 	}
 	stdoutText, stdoutBytes, stdoutTruncated := stdout.snapshot()
 	stderrText, stderrBytes, stderrTruncated := stderr.snapshot()

@@ -151,6 +151,7 @@ func (s *ShellTools) stream(ctx context.Context, argsJSON string) <-chan ToolChu
 		// the central launcher seam (e.g. when no manager is configured).
 		if f, ok := SecureProcessFactoryFromContext(ctx); ok {
 			prog, args, _ := shell.ShellArgv(a.Env, a.Command)
+			factoryStart := time.Now()
 			started, err := f.Start(ctx, secproc.SecureProcessSpec{
 				Tool: "shell_run", Shell: a.Command, Program: prog, Args: args, Dir: wd,
 			})
@@ -158,14 +159,37 @@ func (s *ShellTools) stream(ctx context.Context, argsJSON string) <-chan ToolChu
 				pushErrChunk(ch, err)
 				return
 			}
+			// Fail closed on a Factory that forgot the reaper, exactly as
+			// RunSecureCapture does — this inlined path used to skip that check
+			// AND never call Wait at all, leaking one unreaped child per
+			// shell_run.
+			if started.Wait == nil {
+				pushErrChunk(ch, fmt.Errorf("shell: Factory returned a process with no reaper (fail-closed)"))
+				return
+			}
+			// Drain stdout to EOF BEFORE Wait: (*exec.Cmd).Wait closes the
+			// stdout pipe, so reading after it races into "file already closed"
+			// and silently truncates the output.
 			if started.Stdout != nil {
 				if err := streamFromReader(ctx, ch, started.Stdout); err != nil {
 					pushErrChunk(ch, err)
 					return
 				}
 			}
-			// Factory path: no exit code footer in Phase 0; the output reader
-			// stream is the main contract.
+			exitCode, err := waitExitCode(started.Wait)
+			if err != nil {
+				pushErrChunk(ch, fmt.Errorf("shell: %w", err))
+				return
+			}
+			// The footer is not decoration: without it a non-zero exit is
+			// indistinguishable from success for the model, because stderr and
+			// stdout are merged into the same untagged line stream. The legacy
+			// pipe path below always emitted it; this path must match.
+			footer := fmt.Sprintf("── exit %d · %s ──\n", exitCode, formatDur(time.Since(factoryStart)))
+			select {
+			case ch <- ToolChunk{Text: footer, Result: footer}:
+			case <-ctx.Done():
+			}
 			return
 		}
 		cmd := shellCommand(ctx, a.Env, a.Command)
@@ -236,14 +260,10 @@ func (s *ShellTools) stream(ctx context.Context, argsJSON string) <-chan ToolChu
 			pushErrChunk(ch, fmt.Errorf("shell: %w", ctx.Err()))
 			return
 		}
-		exitCode := 0
-		if waitErr != nil {
-			if ee, ok := waitErr.(*exec.ExitError); ok {
-				exitCode = ee.ExitCode()
-			} else {
-				pushErrChunk(ch, fmt.Errorf("shell: %w", waitErr))
-				return
-			}
+		exitCode, waitFail := exitCodeFromWaitErr(waitErr)
+		if waitFail != nil {
+			pushErrChunk(ch, fmt.Errorf("shell: %w", waitFail))
+			return
 		}
 		footer := fmt.Sprintf("── exit %d · %s ──\n", exitCode, formatDur(time.Since(start)))
 		ch <- ToolChunk{Text: footer, Result: footer}
