@@ -17,8 +17,6 @@ import (
 // TestVSCodeExtensionRemoved asserts the VS Code extension and its CI helper
 // are gone.
 //
-// ledger: D2/O12#1 ide/vscode/ 与 scripts/check-d2.sh 不存在
-//
 // Audit item D2/O12 closed by removal (spec §3.2 ④): the extension was never
 // finished (runWithRecovery was never imported by extension.ts, and the
 // README advertised reconnect behaviour that did not exist), and with TUI and
@@ -63,19 +61,42 @@ const d2Tombstone = "D2/O12 已作废"
 // "ide-vscode" as a commit scope in docs/commit-convention.md. Neither is a
 // claim that the extension ships, and a word-level match would redden on both.
 //
-// Known limit: a sentence that describes the deliverable without ever putting
-// the product name next to "extension" ("a third front end for VS Code") slips
-// through. Widening further trades this gate's precision for recall, and a
-// gate that reddens on unrelated editor notes gets deleted; the residual risk
-// is left to review.
+// The Chinese patterns allow the possessive particle between the product name
+// and the noun. CLAUDE.md requires Chinese prose, and in Chinese the possessive
+// form is at least as natural as the bare compound — measured, the two differ
+// by a single character, and the earlier `\s*` matched only the bare one. That
+// is a recall hole in the phrasing this repository is most likely to produce.
+//
+// KNOWN LIMITS, all measured rather than assumed. This gate still misses:
+//
+//	the product's official full name        the abbreviation is hard-coded
+//	the packaged artefact's file extension  never named
+//	the inverted word order, product name   only the "<noun> for <product>"
+//	in trailing parentheses                 inversion is covered
+//
+// Each is a natural way to re-advertise the deliverable, so these are real
+// holes, not theoretical ones. They are NOT closed here because the patterns
+// that close them all match one live document — the clause-level acceptance
+// breakdown under docs/superpowers/, which spells the missed phrasings out
+// verbatim in order to document these very holes. Closing them therefore has
+// to land together with a tombstone in that document and an entry for it in
+// d2HistoricalDocs; doing the regex half alone reddens the build. That work is
+// out of scope for this change set, and D2/O12 is held at a non-terminal
+// verdict in docs/feature-status.yaml until it happens — an unenforced clause
+// does not get to sit behind a terminal one.
+//
+// A further limit, unchanged: a sentence that describes the deliverable without
+// ever putting the product name next to the noun ("a third front end for that
+// editor") slips through. Widening that far trades precision for recall, and a
+// gate that reddens on unrelated editor notes gets deleted.
 var d2Mentions = []*regexp.Regexp{
 	regexp.MustCompile(`ide/vscode`),
 	regexp.MustCompile(`scripts/check-d2`),
-	// "VS Code 扩展", "VSCode 插件"
-	regexp.MustCompile(`(?i)vs[ _-]?code\s*(扩展|插件)`),
-	// "VS Code extension", "vscode extensions", "VS-Code plugin"
+	// Chinese: product name, optional possessive particle, then the noun.
+	regexp.MustCompile(`(?i)vs[ _-]?code\s*(的|之)?\s*(扩展|插件)`),
+	// English: product name then the noun.
 	regexp.MustCompile(`(?i)vs[ _-]?code\s+(extension|plugin)s?\b`),
-	// "extension for VS Code", "plugin for VSCode"
+	// English, inverted: the noun, then "for", then the product name.
 	regexp.MustCompile(`(?i)\b(extension|plugin)s?\s+for\s+vs[ _-]?code\b`),
 }
 
@@ -112,8 +133,6 @@ var d2HistoricalDocs = map[string]string{
 // TestVSCodeExtensionNotAdvertisedInDocs is the second half of D2/O12: the
 // extension is not merely deleted from disk, it is no longer described as
 // something yanshi delivers.
-//
-// ledger: D2/O12#2 文档无对其作为交付物的描述
 //
 // The distinction a grep cannot make — "we will ship this" versus "we cancelled
 // shipping this" — is resolved structurally instead of semantically: live docs

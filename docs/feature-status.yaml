@@ -529,14 +529,33 @@
 # internal/archtest::TestVSCodeExtensionNotAdvertisedInDocs 守住第 2 条。
 # 该测试如何回避「grep 判断不了语义」：活文档一律零提及；必须保留提及的审计/计划/
 # spec 逐个列进 d2HistoricalDocs 并强制带墓碑，豁免只减不增、死条目失败。
+#
+# 2026-08-04 再复核：removed → partial。第 1 句照旧成立（两条路径都不存在，
+# TestVSCodeExtensionRemoved 直接 os.Stat，回归即红）。**第 2 句站不住**：它的全部
+# 证据就是 TestVSCodeExtensionNotAdvertisedInDocs 的那组正则，而正则的召回率被实测
+# 出多个洞 —— 产品官方全称、打包制品的文件扩展名、以及把产品名放进尾部括号的倒装
+# 词序，都是重新宣传这个交付物的自然写法，全部不命中。一条被绕过的门禁不能替一条
+# 「文档无描述」的承诺背书。
+#
+# 本轮补上了其中一个洞（中文所属助词形态：产品名与「扩展/插件」之间夹一个字时旧
+# 正则不认，而 CLAUDE.md 强制中文写作，这恰是最自然的中文表述）。正反探针各 5 条
+# 实测：5 命中 / 5 不误伤（忽略项列表、提交 scope、无关编辑器、非相邻提及、测试
+# 函数名各一）。
+#
+# 其余几个洞本轮**不能**在这里关掉，原因是结构性的而非畏难：能关掉它们的正则会同时
+# 命中 docs/superpowers/ 下那份逐句拆解文档 —— 它为了记录这些洞，把漏掉的写法逐字
+# 抄了进去，而它既不在 d2HistoricalDocs 里也没带墓碑。所以正则加宽必须和「给那份
+# 文档补墓碑 + 把它登记进 d2HistoricalDocs」一起落地，只做正则那一半会当场把构建
+# 打红。那份文档不在本工作包的可改范围内。
+#
+# 结论：第 2 句真正兑现之前，本条不回终态。这与 C1/AU1、E2/PROP1 是同一把尺子 ——
+# 证据挡不住掏空/绕过，就不算证据。
 - id: "D2/O12"
   package: "-"
-  verdict: removed
+  verdict: partial
   title: "IDE 扩展（VS Code）"
   acceptance: "ide/vscode/ 与 scripts/check-d2.sh 不存在；文档无对其作为交付物的描述"
-  evidence:
-    "1": "internal/archtest::TestVSCodeExtensionRemoved"
-    "2": "internal/archtest::TestVSCodeExtensionNotAdvertisedInDocs"
+  evidence: "internal/archtest::TestVSCodeExtensionRemoved"
 
 - id: "D2/V15"
   package: "W9"
