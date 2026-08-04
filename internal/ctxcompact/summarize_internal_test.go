@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/assert"
@@ -258,4 +259,30 @@ func TestTakeChunk_OvershootShapesAreMeasured(t *testing.T) {
 	assert.Len(t, rest, 1)
 	assert.Greater(t, tok, budget,
 		"index 0 is never budget-checked, so this overshoot owes nothing to tool pairing")
+}
+
+// TestSummaryRetryBackoffSequence pins the retry schedule that docs/compaction.md
+// quotes to operators. The old doc line said "重试 3 次指数退避（1s/2s/4s）",
+// which is wrong in both halves: summaryRetryMax counts ATTEMPTS (3), not
+// retries (2), and the 4s step is unreachable because the final attempt is not
+// followed by a sleep. An operator budgeting worst-case latency from that line
+// doubles it (7s instead of 3s).
+//
+// Asserting the derived slice rather than re-deriving the shift keeps this from
+// being an F4 wish: change summaryRetryMax or summaryRetryBaseMs and this test
+// tells you the new sequence to publish.
+func TestSummaryRetryBackoffSequence(t *testing.T) {
+	got := summaryRetryBackoffs()
+	assert.Equal(t, []time.Duration{1 * time.Second, 2 * time.Second}, got)
+
+	// The structural claims behind the numbers, stated separately so a future
+	// constant change fails on the reason, not just on the literal.
+	assert.Len(t, got, summaryRetryMax-1,
+		"one backoff per retry: the last of the %d attempts is not followed by a sleep", summaryRetryMax)
+	var total time.Duration
+	for _, d := range got {
+		total += d
+		assert.NotEqual(t, 4*time.Second, d, "no 4s step is reachable")
+	}
+	assert.Equal(t, 3*time.Second, total, "worst-case time spent sleeping across a full exhaustion")
 }

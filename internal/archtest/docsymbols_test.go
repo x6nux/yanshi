@@ -823,11 +823,22 @@ var goLineCiteFreeDocs = []string{
 // the same guessing game the `::Symbol` shorthand was left out of.
 //
 // DELIBERATELY NOT EXTENDED TO NON-GO LINE CITATIONS, and the reasoning is
-// recorded here so it is not re-litigated every review. The breakdown also
-// cites yaml, yml, toml, sh, md, py, ts and mod files by line, and at least one
-// of those citations HAS already drifted (an observability block reference kept
-// its old numbers after two config sections were inserted above it), so the rot
-// is real, not hypothetical. The extension is still wrong today:
+// recorded here so it is not re-litigated every review. The breakdown cites
+// several non-Go file types by line too. The live list is whatever this prints
+// — do NOT re-inline it here, because the whole job of this paragraph is to
+// draw the boundary of what the gate does not cover, and an enumeration that
+// has rotted sends the next person looking for citations that do not exist
+// (the first version of this sentence named yaml and ts; the same commit had
+// just rewritten the sole yaml citation into a key name, and ts had never
+// appeared in this branch at all):
+//
+//	grep -ohE '[A-Za-z0-9_.-]+\.[a-z]+:[0-9]+' docs/superpowers/acceptance-breakdown.md |
+//	  sed 's/.*\.//; s/:.*//' | sort | uniq -c | sort -rn
+//
+// At least one of those citations HAS already drifted (an observability block
+// reference kept its old numbers after two config sections were inserted above
+// it), so the rot is real, not hypothetical. The extension is still wrong
+// today:
 //
 //   - The Go half works because it has a MACHINE-CHECKED replacement. GOV9
 //     resolves `path.go::Symbol`, so trading a drifting number for a symbol

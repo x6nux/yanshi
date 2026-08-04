@@ -315,6 +315,15 @@ type ServerFrame struct {
 	ID               string   `json:"id,omitempty"`                // permission_request
 	Reason           string   `json:"reason,omitempty"`            // permission_request
 	ApprovalRequired bool     `json:"approval_required,omitempty"` // permission_request: must be explicit one-shot allow/deny
+	// ForcePrompt is the wire half of the server's two force-a-prompt flags:
+	// tools.PermissionRequest.ForcePrompt (the forcePromptTools list, e.g.
+	// task_cancel) and tools.PermissionRequest.Force (RequireApproval, e.g.
+	// revert_turn). Both mean the same thing to a client: this request may NOT
+	// be auto-approved or pre-approved — only an explicit per-call decision
+	// counts. Without it on the wire the server's refusal to auto-resolve is
+	// silently undone client-side (the TUI's autoResolvePendingByMode answered
+	// "allow" on the user's behalf the moment they switched to YOLO).
+	ForcePrompt bool `json:"force_prompt,omitempty"` // permission_request: cannot be auto-approved or pre-approved
 	Servers          []string `json:"servers,omitempty"`           // mcp_list
 	// Compaction fields (Task 35b). Compacted is set on a status frame after a
 	// compaction completed; TokensBefore/After carry the estimated token counts
@@ -555,9 +564,13 @@ func NewStatusWithMode(model, thinking string, in, out, turns, contextWindow int
 // NewPermissionRequest builds a permission_request frame asking the user to
 // approve a tool call (ToolArgs is the raw JSON arguments blob). approvalRequired
 // is true for mandatory-approval tools (e.g. GitHub mutations) that cannot be
-// auto-approved or pre-allowed.
-func NewPermissionRequest(id, tool, args, reason string, approvalRequired bool) ServerFrame {
-	return ServerFrame{Type: "permission_request", ID: id, ToolName: tool, ToolArgs: args, Reason: reason, ApprovalRequired: approvalRequired}
+// auto-approved or pre-allowed. forcePrompt carries the same "explicit decision
+// only" contract for the server's other two flags (force-prompt tools such as
+// task_cancel, and RequireApproval's destructive actions such as revert_turn);
+// both booleans must be forwarded, because a client that never sees them will
+// happily answer on the user's behalf.
+func NewPermissionRequest(id, tool, args, reason string, approvalRequired, forcePrompt bool) ServerFrame {
+	return ServerFrame{Type: "permission_request", ID: id, ToolName: tool, ToolArgs: args, Reason: reason, ApprovalRequired: approvalRequired, ForcePrompt: forcePrompt}
 }
 
 // NewMCPList builds an mcp_list frame listing the configured MCP server names.

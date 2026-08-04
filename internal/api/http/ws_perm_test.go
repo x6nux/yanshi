@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"os"
@@ -254,4 +255,96 @@ func TestChatWS_InteractivePermission_AlwaysAllow_NoReprompt(t *testing.T) {
 		}
 	}
 	assert.False(t, sawPrompt, "always_allow must suppress re-prompting the identical action")
+}
+
+// TestPermissionRequestFrameCarriesForcePrompt pins the wire half of the
+// force-prompt contract. resolvePermissionMode already refuses to auto-resolve
+// req.ForcePrompt / req.Force, but that refusal only survives if the flag is
+// forwarded: the TUI runs its own auto-approve pass on every mode switch and
+// can honour only what it can see. When ServerFrame had no ForcePrompt field
+// the prompt appeared, the user switched to YOLO, and the client answered
+// "allow" for them.
+//
+// task_cancel is on tools.forcePromptTools, so Authorize takes the force-prompt
+// branch before consulting the profile — a wildcard profile still prompts.
+func TestPermissionRequestFrameCarriesForcePrompt(t *testing.T) {
+	step1 := schema.AssistantMessage("", []schema.ToolCall{
+		{ID: "c1", Type: "function", Function: schema.FunctionCall{
+			Name: "task_cancel", Arguments: `{"id":"t1"}`,
+		}},
+	})
+	step2 := schema.AssistantMessage("done", nil)
+	mdl := einollm.NewFakeModelWithMessages([]*schema.Message{step1, step2}, nil)
+
+	cancelTool := tools.NewGuardedTool("task_cancel", "Cancel", "cancel a task", time.Second, nil,
+		tools.SyncStream(func(context.Context, string) (string, error) { return "cancelled", nil }))
+	o, err := orchestrator.New(orchestrator.Config{
+		Model: mdl,
+		Tools: []orchestrator.BaseTool{cancelTool},
+		// Wildcard profile: nothing here can explain the prompt except the
+		// force-prompt list itself.
+		Profile: guard.PermissionProfile{Tools: guard.ToolsPerm{Allow: []string{"*"}}},
+	})
+	require.NoError(t, err)
+
+	s := New(Config{Token: "t"})
+	s.ChatWS(o, nil, nil)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	c := dial(t, "ws"+strings.TrimPrefix(ts.URL, "http")+"/api/v1/chat/ws")
+	defer c.Close()
+
+	// YOLO is the mode that used to swallow this prompt client-side; the
+	// server must still emit it, flagged.
+	require.NoError(t, c.WriteJSON(proto.ClientFrame{Type: "set_mode", Mode: string(guard.ModeYOLO)}))
+	require.NoError(t, c.WriteJSON(proto.NewUserMessage("cancel the task")))
+
+	f := drainUntil(t, c, "permission_request")
+	assert.Equal(t, "task_cancel", f.ToolName)
+	assert.True(t, f.ForcePrompt,
+		"permission_request must carry force_prompt=true, else the client auto-approves it")
+
+	// And it must be on the JSON, not just the Go struct: the TUI decodes the
+	// wire bytes, so an unexported/omitted field would be invisible to it.
+	raw, err := json.Marshal(f)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"force_prompt":true`)
+
+	require.NoError(t, c.WriteJSON(proto.NewPermissionResponse(f.ID, "deny")))
+}
+
+// TestForcePromptFlagCoversBothServerFlags pins the predicate that feeds the
+// wire field. Both server-side flags mean "explicit decision only", and both
+// have a matching refusal to auto-resolve (req.ForcePrompt in
+// resolvePermissionMode, req.Force in resolvePermissionRequest). The wire flag
+// must therefore be true for BOTH — the revert_turn (Force) half has no
+// separate wire field of its own, so dropping it here would silently restore
+// the client-side auto-approve for destructive actions.
+//
+// The second assertion in each row is the anti-drift one: it re-derives the
+// expectation from the refusal path instead of restating the boolean.
+func TestForcePromptFlagCoversBothServerFlags(t *testing.T) {
+	cases := []struct {
+		name string
+		req  tools.PermissionRequest
+		want bool
+	}{
+		{"force_prompt_tool", tools.PermissionRequest{Tool: "task_cancel", ForcePrompt: true}, true},
+		{"require_approval_destructive", tools.PermissionRequest{Tool: "revert_turn", Force: true}, true},
+		{"both", tools.PermissionRequest{Tool: "task_cancel", ForcePrompt: true, Force: true}, true},
+		{"ordinary", tools.PermissionRequest{Tool: "fs_write"}, false},
+		// approval_required rides its own wire field; the client ORs them.
+		{"approval_required_only", tools.PermissionRequest{Tool: "github_comment", ApprovalRequired: true}, false},
+	}
+	cs := &connSession{perm: &permModeState{mode: guard.ModeYOLO}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, forcePromptFlag(tc.req))
+			if tc.want {
+				_, resolved := resolvePermissionRequest(context.Background(), cs, nil, tc.req)
+				assert.False(t, resolved,
+					"flagged on the wire but the server auto-resolved it — the two halves have drifted")
+			}
+		})
+	}
 }

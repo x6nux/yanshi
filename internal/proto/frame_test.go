@@ -130,7 +130,7 @@ func TestServerFrame_ParityRoundTrip(t *testing.T) {
 	})
 
 	t.Run("permission_request", func(t *testing.T) {
-		in := NewPermissionRequest("req-1", "shell", `{"cmd":"rm -rf /"}`, "shell command", false)
+		in := NewPermissionRequest("req-1", "shell", `{"cmd":"rm -rf /"}`, "shell command", false, true)
 		data, err := json.Marshal(in)
 		require.NoError(t, err)
 		var got ServerFrame
@@ -140,6 +140,7 @@ func TestServerFrame_ParityRoundTrip(t *testing.T) {
 		assert.Equal(t, "shell", got.ToolName)
 		assert.Equal(t, `{"cmd":"rm -rf /"}`, got.ToolArgs)
 		assert.Equal(t, "shell command", got.Reason)
+		assert.True(t, got.ForcePrompt, "force_prompt must round-trip on the wire")
 	})
 
 	t.Run("mcp_list", func(t *testing.T) {
@@ -170,7 +171,7 @@ func TestServerFrame_SSEEvent_ParityFrames(t *testing.T) {
 	for _, in := range []ServerFrame{
 		NewModels([]string{"x"}),
 		NewStatus("m", "low", 1, 2, 3, 0),
-		NewPermissionRequest("id", "t", "{}", "r", false),
+		NewPermissionRequest("id", "t", "{}", "r", false, false),
 		NewMCPList([]string{"s"}),
 	} {
 		event, data := in.SSEEvent()
@@ -448,7 +449,7 @@ func goldenFrames() []ServerFrame {
 		NewFeaturesReply(nil),
 		NewPermissionRuleHit("r1", "shell_run", "scope", "hit"),
 		NewPermissions(nil),
-		NewPermissionRequest("id", "t", "{}", "r", false),
+		NewPermissionRequest("id", "t", "{}", "r", false, false),
 	}
 }
 

@@ -1194,6 +1194,11 @@ func formatSessionAck(action, id, title string) string {
 // (permission_request). It is held in the m.pendingPermissions queue (the front
 // is the visible popup) and rendered as a POPUP above the input (see
 // permissionPopup), not as a transcript entry.
+//
+// mandatory means "only an explicit per-call decision counts": it is set from
+// EITHER approval_required (mandatory-approval tools) OR force_prompt
+// (force-prompt tools and RequireApproval's destructive actions). It suppresses
+// both auto-resolution on a mode switch and the sticky-allow popup options.
 type permissionEntry struct {
 	id, tool, args, reason string
 	mandatory              bool

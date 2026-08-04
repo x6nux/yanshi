@@ -37,10 +37,21 @@ type PermissionRequest struct {
 	// ProfileHardDeny is true when the guard returned an OVERRIDABLE HardDeny —
 	// a profile-policy default (empty Tools/FS allowlist, shell policy="deny",
 	// net.allow=false). resolvePermissionMode gates it by interactive mode:
-	// YOLO/Auto override it (the user opted out of the profile), while
+	// YOLO overrides it outright (the user opted out of the profile), while
 	// default/allow-edits/plan deny SILENTLY without prompting (so policy="deny"
-	// still means "block", never "ask"). It is always resolved server-side and
-	// therefore never reaches the TUI as a permission_request.
+	// still means "block", never "ask").
+	//
+	// Auto is the exception, and this comment used to deny that it existed
+	// ("always resolved server-side and therefore never reaches the TUI"). Auto
+	// does NOT short-circuit: it falls through to the risk assessment, which
+	// returns unresolved whenever it scores the call above the ceiling or
+	// cannot score it at all (no model, timeout). Those requests DO reach the
+	// TUI as an ordinary permission_request. That is the intended outcome (auto
+	// means "ask when unsure"), but the flag itself stays server-side, so the
+	// client cannot tell such a prompt apart from a plain one — switching to
+	// allow-edits then auto-approves an edit tool that the server's own
+	// allow-edits gate would have denied. Narrowing that divergence is an
+	// authorization change and belongs in a work package, not here.
 	ProfileHardDeny bool
 	// Shell carries the shell command for shell_run (empty otherwise) so the
 	// interactive mode layer can apply its destructive-deletion gate
@@ -62,8 +73,15 @@ type PermissionRequest struct {
 //     审批"。这是唯一一处 resolvePermissionMode，它住在 WS 服务端，**不在
 //     internal/cli/tui 下**（TUI 侧那半边叫
 //     `internal/cli/tui/permissions.go::modeAutoAllows`，只在用户切换模式时经
-//     `autoResolvePendingByMode` 生效，且它看的是 ApprovalRequired 而不是
-//     ForcePrompt —— 别把这两个半边搞混）。
+//     `autoResolvePendingByMode` 生效）。
+//  3. 确认这个字段**真的上了 wire**。TUI 那半边读的不是这里的 Go 结构体，而是
+//     `internal/proto/frame.go` 的 `ServerFrame.ForcePrompt`，由
+//     `internal/api/http/ws.go` 从 `req.ForcePrompt || req.Force` 填充。这两半
+//     曾经看的是不同字段 —— ServerFrame 当时根本没有 ForcePrompt，于是服务端
+//     拒绝 auto-resolve、弹窗照常出现，可用户一切到 YOLO，TUI 就替他答了
+//     allow，**用户从未做出授权表示**。钉住它的是
+//     `internal/cli/tui/perm_mode_test.go::TestForcePromptPermissionSurvivesYOLOAndAuto`
+//     与 `internal/api/http/ws_perm_test.go::TestPermissionRequestFrameCarriesForcePrompt`。
 var forcePromptTools = map[string]struct{}{
 	"task_cancel": {},
 }

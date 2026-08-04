@@ -269,3 +269,67 @@ func TestMandatoryPermissionSurvivesYOLOAndAuto(t *testing.T) {
 		}
 	}
 }
+
+// TestForcePromptPermissionSurvivesYOLOAndAuto is the ForcePrompt twin of
+// TestMandatoryPermissionSurvivesYOLOAndAuto. The server refuses to
+// auto-resolve force-prompt requests (forcePromptTools -> task_cancel) and
+// RequireApproval's destructive actions (revert_turn), but that refusal is
+// undone client-side unless the flag reaches the TUI: autoResolvePendingByMode
+// runs on every mode switch and answers "allow" for anything it does not
+// consider mandatory. Before force_prompt went on the wire this test failed
+// with `pendingPermissions` empty and one permission_response{allow} frame
+// sent — an authorization the user never gave.
+//
+// It drives the real frame -> StreamEvent -> applyEvent path on purpose:
+// constructing the permissionEntry directly would set `mandatory` by hand and
+// pass even with the wire field missing.
+func TestForcePromptPermissionSurvivesYOLOAndAuto(t *testing.T) {
+	for _, tool := range []string{"task_cancel", "revert_turn"} {
+		for _, mode := range []guard.PermissionMode{guard.ModeYOLO, guard.ModeAuto} {
+			rec := &recordingSession{}
+			m := newModel(rec, "/proj")
+			m = m.applyEvent(cli.StreamEvent{
+				Kind: "permission_request", ID: "p1", ToolName: tool,
+				ToolArgs: "{}", Reason: "tool requires explicit approval",
+				ForcePrompt: true,
+			})
+			require.NotNil(t, m.pendingPermission(), "tool=%s: prompt did not open", tool)
+			require.True(t, m.pendingPermission().mandatory,
+				"tool=%s: force_prompt must mark the entry mandatory", tool)
+
+			m.permMode = mode
+			m.autoResolvePendingByMode()
+			assert.Len(t, m.pendingPermissions, 1,
+				"tool=%s mode=%s: force-prompt permission disappeared", tool, mode)
+			assert.Empty(t, rec.frames,
+				"tool=%s mode=%s: TUI answered a force-prompt permission on the user's behalf", tool, mode)
+
+			// Sticky-allow must not be offered either: the server discards a
+			// sticky answer for these tools, so showing the option would
+			// promise a durability that does not exist.
+			opts := permissionOptions(m.pendingPermission())
+			if assert.Len(t, opts, 2, "tool=%s: force-prompt options should be Allow/Deny only", tool) {
+				assert.Equal(t, "allow", opts[0].decision)
+				assert.Equal(t, "deny", opts[1].decision)
+			}
+		}
+	}
+}
+
+// TestOrdinaryPermissionStillAutoResolvesInYOLO is the reverse probe for the
+// test above: without force_prompt / approval_required, YOLO must still
+// auto-allow. A fix that simply made every pending permission survive would
+// pass the forward test and silently disable YOLO.
+func TestOrdinaryPermissionStillAutoResolvesInYOLO(t *testing.T) {
+	rec := &recordingSession{}
+	m := newModel(rec, "/proj")
+	m = m.applyEvent(cli.StreamEvent{
+		Kind: "permission_request", ID: "p1", ToolName: "fs_write", ToolArgs: "{}",
+	})
+	require.NotNil(t, m.pendingPermission())
+	m.permMode = guard.ModeYOLO
+	m.autoResolvePendingByMode()
+	assert.Empty(t, m.pendingPermissions, "YOLO must still auto-allow ordinary permissions")
+	require.Len(t, rec.frames, 1)
+	assert.Equal(t, "allow", rec.frames[0].Decision)
+}

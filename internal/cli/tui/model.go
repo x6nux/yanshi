@@ -1038,7 +1038,12 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 		// input (Allow / Always allow / Deny, navigable with Up/Down + Enter or
 		// the y/a/n shortcuts) rather than a transcript entry.
 		m.flushAssistant()
-		m.pendingPermissions = append(m.pendingPermissions, &permissionEntry{id: ev.ID, tool: ev.ToolName, args: ev.ToolArgs, reason: ev.Reason, mandatory: ev.ApprovalRequired})
+		// mandatory ORs the two server-side "explicit decision only" flags:
+		// ApprovalRequired (github mutations) and ForcePrompt (task_cancel via
+		// forcePromptTools, revert_turn via RequireApproval). Both must keep the
+		// popup alive across a mode switch and both must hide the sticky-allow
+		// options — the server discards a sticky answer for them anyway.
+		m.pendingPermissions = append(m.pendingPermissions, &permissionEntry{id: ev.ID, tool: ev.ToolName, args: ev.ToolArgs, reason: ev.Reason, mandatory: ev.ApprovalRequired || ev.ForcePrompt})
 		m.permSel = 0
 	case "done":
 		m.flushAssistant()

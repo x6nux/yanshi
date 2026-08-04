@@ -107,18 +107,32 @@ jobs:
 
   # --- hard gates: archtest governance and fuzz/property ---------------------
   # Both were soft ("continue-on-error") while the E3 and E2 assets were being
-  # built. Those assets landed, and governance now also carries GOV4/GOV6/GOV8
-  # plus the feature-status ledger assertions — a regression there is exactly
-  # the failure mode W0 exists to prevent, so it must fail the build.
+  # built. Those assets landed, and governance grew to carry the assembly,
+  # context-injection and ledger gates on top of the original layering ones —
+  # a regression there is exactly the failure mode W0 exists to prevent, so it
+  # must fail the build. (Deliberately not a gate list; see the scope note
+  # below for why this comment states coverage by exclusion.)
   #
-  # This job runs ./internal/archtest ONLY, so it covers GOV1-GOV4, GOV6, GOV8
-  # and the D2/O12 removal assertions. GOV5 and GOV7 live in
-  # internal/bootstrap/wiring_test.go (they need a really-assembled App) and are
-  # carried by the main `go test ./...` job — naming them here would claim
-  # coverage this job does not have.
+  # This job runs ./internal/archtest ONLY. Scope is stated as an EXCLUSION,
+  # not as a list of the gates included: the included set grows (a closed
+  # enumeration here already went stale once by omitting GOV9, whose eight
+  # tests this job has been running all along — an enumeration whose stated
+  # purpose is precision, wrong in the direction of under-claiming), while the
+  # excluded set is fixed by where the gates have to live.
+  #
+  # Excluded: GOV5 and GOV7 only. They live in internal/bootstrap/wiring_test.go
+  # because they reconcile a really-assembled App.ToolNames against the profile,
+  # which is reachable only inside the composition root; the main
+  # `go test ./...` job carries them. Naming them here would claim coverage this
+  # job does not have.
+  #
+  # Everything else under internal/archtest is covered by definition — the GOV
+  # gates that live there, the feature-status ledger assertions, and the
+  # unnumbered gates (D2/O12 removal, phantom slash commands). For the current
+  # roster: grep -rn '^func Test' internal/archtest/
 
   governance:
-    name: governance (archtest GOV1-GOV4/GOV6/GOV8 + ledger)
+    name: governance (all archtest gates except GOV5/GOV7 + ledger)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

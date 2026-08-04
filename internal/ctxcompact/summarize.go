@@ -225,15 +225,35 @@ func splitIsSafe(msgs []*schema.Message, i int) bool {
 	return true
 }
 
+// summaryRetryBackoffs returns the exact sleep sequence callWithRetry walks:
+// one entry per RETRY, so summaryRetryMax-1 entries, doubling from
+// summaryRetryBaseMs.
+//
+// It exists so the sequence is a value that can be asserted instead of a
+// formula that has to be re-derived by hand. summaryRetryMax=3 means 3
+// ATTEMPTS and 2 retries — waiting 1s then 2s, a 3s worst case. It does NOT
+// mean three backoffs: the loop's last attempt is not followed by a sleep, so
+// the doubling stops at 2s and a third step is unreachable on every path.
+// docs/compaction.md advertised "1s/2s/4s" for months, which doubles the
+// worst-case wait an operator would budget for.
+func summaryRetryBackoffs() []time.Duration {
+	d := make([]time.Duration, 0, summaryRetryMax-1)
+	for i := 0; i < summaryRetryMax-1; i++ {
+		d = append(d, summaryRetryBaseMs*(1<<i)*time.Millisecond)
+	}
+	return d
+}
+
 // callWithRetry invokes m.Stream (preferring streaming so onChunk gets deltas)
 // and falls back to Generate. Retries only transient errors up to summaryRetryMax
 // with exponential backoff. Permanent errors surface immediately.
 func callWithRetry(ctx context.Context, m ModelSummarizer, msgs []*schema.Message, onChunk func(string)) (string, error) {
 	var lastErr error
+	backoffs := summaryRetryBackoffs()
 	for attempt := 0; attempt < summaryRetryMax; attempt++ {
 		if attempt > 0 {
 			select {
-			case <-time.After(summaryRetryBaseMs * (1 << (attempt - 1)) * time.Millisecond):
+			case <-time.After(backoffs[attempt-1]):
 			case <-ctx.Done():
 				return "", ctx.Err()
 			}

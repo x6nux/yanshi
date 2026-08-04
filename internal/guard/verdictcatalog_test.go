@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/x6nux/yanshi/internal/execpolicy"
@@ -186,11 +187,18 @@ func TestExecPolicyVerdictsAreHandledByCheckShell(t *testing.T) {
 	}
 	for verdict := range declared {
 		require.True(t, handledSet[verdict],
-			"execpolicy.Evaluate can return %q but checkShell has no case for it, so it "+
-				"lands in the default branch: a STRUCTURAL HardDeny that yolo and auto "+
-				"cannot override. Add `case %q` with the tier it belongs to, and update "+
-				"the structural-HardDeny enumerations in CLAUDE.md and "+
-				"docs/user-guide/guard.md.", verdict, verdict)
+			"internal/execpolicy writes %q to a .Verdict field somewhere, but checkShell "+
+				"has no case for it, so it would land in the default branch: a STRUCTURAL "+
+				"HardDeny that yolo and auto cannot override. Add `case %q` with the tier "+
+				"it belongs to, and update the structural-HardDeny enumerations in "+
+				"CLAUDE.md and docs/user-guide/guard.md.\n\n"+
+				"If %q looks like it could never come out of Evaluate, check that first: "+
+				"the assignment half of this derivation over-approximates on purpose "+
+				"(a file-local AST has no type info, so it matches ANY selector named "+
+				"Verdict, not just execpolicy.Result's). This message therefore claims "+
+				"only what was actually observed — a write to a .Verdict field — and "+
+				"NOT that Evaluate can return it, which is what it used to claim and "+
+				"could not support.", verdict, verdict, verdict)
 	}
 }
 
@@ -233,26 +241,57 @@ func isResultType(expr ast.Expr) bool {
 // followed as well as `[]Result{Result{Verdict: "x"}}`. Without this the inner
 // literal has a nil Type and looks like a literal of some unrelated type.
 func registerElidedResultLits(lit *ast.CompositeLit, elided map[*ast.CompositeLit]bool) {
-	var elem ast.Expr
-	switch t := lit.Type.(type) {
-	case *ast.ArrayType:
-		elem = t.Elt
-	case *ast.MapType:
-		elem = t.Value
-	default:
-		return
-	}
-	if !isResultType(elem) {
+	registerElidedResultLitsAs(lit, lit.Type, elided)
+}
+
+// registerElidedResultLitsAs is the recursive worker. typ is the KNOWN type of
+// lit, which is lit.Type at the top level and the resolved element type when
+// recursing into a literal whose own type was elided.
+//
+// Recursion is the fix for a silent miss that survived the single-level
+// version: Go elides the element type at EVERY level, so
+// `map[string][]Result{"x": {{Verdict: "…"}}}` writes the field through TWO
+// elided literals. The outer walk resolved `[]Result`, found it was not Result
+// itself, and gave up — the verdict never entered the derived set, and the
+// reconciliation against checkShell silently stopped covering it. One level
+// (`[]Result{{Verdict: "…"}}`) was caught the whole time, which is exactly why
+// the gap read as covered.
+func registerElidedResultLitsAs(lit *ast.CompositeLit, typ ast.Expr, elided map[*ast.CompositeLit]bool) {
+	elem := compositeElemType(typ)
+	if elem == nil {
 		return
 	}
 	for _, e := range lit.Elts {
 		if kv, ok := e.(*ast.KeyValueExpr); ok {
 			e = kv.Value
 		}
-		if inner, ok := e.(*ast.CompositeLit); ok && inner.Type == nil {
-			elided[inner] = true
+		inner, ok := e.(*ast.CompositeLit)
+		if !ok || inner.Type != nil {
+			continue
 		}
+		if isResultType(elem) {
+			elided[inner] = true
+			continue
+		}
+		// elem is itself a container (the []Result inside a
+		// map[string][]Result): inner is that container with its type elided,
+		// so its OWN elements are the elided Result literals.
+		registerElidedResultLitsAs(inner, elem, elided)
 	}
+}
+
+// compositeElemType returns the element type a composite literal of type typ
+// elides in its elements, or nil when typ is not an array/slice/map. Struct
+// types are deliberately absent: Go does not permit type elision for a struct
+// field's value, so there is no third nesting shape to model here.
+func compositeElemType(typ ast.Expr) ast.Expr {
+	switch t := typ.(type) {
+	case *ast.ArrayType:
+		return t.Elt
+	case *ast.MapType:
+		return t.Value
+	}
+	return nil
 }
 
 // resultVerdictFieldIndex returns the position of Verdict in the declared field
@@ -353,12 +392,20 @@ func recordResultVerdict(t *testing.T, file string, lit *ast.CompositeLit, verdi
 // skipped. Silently skipping an unrecognised initialiser is how a derivation
 // like this rots into a permanently empty set that agrees with everything.
 //
+// Type elision is followed to ANY depth, not just one level: see
+// registerElidedResultLitsAs, which recurses through nested array/slice/map
+// element types. The single-level version missed
+// `map[string][]Result{"k": {{Verdict: "…"}}}` silently while catching
+// `[]Result{{Verdict: "…"}}`, so the gap read as covered.
+//
 // What is NOT covered, said plainly: a verdict that reaches Result.Verdict
 // through a value flowing out of this package's own helpers by some fourth
-// route (reflection, unsafe, a generic container the walk does not model) would
-// still be missed. The three shapes above are the ones Go offers for writing a
-// struct field directly, which is why they are enumerated rather than
-// approximated.
+// route (reflection, unsafe) would still be missed. The three shapes above are
+// the ones Go offers for writing a struct field directly, which is why they
+// are enumerated rather than approximated.
+//
+// TestRegisterElidedResultLitsHandlesNesting pins the elision depths so this
+// paragraph cannot drift away from the walk again.
 func execPolicyVerdictSet(t *testing.T) map[string]bool {
 	t.Helper()
 	const dir = "../execpolicy"
@@ -446,4 +493,49 @@ func execPolicyVerdictSet(t *testing.T) map[string]bool {
 		}
 	}
 	return verdicts
+}
+
+// TestRegisterElidedResultLitsHandlesNesting pins the type-elision depths the
+// verdict derivation follows. It parses synthetic sources rather than the real
+// package so the depths are exercised whether or not internal/execpolicy
+// happens to contain them today — the shape that regressed was one nobody had
+// written yet, which is precisely why nobody noticed it was uncovered.
+func TestRegisterElidedResultLitsHandlesNesting(t *testing.T) {
+	cases := []struct {
+		name string
+		decl string
+		want int // elided Result literals the walk must mark
+	}{
+		{"slice_one_level", `var x = []Result{{Verdict: "a"}, {Verdict: "b"}}`, 2},
+		{"map_one_level", `var x = map[string]Result{"k": {Verdict: "a"}}`, 1},
+		{"array_one_level", `var x = [1]Result{{Verdict: "a"}}`, 1},
+		{"map_of_slice_two_levels", `var x = map[string][]Result{"k": {{Verdict: "a"}}}`, 1},
+		{"slice_of_slice_two_levels", `var x = [][]Result{{{Verdict: "a"}}}`, 1},
+		{"slice_of_map_two_levels", `var x = []map[string]Result{{"k": {Verdict: "a"}}}`, 1},
+		// Reverse probes: containers of an unrelated type must stay unmarked,
+		// or the derivation would harvest verdicts that are not Result's.
+		{"unrelated_elem_type", `var x = []Other{{Verdict: "a"}}`, 0},
+		{"unrelated_nested", `var x = map[string][]Other{"k": {{Verdict: "a"}}}`, 0},
+		// An explicit inner type is not elided, so the walk reaches it through
+		// isResultType instead and must not double-register it here.
+		{"explicit_inner_type", `var x = []Result{Result{Verdict: "a"}}`, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "package p\n\ntype Result struct{ Verdict string }\n" +
+				"type Other struct{ Verdict string }\n" + tc.decl + "\n"
+			fset := token.NewFileSet()
+			parsed, err := parser.ParseFile(fset, "synthetic.go", src, 0)
+			require.NoError(t, err)
+
+			elided := map[*ast.CompositeLit]bool{}
+			ast.Inspect(parsed, func(n ast.Node) bool {
+				if lit, ok := n.(*ast.CompositeLit); ok {
+					registerElidedResultLits(lit, elided)
+				}
+				return true
+			})
+			assert.Equal(t, tc.want, len(elided))
+		})
+	}
 }

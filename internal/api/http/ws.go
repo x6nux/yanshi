@@ -556,7 +556,14 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 				ch := make(chan tools.PermissionDecision, 1)
 				pt.register(id, ch)
 				defer pt.take(id) // remove the entry on every return path
-				conn.write(proto.NewPermissionRequest(id, req.Tool, req.Args, req.Reason, req.ApprovalRequired))
+				// req.ForcePrompt (forcePromptTools) and req.Force
+				// (RequireApproval) both mean "no auto-approval, ever".
+				// They MUST go on the wire: resolvePermissionMode already
+				// refuses to auto-resolve them here, but the TUI runs its
+				// own auto-approve pass when the user switches to YOLO, and
+				// that pass can only honour flags it can see.
+				conn.write(proto.NewPermissionRequest(id, req.Tool, req.Args, req.Reason,
+					req.ApprovalRequired, forcePromptFlag(req)))
 				select {
 				case d := <-ch:
 					return d

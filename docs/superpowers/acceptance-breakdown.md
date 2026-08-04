@@ -1434,7 +1434,7 @@ PY
 - 证据形状：见文末 N 类汇总。两条出路：(a) 子进程跑 `go test -cover` 并断言下限的门禁测试；(b) 改写 acceptance（须同步改 `acceptancePins`）。
 
 **2. 全帧往返** — 部分（**「全」没有分母**）
-- 依据：`TestServerFrame_ParityRoundTrip`（5 个子帧）、`TestClientFrame_ParityRoundTrip`（8 个）、两条 `*_UntestedConstructorsRoundTrip` —— 单条断言质量好（逐字段比对 + omitempty 反向断言）。**但** `frame.go` 有 **35 个 ServerFrame + 41 个 ClientFrame 构造器**，`goldenFrames()`（`frame_test.go`）只列 **35 条**；`grep reflect|ast|parser internal/proto/*_test.go` 为空 —— **没有任何东西保证「全」**。新增一个帧类型而不加进 `goldenFrames`，所有测试照绿。
+- 依据：`TestServerFrame_ParityRoundTrip`（5 个子帧）、`TestClientFrame_ParityRoundTrip`（8 个）、两条 `*_UntestedConstructorsRoundTrip` —— 单条断言质量好（逐字段比对 + omitempty 反向断言）。**但** `frame.go` 有 **35 个 ServerFrame + 41 个 ClientFrame 构造器**，`goldenFrames()`（`frame_test.go`）只列 **35 条**；`grep -nEw "reflect|ast|parser" internal/proto/*_test.go` 零输出 —— **没有任何东西保证「全」**。（必须带 `-w`：不带词界的 `grep -nE` 会得两行，`"paste"` 里的 `ast` 与 `older parsers` 里的 `parser`，都不是枚举工具。本文第 19 行的规矩是否定式断言要附上产生空输出的那条命令，原先这里写的正是那条**有**输出的。）新增一个帧类型而不加进 `goldenFrames`，所有测试照绿。
 - 证据形状：用 `go/ast` 或 `reflect` 枚举 `frame.go` 里全部 `func New*(...) ServerFrame`，断言每一个都在 `goldenFrames()` 的 Type 集合里（并做**死条目检测**）。**骗过去**：手写枚举列表 —— 那只是把遗漏从一处搬到另一处。
 
 **3. SSE golden 稳定** — 已兑现（在 `goldenFrames` 覆盖范围内）

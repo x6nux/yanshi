@@ -277,6 +277,27 @@ func resolvePermissionRequest(ctx context.Context, cs *connSession,
 	return resolvePermissionMode(ctx, cs, models, req)
 }
 
+// forcePromptFlag reports whether a request may NOT be auto-approved or
+// pre-approved — only an explicit per-call decision counts. It is the single
+// source for two things that must never drift apart:
+//
+//   - the server's own refusal to auto-resolve (req.Force here in
+//     resolvePermissionRequest, req.ForcePrompt at the top of
+//     resolvePermissionMode);
+//   - the force_prompt flag put on the permission_request frame, which is what
+//     the client's own auto-approve pass (the TUI's autoResolvePendingByMode,
+//     which fires on every permission-mode switch) reads.
+//
+// Deriving both from one predicate is the fix for the shape where only the
+// server half existed: the prompt was emitted correctly, and then the TUI
+// answered "allow" for a user who had merely switched to YOLO.
+//
+// req.ApprovalRequired is deliberately NOT folded in — it travels on its own
+// wire field (approval_required) and the client ORs the two.
+func forcePromptFlag(req tools.PermissionRequest) bool {
+	return req.ForcePrompt || req.Force
+}
+
 // assessRisk asks the model to rate a tool call's risk 1-10 for ModeAuto. It
 // uses the session's selected model when set, else the first registered model.
 // A 15s timeout guards a hung/slow model; on timeout or any error it returns

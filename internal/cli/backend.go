@@ -31,6 +31,7 @@ type StreamEvent struct {
 	ID               string                  // permission_request: id to echo back in the response
 	Reason           string                  // permission_request: why the static profile would deny
 	ApprovalRequired bool                    // permission_request: must be explicit one-shot allow/deny (no always_allow)
+	ForcePrompt      bool                    // permission_request: force-prompt / destructive — cannot be auto-approved or pre-approved
 	Model            string                  // status / session_restored: active model name
 	Thinking         string                  // status / session_restored: active reasoning effort
 	PermMode         string                  // status: permission mode (default|allow-edits|yolo|auto)

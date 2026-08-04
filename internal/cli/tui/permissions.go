@@ -96,8 +96,12 @@ func (m *model) autoResolvePendingByMode() {
 	}
 	kept := make([]*permissionEntry, 0, len(m.pendingPermissions))
 	for _, pe := range m.pendingPermissions {
-		// Mandatory-approval tools (e.g. GitHub mutations) survive YOLO/Auto
-		// — the user MUST click Allow explicitly each time.
+		// pe.mandatory covers BOTH server flags (approval_required and
+		// force_prompt): mandatory-approval tools (e.g. GitHub mutations),
+		// force-prompt tools (task_cancel) and RequireApproval's destructive
+		// actions (revert_turn) all survive YOLO/Auto — the user MUST click
+		// Allow explicitly each time. Answering "allow" here on their behalf
+		// would fabricate an authorization gesture that never happened.
 		if !pe.mandatory && modeAutoAllows(m.permMode, pe.tool) {
 			_ = m.sess.SendFrame(proto.NewPermissionResponse(pe.id, "allow"))
 		} else {

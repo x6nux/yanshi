@@ -325,6 +325,7 @@ func toStreamEvent(f proto.ServerFrame) StreamEvent {
 		ID:               f.ID,
 		Reason:           f.Reason,
 		ApprovalRequired: f.ApprovalRequired,
+		ForcePrompt:      f.ForcePrompt,
 		Model:            f.Model,
 		Thinking:         f.Thinking,
 		PermMode:         f.PermMode,
