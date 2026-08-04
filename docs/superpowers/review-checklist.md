@@ -150,7 +150,9 @@ grep -rn '^func Test' internal/<pkg>/ | grep <关键字>
 第三行是实测出来的，第一版清单只写了前两行并断言「`grep '[no tests to run]'` 两种形态一网打尽」—— 那句话对第三行**失效**。复现：
 
 ```sh
-grep -n 't.Run' internal/proto/frame_test.go   # TestSSEEvent_Golden 没有子测试
+# 命令必须收窄到那个函数体：整文件 grep 会数到别的测试的 t.Run，
+# 照着读会得出「它有子测试」这个相反结论。
+awk '/^func TestSSEEvent_Golden/,/^}/' internal/proto/frame_test.go | grep -c 't.Run'   # 0
 go test -count=1 ./internal/proto -run 'TestSSEEvent_Golden/nosuchsub' -v
 ```
 
@@ -316,12 +318,14 @@ for f in $(find docs -name '*.md' -not -path 'docs/superpowers/plans/*' \
 done | sort -u | wc -l
 ```
 
-解析不出的有 5 处，而这 5 处**全部是正当写法，零真阳性**：
+解析不出的那几个**同样要现算，分子和分母一起**（把上面那条命令的输出跟 `grep -rhoE '^func Test[A-Za-z0-9_]*' --include='*_test.go' .` 做差集）。**分子写死是本清单自己栽过的跟头**：分母已经按 F1 改成现算了，分子却还留着一个硬编码的「5 处」，而实测是 6。
 
-- `TestManagerRunNowIdempotentPerKey` —— 改名记录里**故意写的旧名**
-- `TestProperty_RunReturnsErrorForEmptySummary` —— 计划里要求过、实现时改成别的名字，作为偏差记录被引用
-- `TestX` / `TestXxxRejectsConcurrentTurn` —— 清单与 playbook 的示意占位
-- `TestEvaluator` —— 其实是个真实的 Go 类型名，只是不是测试函数
+现算出来的每一个都要人工判一次「活指针还是记录」。上一次实测的 6 个全部是正当写法、零真阳性，形态有四类：
+
+- **故意写的旧名**（改名记录里引用改名前的名字）
+- **计划与实现的偏差记录**（计划要求过某个名字，实现时改成了别的）
+- **示意占位**（清单与 playbook 里的 `TestX` 之类）
+- **不是测试函数的真实 Go 符号**（比如一个以 Test 开头的类型名），以及**裸 `Test` 本身** —— `CLAUDE.md` 里 goalloop 的三个评估器叫 `Test`/`Intent`/`Quality`，那是正当写法。最后这一类是硬编码「5」漏掉的那个。
 
 结论：在本仓，一个**裸的、解析不出的符号名**最常见的用途本来就是「故意说一个不存在的名字」。带路径前缀时，写不写前缀就是那个「我确实指着它、它应该存在」的结构性信号；去掉前缀，这个信号也一起没了，机器无从区分死指针与诚实的历史记录。所以这一半**只能靠人工**：本条扫到裸符号名时，判断它是「活指针」还是「记录」，是活指针就补成 `路径::符号`。
 

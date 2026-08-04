@@ -1,7 +1,15 @@
 # deps_raw.txt — Complete Dependency & Structural Analysis
 
+> ⚠️ **快照，非活文档（2026-07-20）。** 下文的包数、扇入扇出、LOC 与工具名清单都是那一天的状态，之后没有再生成过，也没有任何门禁守着它。**要看当前依赖图请跑 `go run ./cmd/depsanalyze`**，不要引用本文的数字。
+>
+> 归档去向由 H2/CONTRIB1 处理（计划里已写明 `git mv` 入 `docs/archive/`）；在那之前本文留在仓库根，靠这段墓碑说明性质。
+>
+> **本文写下时就已经错的两处，就地更正而不是照抄：**
+> - 工具名是 `cmd/depsanalyze`，**从来不存在** `cmd/pkganalyze`（全历史零提交）。下文两处已改。
+> - 文件工具的真实注册名是 `fs_read` / `fs_write` / `fs_edit` / `apply_patch`；`fs_patch` 是笔误，`fs_diff` **不对应任何已注册工具**。下文一处已改。
+
 Generated: 2026-07-20
-Tool:      cmd/pkganalyze (go list -json ./internal/...)
+Tool:      cmd/depsanalyze (go list -json ./internal/...)
 Total:     25 internal packages (including sub-packages), ~28K production LOC, ~23K test LOC.
 
 ---
@@ -264,7 +272,7 @@ This is a significant architectural achievement — no import cycles despite 25 
 **Recommendation**: Organize by tool category:
 ```
 tools/               — common types, GuardedTool wrapper, registration
-tools/fs/            — fs_read, fs_write, fs_edit, fs_patch, fs_diff
+tools/fs/            — fs_read, fs_write, fs_edit, apply_patch
 tools/shell/         — shell_run
 tools/vcs/           — vcs_commit, vcs_log, vcs_diff, vcs_restore, vcs_merge
 tools/web/           — web_fetch
@@ -407,4 +415,4 @@ Eino (cloudwego) is the most critical external dependency. The `go.mod` shows it
 
 ---
 
-*End of analysis. Generated from `deps_raw.txt` (cmd/pkganalyze output) + supplementary code inspection.*
+*End of analysis. Generated from `deps_raw.txt` (cmd/depsanalyze output) + supplementary code inspection.*

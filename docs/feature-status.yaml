@@ -178,7 +178,7 @@
   evidence: ""
 
 # 2026-08-04 复核：missing → partial。「missing」是台账**低报**：工具存在
-# （internal/tools/testrun.go）、被装配（bootstrap.go:647）、在出厂 profile 里。
+# （internal/tools/testrun.go）、被装配（bootstrap.go::Build 里的 tools.NewTestRunTool()）、在出厂 profile 里。
 # W1 的 1598cc9（run_tests 假绿）修的就是它。
 # 不翻 done 的原因是第 3、4 两条：
 #   3 超时/取消干净 ——【缺】只有下一层的 internal/tools::
@@ -199,7 +199,7 @@
   evidence: "internal/tools::TestRunTestsExecutesGoTestJSONWithWorkspaceWriteTier"
 
 # 2026-08-04 复核：missing → done。「missing」是台账**低报**：diagnostics 工具一直
-# 存在（internal/tools/diagnostics.go）、一直被装配（bootstrap.go:648
+# 存在（internal/tools/diagnostics.go）、一直被装配（bootstrap.go::Build 里的
 # tools.NewDiagnosticsTool(nil)）、也一直在出厂 profile 的 allow 列表里
 # （bootstrap/profile.go::DefaultOrchestratorProfile）。W1 的 10a2762 / 3d7dabc 修的正是这个工具的
 # toolchain 探针 argv —— 修不了一个不存在的工具。
@@ -241,7 +241,7 @@
   evidence: ""
 
 # 2026-08-04 复核：保持 missing，但要点明「不是没有代码」——
-# web_search 已注册（tools/web.go:45）、已装配（bootstrap.go:613）、在出厂 profile 里。
+# web_search 已注册（tools/web.go::NewWebTools）、已装配（bootstrap.go::Build 里的 webTools.Search）、在出厂 profile 里。
 # 判 missing 的依据是**输出契约本身是残桩**，不是文件不存在：
 #   1 返回标题/摘要/URL ——【残桩】runSearch 把原始 HTML 行整行塞进 Title，URL 恒为
 #     ""，Snippet 从不填充。唯一的测试 TestCov_WebRunSearchHTMLParse 断言的是
@@ -274,10 +274,10 @@
   evidence: "internal/tools::TestStreamReviewDedupesAndSortsFindings"
 
 # 2026-08-04 复核：missing → partial。「missing」是台账**低报**：两个工具存在
-# （internal/tools/git.go）、被装配（bootstrap.go:645-646）、在出厂 profile 里。
+# （internal/tools/git.go）、被装配（bootstrap.go::Build 里的 gitTools.Status / gitTools.Diff）、在出厂 profile 里。
 # W1 的 32217b6（git 退出码）修的就是它们。
 # 不翻 done 的原因只有第 3 条：「大 diff 成 artifact」。runGitDiff 里确实有
-# writeArtifactOrSpill（git.go:214），但**没有任何测试让 patch 超过 SpillThreshold**
+# writeArtifactOrSpill（git.go::collectGitDiffFiles），但**没有任何测试让 patch 超过 SpillThreshold**
 # —— internal/tools::TestWriteArtifactOrSpillUsesTaskManager /
 #   ::TestWriteArtifactOrSpillMarksFallbackDegraded / ::TestWriteArtifactOrSpillNoWorkRoot
 #   测的是通用 helper，那里的 "git-diff"
@@ -355,7 +355,8 @@
 # 预算**。实跑探针：cap=1，第 1 个 agent 跑完且 List.Running=0 之后，
 # len(m.runtime)=1、runningLocked()=1，第二次 Spawn 直接返回
 # "subagent concurrency limit reached (cap=1)"。
-# 生产后果：internal/tools/batch.go:112-118 是 CappedRetries:50 / CappedBackoff:100ms，
+# 生产后果：internal/tools/batch.go 里构造 batch.Runner 的那处是 CappedRetries:50 /
+#   CappedBackoff:100ms，
 # 即**行数超过 registry cap（默认 10）的批任务必然每行空转 5s 后失败**。
 # 原 evidence 里的 internal/agent/batch::TestRunnerSpawnCapExhausted 不是「限并发
 # 生效」的证据，而是这个泄漏的**目击者**：cap=1 / 2 行，第 0 行已完成，第 1 行仍被
@@ -429,8 +430,8 @@
 
 # 2026-08-04 复核：partial → done。这是台账**低报**：四条子句各有具名测试，且整条
 # 生产链路完整（不是「层层有测、接缝没接」那种形状）——
-#   anthropic.go 解析 thinking block → orchestrator/classify.go:363
-#   emit(proto.NewThinking) → ws → cli/wsbackend.go:319 Kind: f.Type 透传 →
+#   anthropic.go 解析 thinking block → orchestrator/classify.go::classifyEvents
+#   emit(proto.NewThinking) → ws → cli/wsbackend.go 里 StreamEvent 的 Kind: f.Type 透传 →
 #   tui applyEvent 的 "thinking" 分支。
 # 第 1 条特意同时挂生产端与渲染端：TestClassifyEvents_EmitsThinkingForReasoning
 # 证明「思考模型」这一侧真的发帧（而且发在 agent_chunk 之前），
@@ -490,7 +491,8 @@
 #     （原子性也钉住了）、TestRegistryNonStrictIgnoresUnknown、
 #     TestRegistrySetAlwaysRejectsUnknown，另有 bootstrap 端到端的具名报错
 #   3 新功能可灰度 ——【缺】全仓只有一个真实消费点
-#     （bootstrap.go:344，OTel 门在 cfg 与 "observe.otel_export" 的与上），而**没有
+#     （bootstrap.go::Build 传给 otelobs.Setup 的 otelobs.Config.Enabled，是 cfg 与
+#     "observe.otel_export" 的与），而**没有
 #     任何测试驱动这个门的两个方向**：TestBuildSetsUpOTelAndShutsDown 只跑 flag=true
 #     一侧，且 App.OTel 在关闭时也是非 nil 的 no-op runtime，所以它对 flag 是否真的
 #     生效不敏感。TestListSortsByStageThenKey 只证明按 Stage 排序，不是灰度。

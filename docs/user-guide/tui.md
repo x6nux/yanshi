@@ -16,7 +16,7 @@ yanshi 的默认入口是一个 Bubble Tea 全屏 TUI（alt-screen）。它是�
 - **Enter**：发送一个 turn。
 - **Ctrl+Enter**：在输入框换行。
 
-> 区分 Enter 与 Ctrl+Enter 依赖本地 bubbletea fork（上游在 Windows 上把两者都收敛为 `KeyEnter`）；详见 [../../CONTRIBUTING.md](../../CONTRIBUTING.md)。`/keymap` 可切换键位方案，`tui.keymap` 配置默认方案。
+> 区分 Enter 与 Ctrl+Enter 依赖本地 bubbletea fork（上游在 Windows 上把两者都收敛为 `KeyEnter`）；详见 [../../CONTRIBUTING.md](../../CONTRIBUTING.md)。**键位方案目前不可切换**：TUI 运行时的键位是写死的 default（见 `internal/cli/tui/model.go::newModel`），`config.yaml` 的 `tui.keymap` 目前只被 `yanshi doctor` 读来做校验，不影响运行时。
 
 ## `/` 前缀命令
 
@@ -24,7 +24,9 @@ yanshi 的默认入口是一个 Bubble Tea 全屏 TUI（alt-screen）。它是�
 
 - `/model`：切换当前会话的 provider/model（按 turn 切换，无需重建编排器）。
 - `/skill`：调用一个技能。
-- `/keymap`、`/vim`、`/contrast`：切换键位 / Vim 模式 / 高对比度主题（写入 preferences.json）。
+- `/theme`：列出 / 切换配色主题。高对比度用 `/theme high-contrast`；不带参数会弹出选择器。**只影响当前会话，不落盘。**
+
+> **键位方案与 Vim 模式当前没有运行时开关。** `internal/cli/tui/preferences.go` 里的分层合并（`Preferences` / `EffectivePreferences` / `mergeTUIPrefs`）已经写好但**生产调用点为零** —— `preferences.json` 既不被读也不被写，`config.yaml` 的 `tui.*` 只被 `yanshi doctor` 读来做校验。台账把 `D3/C15` 记为 `partial` 正是这个原因。本行以前宣传过三个不存在的命令（用 `/help` 或输入 `/` 看真实命令表，查不到的名字会得到 `unknown command`）。
 
 ## 交互式权限
 

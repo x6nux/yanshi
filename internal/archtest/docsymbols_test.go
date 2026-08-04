@@ -60,15 +60,20 @@ import (
 // WHAT IS NOT SCANNED, and cannot be: a BARE symbol name in backticks, with no
 // path in front of it. That half of the checklist's F3 rule stays manual, and
 // the reason is measured rather than assumed. A trial gate over backticked
-// `Test*` names in the live docs found exactly 5 unresolvable ones, and all 5
-// were legitimate: two were deliberately-quoted OLD names inside rename
-// records, two were illustrative placeholders (`TestX` and friends), and one
-// was a real Go type that simply is not a test function. Zero true positives,
-// five false ones — and a gate that reddens on honest history is a gate that
-// gets deleted, which is the larger hole (same trade-off `unconditionalSkip`
-// records in ADR-0011). The denominator is deliberately not recorded here: it
-// moves every time anybody cites a test, which is exactly the rot the
-// checklist's F1 rule is about.
+// `Test*` names in the live docs found a handful of unresolvable ones and every
+// single one was legitimate: deliberately-quoted OLD names inside rename
+// records, illustrative placeholders, a real Go type that simply is not a test
+// function, and the bare word Test — which names one of goalloop's three
+// evaluators. Zero true positives — and a gate that reddens on honest history
+// is a gate that gets deleted, which is the larger hole (same trade-off
+// `unconditionalSkip` records in ADR-0011).
+//
+// NEITHER the numerator nor the denominator is recorded here, and the omission
+// of the numerator is a correction rather than a style choice: an earlier
+// version of this note wrote "exactly 5", the checklist copied it, and by the
+// next reading it was 6. Both counts move every time anybody cites a test,
+// which is the rot the checklist's F1 rule is about. Recompute them; the
+// checklist's F3 section carries the two commands.
 //
 // ALSO NOT SCANNED, and easy to miss because it looks protected: the `::Symbol`
 // SHORTHAND, written with no path at all when the previous citation on the same
@@ -113,7 +118,19 @@ import (
 // real prefix citation was retired in the same commit that added the gate), so
 // the cost of dropping it is nil and the cost of keeping it is a bypass. Cite a
 // family by naming one concrete member, or by naming the package.
-var docSymbolRefRe = regexp.MustCompile(`([A-Za-z0-9_./-]+)::([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)`)
+//
+// The path capture must START WITH AN ASCII LETTER, and that restriction is
+// load-bearing rather than cosmetic. Every path this module can name begins
+// with a letter — a top-level directory (internal, cmd, docs, sdk, skills,
+// third_party) or a bare file name — so nothing legitimate is lost. What it
+// buys is that a stray leading character glued to the path by decoration can no
+// longer swallow the citation whole: `_` and `-` and digits are all in the
+// continuation class, and any of them sitting in front of `internal/...` used
+// to produce an unresolvable path, which unresolvedDocSymbols then discarded as
+// "not ours". Starting the match at the first letter re-anchors the citation on
+// the real path, so the verdict is decided by the symbol instead of being
+// skipped. See stripMarkdownEmphasis for the case that made this necessary.
+var docSymbolRefRe = regexp.MustCompile(`([A-Za-z][A-Za-z0-9_./-]*)::([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)`)
 
 // emphasisRunRe matches a run of markdown emphasis delimiters. Markdown has
 // exactly two of them, `*` and `_`, and `_` is also a legal Go identifier and
@@ -147,13 +164,45 @@ var emphasisRunRe = regexp.MustCompile(`[*_]+`)
 // path and the separator and no match was produced at all.
 //
 // The keep rule is "intraword runs stay": a run whose neighbours on BOTH sides
-// are letters or digits is part of an identifier, never emphasis (CommonMark
+// are word characters is part of an identifier, never emphasis (CommonMark
 // forbids intraword `_` emphasis for the same reason). Everything else goes.
 // That preserves plan_property_test.go and TestFamily_A while stripping the
 // leading and trailing runs of every emphasis form. Runs of `*` are covered by
 // the same rule at no extra cost.
 //
-// One shape it does rewrite: a glob such as `tools/*.go::Foo` loses its
+// "Word character" here means ASCII letter or digit, and the ASCII restriction
+// is the second half of this fix rather than an accident of transcription. The
+// first version asked unicode.IsLetter, which answers TRUE for CJK — and this
+// repository's documents are majority Chinese and do not put a space before an
+// opening delimiter. So `见_path::Sym_`, `**注意**_path::Sym_` (the `**_` runs
+// merge into one) and every other citation whose opening `_` follows a Han
+// character were classified as intraword, kept, glued onto the path, and the
+// citation went INVISIBLE — the exact failure mode this function was written to
+// close, surviving in the shape that is most likely to occur here. The
+// identifiers and paths the keep rule protects (plan_property_test.go,
+// TestFamily_A) are ASCII by construction: Go source in this module has no
+// non-ASCII identifiers and no non-ASCII file names. Treating a Han neighbour
+// as a non-word character therefore costs nothing and restores the strip.
+//
+// A leading run whose left neighbour is an ASCII alnum (`1_path::Sym_`) is
+// still kept here — it is genuinely indistinguishable from an identifier at
+// this layer — and is caught one layer down instead, by docSymbolRefRe's
+// letter-start anchor. The two rules are complementary and both are pinned by
+// TestGOV9DetectsRenamedSymbolUnderMarkdownEmphasis.
+//
+// Two shapes on the SYMBOL side are rewritten as a side effect, and both are
+// currently harmless: `path.go::_helper` becomes `::helper` and `path.go::Foo_`
+// becomes `::Foo`, because a delimiter next to `:` or next to end-of-line has a
+// non-word neighbour and is stripped as emphasis. Harmless because this module
+// declares no package-level identifier that begins or ends with an underscore
+// (the only leading-underscore declaration anywhere is the blank `var _`), so
+// no citation can currently be mis-resolved this way. It is written down
+// because the day one appears, this gate would quietly judge a citation of it
+// against a DIFFERENT name — a false negative if `helper` exists, a confusing
+// false positive if it does not. Nothing enforces the precondition; a reviewer
+// adding such an identifier should come back here.
+//
+// One shape on the PATH side is rewritten too: a glob such as `tools/*.go::Foo` loses its
 // asterisk, because the neighbours are `/` and `.` rather than word characters.
 // The VERDICT is unaffected — "tools/.go" resolves to no file, just as the old
 // regexp's ".go" did — so the rewrite is cosmetic in the only place it is
@@ -166,7 +215,10 @@ func stripMarkdownEmphasis(line string) string {
 		return line
 	}
 	wordAt := func(r rune, ok bool) bool {
-		return ok && (unicode.IsLetter(r) || unicode.IsDigit(r))
+		if !ok || r > unicode.MaxASCII {
+			return false // see the ASCII note above: CJK is a letter, but not a word here
+		}
+		return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
 	}
 	var b strings.Builder
 	prev := 0
@@ -397,6 +449,59 @@ func (idx *goSymbolIndex) resolves(files []string, sym string) bool {
 	return false
 }
 
+// deglued re-resolves a path whose first segment carries a decoration-glued
+// prefix, and it is the third and last layer of the emphasis defence.
+//
+// stripMarkdownEmphasis removes a delimiter run only when the run is not
+// intraword, and docSymbolRefRe re-anchors the match on the first ASCII letter.
+// Between them they cover every glue whose left neighbour is non-ASCII, a
+// digit, or a non-letter path character. What neither can cover is an ASCII
+// LETTER on the left — `see_internal/pkg/thing.go::Sym` is, at both of those
+// layers, byte-for-byte a legal path that happens not to exist, and the "path
+// does not resolve, so this is not our citation" skip swallowed it whole.
+//
+// So: when a path fails to resolve, retry once per `_` inside its FIRST
+// `/`-segment. Confining the retry to the first segment is what keeps this from
+// turning into a general suffix search — a deliberately phantom bare filename
+// such as `no_such_file.go` must NOT be re-anchored onto a real `file.go`
+// somewhere in the tree, and a path with no `/` at all is left alone entirely.
+// A citation that only resolves after this trim is judged normally: if its
+// symbol is real, nothing is reported (the decoration was cosmetic); if the
+// symbol is dead, it is reported, which is the whole point.
+//
+// The three layers were swept together against every leading-character shape
+// that could plausibly precede a citation in these documents — full-width
+// underscore, zero-width space, CJK quotation marks, the em dash, the
+// enumeration comma, full-width parentheses, a backslash-escaped underscore,
+// accented Latin, an emoji, and a bare `.`/`-`/`/`/digit abutting the path.
+// All of them redden on a dead symbol and none of them redden on a live one.
+//
+// Exactly ONE residual survives, and it is stated rather than papered over: an
+// ASCII LETTER abutting the path with no delimiter at all in between
+// (`xinternal/pkg/thing.go::Sym`, or a bare filename as `see_thing.go::Sym`).
+// There is nothing left to detect at that point — the text is byte-for-byte a
+// legal path that this module does not contain, indistinguishable from the
+// deliberate phantom the skip exists to permit. It is also not a shape any
+// markup produces: no emphasis, escape, or punctuation convention puts a bare
+// letter against a path, so it can only arise from a typo, which renders
+// visibly wrong. TestGOV9DetectsRenamedSymbolUnderMarkdownEmphasis pins the
+// swept shapes; this paragraph is the honest edge of the sweep.
+func (idx *goSymbolIndex) deglued(path string) []string {
+	slash := strings.IndexByte(path, '/')
+	if slash < 0 {
+		return nil
+	}
+	for i := 0; i < slash; i++ {
+		if path[i] != '_' {
+			continue
+		}
+		if files := idx.candidates(path[i+1:]); len(files) > 0 {
+			return files
+		}
+	}
+	return nil
+}
+
 // unresolvedDocSymbols returns the citations whose path resolves but whose
 // symbol does not. Split out from the test so the self-tests below can drive it
 // against synthetic trees in both directions.
@@ -404,6 +509,9 @@ func unresolvedDocSymbols(idx *goSymbolIndex, refs []docSymbolRef) []docSymbolRe
 	var bad []docSymbolRef
 	for _, r := range refs {
 		files := idx.candidates(r.Path)
+		if len(files) == 0 {
+			files = idx.deglued(r.Path)
+		}
 		if len(files) == 0 {
 			continue // not a citation of this module — see GOV9 comment
 		}
@@ -523,6 +631,39 @@ func TestGOV9DetectsRenamedSymbolUnderMarkdownEmphasis(t *testing.T) {
 		"CJK quotes: 「internal/pkg/thing.go::NewNam」",
 		"CJK full stop: internal/pkg/thing.go::NewNam。",
 		"footnote marker: internal/pkg/thing.go::NewNam[^1]",
+		// A WORD CHARACTER IMMEDIATELY BEFORE THE OPENING DELIMITER. Every row
+		// above this point has whitespace or start-of-line there, and that
+		// uniformity was itself the hole: the intraword keep rule looks at both
+		// neighbours, so it never fired for any of them. In a majority-Chinese
+		// document nothing separates the prose from the delimiter, which makes
+		// these the LIKELIEST spellings in this repository, not the exotic ones.
+		"CJK then underscore: 见_internal/pkg/thing.go::NewNam_",
+		"bold then underscore: **注意**_internal/pkg/thing.go::NewNam_",
+		"CJK then underscore bold: 见__internal/pkg/thing.go::NewNam__",
+		"CJK on both sides: 见_internal/pkg/thing.go::NewNam_了",
+		"digit then underscore: 1_internal/pkg/thing.go::NewNam_",
+		"latin then underscore: see_internal/pkg/thing.go::NewNam_",
+		"CJK then asterisk: 见*internal/pkg/thing.go::NewNam*",
+		"digit then asterisk: 1*internal/pkg/thing.go::NewNam*",
+		// Leading characters that are in the path continuation class but cannot
+		// begin a real path. Before the letter-start anchor these glued
+		// themselves on and made the citation unresolvable, hence invisible.
+		"hyphen glued: ->internal/pkg/thing.go::NewNam",
+		"dot-slash prefix: ./internal/pkg/thing.go::NewNam",
+		// The rest of the leading-character sweep. Nothing here is markdown
+		// emphasis; each is a character that could sit against the opening
+		// delimiter in a Chinese-language document, and each was run end to end
+		// against the live gate before being written down.
+		"full-width underscore: ＿internal/pkg/thing.go::NewNam＿",
+		"zero-width space: ​_internal/pkg/thing.go::NewNam_",
+		"CJK quotes hugging: 「_internal/pkg/thing.go::NewNam_」",
+		"em dash: ——_internal/pkg/thing.go::NewNam_",
+		"enumeration comma: 、_internal/pkg/thing.go::NewNam_",
+		"full-width parens: （_internal/pkg/thing.go::NewNam_）",
+		"escaped underscore: \\_internal/pkg/thing.go::NewNam\\_",
+		"accented latin: é_internal/pkg/thing.go::NewNam_",
+		"emoji: 🔥_internal/pkg/thing.go::NewNam_",
+		"digit abutting: 1internal/pkg/thing.go::NewNam",
 	} {
 		bad := unresolvedDocSymbols(idx, parseDocSymbolRefs("d.md", body))
 		if len(bad) != 1 {
@@ -559,6 +700,24 @@ func TestStripMarkdownEmphasisKeepsIntrawordRuns(t *testing.T) {
 		"_internal/pkg/thing_test.go::TestFamily_A_",
 		"__internal/pkg/thing_test.go::TestFamily_A__",
 		"**internal/pkg/thing_test.go::TestFamily_A**",
+		// The same rows as the forward probe's word-character block, but on a
+		// citation that is alive. Making a decorated dead pointer VISIBLE is
+		// only half the fix; if it cost a false positive on the live spelling
+		// the gate would be deleted rather than obeyed (checklist section B).
+		"见_internal/pkg/thing_test.go::TestFamily_A_",
+		"**注意**_internal/pkg/thing_test.go::TestFamily_A_",
+		"见_internal/pkg/thing_test.go::TestFamily_A_了",
+		"1_internal/pkg/thing_test.go::TestFamily_A_",
+		"see_internal/pkg/thing_test.go::TestFamily_A_",
+		"1*internal/pkg/thing_test.go::TestFamily_A*",
+		"->internal/pkg/thing_test.go::TestFamily_A",
+		"./internal/pkg/thing_test.go::TestFamily_A",
+		"＿internal/pkg/thing_test.go::TestFamily_A＿",
+		"「_internal/pkg/thing_test.go::TestFamily_A_」",
+		"\\_internal/pkg/thing_test.go::TestFamily_A\\_",
+		"é_internal/pkg/thing_test.go::TestFamily_A_",
+		"🔥_internal/pkg/thing_test.go::TestFamily_A_",
+		"1internal/pkg/thing_test.go::TestFamily_A",
 	} {
 		if bad := unresolvedDocSymbols(idx, parseDocSymbolRefs("d.md", ref)); len(bad) != 0 {
 			t.Errorf("false positive on a live citation %q: %+v", ref, bad)
@@ -582,10 +741,16 @@ func TestGOV9AcceptsLegitimateShapes(t *testing.T) {
 			"func (t *T) Method() {}\n\nfunc Plain() {}\n",
 		"internal/pkg/other.go":      "package pkg\n\nfunc Sibling() {}\n",
 		"internal/pkg/thing_test.go": "package pkg\n\nfunc TestFamily_A() {}\n",
+		"internal/pkg/file.go":       "package pkg\n\nfunc Real() {}\n",
 	})
 	idx := buildGoSymbolIndex(t, dir)
 
 	for _, ref := range []string{
+		// deglued() must not turn into a general suffix search: a phantom bare
+		// filename that merely ENDS in a real one stays a phantom. file.go is
+		// in the synthetic tree above precisely so this row can fail.
+		"no_such_file.go::Whatever",
+		"a_b_c.go::Whatever",
 		"internal/pkg/thing.go::Plain",       // exact file path
 		"pkg/thing.go::T.Method",             // abbreviated path + method
 		"thing.go::T.Field",                  // bare file name + struct field
@@ -600,6 +765,62 @@ func TestGOV9AcceptsLegitimateShapes(t *testing.T) {
 	} {
 		if bad := unresolvedDocSymbols(idx, parseDocSymbolRefs("d.md", ref)); len(bad) != 0 {
 			t.Errorf("false positive on %q: %+v", ref, bad)
+		}
+	}
+}
+
+// goLineCiteRe matches a Go source citation carrying a line number, in either
+// the `file.go:88` or the `file.go:645-646` spelling. It is written as a
+// concatenation so that this very file does not contain a literal instance of
+// the pattern it forbids — the scan below reads two data files, not this one,
+// but a reviewer grepping the repository for the shape should not land here.
+var goLineCiteRe = regexp.MustCompile(`\.go` + `:[0-9]+`)
+
+// goLineCiteFreeDocs are the two documents that promise, in their own text, to
+// cite Go code by symbol rather than by line, and are the inputs GOV8 reads
+// before a ledger entry is flipped.
+//
+// Only these two. Elsewhere a line number is legitimate: the audit reports and
+// the dated archives under docs/superpowers/ are snapshots of a moment, and
+// rewriting them to chase a refactor falsifies the record — the same carve-out
+// d2HistoricalDocs and the GOV9 scan itself make.
+var goLineCiteFreeDocs = []string{
+	"docs/superpowers/acceptance-breakdown.md",
+	"docs/feature-status.yaml",
+}
+
+// TestNoGoLineCitationsInLedgerInputs fails when either ledger input cites Go
+// code by line number.
+//
+// This is the companion to GOV9 and it exists because the promise failed on its
+// own author, twice, in the same shape GOV9 was built for. The breakdown states
+// that its Go line citations "have been reduced to zero"; the commit that wrote
+// that sentence also rewrote two property-test files and left three citations
+// pointing at lines that had moved by six to ten — while its own commit message
+// announced that it had just repaired three drifted line numbers in the ledger.
+// A sentence asserting a count is a wish until something computes the count, so
+// this test computes it.
+//
+// The yaml half matters independently: docs/feature-status.yaml is outside
+// GOV9's reach entirely (that scan reads .md only), so its citations have no
+// machine protection at all. Line numbers there were all still accurate when
+// this test was written, which is exactly when to remove the rot source —
+// afterwards there is no way to tell drift from a citation that was always
+// wrong.
+func TestNoGoLineCitationsInLedgerInputs(t *testing.T) {
+	root := moduleRoot(t)
+	for _, doc := range goLineCiteFreeDocs {
+		body, err := os.ReadFile(filepath.Join(root, doc))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(body), "\n") {
+			if m := goLineCiteRe.FindString(line); m != "" {
+				t.Errorf("%s:%d cites Go code by line number (%q): %s\n"+
+					"\tline numbers drift silently on every insertion. Cite the enclosing\n"+
+					"\tsymbol instead — `path.go::Symbol` for the breakdown, which GOV9 then\n"+
+					"\tholds to resolving.", doc, i+1, m, strings.TrimSpace(line))
+			}
 		}
 	}
 }

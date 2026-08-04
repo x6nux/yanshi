@@ -14,7 +14,7 @@
 
 **规模**：63 条 / 230 子句。
 
-**引用约定（读之前先看）**：代码引用一律写成 `路径::符号`（或「路径 + 就近的反引号符号名」），**不带行号**。这份文档最初 386 处引用全部是 `file.go:NNN` 形式，写下 14 分钟后就有 4 处指错了符号 —— 紧接着的一次提交给 `internal/tools/git.go` 与 `internal/tools/testrun.go` 各加了几十行，行号原地漂移。**行号越界能被扫出来，范围内漂移是无声的**，而这份文档被 `docs/feature-status.yaml` 指定为翻牌前的唯一查表依据，无声错位比缺失更贵。符号名同时也是更好的定位手段（`grep` 一次即得）。**这条约定只覆盖 Go 引用**：本文的 `.go` 行号引用已清零，但非 Go 文件（`*.yml` / `*.sh` / `*.toml` / 其他文档）没有符号可指，那些 `file:line` 仍在，也仍会漂移 —— 它们是**写作时快照**，读到时请按内容而非行号核对。Go 引用的这一半现在由 GOV9（`internal/archtest/docsymbols_test.go::TestGOV9DocSymbolReferencesResolve`）机器守着：路径解析得出而符号解析不出即判红；非 Go 的那一半门禁管不了，只能人工。
+**引用约定（读之前先看）**：代码引用一律写成 `路径::符号`（或「路径 + 就近的反引号符号名」），**不带行号**。这份文档最初 386 处引用全部是 `file.go:NNN` 形式，写下 14 分钟后就有 4 处指错了符号 —— 紧接着的一次提交给 `internal/tools/git.go` 与 `internal/tools/testrun.go` 各加了几十行，行号原地漂移。**行号越界能被扫出来，范围内漂移是无声的**，而这份文档被 `docs/feature-status.yaml` 指定为翻牌前的唯一查表依据，无声错位比缺失更贵。符号名同时也是更好的定位手段（`grep` 一次即得）。**这条约定只覆盖 Go 引用**：本文与 `docs/feature-status.yaml` 的 Go 行号引用现在都是零，而且**这句话本身由机器算出来**（`internal/archtest/docsymbols_test.go::TestNoGoLineCitationsInLedgerInputs`）—— 因为它腐烂过一次：某个提交在宣布「刚修好台账里三处漂移的行号」的同时，重写了两个属性测试文件，把本文三处行号写漂了 6–10 行，而这一段仍旧写着「已清零」。**一句断言计数的话在有人去算之前只是愿望**，所以现在有人算。非 Go 文件（`*.yml` / `*.sh` / `*.toml` / 其他文档）没有符号可指，那些 `file:line` 仍在，也仍会漂移 —— 它们是**写作时快照**，读到时请按内容而非行号核对。Go 符号引用的活性由 GOV9（`internal/archtest/docsymbols_test.go::TestGOV9DocSymbolReferencesResolve`）守着：路径解析得出而符号解析不出即判红；台账 yaml 在 GOV9 的扫描范围外（它只读 `*.md`），那里的符号引用只能人工核。
 
 ---
 
@@ -565,15 +565,15 @@
   - `TestProperty_PinSetIsSubsetOfOutput` — **真**（见 #2）
   - `TestProperty_RunReducesTokens` — **真**（见 #2）
   - `TestProperty_EachSummaryCallWithinWindow` — **真**。它曾经是「吞错」形态（`if err != nil { t.Logf(...); return }`，一个永远失败的 `RunSummary` 也满足这条属性），现在有三道独立防线，逐道实测：
-    - 掏空成「返回常量 summary，从不调 summarizer」→ 四个 window 子测试全 FAIL：`summarize_property_test.go:88: RunSummary returned success but summarizer was never called`
-    - 掏空成「无条件返回 `ErrNoWindowRoom`」→ FAIL：`summarize_property_test.go:105: only 0 of 4 windows produced summarizer calls (want ≥3)`
+    - 掏空成「返回常量 summary，从不调 summarizer」→ 四个 window 子测试全 FAIL，落进 `summarize_property_test.go::TestProperty_EachSummaryCallWithinWindow` 里那句 `t.Fatal("RunSummary returned success but summarizer was never called")`
+    - 掏空成「无条件返回 `ErrNoWindowRoom`」→ FAIL，落进同一测试末尾的跨 window 下限 `t.Fatalf("only %d of %d windows produced summarizer calls (want ≥%d)…")`，实测 `only 0 of 4`
     - 掏空成「返回任何别的 error」→ 落进 `t.Fatalf("RunSummary failed for a reason this property does not tolerate")`，只有 `ErrNoWindowRoom` 被容忍
 - 证据形状：这是计数主张，应该挂「互不重复**且各自变异敏感**」的 3 个测试（现状即是）。**骗过去**：把 8 个测试名都列上而不管其中几个是空的。
 
 **2. 随机输入通过** — 已兑现（`TestProperty_PinSetIsSubsetOfOutput` 与 `TestProperty_RunReducesTokens` 两条同时扛）
 - 依据：`gen_test.go` `genHistory` 随机生成含孤儿 tool_call / 孤儿 tool_result / working-set / error / diff 标记 / summary 尾的历史，`planPropertyGen` 每属性 30–50 trial。
   - `TestProperty_PinSetIsSubsetOfOutput` — **真证据**：50 个随机历史，断言的是**指针恒等**（`out[i] != msgs[idx]` 即失败）+ 索引升序。掏空实验：把 `Assemble` 改成复制 message（内容相同、指针不同）→ FAIL。
-  - `TestProperty_RunReducesTokens` — **真证据**。它曾经是「守卫用被测函数自己的产物」的坏形态（`if after >= before && calls > 0`，调用次数由被测的 `Run` 自己决定，`Run` 一掏空条件恒假、测试全绿）。现在调用次数是**跨 trial 的硬下限**而非每 trial 的条件：测试体走 `plan_property_test.go::runGeneratedProperty`，末尾用 `::requireTrialFloor` 断言「至少 60% 的 trial 真的 summarize 了东西」。掏空实验：`Run` 改成「原样返回入参、永不 summarize」→ FAIL：`run_property_test.go:97: only 0/30 trials summarized anything (need ≥18): the property is vacuous, not passing`
+  - `TestProperty_RunReducesTokens` — **真证据**。它曾经是「守卫用被测函数自己的产物」的坏形态（`if after >= before && calls > 0`，调用次数由被测的 `Run` 自己决定，`Run` 一掏空条件恒假、测试全绿）。现在调用次数是**跨 trial 的硬下限**而非每 trial 的条件：测试体走 `plan_property_test.go::runGeneratedProperty`，末尾用 `::requireTrialFloor` 断言「至少 60% 的 trial 真的 summarize 了东西」。掏空实验：`Run` 改成「原样返回入参、永不 summarize」→ FAIL，落进 `run_property_test.go::TestProperty_RunReducesTokens` 末尾那句 `requireTrialFloor(t, "summarized anything", …)`，实测 `only 0/30 trials summarized anything (need ≥18): the property is vacuous, not passing`
 - 证据形状：随机输入 + 守卫只对**输入侧可算的前提**成立，且把「被测函数真的干活了」写成跨 trial 的硬下限而非 per-trial 条件（现状即是，`run_property_test.go` 与 `plan_property_test.go` 走同一个入口）。**骗过去**：任何把被测函数的调用计数当 skip 条件、又不数执行率的写法。
 
 **3. 工具对配对不变量成立** — 已兑现（**指控不成立**）
@@ -795,7 +795,7 @@
 > acceptance：至少 Go 解析正确；结构化计数+失败列表；超时/取消干净；大输出成 artifact
 
 **1. 至少 Go 解析正确** — 部分（**新发现：对真实 `go test -json` 解析是错的**）
-- 依据：`internal/tools/testrun.go` `parseGoJSON`。`TestParseGoJSONCountsPassFailSkip` 等断言真实，但**全部 fixture 是人造的、每条事件都带 `Test` 字段**。实测 `go test -json ./internal/version` 输出 9 条 test 级 pass + **1 条包级 pass（无 `Test` 字段）**；`parseGoJSON` **不过滤 `ev.Test != ""`** → `Passed` 按包数虚增；失败场景下包级 fail 事件会往 `Failures` 塞一条 `Test` 为空的**幻影条目**。类别：**fake 太宽 / fixture 系统性回避了会失败的输入**（全仓 6 处 `"Action":"pass"` fixture 无一例外）。
+- 依据：`internal/tools/testrun.go` `parseGoJSON`。`TestParseGoJSONCountsPassFailSkip` 等断言真实，但**全部 fixture 是人造的、每条事件都带 `Test` 字段**。实测 `go test -json ./internal/version` 输出 9 条 test 级 pass + **1 条包级 pass（无 `Test` 字段）**；`parseGoJSON` **不过滤 `ev.Test != ""`** → `Passed` 按包数虚增；失败场景下包级 fail 事件会往 `Failures` 塞一条 `Test` 为空的**幻影条目**。类别：**fake 太宽 / fixture 系统性回避了会失败的输入** —— 全仓每一处 `"Action":"pass"` fixture 无一例外（现算：`grep -rn '"Action":"pass"' --include='*.go' internal/`；此处刻意不写死处数，写下的那一刻就开始腐烂，初版写「6 处」而当时实测已是 7）。
 - 证据形状：把一次**真实** `go test -json` 的完整事件流（含 run/output/包级 pass）存成 fixture，断言 `Passed` 恰等于 test 级 pass 数、`Failures` 中**无空 `Test` 条目**。**骗过去**：继续手写只含 test 级事件的三行 JSON。
 
 **2. 结构化计数+失败列表** — 部分
@@ -929,10 +929,10 @@
 - 依据：实现在 `git.go::collectGitDiffFiles` `writeArtifactOrSpill`，但**无测试**。`TestWriteArtifactOrSpill*`（`artifact_output_test.go::TestWriteArtifactOrSpillUsesTaskManager/TestWriteArtifactOrSpillMarksFallbackDegraded/TestWriteArtifactOrSpillNoWorkRoot`）测的是通用 helper，其中 `"git-diff"` 只是**字符串字面量当 label**，不经过 git 工具；`git_test.go` 中无任何 fixture 超过 64 KiB。
 - 证据形状：commit 一个 > 64 KiB 的文本文件改动，断言该文件的 `ArtifactRef` 非空、`Patch`（= `art.Summary`）显著短于原 patch、且从 FakeManager 读回的 artifact 字节与真实 patch 一致。
 
-**4. 边界清晰** — 部分（**含一条实测确认的安全缺陷**）
-- 依据：`git.go::runGitDiff`（路径越界）、`validateGitRef`。`TestGitDiffRejectsPathEscape` 与 `validateGitRef` 单测是真证据；但 **`TestGitDiffScopesBaseRefAndCommit` 恒真 / 不可区分** —— 三种 scope 都只断言 `Contains(out, "path":"a.go")`，而该 fixture 下三种 base 的答案**完全相同**，把 `base_ref`/`commit` 都退化成 `working_tree` 也照样绿。
-- ⚠️ **新发现的边界漏洞（已实测复现）**：`validateGitRef` 只拒空白字符，**不拒 `-` 开头的 ref**。`commit` scope 把 ref **原样**放进 argv（`git.go::gitDiffCommands`，无 `...HEAD` 拼接），因此 `scope.ref = "--output=/tmp/pwned.txt"` 会变成 `git show --numstat -z --format= --output=/tmp/pwned.txt --` —— 该命令**在工作根之外写出了文件**，而 `git_diff` 声明的 sandbox tier 是 `sandbox.ReadOnly`。这是一条从工具参数到任意路径写的**参数注入**，直击「边界清晰」这一句。
-- 证据形状：(a) 三种 scope 的 fixture 必须让三者答案**互不相同**（如各 base 下变更文件集不同），断言各自的文件集；(b) 断言 `validateGitRef("--output=/tmp/x")` 与 `validateGitRef("-x")` 返回 error；(c) 跑一次带该 ref 的 `git_diff`，断言工作根外的目标路径**不存在**。
+**4. 边界清晰** — 部分（安全缺陷已修，剩一条空壳证据）
+- 依据：`git.go::runGitDiff`（路径越界）、`git.go::validateGitRef`。`TestGitDiffRejectsPathEscape` 与 `validateGitRef` 单测是真证据；但 **`TestGitDiffScopesBaseRefAndCommit` 恒真 / 不可区分** —— 三种 scope 都只断言 `Contains(out, "path":"a.go")`，而该 fixture 下三种 base 的答案**完全相同**，把 `base_ref`/`commit` 都退化成 `working_tree` 也照样绿。**这是本条判「部分」的唯一原因。**
+- ✅ **曾经的参数注入漏洞已在 `03a6bb3`（W1 范围内）修复**，本段随之改写。原缺陷：`validateGitRef` 只拒空白与 NUL，`commit` scope 把 ref 原样放进 argv（无 `...HEAD` 拼接），`scope.ref = "--output=<绝对路径>"` 于是让一个声明 `sandbox.ReadOnly` 的工具在工作根外写出文件。现状是**双层防御**：① `git.go::validateGitRef` 委托 `argvsafe.go::validateArgvOperand`，拒绝一切 `-` 开头的操作数；② `gitDiffCommands` 的每条 argv 都在 ref 前放 `git.go::gitEndOfOptions`（`--end-of-options`），让 git 自己拒绝把操作数读成选项。两层刻意不冗余：前者能推广到没有 `--end-of-options` 的程序（go、cargo），后者能扛住未来某个忘记校验的调用方。
+- 证据形状与现状：(a) 三种 scope 的 fixture 必须让三者答案**互不相同**（如各 base 下变更文件集不同），断言各自的文件集 ——【仍缺】；(b) 断言 `validateGitRef("--output=/tmp/x")` 与 `validateGitRef("-x")` 返回 error ——【已有】`argvsafe_test.go::TestValidateArgvOperandRejectsOnlyOptionShapes`；(c) 跑一次带该 ref 的 `git_diff`，断言工作根外的目标路径**不存在** ——【已有】`argvsafe_test.go::TestGitDiffRefCannotWriteFilesOutsideWorkRoot`，另有 `::TestGitDiffPassesEndOfOptionsBeforeRef` 钉住第二层、`::TestGitDiffAcceptsRefsContainingDashes` 作反向探针（含 `-` 但不以 `-` 开头的 ref 不被误伤）。
 
 ---
 
@@ -1647,9 +1647,13 @@
 
 **C. 实测确认的真 bug（不是记账问题）**
 
-1. **`git_diff` 参数注入 → 沙箱外写文件**（B3/W07#4）：`validateGitRef` 不拒 `-` 开头的 ref，`commit` scope 原样透传 → `scope.ref="--output=<path>"` 让声明为 `sandbox.ReadOnly` 的工具**在工作根外写出文件**。已实测复现。
+> **读法**：本列表按发现时刻记账，条目**修好后就地标注而不删除** —— 删掉会让「这条是否被处理过」变得不可查。反过来，**已修的条目继续用现在时挂着同样是虚报**：读者会重做已完成的工作，或据此低估当前安全态。第 1 条曾经就是这个形状（它在修复提交 `03a6bb3` 落地后仍写着「已实测复现」）。改状态时同步改上面对应子句那一段。
+>
+> 除第 1 条外，以下 7 条在 2026-08-04 逐条实测**仍然成立**。
+
+1. ~~**`git_diff` 参数注入 → 沙箱外写文件**（B3/W07#4）~~ — ✅ **已修（`03a6bb3`，W1 范围内）**。原缺陷：`validateGitRef` 不拒 `-` 开头的 ref，`commit` scope 原样透传 → `scope.ref="--output=<path>"` 让声明为 `sandbox.ReadOnly` 的工具在工作根外写出文件。现状：`argvsafe.go::validateArgvOperand` 拒绝一切 `-` 开头操作数，且每条 git argv 在 ref 前带 `git.go::gitEndOfOptions` 哨兵；证据见 `argvsafe_test.go::TestGitDiffRefCannotWriteFilesOutsideWorkRoot` 与 `::TestGitDiffPassesEndOfOptionsBeforeRef`，反向探针 `::TestGitDiffAcceptsRefsContainingDashes`。详见 B3/W07 第 4 句那一段。
 2. **`parseGitStatusZ` 两个解析 bug**（B3/W07#1）：已跟踪且含空格的路径被截断；rename 的 origPath 含 ≥2 空格时**伪造出不存在的 status 条目**。
-3. **`parseGoJSON` 计数错误**（B3/DT4#1）：不过滤包级事件 → `Passed` 虚增；失败列表混入空 `Test` 幻影条目。6 处 fixture 系统性回避了这个输入。
+3. **`parseGoJSON` 计数错误**（B3/DT4#1）：不过滤包级事件 → `Passed` 虚增；失败列表混入空 `Test` 幻影条目。全部 `"Action":"pass"` fixture 系统性回避了这个输入（处数现算，见 B3/DT4 第 1 句那一段）。
 4. **`--file` 绕过 `cfg.Input`**（D1/V12#1）：`--input jsonl --file <3 行>` 实测只跑 **1** 个 turn（stdin 同文件跑 3 个）。CI 跑的正是这条命令但输出丢 `/dev/null`；`examples/headless-batch/run.sh` 还用 `grep -c` **谎报** "processed 3 prompts"。
 5. **`item.toolName` AttributeError**（H2/APIREF1#2 / H2/EX1#2）：pydantic 字段是 `tool_name`，`toolName` 只是 alias。首条 item 无 text 故必然触发。CI 的 `py_compile` 吞掉它。
 6. **`BenchmarkOrchestratorTurn` 在 `b.N ≥ 2` 下必挂**（F2/BENCH1#1）：FakeModel 只脚本 1 条响应且未设 `Repeat`。失败被 `nightly.yml` 缺 `pipefail` + `continue-on-error` **吞掉两层**。

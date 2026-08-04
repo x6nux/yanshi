@@ -90,7 +90,9 @@ I18N1 国际化：`ui_locale`=`auto`（默认，每次启动按 LC_ALL > LANG �
 
 ## tui
 
-C15 TUI 偏好（也可运行时 `/keymap`、`/vim`、`/contrast` 改）：`keymap`（默认 default）、`theme`（默认 default）、`vim`（*bool：省略=跟随 preferences.json，显式 false=强制关）、`high_contrast`（*bool）、`bindings`（key:action 映射，方向固定）。
+C15 TUI 偏好：`keymap`（默认 default）、`theme`（默认 default）、`vim`（*bool）、`high_contrast`（*bool）、`bindings`（key:action 映射，方向固定）。
+
+⚠️ **本块目前只被 `yanshi doctor` 读来做校验，不影响 TUI 运行时**：`internal/cli/tui/model.go::newModel` 把主题与键位写死为 `default`，而 `internal/cli/tui/preferences.go` 的分层合并（`mergeTUIPrefs` 及其 `preferences.json` 读写）**生产调用点为零**。台账 `D3/C15` 记为 `partial` 就是这条接线断点。运行时唯一可改的是配色：TUI 里用 `/theme`（`/theme high-contrast` 即高对比度），仅当前会话有效、不落盘。此处以前写着「也可运行时 `/keymap`、`/vim`、`/contrast` 改」，那三个命令从未注册过。
 
 ## 配置字段骨架（由 gendocs 生成）
 
