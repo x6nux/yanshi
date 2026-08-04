@@ -717,7 +717,7 @@
 **3. 无 keyring 安全降级** — 部分（两半：Manager 半真，build-tag 半**完全不执行**）
 - 依据：
   - **(b) Manager 半 —— 真且无条件执行**：`manager.go::NewManager` 的 `"auto"` 分支（`Available()` 失败 → 有 passphrase 则 `fileStore`，否则 store=nil + warn，**从不 fatal**）。`internal/secrets::TestManager_NewManagerAllModes` 的四个子测试通过 `withFakeKeyring(t, &fakeStore{avail: ErrKeyringUnavailable})` 注入 `newKeyringStore` seam，断言 `*FileStore` 类型回退与两条 warn 文本。**这是本条的实质证据。**
-  - **(a) build-tag 半 —— 零测试**：`keyring_disabled.go`（`//go:build nokeyring`）的 `noKeyringStore` 四个方法全返回 `ErrKeyringUnavailable`，但全仓 grep `nokeyring` 只命中实现文件与注释；`ci.yml` 的 `build` job（`tags: [default, nokeyring]` 矩阵）**只做 `go build` + `./yanshi -h` 冒烟，不跑 `go test`** → **`noKeyringStore` 的四个方法在任何环境下都从未被执行过**（假证据类别：**不会被执行（`//go:build` tag）**）。
+  - **(a) build-tag 半 —— 零测试**：`keyring_disabled.go`（`//go:build nokeyring`）的 `noKeyringStore` 四个方法全返回 `ErrKeyringUnavailable`，但**没有任何 workflow 跑 `go test -tags=nokeyring`** —— `grep -rnE 'go test[^|&;]*nokeyring' .github/workflows/` 产出空输出（负向对照：同目录下 `grep -rnE 'go test' .github/workflows/` 命中 `ci.yml`/`nightly.yml`/`docs.yml` 多行，所以空不是模式写窄了）。**这句原先写的是「全仓 grep `nokeyring` 只命中实现文件与注释」，过松**：那条 grep 还命中 `internal/cli/doctor.go` 里的生产字符串与 `.goreleaser.yaml`/`ci.yml` 里真实的 tag 传递，承重结论靠的一直是「没有 workflow 拿这个 tag 跑测试」而不是「没人提过这个词」。`ci.yml` 的 `build` job（`tags: [default, nokeyring]` 矩阵）**只做 `go build` + `./yanshi -h` 冒烟，不跑 `go test`** → **`noKeyringStore` 的四个方法在任何环境下都从未被执行过**（假证据类别：**不会被执行（`//go:build` tag）**）。
 - 证据形状：CI 增一个 `go test -tags=nokeyring ./internal/secrets/...` 作业；或把 (a) 半的断言写成不依赖 tag 的形式（当前 `Store` 接口已足以做到）。
 
 ---
