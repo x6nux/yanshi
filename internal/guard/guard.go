@@ -97,9 +97,17 @@ func hardDeny(reason string) Decision {
 // structural guard. It stays fail-closed on the SSE path and under
 // default/allow-edits/plan modes, but YOLO/Auto interactive modes may override
 // it via the permission callback (tools.Authorize routes Overridable HardDenies
-// to mode resolution). Structural HardDenies (metachar, parse-error, denylist
-// match, unknown policy, empty MCP allowlist) use hardDeny() and are NEVER
-// overridable — that is the floor operators can rely on even under YOLO.
+// to mode resolution).
+//
+// The structural floor — the denials YOLO cannot buy its way past — is exactly
+// the set that reaches hardDeny() or an inline Decision without Overridable:
+// catastrophic mass deletion, shell metacharacters, execpolicy parse-error, and
+// unknown shell policy / unknown execpolicy verdict. Everything a profile can
+// merely have an opinion about is overridable, and that includes two denials
+// this comment used to misfile as structural: a denylist pattern match and an
+// empty MCP allowlist. Both are profile policy, so both yield to YOLO/Auto.
+// Enumerate the floor with `grep -n 'hardDeny(' internal/guard/guard.go` plus
+// the two inline HardDenies in checkShell rather than trusting this list.
 func overridableDeny(reason string) Decision {
 	return Decision{Verdict: HardDeny, Reason: reason, Promptable: false, Overridable: true}
 }
