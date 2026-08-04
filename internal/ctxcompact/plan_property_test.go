@@ -69,6 +69,18 @@ func pinnedSetIsConsistent(msgs []*schema.Message, pinned map[int]bool) bool {
 	return true
 }
 
+// TestProperty_PinSetIsSubsetOfOutput is one of the suite's distinct
+// properties: whatever Plan pins must survive Assemble verbatim, at the front,
+// in ascending order. Pointer identity is asserted (not content equality) so a
+// "helpful" rewrite of a pinned message fails here rather than silently
+// changing what the model was promised it would keep.
+//
+// It runs 50 trials over randomly generated histories from genHistory, which
+// deliberately emits orphan tool_calls and orphan tool_results — the shapes
+// hand-written fixtures never think to include.
+//
+// ledger: E2/PROP1#1 ≥3 个属性
+// ledger: E2/PROP1#2 随机输入通过
 func TestProperty_PinSetIsSubsetOfOutput(t *testing.T) {
 	planPropertyGen(t, 50, 60, func(t *testing.T, msgs []*schema.Message) {
 		plan := Plan(msgs, PlanOpts{KeepRecent: 3})
@@ -99,6 +111,13 @@ func TestProperty_PinSetIsSubsetOfOutput(t *testing.T) {
 	})
 }
 
+// TestProperty_ToolCallPairingFixpointHolds is the core pairing invariant: in
+// Plan's pinned set, every pinned tool_call has its tool_result pinned too and
+// vice versa. A history that keeps one half of a pair is rejected outright by
+// several providers, so this invariant is what makes compaction safe to run
+// mid-turn at all.
+//
+// ledger: E2/PROP1#3 工具对配对不变量成立
 func TestProperty_ToolCallPairingFixpointHolds(t *testing.T) {
 	planPropertyGen(t, 50, 60, func(t *testing.T, msgs []*schema.Message) {
 		plan := Plan(msgs, PlanOpts{KeepRecent: 3})
@@ -144,6 +163,13 @@ func TestProperty_ToolCallPairingFixpointHolds(t *testing.T) {
 	})
 }
 
+// TestProperty_ToolCallPairFixpointIsIdempotent is the second angle on the
+// same invariant: re-running EnforceToolCallPairs on an already-consistent set
+// changes nothing. Without idempotence the "fixpoint" is not one, and the
+// pin set could oscillate across the mid-turn/pre-turn compaction paths that
+// both call it.
+//
+// ledger: E2/PROP1#3 工具对配对不变量成立
 func TestProperty_ToolCallPairFixpointIsIdempotent(t *testing.T) {
 	planPropertyGen(t, 30, 60, func(t *testing.T, msgs []*schema.Message) {
 		plan := Plan(msgs, PlanOpts{KeepRecent: 3})
@@ -172,6 +198,13 @@ func TestProperty_ToolCallPairFixpointIsIdempotent(t *testing.T) {
 	})
 }
 
+// TestProperty_ToolCallPairFixpointRepairsCorruption is the third angle, and
+// the only one that can fail when the fixpoint is a no-op: it deliberately
+// unpins one half of a pair and requires EnforceToolCallPairs to restore
+// consistency. The first two properties would still pass against an
+// implementation that never repaired anything.
+//
+// ledger: E2/PROP1#3 工具对配对不变量成立
 func TestProperty_ToolCallPairFixpointRepairsCorruption(t *testing.T) {
 	planPropertyGen(t, 30, 60, func(t *testing.T, msgs []*schema.Message) {
 		plan := Plan(msgs, PlanOpts{KeepRecent: 3})

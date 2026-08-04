@@ -46,6 +46,17 @@ func TestProperty_NoDoubleCompaction(t *testing.T) {
 	}
 }
 
+// TestProperty_RunReducesTokens is a second, independent property: whenever
+// Run actually summarizes something, the resulting history must estimate to
+// strictly fewer tokens than the input. A compaction that grows the history is
+// worse than no compaction — it burns a model call to move closer to the wall.
+//
+// The input is a randomly generated 40-message history (genHistory over a
+// seeded PCG), not a fixture, so the property is asserted against shapes
+// nobody chose by hand.
+//
+// ledger: E2/PROP1#1 ≥3 个属性
+// ledger: E2/PROP1#2 随机输入通过
 func TestProperty_RunReducesTokens(t *testing.T) {
 	rng := rand.New(rand.NewPCG(123, 0))
 	msgs := genHistory(rng, 40)

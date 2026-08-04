@@ -170,19 +170,47 @@
   acceptance: "编辑后模型收到诊断；server 缺失安全降级；超时不阻塞 turn；Go/Python/TS 至少一种端到端可用"
   evidence: ""
 
+# 2026-08-04 复核：missing → partial。「missing」是台账**低报**：工具存在
+# （internal/tools/testrun.go）、被装配（bootstrap.go:647）、在出厂 profile 里。
+# W1 的 1598cc9（run_tests 假绿）修的就是它。
+# 不翻 done 的原因是第 3、4 两条：
+#   3 超时/取消干净 ——【缺】只有下一层的 internal/tools::
+#     TestRunSecureCaptureCancellationStopsWait 覆盖通用 capture 路径；run_tests
+#     自己的 10min 超时从未被驱动。⚠️ internal/tools::TestRunTestsDefaultTimeout
+#     是**空壳**：它把 error 用 t.Logf 吞掉、结果 `_ = out`，无论超时行为对错都会绿，
+#     不能当这条的证据。
+#   4 大输出成 artifact ——【缺】testrun.go:89 有 SpillThreshold 分支，但没有任何
+#     测试让 raw 超过阈值。与 B3/W07 第 3 条同一个形状。
+# 第 1、2 条已覆盖（TestParseGoJSONCountsPassFailSkip /
+# TestRunTestsExecutesGoTestJSONWithWorkspaceWriteTier /
+# TestRunTestsReportsRunnerFailureInsteadOfPass 等）。补测归 W6。
 - id: "B3/DT4"
   package: "W6"
-  verdict: missing
+  verdict: partial
   title: "run_tests 工具"
   acceptance: "至少 Go 解析正确；结构化计数+失败列表；超时/取消干净；大输出成 artifact"
-  evidence: ""
+  evidence: "internal/tools::TestRunTestsExecutesGoTestJSONWithWorkspaceWriteTier"
 
+# 2026-08-04 复核：missing → done。「missing」是台账**低报**：diagnostics 工具一直
+# 存在（internal/tools/diagnostics.go）、一直被装配（bootstrap.go:648
+# tools.NewDiagnosticsTool(nil)）、也一直在出厂 profile 的 allow 列表里
+# （bootstrap/profile.go:113）。W1 的 10a2762 / 3d7dabc 修的正是这个工具的
+# toolchain 探针 argv —— 修不了一个不存在的工具。
+# 三条子句逐条对账后全部有可执行断言，故直接翻终态而不是停在 partial：
+#   1 一次调用聚合 —— 一次 runTool 同时拿到 git / toolchain / lsp 三段结果
+#   2 各子项可独立失败不拖垮 —— git 探针 exit 128 时 toolchain 行仍完整
+#   3 toolchain 版本准确 —— 逐个程序断言 argv（go version / cargo --version /
+#     node --version），并要求三行版本值都非空；这正是 3d7dabc 那个 bug 的形状：
+#     错 argv → 探针非零退出 → 该行被静默丢弃 → 操作员看到空版本。
 - id: "B3/DT5"
   package: "W6"
-  verdict: missing
+  verdict: done
   title: "diagnostics 工具"
   acceptance: "一次调用聚合；各子项可独立失败不拖垮；toolchain 版本准确"
-  evidence: ""
+  evidence:
+    "1": "internal/tools::TestDiagnosticsAggregatesIndependentProbes"
+    "2": "internal/tools::TestDiagnosticsGitFailureDoesNotHideOthers; internal/tools::TestDiagnosticsLSPUnavailableIsLocalDegradation"
+    "3": "internal/tools::TestDiagnosticsProbesEachToolchainWithItsOwnVersionArgv"
 
 - id: "B3/GH1"
   package: "W6"
@@ -191,6 +219,18 @@
   acceptance: "只读 context 可用；写操作需审批且需证据；大 body 成 artifact；未认证明确降级；注入内容不被当指令执行"
   evidence: ""
 
+# 2026-08-04 复核：保持 missing，但要点明「不是没有代码」——
+# web_search 已注册（tools/web.go:45）、已装配（bootstrap.go:613）、在出厂 profile 里。
+# 判 missing 的依据是**输出契约本身是残桩**，不是文件不存在：
+#   1 返回标题/摘要/URL ——【残桩】runSearch 把原始 HTML 行整行塞进 Title，URL 恒为
+#     ""，Snippet 从不填充。唯一的测试 TestCov_WebRunSearchHTMLParse 断言的是
+#     assert.Contains(out, "Example") —— 原始 HTML 里就含这个词，所以它对「有没有
+#     解析」完全不敏感。
+#   2 域名/时间过滤生效 ——【无】webSearchArgs 只有 Query / MaxResults。
+#   3 重定向受策略约束 ——【无】runSearch 用裸 &http.Client{}，没有 CheckRedirect；
+#     现有 4 个重定向测试全部针对 web_fetch。
+#   4 后端不可用降级 —— 唯一成立的一条（TestWebSearchReturnsEmptyOnUnreachable）。
+# 4 条里 3 条无实现，故不升 partial。
 - id: "B3/T11"
   package: "W6"
   verdict: missing
@@ -198,19 +238,39 @@
   acceptance: "返回标题/摘要/URL；域名/时间过滤生效；重定向受策略约束；后端不可用降级"
   evidence: ""
 
+# 2026-08-04 复核：保持 partial，缺口定位到第 1 条「支持三种 base」——
+# internal/tools/review.go 的 reviewInput 只有 {diff, task_id, repo, number}，
+# 调用方必须自己把 diff 文本塞进来；全仓没有任何 base / baseline 参数，也没有
+# HEAD~ / branch / staged 之类的基线选择逻辑。第 2–4 条反而是齐的
+# （reviewFinding 含 File/Line/Severity、TestStreamReviewDedupesAndSortsFindings、
+# 工具不写文件）。评审曾建议据此降 missing —— **不该降**：partial 的语义就是
+# 「部分实现」，4 条里 3 条成立，降 missing 反而是另一个方向的失真。
 - id: "B3/V13"
   package: "W6"
   verdict: partial
   title: "结构化 code review"
   acceptance: "支持三种 base；findings 结构化含 severity/file/line；clean 明确；只读不改"
-  evidence: ""
+  evidence: "internal/tools::TestStreamReviewDedupesAndSortsFindings"
 
+# 2026-08-04 复核：missing → partial。「missing」是台账**低报**：两个工具存在
+# （internal/tools/git.go）、被装配（bootstrap.go:645-646）、在出厂 profile 里。
+# W1 的 32217b6（git 退出码）修的就是它们。
+# 不翻 done 的原因只有第 3 条：「大 diff 成 artifact」。runGitDiff 里确实有
+# writeArtifactOrSpill（git.go:214），但**没有任何测试让 patch 超过 SpillThreshold**
+# —— internal/tools::TestWriteArtifactOrSpill* 测的是通用 helper，那里的 "git-diff"
+# 只是一个字符串字面量当 label，不经过 git 工具。溢出阈值这条路径在 git_diff 上
+# 从未被执行过。补这条测试归 W6。
+# 另三条已覆盖：
+#   1 status/diff 结构化 —— TestGitStatusParsesPorcelainV2ZWithHostileNames /
+#     TestGitDiffReturnsOneRecordPerFileWithBinaryMarker
+#   2 不修改用户配置 —— TestGitToolsDoNotWriteGitConfig
+#   4 边界清晰 —— TestGitDiffRejectsPathEscape / TestGitDiffScopesBaseRefAndCommit
 - id: "B3/W07"
   package: "W6"
-  verdict: missing
+  verdict: partial
   title: "git_status / git_diff 专用工具"
   acceptance: "status/diff 结构化；不修改用户配置；大 diff 成 artifact；边界清晰"
-  evidence: ""
+  evidence: "internal/tools::TestGitToolsDoNotWriteGitConfig"
 
 # W1/Task 4 Step 7：BuildC1 此前只被测试调用，八个 automation_* 工具在运行时是死代码。
 # 证据测试断言 App.ToolNames —— GOV4 只证明 BuildC1 被调用，不证明其产物被使用。
@@ -306,6 +366,14 @@
   acceptance: "F1 打开;可搜索;内容自动生成不漂移"
   evidence: ""
 
+# 2026-08-04 复核：保持 missing。存在一个**同名不同物**的东西，别把它读成低报：
+# internal/tools/pathref.go 的 ResolveImagePathRefs 是服务端的、**只处理图片**的
+# path-ref 展开（挂在 orchestrator.expandPathRefs 上），它不是 TUI 的 `@` 补全。
+# TUI 侧四条子句里第 1 条整条不存在：internal/cli/tui 的弹层只有
+# pickerKind ∈ {"", model, mode, theme} + Ctrl+K 面板 + F1 帮助 + Alt+R 历史搜索，
+# 没有任何文件路径补全器；frecency.go 的注释也自称是「提供给后续 UX 批次排序使用」。
+# 第 4 条「超大提示 fs_read」同样无实现（pathRefGuardTool = "fs_read" 是鉴权用的
+# 工具名，不是给用户看的提示）。故不升 partial。
 - id: "C2/UX3"
   package: "W8"
   verdict: missing
@@ -320,12 +388,26 @@
   acceptance: "近期选择靠前;衰减合理;可禁用"
   evidence: ""
 
+# 2026-08-04 复核：partial → done。这是台账**低报**：四条子句各有具名测试，且整条
+# 生产链路完整（不是「层层有测、接缝没接」那种形状）——
+#   anthropic.go 解析 thinking block → orchestrator/classify.go:363
+#   emit(proto.NewThinking) → ws → cli/wsbackend.go:319 Kind: f.Type 透传 →
+#   tui applyEvent 的 "thinking" 分支。
+# 第 1 条特意同时挂生产端与渲染端：TestClassifyEvents_EmitsThinkingForReasoning
+# 证明「思考模型」这一侧真的发帧（而且发在 agent_chunk 之前），
+# TestModel_ThinkingLiveThenCollapses 证明「可见」不只是内存里有 entry —— 它断言
+# te.render() 的输出含 "Thinking…" 头与流式正文。只测其中一端就会重演本仓反复
+# 出现的「写完也测过，但没人调它」。
 - id: "C2/UX8"
   package: "W8"
-  verdict: partial
+  verdict: done
   title: "思考流式展示"
   acceptance: "思考模型可见流式思考;正文与思考分离;非思考模型无影响;可折叠"
-  evidence: ""
+  evidence:
+    "1": "internal/agent/orchestrator::TestClassifyEvents_EmitsThinkingForReasoning; internal/cli/tui::TestModel_ThinkingLiveThenCollapses"
+    "2": "internal/cli/tui::TestThinkingParity_NonThinkingFinalizesLive; internal/agent/orchestrator::TestClassifyEvents_ReasoningOnlyEmitsOnlyThinking"
+    "3": "internal/cli/tui::TestThinkingParity_NoThinkingNoEntry"
+    "4": "internal/cli/tui::TestModel_ThinkingCtrlOTogglesExpand; internal/cli/tui::TestThinkingParity_LiveBlockNotExpandable"
 
 - id: "C3/E03"
   package: "W8"
@@ -362,12 +444,24 @@
   acceptance: "trace 链可导出;latency/token/retry/error 可观测;可关闭;脱敏"
   evidence: ""
 
+# 2026-08-04 复核：保持 partial，但第 1、2 条其实已经很硬，缺口只在第 3 条 ——
+#   1 flag 注册/切换 —— internal/features::TestRegistryDefaultsRuntimeSetAndList
+#     （默认关 → Set → 开）、TestRegisterPanicsOnDuplicate
+#   2 strict mode 报错未知 flag —— TestRegistryStrictRejectsUnknownByNameAtomically
+#     （原子性也钉住了）、TestRegistryNonStrictIgnoresUnknown、
+#     TestRegistrySetAlwaysRejectsUnknown，另有 bootstrap 端到端的具名报错
+#   3 新功能可灰度 ——【缺】全仓只有一个真实消费点
+#     （bootstrap.go:344，OTel 门在 cfg 与 "observe.otel_export" 的与上），而**没有
+#     任何测试驱动这个门的两个方向**：TestBuildSetsUpOTelAndShutsDown 只跑 flag=true
+#     一侧，且 App.OTel 在关闭时也是非 nil 的 no-op runtime，所以它对 flag 是否真的
+#     生效不敏感。TestListSortsByStageThenKey 只证明按 Stage 排序，不是灰度。
+#     补一条「flag off ⇒ 该功能不生效」的双向测试即可翻终态，归 W7。
 - id: "C4/OBS3"
   package: "W7"
   verdict: partial
   title: "feature flags"
   acceptance: "flag 注册/切换;strict mode 报错未知 flag;新功能可灰度"
-  evidence: ""
+  evidence: "internal/features::TestRegistryStrictRejectsUnknownByNameAtomically"
 
 - id: "D1/APS1"
   package: "W9"
@@ -435,26 +529,60 @@
   acceptance: "secret 不入日志/DB 明文；keyring 读写删；无 keyring 安全降级"
   evidence: ""
 
+# 2026-08-04 复核：保持 partial，但原因**不是**「没做到」，而是「做到了却没法按
+# GOV8 的形状记账」—— 这两条要单独说明，否则下一轮评审会重复怀疑它是低报。
+# 实测 `go test ./internal/proto -cover` = 100.0%（验收要 ≥80%），
+#      `go test ./internal/bootstrap -cover` = 94.1%（验收要 ≥50%）。
+# 第 2–4（COV2）/ 第 2–3（COV3）条都有具名测试且全 PASS：
+#   COV2: TestServerFrame_ParityRoundTrip + TestClientFrame_ParityRoundTrip（全帧
+#         往返）、TestSSEEvent_Golden（golden）、TestVocabulary_Symmetry（词表对称）
+#   COV3: TestBuild_MinimalApp + TestBuild_EndToEndTurn（最小 App 跑一轮 turn）、
+#         TestBuild_VCSSoftDegrade / TestBuild_PluginDiscoverySoftDegrade /
+#         TestBuild_MCPStartupSoftDegrade（软降级）
+# 卡住的是第 1 条：「覆盖率 ≥N%」是一次**测量**而不是一条行为断言，全仓没有任何
+# 测试对覆盖率做门禁。GOV8 的不可违反约束是终态证据只收测试引用（ADR-0011），
+# 而覆盖率数字撑不起测试引用 —— 贴任何一个功能测试上去都是凑数。
+# 要翻终态只有两条路，都属于 W10 的范围决策而非台账对账：
+#   (a) 真加一道覆盖率门禁测试（子进程跑 go test -cover 并断言下限），代价是
+#       把 bootstrap 那 14s 再嵌套跑一遍，且要在 -race 三平台上稳定；
+#   (b) 承认「覆盖率 ≥N%」不是可终态化的验收，改写 acceptance（改 acceptance 要
+#       同步改 internal/archtest/acceptance_pin_test.go 的 pin，是范围决策）。
+# 在其中之一落地前，本条保持 partial —— 这是记账形状的问题，不是实现缺口。
 - id: "E1/COV2"
   package: "W10"
   verdict: partial
   title: "proto 覆盖 67% → 80%+"
   acceptance: "覆盖率 ≥80%；全帧往返；SSE golden 稳定；WS/SSE 词表对称"
-  evidence: ""
+  evidence: "internal/proto::TestVocabulary_Symmetry; internal/proto::TestSSEEvent_Golden"
 
 - id: "E1/COV3"
   package: "W10"
   verdict: partial
   title: "bootstrap 集成测试 23% → 50%+"
   acceptance: "覆盖率 ≥50%；最小 App 可构建并跑一轮 turn；软降级被验证"
-  evidence: ""
+  evidence: "internal/bootstrap::TestBuild_EndToEndTurn; internal/bootstrap::TestBuild_VCSSoftDegrade"
 
+# 2026-08-04 复核：partial → done。这是台账**低报**：internal/ctxcompact 下有 8 个
+# TestProperty_*，三条子句逐条都有可执行断言。
+#   1 ≥3 个属性 —— 三个互不相同的属性各自成立（pin 集是输出前缀且严格升序 /
+#     压缩后 token 严格下降 / 每次 summary 调用输入不超窗口），远超 3
+#   2 随机输入通过 —— genHistory(rng) 随机生成含孤儿 tool_call、孤儿 tool_result
+#     的历史；planPropertyGen 每属性跑 30–50 个 trial（实测子测试 pass=51/23/40…，
+#     skip 的是「历史以 summary 结尾」这一前置不成立的 trial，非全量跳过）
+#   3 工具对配对不变量成立 —— 不动点成立 / 幂等 / 人为破坏后可修复，三个角度
+# 已知弱点（不足以推翻 done）：属性生成器用固定种子（propSeed=42、123、777）而非
+# 每次运行换种子，所以它是「确定性重放的属性测试」—— 覆盖面来自 trial 数而不是
+# 跨运行的随机性。这是有意的（CI 可复现），但它意味着新 bug 只有落在这批种子的
+# 轨迹上才会被抓到。
 - id: "E2/PROP1"
   package: "W4"
-  verdict: partial
+  verdict: done
   title: "ctxcompact 属性测试"
   acceptance: "≥3 个属性；随机输入通过；工具对配对不变量成立"
-  evidence: ""
+  evidence:
+    "1": "internal/ctxcompact::TestProperty_PinSetIsSubsetOfOutput; internal/ctxcompact::TestProperty_RunReducesTokens; internal/ctxcompact::TestProperty_EachSummaryCallWithinWindow"
+    "2": "internal/ctxcompact::TestProperty_PinSetIsSubsetOfOutput; internal/ctxcompact::TestProperty_RunReducesTokens"
+    "3": "internal/ctxcompact::TestProperty_ToolCallPairingFixpointHolds; internal/ctxcompact::TestProperty_ToolCallPairFixpointIsIdempotent; internal/ctxcompact::TestProperty_ToolCallPairFixpointRepairsCorruption"
 
 - id: "F1/WAL1"
   package: "W3"
@@ -470,12 +598,26 @@
   acceptance: "关键路径有基准；CI 记录趋势；大回归可发现"
   evidence: ""
 
+# 2026-08-04 复核：missing → partial。「missing」是台账**低报**：cooldown 实现完整
+# 且已接通配置链 —— config.Compaction.CooldownFraction / CooldownDuration /
+# HardForceFraction（默认 0.05 / "" / 0.95）→ bootstrap.go:967-969 →
+# orchestrator.wrapCompaction → einollm.CompactingModel.inCooldown。
+# 不翻 done 的原因是第 3 条「keepRecent 文档清晰」**没有可执行证据**：
+#   唯一沾边的 internal/llm/eino::TestCompactingModel_KeepRecentBridge 是**恒真的
+#   空壳** —— 它对字面量断言 `KeepRecent(4)/2 >= 2`，且自己的注释就写明「The test
+#   does NOT assert the bridge itself」。拿它顶这条子句正是 ADR-0011 边界里点名的
+#   「空壳测试 + 一行正确 marker」形状，故拒绝。
+#   而「文档清晰」本身是文档质量主张，不是行为主张，GOV8 只收测试引用 —— 这条要么
+#   改写成可断言的形式（例如断言两处 KeepRecent 语义在代码里不漂移），要么它永远
+#   撑不起终态。移交 W4 决定。
+# 第 1、2 条已覆盖：TestCompactingModel_CooldownDefersReCompact（冷却期内不重压）、
+# TestCompactingModel_HardForceOverridesCooldown（逼近 HardForceFraction 仍触发）。
 - id: "F2/CCL1"
   package: "W4"
-  verdict: missing
+  verdict: partial
   title: "mid-turn 压缩 cooldown"
   acceptance: "同 turn 不重复压缩；逼近上限仍触发；keepRecent 文档清晰"
-  evidence: ""
+  evidence: "internal/llm/eino::TestCompactingModel_CooldownDefersReCompact; internal/llm/eino::TestCompactingModel_HardForceOverridesCooldown"
 
 - id: "F2/LEAK2"
   package: "W3"

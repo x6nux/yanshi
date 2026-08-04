@@ -613,6 +613,13 @@ func TestClassifyEventsWithUsage_OnUsageOmittedIsBackwardCompat(t *testing.T) {
 // emitAssistant serves the streaming path, where reasoning arrives as a per-
 // chunk delta (openai acl chat_model.go:1222, choice.Delta.ReasoningContent —
 // parallel to choice.Delta.Content), so a frame-per-chunk is correct.
+//
+// This is the PRODUCER half of the thinking clause; the TUI half is
+// internal/cli/tui::TestModel_ThinkingLiveThenCollapses. Either one alone would
+// leave the seam untested, which is the exact shape of this repo's recurring
+// "written and tested but never called" defect.
+//
+// ledger: C2/UX8#1 思考模型可见流式思考
 func TestClassifyEvents_EmitsThinkingForReasoning(t *testing.T) {
 	iter := newFakeEventIter(t, []*schema.Message{
 		{Role: schema.Assistant, ReasoningContent: "let me think", Content: "answer"},
@@ -630,6 +637,13 @@ func TestClassifyEvents_EmitsThinkingForReasoning(t *testing.T) {
 // TestClassifyEvents_ReasoningOnlyEmitsOnlyThinking proves a reasoning-only
 // chunk (no Content) emits a thinking frame and NO agent_chunk — so reasoning-
 // only deltas don't produce empty content frames.
+//
+// It carries the separation clause at the wire level: reasoning and answer text
+// travel in DIFFERENT frame types, so a client cannot accidentally render one
+// as the other. The TUI-side counterpart is
+// internal/cli/tui::TestThinkingParity_NonThinkingFinalizesLive.
+//
+// ledger: C2/UX8#2 正文与思考分离
 func TestClassifyEvents_ReasoningOnlyEmitsOnlyThinking(t *testing.T) {
 	iter := newFakeEventIter(t, []*schema.Message{
 		{Role: schema.Assistant, ReasoningContent: "pondering"},

@@ -958,6 +958,13 @@ func findThinkingEntry(t *testing.T, m model) *thinkingEntry {
 // LIVE thinkingEntry (streaming text rendered, live=true); the first
 // non-thinking event (agent_chunk) finalizes it — live=false, endedAt set — so
 // it collapses to the "Thought for …" line, and the reasoning text accumulates.
+//
+// The visibility half of the clause is asserted against te.render(), not just
+// the entry struct: a thinkingEntry nobody draws is not "visible streaming
+// thinking". The producer half is orchestrator's
+// TestClassifyEvents_EmitsThinkingForReasoning.
+//
+// ledger: C2/UX8#1 思考模型可见流式思考
 func TestModel_ThinkingLiveThenCollapses(t *testing.T) {
 	m := newModel(&fakeSession{}, "/proj")
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -997,6 +1004,8 @@ func TestModel_ThinkingLiveThenCollapses(t *testing.T) {
 // TestModel_ThinkingCtrlOTogglesExpand proves ctrl+o flips expanded on the most
 // recent finalized thinkingEntry, revealing the full reasoning, and collapses on
 // the next press. It is a no-op on a live block or when no block exists.
+//
+// ledger: C2/UX8#4 可折叠
 func TestModel_ThinkingCtrlOTogglesExpand(t *testing.T) {
 	m := newModel(&fakeSession{}, "/proj")
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})

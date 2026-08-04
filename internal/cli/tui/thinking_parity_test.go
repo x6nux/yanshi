@@ -39,6 +39,12 @@ func TestThinkingParity_LiveDeltaAccumulates(t *testing.T) {
 
 // TestThinkingParity_NonThinkingFinalizesLive 验证首个非 thinking 帧把 live block
 // finalize(startedAt/endedAt 均非零,live=false)。
+//
+// 这是「分离」在 TUI 侧的形态:思考被 detach 成 assistantEntry.thought,与正文
+// 各占一个字段,而不是拼进同一段文本。线路侧的对应证据是
+// internal/agent/orchestrator::TestClassifyEvents_ReasoningOnlyEmitsOnlyThinking。
+//
+// ledger: C2/UX8#2 正文与思考分离
 func TestThinkingParity_NonThinkingFinalizesLive(t *testing.T) {
 	m := newTestModel(t)
 	m = m.applyEvent(cli.StreamEvent{Kind: "thinking", Text: "reasoning"})
@@ -121,6 +127,11 @@ func TestThinkingParity_CtrlOExpandsCollapsed(t *testing.T) {
 
 // TestThinkingParity_LiveBlockNotExpandable 验证 live thinkingEntry 不受 ctrl+O
 // 影响(应跳过 live block,找更早的可折叠项或返回 false)。
+//
+// 它是折叠语义的负向边界:折叠只对「已结束的思考」成立,对正在流的块折叠会让
+// 用户看不到还在增长的内容。
+//
+// ledger: C2/UX8#4 可折叠
 func TestThinkingParity_LiveBlockNotExpandable(t *testing.T) {
 	m := newTestModel(t)
 	m = m.applyEvent(cli.StreamEvent{Kind: "thinking", Text: "ongoing"})
@@ -132,6 +143,8 @@ func TestThinkingParity_LiveBlockNotExpandable(t *testing.T) {
 // TestThinkingParity_NoThinkingNoEntry 锁定"非思考模型无影响":
 // 只 apply agent_chunk(无 thinking frame),再调用现有 flushAssistant 把 pending
 // 正文落成 entry;不得创建 thinkingEntry,assistantEntry.thought 必须为 nil。
+//
+// ledger: C2/UX8#3 非思考模型无影响
 func TestThinkingParity_NoThinkingNoEntry(t *testing.T) {
 	m := newTestModel(t)
 	m = m.applyEvent(cli.StreamEvent{Kind: "agent_chunk", Text: "plain answer"})
