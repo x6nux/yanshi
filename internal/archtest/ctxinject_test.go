@@ -22,8 +22,9 @@ import (
 // ctxInjectExceptions maps "<module-relative pkg>.<Func>" to the work package
 // that will add the missing production call site.
 //
-// Entries may only be REMOVED, never added. A dead entry — the injector now
-// has a production call site — fails the test.
+// Entries may only be REMOVED, never added. A dead entry fails the test, in
+// both of its shapes: the injector now has a production call site, OR no such
+// injector is declared any more.
 var ctxInjectExceptions = map[string]string{}
 
 // ctxInjector is one exported context-injecting function declaration.
@@ -172,9 +173,11 @@ func TestGOV6ContextInjectorsHaveCallSites(t *testing.T) {
 	}
 	called := findCtxInjectorCalls(t)
 
+	declared := make(map[string]bool, len(injectors))
 	var orphans []string
 	for _, inj := range injectors {
 		k := inj.key()
+		declared[k] = true
 		if called[k] {
 			continue
 		}
@@ -192,18 +195,26 @@ func TestGOV6ContextInjectorsHaveCallSites(t *testing.T) {
 			len(orphans), strings.Join(orphans, "\n  "))
 	}
 
-	// Dead-entry check: an exempted injector that now has a call site has
-	// been wired up, so its exemption must be deleted.
+	// Dead-entry check, both halves. "Now called" was the only one checked;
+	// an entry whose injector had been deleted or renamed matched nothing in
+	// `called`, so the failure condition was vacuously false and the entry
+	// lived forever — pre-authorising the next injector to appear under that
+	// exact key, which is precisely how a silently-unwired injector got here
+	// in the first place.
 	var dead []string
 	for k := range ctxInjectExceptions {
-		if called[k] {
-			dead = append(dead, k)
+		switch {
+		case called[k]:
+			dead = append(dead, k+": now has a production call site")
+		case !declared[k]:
+			dead = append(dead, k+": no such exported context injector under internal/ "+
+				"(renamed, unexported or deleted)")
 		}
 	}
 	sort.Strings(dead)
 	if len(dead) > 0 {
-		t.Errorf("GOV6: %d stale ctxInjectExceptions entr(ies) — these injectors now "+
-			"have production call sites and their exemptions must be DELETED:\n  %s",
+		t.Errorf("GOV6: %d stale ctxInjectExceptions entr(ies) — the exempted subject is "+
+			"wired up or gone, so the exemption must be DELETED:\n  %s",
 			len(dead), strings.Join(dead, "\n  "))
 	}
 }

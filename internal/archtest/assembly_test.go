@@ -2,8 +2,14 @@
 //
 // GOV4 catches the repo's dominant failure mode: a component package is
 // written, tested, and green, but never wired into the composition root, so
-// it is dead code at runtime. The 2026-07-31 audit found this pattern behind
-// 53% of "partially implemented" features. See
+// it is dead code at runtime. The 2026-07-31 audit named it the leading
+// failure mode in prose — "零件造好了，总装线没接上"
+// (docs/feature-status-audit.md §1.1) — and put no number on it.
+//
+// The number that IS in that document is a different one, and this comment
+// used to misreport it: 50 of the audit's 94 items were judged "部分实现",
+// i.e. 53% of ITEMS are partial. It is not "53% of the partial items are
+// assembly breaks". Nothing measured that share. See
 // docs/superpowers/specs/2026-08-03-yanshi-roadmap-design.md §4.2.
 package archtest
 
@@ -26,8 +32,9 @@ import (
 // BuildAutomation reachable through it, so W1's single fix (calling BuildC1
 // from Build) turns all three green in one commit.
 //
-// Entries may only be REMOVED, never added. A dead entry — the function is
-// now reachable from Build without needing to be a root — fails the test.
+// Entries may only be REMOVED, never added. A dead entry fails the test, in
+// both of its shapes: the function is now reachable from Build without needing
+// to be a root, OR no exported Build* function by that name exists any more.
 var assemblyExceptions = map[string]string{}
 
 // bootstrapCallGraph parses every non-test .go file in internal/bootstrap and
@@ -138,14 +145,23 @@ func TestGOV4BuildFunctionsReachable(t *testing.T) {
 	base := reachableFrom(graph, []string{"Build"})
 	var dead []string
 	for name := range assemblyExceptions {
-		if base[name] {
-			dead = append(dead, name)
+		switch {
+		case base[name]:
+			dead = append(dead, name+": now reachable from Build")
+		case builds[name] == "":
+			// The "subject vanished" half. Reachability alone cannot see it:
+			// an entry for a function that no longer exists is added as a BFS
+			// root, reaches nothing, and is never reported — so it survives
+			// every run as a silent pre-authorisation. Restore a Build* by
+			// that name later and it arrives already exempt.
+			dead = append(dead, name+": no exported Build* function by this name exists "+
+				"in internal/bootstrap (renamed, unexported or deleted)")
 		}
 	}
 	sort.Strings(dead)
 	if len(dead) > 0 {
-		t.Errorf("GOV4: %d stale assemblyExceptions entr(ies) — these functions are "+
-			"now reachable from Build and their exemptions must be DELETED:\n  %s",
+		t.Errorf("GOV4: %d stale assemblyExceptions entr(ies) — the exempted subject is "+
+			"wired up or gone, so the exemption must be DELETED:\n  %s",
 			len(dead), strings.Join(dead, "\n  "))
 	}
 }

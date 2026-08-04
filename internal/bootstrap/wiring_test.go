@@ -81,9 +81,27 @@ func TestC1ToolsAreRegistered(t *testing.T) {
 // allow list but absent from the tool registry, to the work package that
 // will register it.
 //
-// Entries may only be REMOVED, never added. A dead entry — the tool is now
-// registered — fails the test.
+// Entries may only be REMOVED, never added. A dead entry fails the test, in
+// both of its shapes: the tool is now registered, OR no profile allow list
+// names it any more so there is nothing left to excuse.
 var toolWiringExceptions = map[string]string{}
+
+// profileNamedTools is the universe an exemption can legitimately refer to:
+// every concrete name the shipped profile machinery can put in front of guard.
+//
+// ConditionalProfileTools is included because the production-shape assertion
+// runs phantomNames against the EFFECTIVE profile, which those names join at
+// boot; leaving them out would make a legitimate exemption look vanished.
+func profileNamedTools() map[string]bool {
+	named := map[string]bool{}
+	for _, n := range bootstrap.DefaultOrchestratorProfile().Tools.Allow {
+		named[n] = true
+	}
+	for _, n := range bootstrap.ConditionalProfileTools() {
+		named[n] = true
+	}
+	return named
+}
 
 // registeredSet indexes an App's tool registry snapshot for name lookup.
 func registeredSet(t *testing.T, app *bootstrap.App) map[string]bool {
@@ -155,18 +173,27 @@ func TestGOV5ProfileAllowMatchesToolRegistry(t *testing.T) {
 			len(phantom), strings.Join(phantom, "\n  "))
 	}
 
-	// Dead-entry check: an exempted name that is now registered has been
-	// wired up, so its exemption must be deleted.
+	// Dead-entry check, both halves. Only "now registered" used to be checked,
+	// and that condition is vacuously false for a name no profile mentions —
+	// so an entry for a tool that was dropped from the allow list (or never
+	// existed) survived every run. It is not inert: it silently pre-approves
+	// the next appearance of that exact name, which is the phantom-name bug
+	// GOV5 exists to catch, arriving with its own exemption already in place.
+	named := profileNamedTools()
 	var dead []string
 	for name := range toolWiringExceptions {
-		if registered[name] {
-			dead = append(dead, name)
+		switch {
+		case registered[name]:
+			dead = append(dead, name+": now registered")
+		case !named[name]:
+			dead = append(dead, name+": no profile allow list names this tool, so the "+
+				"exemption excuses nothing")
 		}
 	}
 	sort.Strings(dead)
 	if len(dead) > 0 {
-		t.Errorf("GOV5: %d stale toolWiringExceptions entr(ies) — these tools are now "+
-			"registered and their exemptions must be DELETED:\n  %s",
+		t.Errorf("GOV5: %d stale toolWiringExceptions entr(ies) — the exempted subject is "+
+			"registered or gone, so the exemption must be DELETED:\n  %s",
 			len(dead), strings.Join(dead, "\n  "))
 	}
 

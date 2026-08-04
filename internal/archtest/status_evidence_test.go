@@ -57,8 +57,15 @@ import (
 )
 
 // evidenceField holds the "evidence:" value of a ledger entry, which is a
-// scalar for non-terminal entries (always the empty string — there is nothing
-// to prove yet) and a clause-index → references mapping for terminal ones.
+// scalar for non-terminal entries and a clause-index → references mapping for
+// terminal ones.
+//
+// The non-terminal scalar is USUALLY empty — there is nothing proven yet — but
+// it is not required to be, and this comment used to claim otherwise ("always
+// the empty string") while five partial entries carried reference lists. The
+// rule actually enforced, in TestFeatureStatusLedgerIntegrity, is the weaker
+// and truthful one: a non-terminal entry may record leads, and any lead it
+// records must resolve.
 //
 // The two shapes share one field because they answer the same question at
 // different resolutions, and a second field would let a terminal entry keep a
@@ -224,10 +231,17 @@ func testDocs(t *testing.T, pkgDir string) map[string]string {
 //     it covers, which is the whole failure this gate exists for);
 //  2. its keys must be exactly 1..N for N acceptance clauses — a missing key
 //     is an unproven promise, an extra key is a clause that no longer exists;
-//  3. every reference must be a TEST reference. A terminal verdict asserts
-//     behaviour, and only an executable assertion can carry that claim; a file
-//     path proves a file exists;
-//  4. each cited test must echo the clause back from its own doc comment.
+//  3. every reference must be a TEST reference that `go test` would really run
+//     — see resolveTestRef. A terminal verdict asserts behaviour, and only an
+//     executable assertion can carry that claim; a file path proves a file
+//     exists, and a fixture helper proves nothing at all;
+//  4. no clause may rest SOLELY on build-constrained tests (rule 3's remaining
+//     loophole: //go:build e2e_real compiles under no CI job, so the assertion
+//     has never executed anywhere). Constrained tests are welcome ALONGSIDE an
+//     unconstrained one — internal/acp and internal/vcs carry the repo's only
+//     real-CLI coverage and banning them outright would push those clauses
+//     toward weaker evidence, which is the opposite of the point;
+//  5. each cited test must echo the clause back from its own doc comment.
 func checkTerminalEvidence(t *testing.T, root string, e ledgerEntry) []string {
 	t.Helper()
 	clauses := splitClauses(e.Acceptance)
@@ -264,20 +278,30 @@ func checkTerminalEvidence(t *testing.T, root string, e ledgerEntry) []string {
 				"evidence value", e.ID, n, clause))
 			continue
 		}
+		// Per-clause tally for rule 4: a clause needs at least one reference
+		// that the default toolchain actually compiles.
+		unconstrained := 0
+		var constrained []string
 		for _, ref := range refs {
-			if !strings.Contains(ref, "::") {
+			pkg, name, isTestRef := strings.Cut(ref, "::")
+			if !isTestRef {
 				problems = append(problems, fmt.Sprintf("%s: clause %d (%q) cites %q — "+
 					"terminal evidence must be a TEST reference (pkg/path::TestName); a "+
 					"file reference proves a file exists, not that the clause holds",
 					e.ID, n, clause, ref))
 				continue
 			}
-			if reason := checkEvidence(t, root, ref); reason != "" {
+			info := resolveTestRef(t, root, pkg, name)
+			if info.Problem != "" {
 				problems = append(problems, fmt.Sprintf("%s: clause %d bad evidence — %s",
-					e.ID, n, reason))
+					e.ID, n, info.Problem))
 				continue
 			}
-			pkg, name, _ := strings.Cut(ref, "::")
+			if info.Constrained {
+				constrained = append(constrained, ref+" ["+info.Constraint+"]")
+			} else {
+				unconstrained++
+			}
 			docs := testDocs(t, filepath.Join(root, filepath.FromSlash(pkg)))
 			var matched bool
 			var transcribed []string
@@ -305,6 +329,14 @@ func checkTerminalEvidence(t *testing.T, root string, e ledgerEntry) []string {
 				"\"ledger: %s#%d %s\" to the test's doc comment — the claim belongs "+
 				"where it can be checked against the test body",
 				e.ID, n, clause, ref, e.ID, n, clause))
+		}
+		if unconstrained == 0 && len(constrained) > 0 {
+			problems = append(problems, fmt.Sprintf("%s: clause %d (%q) is proven ONLY by "+
+				"build-constrained test(s) — %s. No CI job supplies those tags, so the "+
+				"assertion behind this terminal verdict has never executed. Cite at least "+
+				"one unconstrained test for the clause; the constrained one may stay "+
+				"alongside it as deeper coverage.",
+				e.ID, n, clause, strings.Join(constrained, ", ")))
 		}
 	}
 	return problems
@@ -356,7 +388,10 @@ func TestLedgerMarkersAreLive(t *testing.T) {
 	// per *_test.go and report every finding that many times (the reason a
 	// dedup pass used to be needed here).
 	var problems []string
-	for _, dir := range []string{"internal", "cmd"} {
+	// evidenceScanRoots, not a local list: resolveTestRef rejects citations
+	// outside these roots for exactly this reason, and two independently
+	// maintained copies would let the two halves drift apart silently.
+	for _, dir := range evidenceScanRoots {
 		base := filepath.Join(root, dir)
 		err := filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
 			if err != nil || !d.IsDir() {

@@ -35,7 +35,12 @@ go test ./internal/archtest ./internal/bootstrap  # 架构治理测试（见下�
 
 **配置。** `config.yaml` 已被 gitignore —— 从被跟踪的 `config.example.yaml` 复制而来。YAML 由 `internal/config` 加载；`${VAR}` 环境变量在反序列化前展开。
 
-**治理是机器强制的（`internal/archtest` + `internal/bootstrap`）。** 下方「约定」里的规则不是荣誉制，而是由测试执行的 —— 违反时 `go test ./internal/archtest ./internal/bootstrap` 会红。**GOV1–GOV4、GOV6、GOV8 住在 `internal/archtest`；GOV5 与 GOV7 住在 `internal/bootstrap/wiring_test.go`** —— 后两条要拿真实装配出来的 `App.ToolNames` 跟 profile 对账，只有在组合根内部才拿得到，所以别去 archtest 里找它们。**债务型豁免表**（记录「有人打算修的违规」）遵循同一套语义：**只能删不能加，且死条目（豁免项已经合规或已消失）也判失败**。这套语义覆盖全部 8 张债务表：`lineExceptions`、`docExceptionPkgs`、`docExceptionSymbols`、`portExceptions`、`assemblyExceptions`、`ctxInjectExceptions`、`toolWiringExceptions`、`d2HistoricalDocs`。
+**治理是机器强制的（`internal/archtest` + `internal/bootstrap`）。** 下方「约定」里的规则不是荣誉制，而是由测试执行的 —— 违反时 `go test ./internal/archtest ./internal/bootstrap` 会红。**GOV1–GOV4、GOV6、GOV8 住在 `internal/archtest`；GOV5 与 GOV7 住在 `internal/bootstrap/wiring_test.go`** —— 后两条要拿真实装配出来的 `App.ToolNames` 跟 profile 对账，只有在组合根内部才拿得到，所以别去 archtest 里找它们。
+
+**债务型豁免表**（记录「有人打算修的违规」）遵循同一套语义，但这套语义里**只有一半是机器强制的**，读的时候别把两半混为一谈：
+
+- **机器强制：死条目判失败。** 豁免项**已经合规**或**主体已消失**（文件被删/改名、函数被删、符号已不存在、名字已不在 allow list）都会让门禁变红。这条覆盖全部 8 张债务表：`lineExceptions`、`docExceptionPkgs`、`docExceptionSymbols`、`portExceptions`、`assemblyExceptions`、`ctxInjectExceptions`、`toolWiringExceptions`、`d2HistoricalDocs`。（「主体已消失」这半是后补的：`lineExceptions`/`assemblyExceptions`/`ctxInjectExceptions`/`toolWiringExceptions` 四张表原先只查「已合规」，而主体消失时那个条件恒假 —— 指向已删文件的条目就成了**永久预授权**，同名主体一回来就自带豁免。）
+- **只是约定，机器拦不住：「只能删不能加」。** 没有任何测试能区分「新增一条违规 + 同时新增一行豁免」与「本来就在表里」—— 实测这么干全绿。这条靠 code review 守，写进表里的每条都必须附整改工作包。
 
 ⚠️ 两个例外，**不适用**上述语义，别按债务表去读：
 - `fanOutExempt`（deps_test.go，R4(b) 的 25 fan-out 上限）记录的是**永久架构角色**而非债务 —— `bootstrap` 是组合根、`tools` 是工具枢纽，本来就该是 hub。**故意不做死条目检测**：某次依赖数偶然掉到 25 以下就删条目，等它长回来时门禁会反过来指控组合根是「第二个组合根」。
@@ -44,13 +49,13 @@ go test ./internal/archtest ./internal/bootstrap  # 架构治理测试（见下�
 GOV7 与 GOV8 的对账部分**故意不设任何豁免表**。
 
 - `deps_test.go`（GOV1，`TestR1_NoImportCycle`/`TestR2_PortAllowlist`/`TestR3_W2ConfigMustNotDependOnGuard`/`TestR4_SingleServerCompositionRoot`/`TestR5_PortsMustNotDependOnServiceLayer`）：六边形分层。`portAllowlists` 规定每个 port 包允许的 internal 依赖，已知的临时违规登记在 `portExceptions`（附整改工作包，`TestR2_PortAllowlist` 会把「port 已不再 import 该依赖但条目还在」判为死条目而失败）；`bootstrap` 是唯一组合根。新增跨包依赖前先看这里，否则 CI 直接红。
-- `lines_test.go`（GOV2，`TestPureCodeLineGate`）：非测试 `.go` 文件 ≤ 1000 纯代码行。豁免写在 `lineExceptions` map 里。用 `go run ./cmd/codelines` 做即时检查。
+- `lines_test.go`（GOV2，`TestPureCodeLineGate`）：`internal/` 与 `cmd/` 下的非测试 `.go` 文件 ≤ 1000 纯代码行（门禁只扫这两个目录，`third_party/`、`sdk/` 与所有 `_test.go` 都不在范围内）。豁免写在 `lineExceptions` map 里，key 是绝对路径（用 `abs("internal/…")`）。用 `go run ./cmd/codelines` 做即时检查 —— 它扫的目录与门禁一致。
 - `docs_test.go`（GOV3，`TestExportedDocs`）：`internal/` 与 `cmd/` 下所有导出符号必须有 doc 注释；豁免为 `docExceptionPkgs`（整包）与 `docExceptionSymbols`（单符号）。两张表都做死条目检测：被豁免的包里已经没有缺注释的符号（或包已不存在）、被豁免的符号已经补上注释（或已不存在），都判失败。
-- `assembly_test.go`（GOV4，`TestGOV4BuildFunctionsReachable`）：`internal/bootstrap` 里每个导出的 `Build*` 必须能从 `Build` 经同包调用图到达。写完、测绿、却没接进组合根 = 运行时死代码 —— 审计里 53% 的「部分实现」是这个形状。豁免表 `assemblyExceptions` 的条目被当作**额外的 BFS 根**（而非跳过的节点），这样一次接线能让整条链同时转绿。
+- `assembly_test.go`（GOV4，`TestGOV4BuildFunctionsReachable`）：`internal/bootstrap` 里每个导出的 `Build*` 必须能从 `Build` 经同包调用图到达。写完、测绿、却没接进组合根 = 运行时死代码 —— 审计把它定性为**主导失效模式**（「零件造好了，总装线没接上」），但**没给过任何百分比**（`docs/feature-status-audit.md` 里的 53% 是另一回事：94 项里 50 项判为「部分实现」，即 **53% 的条目是部分实现**，不是「53% 的部分实现是装配断裂」）。豁免表 `assemblyExceptions` 的条目被当作**额外的 BFS 根**（而非跳过的节点），这样一次接线能让整条链同时转绿。
 - `internal/bootstrap/wiring_test.go`（GOV5，`TestGOV5ProfileAllowMatchesToolRegistry`/`TestGOV5ProductionProfileHasNoPhantomNames`/`TestGOV5ConditionalToolAuthorizedWhenRegistered`/`TestGOV5OperatorProfileIsNotWidened`）：默认 orchestrator profile 里 allow 的每个工具名都必须真的被注册。幻影名字让 profile 读起来比实际权限宽；两个方向都测（fake 形状与生产形状），豁免表是 `toolWiringExceptions`。
 - `ctxinject_test.go`（GOV6，`TestGOV6ContextInjectorsHaveCallSites`）：每个导出的 `With<X>(ctx, …) context.Context` 注入器都必须有生产调用点，否则整条消费链静默读零值（`registry.WithRole` 曾这样空跑）。豁免表 `ctxInjectExceptions`。
 - `internal/bootstrap/wiring_test.go`（GOV7，`TestGOV7EditToolsAreRegistered`）：guard 的 allow-edits 免提示自动批准集（`guard.EditToolNames()`）里的每个名字必须是已注册工具 —— 这是 GOV5 的消费侧孪生。该集合带**授权语义**，幻影名会白占一个「不弹窗」的槽位（`fs_mkdir` 就这样残留过）。**故意不设豁免表**：往这个集合里加名字是授权变更，该走工作包而不是治理逃生门。
-- `status_test.go` + `status_evidence_test.go` + `acceptance_pin_test.go`（GOV8，`TestFeatureStatusLedgerIntegrity`/`TestLedgerEvidenceIsClauseComplete`/`TestLedgerMarkersAreLive`/`TestLedgerAcceptanceIsPinned`）：`docs/feature-status.yaml` 的终态条目（`done`/`removed`）必须逐句对账 —— evidence 是**子句号 → 测试引用**的映射，key 恰好等于 acceptance 切出的子句数，且只接受测试引用；被引的测试还要在**自己的 doc 注释**里回写 `ledger: <ID>#<n> <子句原文>`（逐字一致），反向扫描则拒绝陈旧标记。**分母也被钉住**：`acceptancePins` 给全部 63 条 acceptance 各存一行「子句数 + SHA-256 前 16 位」，任何改动 acceptance 的编辑都会红，必须显式改写这一行才能转绿 —— 否则「删掉 4 条子句 + 删掉对应 evidence key + 删掉随之陈旧的 marker」这套纯机械三步就能整条绕过 GOV8。看当前台账用 `go run ./cmd/featurestatus`（`-open` 只列未结项）。理由与边界见 [ADR-0011](docs/adr/0011-ledger-clause-level-evidence-handshake.md)。
+- `status_test.go` + `status_evidence_test.go` + `acceptance_pin_test.go`（GOV8，`TestFeatureStatusLedgerIntegrity`/`TestLedgerEvidenceIsClauseComplete`/`TestLedgerMarkersAreLive`/`TestLedgerAcceptanceIsPinned`）：`docs/feature-status.yaml` 的终态条目（`done`/`removed`）必须逐句对账 —— evidence 是**子句号 → 测试引用**的映射，key 恰好等于 acceptance 切出的子句数，且只接受测试引用；被引的测试还要在**自己的 doc 注释**里回写 `ledger: <ID>#<n> <子句原文>`（逐字一致），反向扫描则拒绝陈旧标记。**「测试引用」按 `go test` 的口径解析**（`resolveTestRef`）：名字必须是 `Test` + 非小写字母开头、签名必须是 `func(*testing.T)`、包路径必须在 `internal/`/`cmd/` 之内（反向陈旧扫描只走这两个根，指向别处的 marker 永远不会被复查）。**带 build 约束的测试**（如 `//go:build e2e_real`）可以作为**补充**证据，但**不能是某条子句的唯一证据** —— 没有任何 CI job 提供那些 tag，只靠它撑起的终态断言从未被执行过。非终态条目的 evidence 是**可选**的（台账文件头说写 `""`，实际有 5 条 partial 带线索），但一旦写了就必须解析得开。**分母也被钉住**：`acceptancePins` 给全部 63 条 acceptance 各存一行「子句数 + SHA-256 前 16 位」，任何改动 acceptance 的编辑都会红，必须显式改写这一行才能转绿 —— 否则「删掉 4 条子句 + 删掉对应 evidence key + 删掉随之陈旧的 marker」这套纯机械三步就能整条绕过 GOV8。看当前台账用 `go run ./cmd/featurestatus`（`-open` 只列未结项）。理由与边界见 [ADR-0011](docs/adr/0011-ledger-clause-level-evidence-handshake.md)。
 - `removal_test.go`（不带 GOV 编号，`TestVSCodeExtensionRemoved`/`TestVSCodeExtensionNotAdvertisedInDocs`）：以**删除**结项的审计项（D2/O12）必须保持删除状态 —— 路径不得回归，文档也不得再把它当作在售能力宣传。仍然提到它的历史文档（审计、计划、spec 这类有日期的档案）登记在 `d2HistoricalDocs` 并须带 `D2/O12 已作废` 墓碑。识别用 `d2Mentions` 正则组，**中英文都认** —— 产品名紧跟「扩展 / 插件 / extension / plugin」的各种拼法，以及 `<那个词> for <产品名>` 的倒装写法。本仓多份文档是英文正文，只认中文等于对最可能复发的那批文档失效。正则刻意要求产品名与那几个词**相邻**，好让 `.vscode` 忽略项与 `ide-vscode` 提交 scope 这两处合法用法不误伤。**顺带一提：这段话本身就被这道门禁改写过一次** —— 初稿把几个正则示例原样写在这里，测试立刻变红。**这条门禁会扫描 `CLAUDE.md` 本身**：在这里描述那个被删的交付物会直接让测试变红，本条目就是这么被抓到过的。
 
 **生成的文档会被 CI diff-gate。** 改动 `internal/config.Config`、`internal/api` schema 或任何子命令的 `-h` 文本后，必须重跑生成器并提交结果，否则 `.github/workflows/docs.yml` 的 `git diff --exit-code` 会失败：
@@ -130,11 +135,11 @@ Agent Client Protocol 适配器，以子进程方式拉起外部 agent CLI，并
 
 ## 约定
 
-- **单文件不超过 1000 行** —— 这里指**纯代码行**（不含注释行和空行）。任何 `.go` 文件的纯代码行超过 1000 时，先按职责拆分（拆到同包的新文件，或独立的子包）再继续写新代码；不要在超长文件里继续堆叠。
+- **单文件不超过 1000 行** —— 这里指**纯代码行**（不含注释行和空行）。任何 `.go` 文件的纯代码行超过 1000 时，先按职责拆分（拆到同包的新文件，或独立的子包）再继续写新代码；不要在超长文件里继续堆叠。这是**全仓约定**，但机器强制的范围更窄：GOV2 只扫 `internal/` 与 `cmd/` 下的**非测试**文件，`_test.go`、`third_party/`、`sdk/` 超标不会让门禁变红 —— 那部分靠自觉。
 - **重复逻辑必须抽成公共函数** —— 发现重复实现的函数或反复出现的相同逻辑片段时，提取为公共函数/辅助函数（同包内，或放进合适的小包）复用；禁止复制粘贴。
 - **注释是承重文档** —— 包和导出符号都带有多段 doc 注释来解释*为什么*（尤其在 ADK、guard、VCS 周围）。在这些区域增改时，请保持同样的注释密度。
 - **Fake 优先于 mock** —— `einollm.FakeModel`、`goalloop.FakePlanner`/`FakeImplementer`、`cli.FakeBackend`、`acp.FakeAgent` 驱动确定性测试，无需 API key 或子进程。优先新增一个 fake，而非引入 mock 框架。
-- **承重架构决策走 ADR** —— `docs/adr/` 是单决策的演进档案（ADR-0001..0010 已覆盖 UnknownToolsHandler、guard fail-closed、压缩、WS/SSE、autoVCS scope 覆盖等）。新增或修改上述架构章节里的约束时，从 `docs/adr/0000-template.md` 复制一条新 ADR（编号取当前最大 +1），把不可违反的约束落进 Consequences。CLAUDE.md 写全景当前态，ADR 写单条决策的来龙去脉 —— 交叉引用，不要互相复制。
+- **承重架构决策走 ADR** —— `docs/adr/` 是单决策的演进档案（ADR-0001..0011 已覆盖 UnknownToolsHandler、guard fail-closed、压缩、WS/SSE、autoVCS scope 覆盖、台账逐句对账等）。新增或修改上述架构章节里的约束时，从 `docs/adr/0000-template.md` 复制一条新 ADR（编号取当前最大 +1），把不可违反的约束落进 Consequences。CLAUDE.md 写全景当前态，ADR 写单条决策的来龙去脉 —— 交叉引用，不要互相复制。
 - **对外契约在 `sdk/`** —— `sdk/schema/` 存放版本化的 API 契约（v1、v1.1），`sdk/python` 与 `sdk/ts` 是从中生成/校验的客户端。改动 `internal/api` 的 wire 格式时同步这里。
 - **提交信息用 conventional commit** —— `feat(scope):` / `fix:` / `docs:` / `refactor:` / `test:` / `chore:` / `ci:`，CHANGELOG 由 `cliff.toml` 自动生成。**（重要：用户没主动要求时，绝对不要执行 git 提交/分支操作）**
 - **被忽略的产物**：`config.yaml`、`*.db`（运行时 SQLite 存储，含 `yanshi.db`）以及构建出的二进制都被 gitignore。构建产物（`yanshi.exe`、`yanshi.exe~`）可能出现在工作树中 —— 不要提交它们。
