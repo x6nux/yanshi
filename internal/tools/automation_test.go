@@ -86,8 +86,6 @@ func TestAutomationToolsAllEightPresent(t *testing.T) {
 //
 // 这是「approval 门禁」这条验收的主证据：它遍历全部 9 个工具，并用
 // assert.Equal(len(all), checked) 保证没有一个被静默跳过。
-//
-// ledger: C1/AU1#5 approval 门禁
 func TestApprovalPromisedInDescriptionIsEnforced(t *testing.T) {
 	set, _ := setupAutomation(t)
 	batchSet, _ := newBatchTools(t)
@@ -117,8 +115,6 @@ func TestApprovalPromisedInDescriptionIsEnforced(t *testing.T) {
 //
 // ⚠️ 这条只跑一个工具（set.List），因此它是门禁**后果**的证据，不是「这九个工具都
 // 被门禁」的证据 —— 后者由 TestApprovalPromisedInDescriptionIsEnforced 承担。
-//
-// ledger: C1/AU1#5 approval 门禁
 func TestApprovalGatedToolsDeniedWithoutCallback(t *testing.T) {
 	set, _ := setupAutomation(t)
 	ctx := tools.WithProfile(context.Background(), allowAll(
@@ -132,11 +128,23 @@ func TestApprovalGatedToolsDeniedWithoutCallback(t *testing.T) {
 	assert.Contains(t, result, "requires explicit approval")
 }
 
-// TestAutomationCreateReadUpdatePauseResumeDeleteRun covers the controllable
-// lifecycle end to end through the tool layer: create → read → update → pause →
-// resume → delete → run.
+// TestAutomationCreateReadUpdatePauseResumeDeleteRun walks the whole tool-layer
+// lifecycle — create → read → update → pause → resume → run → list → delete —
+// and proves REACHABILITY: every one of the eight tools accepts its envelope,
+// dispatches, and comes back without a transport error.
 //
-// ledger: C1/AU1#3 生命周期可控
+// It does NOT prove the mutating four took effect, and the distinction is not
+// academic: GuardedTool.InvokableRun reports refusals in the RESULT STRING with
+// a nil error (TestAutomationToolsDeniedWithoutProfile below is built on
+// exactly that shape), so update/pause/resume/delete are checked here by a bare
+// require.NoError against a value that stays nil whether the operation ran or
+// was refused. Hollowing out Manager.Update and Manager.Delete to `if true {
+// return }` leaves this test green.
+//
+// That is why C1/AU1#3 is not a terminal clause. Closing it means asserting the
+// observable after-state — read reports paused, then active again, prompt
+// really became "do Y", and read after delete reports not-found — not merely
+// that the calls returned.
 func TestAutomationCreateReadUpdatePauseResumeDeleteRun(t *testing.T) {
 	set, m := setupAutomation(t)
 	ctx := withApprovingUser(tools.WithProfile(context.Background(), allowAll(

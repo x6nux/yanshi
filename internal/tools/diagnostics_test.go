@@ -51,7 +51,18 @@ func toolchainProbeReply(spec secproc.SecureProcessSpec, version string) cannedR
 // populated in the same result. Aggregation is the tool's entire reason to
 // exist: three separate tool calls would cost three model round trips.
 //
-// ledger: B3/DT5#1 一次调用聚合
+// ⚠️ The LSP row here is reachable only because this test injects
+// diagTestProbe, and that probe does not exist in production. The single
+// production construction site passes nil, which leaves diagFileListerOverride
+// at defaultFileLister — whose recentFiles returns nil unconditionally — so a
+// shipped binary iterates over zero files and reports
+// open_diagnostics_count: 0 no matter how many diagnostics the LSP manager
+// holds. Swapping the constructor below for NewDiagnosticsTool(nil) and
+// changing nothing else yields available=true, open_diagnostics_count=0.
+//
+// So this test pins the aggregation SHAPE, not the claim that production
+// aggregates all five dimensions; B3/DT5#1 stays open until defaultFileLister
+// is a real implementation (or the LSP row leaves the promise).
 func TestDiagnosticsAggregatesIndependentProbes(t *testing.T) {
 	src := stubLSPManager{enabled: true, byPath: map[string][]lsp.Diagnostic{"a.go": {{Severity: lsp.SeverityError, Message: "bad"}}}}
 	diagLSPSourceOverride = src
@@ -94,8 +105,6 @@ func TestDiagnosticsAggregatesIndependentProbes(t *testing.T) {
 // TestDiagnosticsLSPUnavailableIsLocalDegradation pins the LSP half of the
 // per-probe isolation rule: a disabled LSP manager reports itself unavailable
 // in its own row instead of failing the call.
-//
-// ledger: B3/DT5#2 各子项可独立失败不拖垮
 func TestDiagnosticsLSPUnavailableIsLocalDegradation(t *testing.T) {
 	diagLSPSourceOverride = stubLSPManager{enabled: false}
 	t.Cleanup(func() { diagLSPSourceOverride = nil })
@@ -114,8 +123,6 @@ func TestDiagnosticsLSPUnavailableIsLocalDegradation(t *testing.T) {
 // and the harsher one: git exits 128 ("not a repo") and the toolchain row must
 // still arrive intact. A probe that aborted the aggregate would turn one
 // missing subsystem into a blind spot across all of them.
-//
-// ledger: B3/DT5#2 各子项可独立失败不拖垮
 func TestDiagnosticsGitFailureDoesNotHideOthers(t *testing.T) {
 	diagLSPSourceOverride = stubLSPManager{enabled: false}
 	t.Cleanup(func() { diagLSPSourceOverride = nil })
@@ -153,8 +160,6 @@ func TestDiagnosticsGitFailureDoesNotHideOthers(t *testing.T) {
 // EMPTY row: wrong argv → probe exits non-zero → runToolchainProbes drops it →
 // the operator reads "no Go toolchain" from a machine that has one. The final
 // loop therefore also requires all three rows to be populated.
-//
-// ledger: B3/DT5#3 toolchain 版本准确
 func TestDiagnosticsProbesEachToolchainWithItsOwnVersionArgv(t *testing.T) {
 	diagLSPSourceOverride = stubLSPManager{enabled: false}
 	t.Cleanup(func() { diagLSPSourceOverride = nil })

@@ -51,7 +51,7 @@
 | [A2/G05](#a2g05) | W1 | `partial` | 4 | 1/1/2 |
 | [B1/M04b](#b1m04b) | W1 | `partial` | 4 | 1/2/1 |
 | [B1/M05](#b1m05) | W1 | `partial` | 5 | 2/3/0 |
-| [C1/AU1](#c1au1) | W1 | `done` | 5 | 3/2/0 |
+| [C1/AU1](#c1au1) | W1 | `partial` | 5 | 3/2/0 |
 | [C1/M07](#c1m07) | W1 | `partial` | 3 | 2/0/1 |
 | [C1/RLM1](#c1rlm1) | W1 | `partial` | 4 | 3/0/1 |
 | [G/VISION](#gvision) | W1 | `partial` | 3 | 1/1/1 |
@@ -76,79 +76,7 @@
 | [A3/V16](#a3v16) | W6 | `partial` | 4 | 0/2/2 |
 | [B2/LSP1](#b2lsp1) | W6 | `partial` | 4 | 1/1/2 |
 | [B3/DT4](#b3dt4) | W6 | `partial` | 4 | 0/2/2 |
-| [B3/DT5](#b3dt5) | W6 | `done` | 3 | 3/0/0 |
-| [B3/GH1](#b3gh1) | W6 | `partial` | 5 | 1/2/2 |
-| [B3/T11](#b3t11) | W6 | `missing` | 4 | 1/1/2 |
-| [B3/V13](#b3v13) | W6 | `partial` | 4 | 3/0/1 |
-| [B3/W07](#b3w07) | W6 | `partial` | 4 | 1/2/1 |
-| [M1/SPEC-TOOLIF](#m1spectoolif) | W6 | `partial` | 5 | 0/2/0 +3? |
-| [C4/COST1](#c4cost1) | W7 | `partial` | 4 | 1/3/0 |
-| [C4/O07](#c4o07) | W7 | `partial` | 3 | 1/1/1 |
-| [C4/OBS1](#c4obs1) | W7 | `partial` | 4 | 1/2/1 |
-| [C4/OBS2](#c4obs2) | W7 | `partial` | 4 | 2/1/1 |
-| [C4/OBS3](#c4obs3) | W7 | `partial` | 3 | 2/0/1 |
-| [F2/BENCH1](#f2bench1) | W7 | `partial` | 3 | 0/1/2 |
-| [M1/O07](#m1o07) | W7 | `partial` | 5 | 2/3/0 |
-| [C2/UX1](#c2ux1) | W8 | `partial` | 4 | 1/3/0 |
-| [C2/UX2](#c2ux2) | W8 | `partial` | 3 | 1/0/2 |
-| [C2/UX3](#c2ux3) | W8 | `missing` | 4 | 0/2/2 |
-| [C2/UX4](#c2ux4) | W8 | `partial` | 3 | 1/0/2 |
-| [C2/UX8](#c2ux8) | W8 | `done` | 4 | 4/0/0 |
-| [C3/E03](#c3e03) | W8 | `partial` | 4 | 2/2/0 |
-| [D3/C15](#d3c15) | W8 | `partial` | 4 | 0/2/2 |
-| [D3/I18N1](#d3i18n1) | W8 | `partial` | 3 | 0/2/1 |
-| [D1/APS1](#d1aps1) | W9 | `partial` | 3 | 1/0/2 |
-| [D1/V12](#d1v12) | W9 | `partial` | 4 | 0/4/0 |
-| [D1/V14](#d1v14) | W9 | `divergent` | 3 | 1/2/0 |
-| [D2/V15](#d2v15) | W9 | `partial` | 3 | 0/2/1 |
-| [H2/APIREF1](#h2apiref1) | W9 | `partial` | 3 | 1/2/0 |
-| [E1/COV2](#e1cov2) | W10 | `partial` | 4 | 1/1/1 |
-| [E1/COV3](#e1cov3) | W10 | `partial` | 3 | 0/2/0 |
-| [H1/PKG1](#h1pkg1) | W10 | `partial` | 4 | 0/2/2 |
-| [H1/VER1](#h1ver1) | W10 | `partial` | 3 | 1/2/0 |
-| [H2/CONTRIB1](#h2contrib1) | W10 | `partial` | 3 | 1/2/0 |
-| [H2/EX1](#h2ex1) | W10 | `partial` | 3 | 1/2/0 |
-| [H2/UDOC1](#h2udoc1) | W10 | `partial` | 3 | 1/2/0 |
-| [D2/O12](#d2o12) | - | `removed` | 2 | 1/1/0 |
-| **合计** | | | **230** | **62/101/61 +4?** |
-
----
-## 索引：63 条 × 230 子句
-
-「状态」列格式为 `已兑现/部分/未兑现`（如有未查证另标 `+N?`）。
-
-| ID | 包 | 台账 verdict | 子句 | 状态 |
-|---|---|---|---:|---|
-| [A1/T07/T08](#a1t07t08) | W1 | `partial` | 5 | 1/3/1 |
-| [A2/G05](#a2g05) | W1 | `partial` | 4 | 1/1/2 |
-| [B1/M04b](#b1m04b) | W1 | `partial` | 4 | 1/2/1 |
-| [B1/M05](#b1m05) | W1 | `partial` | 5 | 2/3/0 |
-| [C1/AU1](#c1au1) | W1 | `done` | 5 | 3/2/0 |
-| [C1/M07](#c1m07) | W1 | `partial` | 3 | 2/0/1 |
-| [C1/RLM1](#c1rlm1) | W1 | `partial` | 4 | 3/0/1 |
-| [G/VISION](#gvision) | W1 | `partial` | 3 | 1/1/1 |
-| [G/VISION-TOOL](#gvisiontool) | W1 | `partial` | 4 | 0/2/1 +1? |
-| [B0/TD1](#b0td1) | W2 | `partial` | 5 | 2/2/1 |
-| [F2/LEAK3](#f2leak3) | W2 | `partial` | 3 | 1/1/1 |
-| [M1/G02](#m1g02) | W2 | `partial` | 2 | 0/2/0 |
-| [M1/G03](#m1g03) | W2 | `partial` | 3 | 2/1/0 |
-| [A2/DT1](#a2dt1) | W3 | `partial` | 4 | 0/2/2 |
-| [A2/DT2](#a2dt2) | W3 | `divergent` | 4 | 0/2/2 |
-| [B1/M04](#b1m04) | W3 | `partial` | 4 | 0/3/1 |
-| [F1/WAL1](#f1wal1) | W3 | `partial` | 5 | 1/3/1 |
-| [F2/LEAK2](#f2leak2) | W3 | `partial` | 4 | 1/2/1 |
-| [E2/PROP1](#e2prop1) | W4 | `done` | 3 | 3/0/0 |
-| [F2/CCL1](#f2ccl1) | W4 | `partial` | 3 | 1/0/2 |
-| [A1/S06](#a1s06) | W5 | `partial` | 3 | 0/3/0 |
-| [A1/S07](#a1s07) | W5 | `partial` | 4 | 0/3/1 |
-| [A1/S09](#a1s09) | W5 | `partial` | 4 | 0/1/3 |
-| [D3/S10](#d3s10) | W5 | `partial` | 3 | 0/2/1 |
-| [A3/C13](#a3c13) | W6 | `partial` | 3 | 0/1/2 |
-| [A3/MCP1](#a3mcp1) | W6 | `partial` | 3 | 0/1/2 |
-| [A3/V16](#a3v16) | W6 | `partial` | 4 | 0/2/2 |
-| [B2/LSP1](#b2lsp1) | W6 | `partial` | 4 | 1/1/2 |
-| [B3/DT4](#b3dt4) | W6 | `partial` | 4 | 0/2/2 |
-| [B3/DT5](#b3dt5) | W6 | `done` | 3 | 3/0/0 |
+| [B3/DT5](#b3dt5) | W6 | `partial` | 3 | 3/0/0 |
 | [B3/GH1](#b3gh1) | W6 | `partial` | 5 | 1/2/2 |
 | [B3/T11](#b3t11) | W6 | `missing` | 4 | 1/1/2 |
 | [B3/V13](#b3v13) | W6 | `partial` | 4 | 3/0/1 |
@@ -291,7 +219,7 @@
 
 ---
 
-### C1/AU1 — Automations（计划任务） · 台账 `done` ⚠️ **建议回退 partial**
+### C1/AU1 — Automations（计划任务） · 台账 `partial`（本次拆解后由 `done` 退回）
 
 > acceptance：可创建计划任务；按时触发入队；生命周期可控；持久化；approval 门禁
 
@@ -315,7 +243,7 @@
 - 依据：`internal/tools::TestApprovalGatedToolsDeniedWithoutCallback` —— profile 明确 allow 全部八个工具（排除「被 profile 拦掉」这个混淆变量），断言 result 同时含 `"permission denied"` 与 `"requires explicit approval"`；配 `TestApprovalPromisedInDescriptionIsEnforced`（遍历全部 9 个 + `assert.Equal(len(all), checked)` 防漏）。
 - 证据形状：正是现在这个（**先把 profile 放开**，再断言拒绝来自 approval 维度而非 tools 维度）+ 遍历式防漏计数。
 
-> **回退建议**：按与 A1/T07/T08、B1/M04b、G/VISION-TOOL 相同的尺子，#3 与 #4 都未达「已兑现」，应回退 `partial`。若认为这两条属于「覆盖成立但不够强」而非「未兑现」，AU1 可保 `done` —— 但那就是 W1 内部用了两把尺子。
+> **已回退 `partial`**（2026-08-04）：按与 A1/T07/T08、B1/M04b、G/VISION-TOOL 相同的尺子，#3 与 #4 都未达「已兑现」。#3 的指控经变异测试证实 —— 把 `Manager.Update` 与 `Manager.Delete` 掏空成 `if true { return }` 后，`go test ./internal/tools -run '^TestAutomationCreateReadUpdatePauseResumeDeleteRun$' -v` 仍输出 `--- PASS`。四条 `ledger: C1/AU1#n` marker 已随之删除。
 
 ---
 
@@ -873,7 +801,7 @@
 
 ---
 
-### B3/DT5 — diagnostics 工具 · 台账 `done` ⚠️ **第 1 句有生产侧硬伤**
+### B3/DT5 — diagnostics 工具 · 台账 `partial`（本次拆解后由 `done` 退回）· 第 1 句有生产侧硬伤
 
 > acceptance：一次调用聚合；各子项可独立失败不拖垮；toolchain 版本准确
 
@@ -881,6 +809,7 @@
 - 依据：`internal/tools/diagnostics.go:43`；`TestDiagnosticsAggregatesIndependentProbes` 一次 `runTool` 同时断言 git/toolchain/lsp 三段，非假证据。
 - ⚠️ **硬伤：LSP 维度在生产里是死的**。`defaultFileLister.recentFiles` 恒返回 `nil`（`diagnostics.go:24`），而 `bootstrap.go:648` 传的是 `nil` → override 保持默认 → 生产环境 `open_diagnostics_count` **恒为 0**。测试之所以拿到 1，是因为注入了 `diagTestProbe{files:["a.go"]}` —— **这个 probe 在生产不存在**。这是一处占位实现（违反仓库「禁占位」约定），且让 `done` 的第 1 句在生产路径上只聚合了 4/5 个维度。
 - 证据形状：要么补齐 `defaultFileLister` 的真实实现并断言**生产构造**（`NewDiagnosticsTool(nil)`）下也能拿到非零诊断数，要么把 LSP 行从「聚合」的承诺里摘出去。
+- **已回退 `partial`**（2026-08-04）：硬伤经实测确认 —— 把 `TestDiagnosticsAggregatesIndependentProbes` 的构造换成生产形态 `NewDiagnosticsTool(nil)`、其余一律不变（stub LSP 仍报 `a.go` 有一条 error 诊断），结果是 `available=true open_diagnostics_count=0`。三条 `ledger: B3/DT5#n` marker 已随之删除。
 
 **2. 各子项可独立失败不拖垮** — 已兑现
 - 依据：`diagnostics.go:86`（git 吞错）、`:145`（toolchain `continue`）、`:169`（LSP 短路）；`TestDiagnosticsGitFailureDoesNotHideOthers`（git exit 128 时断言 toolchain 行完整）、`TestDiagnosticsLSPUnavailableIsLocalDegradation`。
@@ -1674,9 +1603,9 @@
 
 | ID | 当前 | 子句 | 问题 |
 |---|---|---|---|
-| **C1/AU1** | `done` | #3 生命周期可控 | update/pause/resume/delete 四步只有裸 `require.NoError`，而 `GuardedTool` 把拒绝写进 **result 串**不写进 error → 这四步对「操作没生效」完全是盲的 |
-| **C1/AU1** | `done` | #4 持久化 | 无跨重启（重开 DB 文件）断言，台账自记为「已知弱点」。按与 A1/T07/T08 / B1/M04b 相同的尺子应回退 `partial` |
-| **B3/DT5** | `done` | #1 一次调用聚合 | **LSP 维度在生产里是死的** —— `defaultFileLister.recentFiles` 恒返回 nil，`bootstrap.go:648` 传 nil → 生产 `open_diagnostics_count` **恒为 0**；测试靠注入生产不存在的 `diagTestProbe` 才拿到非零。占位实现顶着终态 |
+| **C1/AU1** | `done`→已退回 `partial` | #3 生命周期可控 | update/pause/resume/delete 四步只有裸 `require.NoError`，而 `GuardedTool` 把拒绝写进 **result 串**不写进 error → 这四步对「操作没生效」完全是盲的 |
+| **C1/AU1** | `done`→已退回 `partial` | #4 持久化 | 无跨重启（重开 DB 文件）断言，台账自记为「已知弱点」。按与 A1/T07/T08 / B1/M04b 相同的尺子应回退 `partial` |
+| **B3/DT5** | `done`→已退回 `partial` | #1 一次调用聚合 | **LSP 维度在生产里是死的** —— `defaultFileLister.recentFiles` 恒返回 nil，`bootstrap.go:648` 传 nil → 生产 `open_diagnostics_count` **恒为 0**；测试靠注入生产不存在的 `diagTestProbe` 才拿到非零。占位实现顶着终态 |
 | **E2/PROP1** | `done` | #1·#2 的部分引用 | **`done` 本身站得住**（掏空 `EnforceToolCallPairs` 三个测试全 FAIL），但 evidence 里 `TestProperty_RunReducesTokens`（引 2 次）与 `TestProperty_EachSummaryCallWithinWindow`（引 1 次）共 **3 处引用是空心的** |
 
 **B. 非终态条目里的实现缺口（不是测试缺口 —— 补测试无用）**
@@ -1746,7 +1675,7 @@
 | **B0/TD1#4** `TestLoop_BudgetStopsOnAccumulatedUsage 等测试守护'` | **把具体测试名写进验收**：任何人只要保留同名测试壳就能"满足"它 |
 | **B0/TD1#1** 前半段 | 「路线图未给 B0 独立验收标准」是**元陈述**，不是可断言的行为 |
 | **A3/V16#3** 启动超时/重连/权限检查**有测试** | 字面要求「有测试」而非「行为成立」—— 同族缺陷，但危害小于 B0/TD1#4（它至少不指名具体测试） |
-| **F1/WAL1#5** | 文本以字面省略号 `"Windows -r…"` 结尾 → **第 10 条细化验收读不到**，无法对账。这是 GOV8 的一个洞：读不到的子句既不能兑现也不能证伪 |
+| ~~**F1/WAL1#5**~~ **已修复** | 原文以字面省略号 `"Windows -r…"` 结尾 → **第 10 条细化验收读不到**，无法对账。这是 GOV8 的一个洞：读不到的子句既不能兑现也不能证伪。已按 spec §12 第 9、10 条补回原文并同步 `acceptancePins["F1/WAL1"]` |
 
 **(d) 已被正确行为化的范本（供改写时参照）**
 
@@ -1759,10 +1688,10 @@
 
 ### acceptance / pin 处置建议
 
-本文档**不修改任何 acceptance 文本**（改动会触发 `acceptancePins` 门禁，而 `internal/archtest/acceptance_pin_test.go` 在本任务的文件边界之外）。以下是发现的**客观缺陷**，建议在后续工作包里连同 pin 一起改：
+拆解本身不改 acceptance 文本。以下是发现的**客观缺陷**及处置：
 
-1. **B0/TD1** —— acceptance 是一段实测表引文被分号切碎的产物：子句 1 前半是元陈述、子句 4 把测试名当验收、引号跨子句 1→4 不闭合。**整条需要重写为行为陈述**。改后须更新 `acceptancePins["B0/TD1"]` 的 `Clauses` 与 `Digest`。
-2. **F1/WAL1** —— 子句 5 以字面省略号截断，第 10 条细化验收不可读。**至少要把省略号补全**。改后须更新 `acceptancePins["F1/WAL1"]`。
+1. **F1/WAL1 —— 已修复。** 子句 5 以字面省略号截断，第 10 条细化验收在台账里不可读。已按 `docs/superpowers/specs/2026-07-22-f1-sqlite-wal-design.md` §12 第 9、10 条补回原文（「Windows CI 下并发/升级测试全绿」「doctor 报告 journal_mode 与 -wal/-shm 大小」），并同步 `acceptancePins["F1/WAL1"]`（子句数不变仍为 5，Digest 更新）。**先修这条的理由**：截断是**可读性**缺陷而非措辞缺陷 —— 读不到的子句既不能兑现也不能证伪，它会永远占一个承诺位；补回原文是纯还原，不改变任何一条承诺的内容，因此不需要工作包 owner 拍板。
+2. **B0/TD1 —— 暂不修，留给 W2。** acceptance 是一段实测表引文被分号切碎的产物：子句 1 前半是元陈述、子句 4 把测试名当验收、引号跨子句 1→4 不闭合。但**五条子句在文件里全都读得到**，缺陷是形状而非可读性；把它重写成行为陈述会实质改变 W2 要交付什么（例如子句 4 从「有某某测试」改成「预算超限时循环真的停」是**加重**承诺）。这是范围决策，应由 W2 在动手时连同 `acceptancePins["B0/TD1"]` 一起改，而不是夹带在一次台账退回里悄悄完成。
 3. 上表 (a)(b) 里标注「改写 acceptance」的各条，每改一条都要同步改对应的 pin 行。
 
 **改 pin 的正确做法**：`internal/archtest/acceptance_pin_test.go` 的 `TestLedgerAcceptanceIsPinned` 在失配时会直接打印新的行（`fmt.Sprintf("%q: {Clauses: %d, Digest: %q},", …)`），把它粘回表里即可 —— 但**必须在同一个 diff 里**，让 `5 -> 1` 这类变化对评审可见。

@@ -27,11 +27,16 @@ func TestRepositoryLoadEmptyReturnsDefault(t *testing.T) {
 	assert.Empty(t, state.Runs)
 }
 
-// TestRepositorySaveLoadRoundTrip covers persistence: state written through
-// the repository comes back identical from a fresh Repository over the same
-// store.
+// TestRepositorySaveLoadRoundTrip covers the SERIALISATION half of persistence:
+// state written through the repository decodes back with its fields intact.
 //
-// ledger: C1/AU1#4 持久化
+// It deliberately does not claim the durability half. The round trip happens on
+// one live :memory: store through one Repository instance, so it proves the
+// encode/decode pair is lossless and nothing more — a cross-restart assertion
+// (write → Close the handle → reopen the same file path → read back) would need
+// a file-backed store and is what C1/AU1#4 is still waiting on. The ledger
+// cites no test for that clause; do not add a marker here without adding the
+// reopen.
 func TestRepositorySaveLoadRoundTrip(t *testing.T) {
 	repo := automation.NewRepository(newTestStore(t))
 	original := automation.State{
