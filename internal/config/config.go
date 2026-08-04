@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -628,6 +629,44 @@ func (c *Config) applyDefaults() {
 func (c *Config) validate() error {
 	if c.Subagents.Limit != 0 && (c.Subagents.Limit < 1 || c.Subagents.Limit > 20) {
 		return errors.New("subagents.limit must be within 1..20")
+	}
+	return c.validateProfiles()
+}
+
+// validateProfiles rejects profile fields whose illegal values would otherwise
+// stay dormant until the guard evaluates them mid-session.
+//
+// Only shell.policy is checked, and the asymmetry is deliberate: it is the one
+// profile field where a typo degrades into guard's STRUCTURAL HardDeny — the
+// tier no permission mode can override, so neither yolo nor auto can rescue the
+// session, and the operator sees a refusal with no path back except editing
+// config and restarting. Every other profile field either has no enumeration
+// (glob lists, booleans) or degrades toward the restrictive end in a way the
+// interactive modes can still override.
+//
+// Rejecting the config outright is a tightening only in appearance. A profile
+// carrying an unknown policy has no working shell dimension today: every
+// shell_run through it is denied unconditionally. The configs this check turns
+// away are exactly the configs that were already dead, so no deployment that
+// works today stops working — it only stops failing silently.
+//
+// The check runs even when shell.rules is populated, where the legacy switch is
+// unreachable and the bad value is inert. That case is still a lie about the
+// operator's intent, and it becomes a live lockout the moment the rules table
+// is emptied.
+//
+// Profiles is a bare map[string]guard.PermissionProfile, so profile names are
+// sorted before reporting to keep the error deterministic across runs.
+func (c *Config) validateProfiles() error {
+	names := make([]string, 0, len(c.Profiles))
+	for name := range c.Profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if err := guard.ValidateShellPolicy(c.Profiles[name].Shell.Policy); err != nil {
+			return fmt.Errorf("profiles.%s.shell.policy: %w", name, err)
+		}
 	}
 	return nil
 }

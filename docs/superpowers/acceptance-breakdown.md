@@ -16,6 +16,8 @@
 
 **引用约定（读之前先看）**：代码引用一律写成 `路径::符号`（或「路径 + 就近的反引号符号名」），**不带行号**。这份文档最初 386 处引用全部是 `file.go:NNN` 形式，写下 14 分钟后就有 4 处指错了符号 —— 紧接着的一次提交给 `internal/tools/git.go` 与 `internal/tools/testrun.go` 各加了几十行，行号原地漂移。**行号越界能被扫出来，范围内漂移是无声的**，而这份文档被 `docs/feature-status.yaml` 指定为翻牌前的唯一查表依据，无声错位比缺失更贵。符号名同时也是更好的定位手段（`grep` 一次即得）。**这条约定只覆盖 Go 引用**：本文与 `docs/feature-status.yaml` 的 Go 行号引用现在都是零，而且**这句话本身由机器算出来**（`internal/archtest/docsymbols_test.go::TestNoGoLineCitationsInLedgerInputs`）—— 因为它腐烂过一次：某个提交在宣布「刚修好台账里三处漂移的行号」的同时，重写了两个属性测试文件，把本文三处行号写漂了 6–10 行，而这一段仍旧写着「已清零」。**一句断言计数的话在有人去算之前只是愿望**，所以现在有人算。非 Go 文件（`*.yml` / `*.sh` / `*.toml` / 其他文档）没有符号可指，那些 `file:line` 仍在，也仍会漂移 —— 它们是**写作时快照**，读到时请按内容而非行号核对。Go 符号引用的活性由 GOV9（`internal/archtest/docsymbols_test.go::TestGOV9DocSymbolReferencesResolve`）守着：路径解析得出而符号解析不出即判红；台账 yaml 在 GOV9 的扫描范围外（它只读 `*.md`），那里的符号引用只能人工核。
 
+**否定式断言与计数的约定**：本文里的「某文件完全没有 X」「某 struct 有 N 个字段」这类断言**没有任何门禁**（GOV9 只管符号解析，`TestNoGoLineCitationsInLedgerInputs` 只管行号），而它们已经错过两次：一条说 `config.example.yaml` 没有 `subagents:` 段（实际一直都在，还有绿测试钉着），一条把 `Evidence` 的字段数写成 11（实际 10，且同条自己的枚举也等于 10）。为什么不给它们加门禁，理由与实测分母见 `docs/superpowers/review-checklist.md` 的 F1/F2。**写作要求**：否定式断言必须当场附上产生空输出的那条命令；字段/元素计数一律**不写数字**，改写枚举或「见 `路径::符号`」。撤回一条错断言时用删除线保留原文并写明「撤回」，不要静默改掉 —— 虚增的缺口已经进过工作包，读者需要知道它作废了。
+
 ---
 
 ## 怎么读「证据形状」这一栏
@@ -447,7 +449,7 @@
 > acceptance：gate 证据结构完整；大输出成 artifact；挂到正确 task；退出码/duration 准确
 
 **1. gate 证据结构完整** — 部分
-- 依据：Evidence 11 字段（`internal/task/work/types.go`）、填充（`internal/tools/gate.go::GateTools.runGate`）、落 `task_work_gates` + timeline（`store.go::Store.RecordGate`）。`internal/tools::TestTaskGateRun_PassEvidence` 只断言 4 个字段（Classification / ExitCode / Gate / Command），**ID、Cwd、DurationMs、RecordedAt、Summary 五个未断言**，且走 FakeManager 不经 SQLite 往返；`internal/task/work::TestStoreRecordGate` 走真实 Store 但只断言 `Gates[0].Classification`。
+- 依据：`internal/task/work::Evidence` 的全部字段（`internal/task/work/types.go`）、填充（`internal/tools/gate.go::GateTools.runGate`）、落 `task_work_gates` + timeline（`store.go::Store.RecordGate`）。`internal/tools::TestTaskGateRun_PassEvidence` 只断言 4 个字段（Classification / ExitCode / Gate / Command），**ID、Cwd、DurationMs、RecordedAt、Summary 五个未断言**，且走 FakeManager 不经 SQLite 往返；`internal/task/work::TestStoreRecordGate` 走真实 Store 但只断言 `Gates[0].Classification`。
 - 证据形状：真实 gate 跑完后从 SQLite **读回**，逐字段非零/相等（ID 非空、Cwd == 解析后的 cwd、RecordedAt 落在 [before, after] 区间）。**骗过去**：只断言输入里手填的那几个字段。
 
 **2. 大输出成 artifact** — 未兑现（**虚报**）
@@ -542,10 +544,10 @@
 - 修复落点：`finishTerminal` 末尾摘除 runtime 并 cancel child ctx；注意 `Cancel`、`Wait`、`sinkLocked` 都读 runtime，顺序须先取 sink 再 detach。
 
 **4. 与深度上限交互文档化** — 部分
-- 依据：注释齐全（`manager.go::Manager.Spawn` 明写「ErrTooDeep 优先」「两个维度同时生效」+ `internal/tools/subagent.go::MaxSubAgentDepth` 对偶注释），docs/ 下无对应章节。三处缺口：
+- 依据：注释齐全（`manager.go::Manager.Spawn` 明写「ErrTooDeep 优先」「两个维度同时生效」+ `internal/tools/subagent.go::MaxSubAgentDepth` 对偶注释），docs/ 下无对应章节。两处缺口：
   - **doc drift**：`manager.go::Manager.Spawn` 硬编码 `if depth > 3 { // MaxSubAgentDepth }`（registry 不能 import tools，会成环）→ 把 `tools.MaxSubAgentDepth` 改成 5，registry 仍卡 3，而 `TestSpawnRejectsTooDeep` 自己硬编码 4 层链照样绿（变异盲）。深度检查还有**第三处** `orchestrator.go::Orchestrator.runSubAgentTurn`。
   - 注释里最关键的「两者同时超限时 ErrTooDeep 胜出」**零测试**（`TestSpawnRejectsTooDeep` 用 `MaxConcurrent: 10`，并发根本没超）。
-  - `config.example.yaml` **完全没有 `subagents:` 段**，操作者看不到 `subagents.limit` 可调（只在 `docs/user-guide/configuration.md` 有）。
+  - ~~第三处缺口：`config.example.yaml` 完全没有 `subagents:` 段~~ —— **撤回，是错的**。该段一直都在，连合法范围 `1..20` 都写了，而且 `internal/config::TestExampleConfigDocumentsSubagents` 正是钉住它的绿测试。本条据此把缺口记成三处，实为两处。
 - 证据形状：构造「深度已达上限 **且** 并发已满」的场景断言返回 `ErrTooDeep` 而非 `SpawnErrCap`；外加一条跨包常量对账测试（测试里断言 registry 的深度常量 == `tools.MaxSubAgentDepth`，用测试而非 import 破环）。
 
 ---

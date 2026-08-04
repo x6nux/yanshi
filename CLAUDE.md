@@ -118,7 +118,7 @@ Profile 来自 `profiles:` 配置 map（见 `config.example.yaml` 中的 `coding
 1. 灾难性批量删除（`checkDestructive`，见下一段）
 2. shell 元字符（注入防线）
 3. execpolicy parse-error（畸形语法）
-4. 未知 shell policy（配置错误）
+4. 未知 shell policy（配置错误）—— 合法值只有 `""`（= `allowlist`）/ `allowlist` / `deny` / `denylist`，**没有 `allow`**。这一档现在从 config 侧走不到了：`guard.ValidateShellPolicy` 是权威目录，`Config.validate` 逐个 profile 校验，写错直接启动失败并点名 `profiles.<名>.shell.policy`。目录与 `checkShell` 的 switch 由 `internal/guard::TestShellPolicyCatalogMatchesCheckShell` 双向对账。运行时这一档仍留着，因为 profile 也可以由代码直接构造。
 5. **未知 execpolicy verdict**（`checkShell` 里 `switch result.Verdict` 的 `default` 分支——规则文件给出了本代码不认识的判决，fail-closed）
 
 **这个"5"是描述而非契约**：权威枚举在 `internal/guard/guard.go` 的 `overridableDeny` doc 注释上，现场清点用 `grep -n 'hardDeny(' internal/guard/guard.go` 加 `checkShell` 里那两处内联 `Decision`（它们不带 `Overridable` 字段，因此是结构性）。这段话此前写"只有三类"，漏了第 1 和第 5 条——而**同一份 CLAUDE.md 的下一段又把 Catastrophic 称作结构性 HardDeny**，同一个术语在相邻两段指了两个不同的集合。根因是 `checkShell` 头上那段陈旧注释（已随本次一并改掉）：权威那段在 `a30eb80` 修过，消费侧那段没跟上，CLAUDE.md 抄的正是没跟上的那份。**闭合枚举（"只有"）在安全边界上必须与源码同改**，读者据此判断 yolo 能越过什么。

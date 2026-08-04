@@ -150,7 +150,7 @@ func TestPhantomSlashCommandsNotAdvertised(t *testing.T) {
 		rel := filepath.ToSlash(mustRel(t, root, path))
 		if d.IsDir() {
 			switch {
-			case nestedCheckoutDirNames[d.Name()],
+			case isNestedCheckoutDir(rel, d.Name()),
 				rel == "third_party", rel == "reference",
 				rel == "docs/archive", rel == "docs/superpowers/plans",
 				rel == "docs/superpowers/specs", rel == "docs/superpowers/notes":

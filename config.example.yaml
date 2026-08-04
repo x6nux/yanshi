@@ -48,6 +48,22 @@ compaction:
   cooldown_fraction: 0.05    # token-growth cooldown: 5% of window
   cooldown_duration: ""      # time-based cooldown (optional, e.g. "3s"); "" disables
   hard_force_fraction: 0.95  # force-compact near window edge even inside cooldown
+# Permission profiles. The MAP KEY is what selects a profile — there is no
+# indirection through the `agents:` block above (agents[].profile has no
+# production reader today; setting it changes nothing and warns about nothing).
+# Two keys are actually looked up:
+#   * "orchestrator" — the chat/TUI orchestrator reads this exact key. Absent,
+#     it falls back to the built-in DefaultOrchestratorProfile.
+#   * <worker name>  — the task API serves GET /api/v1/agent/profile?worker=<n>
+#     by looking up key <n>. So the "coding" profile below reaches a worker
+#     started as `agent-worker -name coding`, and nothing else. Unknown workers
+#     get a fail-closed deny-all profile.
+#
+# shell.policy accepts exactly four values: "" (== "allowlist"), "allowlist",
+# "deny", "denylist". There is NO "allow" — an unrestricted shell is a
+# "denylist" with no patterns. An unrecognized value is rejected at startup,
+# because at runtime it would be a STRUCTURAL HardDeny that not even yolo/auto
+# can override.
 profiles:
   orchestrator:
     fs: { read: ["**"], write: [] }
@@ -57,9 +73,10 @@ profiles:
     mcp: { allow: [] }
     shell: { policy: "deny" }
     net: { allow: false }
-  # A coding agent: all tools, read/write the repo, an allowlisted shell, and
-  # outbound network. Reference this profile by setting an agent's `profile`
-  # field to "coding".
+  # A coding agent: all tools, one MCP server, read/write the repo, an
+  # allowlisted shell, and outbound network. Reached only by a task worker
+  # named "coding" (see the note above the profiles block) — rename the key to
+  # "orchestrator" if you want the chat session to run under it.
   coding:
     tools: { allow: ["*"] }
     # Example: permit only tools discovered from server "github".

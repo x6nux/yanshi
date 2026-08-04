@@ -22,11 +22,20 @@ SQLite 持久化（`sqlite_path`）。F1 的 WAL 相关项：`wal_max_open_conns
 
 ## agents
 
-agent 声明列表（`name`/`type`=`local`|`external`|`remote`/`chain` provider 链/`profile` 权限 profile 名/`capabilities`）。`profile` 引用下方 `profiles` map 里的一个具名 profile。
+agent 声明列表（`name`/`type`=`local`|`external`|`remote`/`chain` provider 链/`profile`/`capabilities`）。
+
+> ⚠️ **`agents[].profile` 目前是空操作。** 它没有任何生产读点（`cfg.Agents` 整个字段今天只被声明、不被消费），yaml 解析成功、启动零告警，改它不会改变任何权限。profile 的实际选取方式见下一节。
 
 ## profiles
 
-权限 profile 的 map（键名被 agent 的 `profile` 字段引用）。每个 profile 是一个 `guard.PermissionProfile`，含四维：`tools`（glob 白名单，空=拒绝一切，见 [../adr/0003-guard-fail-closed-empty-allow.md](../adr/0003-guard-fail-closed-empty-allow.md)）、`fs`（读/写路径 glob）、`shell`（`policy` + `patterns`）、`net`（`allow` + `hosts`）、`mcp`（允许的 `mcp_<server>_<tool>` 白名单，即便 `tools.allow` 含 `*` 也单独把关）。`security` 块的 sandbox/network/shell 是叠加在 profile 之上的**部署级**姿态。
+权限 profile 的 map。每个 profile 是一个 `guard.PermissionProfile`，含**五维**：`tools`（glob 白名单，空=拒绝一切，见 [../adr/0003-guard-fail-closed-empty-allow.md](../adr/0003-guard-fail-closed-empty-allow.md)）、`mcp`（允许的 `mcp_<server>_<tool>` 白名单，**空=拒绝一切 MCP 工具，即便 `tools.allow` 含 `*`**，且它排在 `tools` **之前**检查）、`fs`（读/写路径 glob）、`shell`（`policy` + `patterns` + `rules`）、`net`（`allow` + `hosts`）。`security` 块的 sandbox/network/shell 是叠加在 profile 之上的**部署级**姿态。
+
+**profile 靠 map 键名选中**，没有经过 `agents:` 的间接层：
+
+- `orchestrator` —— 聊天/TUI 编排器固定读这个键（`internal/bootstrap::Build`）；缺失则退回内置的 `internal/bootstrap::DefaultOrchestratorProfile`。
+- **worker 名** —— task API 的 `GET /api/v1/agent/profile?worker=<名>` 拿 `<名>` 当键名查（`internal/api/http::Server.TaskAPI`）。所以示例里的 `coding` profile 只对 `agent-worker -name coding` 生效；查不到时 fail-closed 退回 deny-all。
+
+`shell.policy` 只接受四个值：`""`（等同 `allowlist`）、`allowlist`、`deny`、`denylist`；**没有 `allow`**，"不限制 shell" 用空 `patterns` 的 `denylist` 表达。写了别的值会在 `config.Load` 阶段直接报错退出（`profiles.<名>.shell.policy: unknown shell policy ...`）—— 因为运行时它会变成连 `yolo`/`auto` 都越不过的结构性 HardDeny。维度顺序与两档 HardDeny 详见 [guard.md](guard.md)。
 
 ## skills
 

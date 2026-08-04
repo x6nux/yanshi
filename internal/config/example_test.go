@@ -40,3 +40,22 @@ func TestExampleConfigDocumentsSubagents(t *testing.T) {
 	require.Contains(t, block, "limit", "subagents must document the concurrency limit")
 	require.Contains(t, block, "persistence_path", "subagents must document the persistence path")
 }
+
+// TestExampleConfigProfilesAreEnforceable runs the shipped example's profiles
+// through the same validation Load applies, so the file operators copy can
+// never ship a profile the guard would refuse to start on.
+//
+// It calls validate() rather than Load for the reason documented on
+// TestExampleConfigDocumentsSubagents: Load also validates api_key references
+// against the host environment, which would make this assertion depend on
+// whether the developer has ANTHROPIC_API_KEY exported.
+func TestExampleConfigProfilesAreEnforceable(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "config.example.yaml"))
+	require.NoError(t, err, "config.example.yaml must be readable from the repo root")
+
+	var cfg Config
+	require.NoError(t, yaml.Unmarshal(raw, &cfg), "config.example.yaml must be valid YAML")
+	require.NotEmpty(t, cfg.Profiles, "the example must ship at least one profile to validate")
+	require.NoError(t, cfg.validate(),
+		"config.example.yaml must pass the validation Load performs")
+}

@@ -70,9 +70,8 @@ func moduleRoot(t *testing.T) string {
 // this package must refuse to descend into, because they hold whole copies of
 // the repository rather than repository content.
 //
-// .claude/worktrees/ is where subagent-driven execution parks its git
-// worktrees. A copy of the tree sitting inside the tree breaks these gates in
-// two directions at once, and both were observed:
+// A copy of the tree sitting inside the tree breaks these gates in two
+// directions at once, and both were observed:
 //
 //   - Every path-keyed exemption stops matching. The skip lists here are exact
 //     relative paths ("docs/superpowers/plans"), so the copy's version of that
@@ -84,13 +83,40 @@ func moduleRoot(t *testing.T) string {
 //     zero-reference tally in docs/superpowers/acceptance-breakdown.md drops to
 //     zero while a worktree exists and recovers when it is removed.
 //
-// Matching by name rather than by path is deliberate: the offending directory
-// is at the root today, but nothing stops a nested checkout, and a name match
-// costs nothing.
+// Matching by name rather than by path is deliberate for these two: the
+// offending directory is at the root today, but nothing stops a nested
+// checkout, and a name match costs nothing.
+//
+// .claude is deliberately NOT here — see isNestedCheckoutDir.
 var nestedCheckoutDirNames = map[string]bool{
 	".git":         true,
 	"node_modules": true,
-	".claude":      true,
+}
+
+// isNestedCheckoutDir reports whether a directory holds a whole copy of the
+// repository and must not be descended into. rel is the slash-separated path
+// relative to the module root; name is the directory's base name.
+//
+// The .claude case is why this is a function rather than a name lookup.
+// .claude/worktrees/ is where subagent-driven execution parks its git
+// worktrees, and it is the only part of .claude that is a repository copy —
+// .gitignore says exactly that, ignoring ".claude/worktrees/" and nothing else.
+// Skipping the whole .claude directory by name was one notch wider than the
+// thing it was protecting against, and the gap is silent: .claude/settings.json
+// is already a slash-command carrier that no gate reads, and the moment anyone
+// adds .claude/agents/*.md or .claude/skills/*.md those files leave GOV9's
+// symbol scan and removal_test's D2 scan without a single test turning red.
+// A skip list that is wider than its justification only ever grows more
+// unscanned surface, so this matches the justification instead: the worktree
+// parking directory, at any depth, and nothing else under .claude.
+func isNestedCheckoutDir(rel, name string) bool {
+	if nestedCheckoutDirNames[name] {
+		return true
+	}
+	// ".claude/worktrees" at the root, or "<anything>/.claude/worktrees" for a
+	// nested checkout — the same "at any depth" property the name matches have.
+	return name == "worktrees" &&
+		(rel == ".claude/worktrees" || strings.HasSuffix(rel, "/.claude/worktrees"))
 }
 
 // modulePath reads go.mod and returns the module path declared on the
@@ -568,4 +594,41 @@ func mapKeys(m map[string][]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// TestIsNestedCheckoutDirMatchesGitignoreScope pins the skip list to the same
+// scope .gitignore uses, in both directions.
+//
+// The forward direction (worktree parking is skipped) is what keeps a nested
+// checkout from duplicating every finding. The reverse direction is the one
+// that regressed: skipping all of .claude by name also removed .claude's own
+// content from every scan, and because that content is currently a single JSON
+// settings file, nothing failed. A skip that is wider than its justification
+// leaves no trace until someone parks a document behind it, so the width is
+// asserted here rather than left to review.
+func TestIsNestedCheckoutDirMatchesGitignoreScope(t *testing.T) {
+	skip := []struct{ rel, name string }{
+		{".git", ".git"},
+		{"third_party/x/node_modules", "node_modules"},
+		{".claude/worktrees", "worktrees"},
+		{"sub/repo/.claude/worktrees", "worktrees"}, // nested checkout, any depth
+	}
+	for _, c := range skip {
+		if !isNestedCheckoutDir(c.rel, c.name) {
+			t.Errorf("expected %q to be skipped as a nested checkout", c.rel)
+		}
+	}
+
+	keep := []struct{ rel, name string }{
+		{".claude", ".claude"},              // the directory itself carries content
+		{".claude/agents", "agents"},        // future agent definitions must stay scanned
+		{".claude/skills", "skills"},        // ditto
+		{"internal/worktrees", "worktrees"}, // "worktrees" alone is not a checkout
+		{"docs/worktrees", "worktrees"},
+	}
+	for _, c := range keep {
+		if isNestedCheckoutDir(c.rel, c.name) {
+			t.Errorf("%q must stay in scope for the doc/symbol gates", c.rel)
+		}
+	}
 }

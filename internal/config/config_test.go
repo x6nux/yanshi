@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/x6nux/yanshi/internal/guard"
 )
 
 func TestLoad(t *testing.T) {
@@ -732,4 +735,51 @@ llm:
 	if cfg.LLM.Providers[0].Multimodal {
 		t.Fatal("omitted multimodal must default to false (text-only)")
 	}
+}
+
+// TestLoadBytesRejectsUnknownShellPolicy pins the startup rejection of a
+// profile whose shell.policy the guard cannot enforce.
+//
+// The value under test, "allow", is not arbitrary: it is what
+// docs/user-guide/guard.md advertised, so an operator following the docs wrote
+// a profile whose shell dimension was permanently dead. checkShell's default
+// branch is a structural HardDeny, which no permission mode (yolo and auto
+// included) can override, and nothing read the field until the first
+// shell_run — so the config started clean and failed mid-session with no
+// remedy available from inside the running process.
+//
+// The error has to name the offending profile, because Profiles is a bare map
+// and an operator with several profiles otherwise cannot tell which one to fix.
+func TestLoadBytesRejectsUnknownShellPolicy(t *testing.T) {
+	const bad = `
+profiles:
+  coding:
+    tools: { allow: ["*"] }
+    shell: { policy: "allow" }
+`
+	_, err := LoadBytes([]byte(bad))
+	require.Error(t, err, "an unenforceable shell policy must not load")
+	require.Contains(t, err.Error(), "profiles.coding.shell.policy")
+	require.Contains(t, err.Error(), `"allow"`)
+	require.Contains(t, err.Error(), "allowlist",
+		"the error must list the legal values, not just reject")
+}
+
+// TestLoadBytesAcceptsEveryEnforceableShellPolicy is the negative probe for
+// TestLoadBytesRejectsUnknownShellPolicy: a gate that rejects a legal policy
+// would be worse than no gate, because it would refuse configs that work.
+// Driving guard.ShellPolicies() rather than a local copy means a future policy
+// gains coverage here without anyone remembering to add it.
+func TestLoadBytesAcceptsEveryEnforceableShellPolicy(t *testing.T) {
+	for _, policy := range guard.ShellPolicies() {
+		src := fmt.Sprintf("profiles:\n  coding:\n    shell: { policy: %q }\n", policy)
+		cfg, err := LoadBytes([]byte(src))
+		require.NoError(t, err, "policy %q is enforceable and must load", policy)
+		require.Equal(t, policy, cfg.Profiles["coding"].Shell.Policy)
+	}
+	// A profile block with no shell key at all is the most common shape and
+	// must keep loading: the zero value is "" and "" is allowlist.
+	cfg, err := LoadBytes([]byte("profiles:\n  coding:\n    tools: { allow: [\"*\"] }\n"))
+	require.NoError(t, err)
+	require.Empty(t, cfg.Profiles["coding"].Shell.Policy)
 }

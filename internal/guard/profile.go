@@ -107,6 +107,39 @@ type ShellPerm struct {
 	Rules    []execpolicy.Rule `yaml:"rules"`
 }
 
+// ShellPolicies returns the policy strings the guard understands, in the order
+// checkShell's switch tests them. "" is legal and is an alias for "allowlist";
+// there is deliberately NO "allow" value — an unrestricted shell is expressed
+// as "denylist" with no patterns.
+//
+// This slice is the single source of truth for policy validation, consumed by
+// ValidateShellPolicy so a typo is rejected when the config loads. It has to
+// agree with checkShell's switch, and TestShellPolicyCatalogMatchesCheckShell
+// holds it there in both directions: every entry here must survive Check
+// without hitting the unknown-policy branch, and a value outside this list must
+// hit it.
+func ShellPolicies() []string { return []string{"", "allowlist", "deny", "denylist"} }
+
+// ValidateShellPolicy reports whether policy is one the guard can enforce.
+//
+// This exists because an unrecognized policy is the single worst thing an
+// operator can write into a profile: checkShell's default branch returns a
+// STRUCTURAL HardDeny (not overridable), so the profile's shell dimension is
+// dead in every permission mode — yolo and auto included — with no interactive
+// escape hatch. Nothing reads the value until the first shell_run, so without
+// this check a typo starts cleanly and only surfaces mid-session as an
+// unexplained refusal. Validating at load turns that into a startup error that
+// names the profile and the legal values.
+func ValidateShellPolicy(policy string) error {
+	for _, p := range ShellPolicies() {
+		if policy == p {
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown shell policy %q (want one of %q, where \"\" means \"allowlist\")",
+		policy, ShellPolicies())
+}
+
 // NetPerm governs outbound network access.
 type NetPerm struct {
 	Allow bool     `yaml:"allow"`
