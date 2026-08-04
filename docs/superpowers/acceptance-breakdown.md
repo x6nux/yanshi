@@ -14,7 +14,7 @@
 
 **规模**：63 条 / 230 子句。
 
-**引用约定（读之前先看）**：代码引用一律写成 `路径::符号`（或「路径 + 就近的反引号符号名」），**不带行号**。这份文档最初 386 处引用全部是 `file.go:NNN` 形式，写下 14 分钟后就有 4 处指错了符号 —— 紧接着的一次提交给 `internal/tools/git.go` 与 `internal/tools/testrun.go` 各加了几十行，行号原地漂移。**行号越界能被扫出来，范围内漂移是无声的**，而这份文档被 `docs/feature-status.yaml` 指定为翻牌前的唯一查表依据，无声错位比缺失更贵。符号名同时也是更好的定位手段（`grep` 一次即得）。少数非 Go 文件（`*.yml` / `*.sh` / `*.toml` / spec 文档）没有符号可指，仍保留行号 —— 那些是**写作时快照**，读到时请按内容而非行号核对。
+**引用约定（读之前先看）**：代码引用一律写成 `路径::符号`（或「路径 + 就近的反引号符号名」），**不带行号**。这份文档最初 386 处引用全部是 `file.go:NNN` 形式，写下 14 分钟后就有 4 处指错了符号 —— 紧接着的一次提交给 `internal/tools/git.go` 与 `internal/tools/testrun.go` 各加了几十行，行号原地漂移。**行号越界能被扫出来，范围内漂移是无声的**，而这份文档被 `docs/feature-status.yaml` 指定为翻牌前的唯一查表依据，无声错位比缺失更贵。符号名同时也是更好的定位手段（`grep` 一次即得）。**这条约定只覆盖 Go 引用**：本文的 `.go` 行号引用已清零，但非 Go 文件（`*.yml` / `*.sh` / `*.toml` / 其他文档）没有符号可指，那些 `file:line` 仍在，也仍会漂移 —— 它们是**写作时快照**，读到时请按内容而非行号核对。Go 引用的这一半现在由 GOV9（`internal/archtest/docsymbols_test.go::TestGOV9DocSymbolReferencesResolve`）机器守着：路径解析得出而符号解析不出即判红；非 Go 的那一半门禁管不了，只能人工。
 
 ---
 
@@ -697,7 +697,7 @@
 
 **3. 无 keyring 安全降级** — 部分（两半：Manager 半真，build-tag 半**完全不执行**）
 - 依据：
-  - **(b) Manager 半 —— 真且无条件执行**：`manager.go::NewManager` 的 `"auto"` 分支（`Available()` 失败 → 有 passphrase 则 `fileStore`，否则 store=nil + warn，**从不 fatal**）。`internal/secrets::TestNewManager_*` 的四个子测试通过 `withFakeKeyring(t, &fakeStore{avail: ErrKeyringUnavailable})` 注入 `newKeyringStore` seam，断言 `*FileStore` 类型回退与两条 warn 文本。**这是本条的实质证据。**
+  - **(b) Manager 半 —— 真且无条件执行**：`manager.go::NewManager` 的 `"auto"` 分支（`Available()` 失败 → 有 passphrase 则 `fileStore`，否则 store=nil + warn，**从不 fatal**）。`internal/secrets::TestManager_NewManagerAllModes` 的四个子测试通过 `withFakeKeyring(t, &fakeStore{avail: ErrKeyringUnavailable})` 注入 `newKeyringStore` seam，断言 `*FileStore` 类型回退与两条 warn 文本。**这是本条的实质证据。**
   - **(a) build-tag 半 —— 零测试**：`keyring_disabled.go`（`//go:build nokeyring`）的 `noKeyringStore` 四个方法全返回 `ErrKeyringUnavailable`，但全仓 grep `nokeyring` 只命中实现文件与注释；`ci.yml:83-106` 的 `tags: [default, nokeyring]` 矩阵**只做 `go build` + `./yanshi -h` 冒烟，不跑 `go test`** → **`noKeyringStore` 的四个方法在任何环境下都从未被执行过**（假证据类别：**不会被执行（`//go:build` tag）**）。
 - 证据形状：CI 增一个 `go test -tags=nokeyring ./internal/secrets/...` 作业；或把 (a) 半的断言写成不依赖 tag 的形式（当前 `Store` 接口已足以做到）。
 
@@ -1243,7 +1243,7 @@
 > acceptance：核心按键可重映射；Vim 开关；高对比主题；冲突可诊断
 
 **1. 核心按键可重映射** — 未兑现（**虚报：连第 1 句都没有**）
-- 依据：核心存在但**不在生效路径** —— `internal/keymap/keymap.go::NewDefaultBuilder`（默认表 + overrides）、`::Map.Lookup`（`Lookup`）、配置项 `internal/config/config.go::TUIConfig`（`Bindings`）。**但 `internal/cli/tui` 不导入 `internal/keymap`**（全仓唯一 importer 是 `internal/cli/doctor.go::imports`）；真实分发是 `handlers.go::model.handleKeyMsg` 的硬编码 `switch msg.Type`。`cfg.TUI.Bindings` **运行时永不被读**。`internal/keymap::TestBuild_DefaultLookupUsesRealKeyMessages` 是**变异盲**：它断言 `Lookup(KeyCtrlK)==ActionScrollUp`，而 TUI 里 Ctrl+K 实为打开 action palette —— **两者语义直接矛盾，测试照绿**。`internal/cli::TestCheckKeymapConfig_OKAndSkipped` 只是 spy（证明 doctor 会把 bindings 喂给 Builder）。
+- 依据：核心存在但**不在生效路径** —— `internal/keymap/keymap.go::NewDefaultBuilder`（默认表 + overrides）、`::Map.Lookup`（`Lookup`）、配置项 `internal/config/config.go::TUIConfig`（`Bindings`）。**但 `internal/cli/tui` 不导入 `internal/keymap`**（全仓唯一 importer 是 `internal/cli/doctor.go`）；真实分发是 `handlers.go::model.handleKeyMsg` 的硬编码 `switch msg.Type`。`cfg.TUI.Bindings` **运行时永不被读**。`internal/keymap::TestBuild_DefaultLookupUsesRealKeyMessages` 是**变异盲**：它断言 `Lookup(KeyCtrlK)==ActionScrollUp`，而 TUI 里 Ctrl+K 实为打开 action palette —— **两者语义直接矛盾，测试照绿**。`internal/cli::TestCheckKeymapConfig_OKAndSkipped` 只是 spy（证明 doctor 会把 bindings 喂给 Builder）。
 - 证据形状：`Bindings{"ctrl+g":"scroll_up"}` 经**生产构造**建 model，`Update(KeyMsg{KeyCtrlG})` 后断言 `viewport.YOffset` 变化，同时断言默认键不再触发旧行为。**骗过去**：任何只在 `internal/keymap` 内 `Build().Lookup()` 的测试。
 
 **2. Vim 开关** — 未兑现（**虚报：连第 1 句都没有**）
@@ -1315,7 +1315,7 @@
 - 证据形状：断言必须写死字面量 —— `assert.Equal(t, 124, mapExecError(context.DeadlineExceeded))`；或更强：起子进程跑 `exec --timeout 1ns` 并断言 `ProcessState.ExitCode() == 124`。**骗过去**：常量对常量（现状）。
 
 **3. 可 resume** — 部分
-- 依据：`internal/cli/exec.go::execWithBackend`（发 `restore_session` 帧、消费回复）；`internal/api/http/ws_handlers.go handleRestoreSession`。`cmd/yanshi::TestRunHeadlessCommandResume` 是**空壳（零断言）** —— 测试体注释直说「non-zero expected (resume fails); the point is the resume branch ran」，只等它别超时。`internal/cli::TestExec_ResumeJSONLRendersRestoreEvent` 稍强但仍是 **spy + fake 太宽**：fakeExecBackend 自己回 `session_restored`，只断言 stdout 含该字符串 —— 证明的是「客户端发了帧并渲染了回复」，不是「历史真的被恢复了」。这批里最好的是 `internal/cli::TestExec_ResumeSendsRestoreBeforeTurn`（断言 restore 帧**先于** user turn）。
+- 依据：`internal/cli/exec.go::execWithBackend`（发 `restore_session` 帧、消费回复）；`internal/api/http/ws_handlers.go handleRestoreSession`。`cmd/yanshi::TestRunHeadlessCommandResume` 是**空壳（零断言）** —— 测试体注释直说「non-zero expected (resume fails); the point is the resume branch ran」，只等它别超时。`internal/cli::TestExec_ResumeJSONLRendersRestoreEvent` 稍强但仍是 **spy + fake 太宽**：fakeExecBackend 自己回 `session_restored`，只断言 stdout 含该字符串 —— 证明的是「客户端发了帧并渲染了回复」，不是「历史真的被恢复了」。这批里最好的是 `internal/cli::TestExec_ResumeSendsRestoreBeforeUserMessage`（断言 restore 帧**先于** user turn）。
 - 证据形状：端到端 —— 第一次 exec 说「记住 X」拿到 sessionID，第二次 `--resume <id>` 问「X 是什么」，断言**服务端喂给 model 的历史里含第一轮的消息**（fake model 可记录收到的 history）。**骗过去**：任何用 fake backend 自造 `session_restored` 回复的测试。
 
 **4. CI 可脚本化** — 部分（**现成门禁可以顶，但有两个洞**）

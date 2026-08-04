@@ -84,9 +84,13 @@ go test -overlay /tmp/ov.json ./internal/foo -run '^<TestName>$' -v
 
 **真实实例**：`internal/ctxcompact.EnforceToolCallPairs` 掏空后，台账 `E2/PROP1#3` 引用的三条属性测试**全部 PASS**。原因：属性测试的前置条件守卫用**被测函数自己的产物**算 skip 条件，函数一掏空，每个 trial 都在守卫处 skip，而 `go test` 对 0 个执行 trial 报 PASS —— 与真正通过在退出码、在输出、在 CI 日志里都不可区分。
 
-修复后的参考实现：`internal/ctxcompact/plan_property_test.go` 的 `runPairingProperty` / `minPairingTrials` —— 守卫（`skipAlreadyCompacted`）只读**生成的输入**、绝不读被测函数的输出，并且断言实际执行的 trial 数下限。这条约定**不是机器强制的**（理由见 ADR-0011 边界），只能靠本清单在评审时看。
+修复后的参考实现：`internal/ctxcompact/plan_property_test.go` 的 `runGeneratedProperty` / `minExecutedTrials` / `requireTrialFloor` —— 守卫（`skipAlreadyCompacted`）只读**生成的输入**、绝不读被测函数的输出，并且断言实际执行的 trial 数下限。
 
-**推论（写给被评审者）**：凡带前置条件守卫的属性测试，必须断言实际执行的 trial 数下限。
+**参考实现的关键是作用域，不只是那个下限。** 第一版只把这套守卫接进三条配对属性，函数名也叫 `runPairingProperty`（那个名字今天只作为改名记录出现在该文件的注释里，**不要照它去 grep**）—— **那个窄作用域本身就是缺陷**：被它漏在外面的两条属性（pin 集合子集、token 缩减）继续拿被测函数自己的产物当守卫，掏空后依旧全绿。正确形态是**包内所有生成型属性一律走同一个入口**，包括跨文件的（`run_property_test.go` 也调它）。照第一版那个只接配对属性的形状实现，等于把已经判定过的缺陷复制回来。
+
+这条约定**不是机器强制的**（理由见 ADR-0011 边界），只能靠本清单在评审时看。
+
+**推论（写给被评审者）**：凡带前置条件守卫的属性测试，必须断言实际执行的 trial 数下限，并且这个下限要**统一在一个入口**上，不能按属性挑着加。
 
 ---
 
@@ -263,6 +267,16 @@ go test ./<pkg> -run '^<TestName>$' -v 2>&1 | grep -E '^(=== RUN|--- (PASS|FAIL|
 
 **判据**：行号在任何一次插入删除后失效，且失效**无声**。改用**符号引用**（函数名、类型名、常量名）—— 符号改名时 `grep` 找得回来，行号漂移找不回来。
 
+**但「找得回来」不等于「有人去找」。** 这条规则第一个栽在自己身上：本清单 A 段的参考实现指针写下 6 个提交后被一次改名作废，而那是该约定的唯一指针，没有任何人回来 `grep`。**符号引用去掉了无声的数字漂移，换来的是同样无声的名字漂移** —— 而且更坏，坏掉的名字读起来是合法的。
+
+所以现在这一半是**机器强制的**：`internal/archtest/docsymbols_test.go::TestGOV9DocSymbolReferencesResolve`（GOV9）扫活文档里所有 `路径::符号` 引用，路径解析得出、符号解析不出即判红。三条使用约定：
+
+- **要引用就写全 `路径::符号`**，只写反引号里的裸符号名不受门禁保护。
+- **要故意写一个不存在的名字**（记录幻影、给模板占位、举反例），就**不要带可解析的路径前缀** —— 门禁只在路径解析得出时才追究符号，这既是自指逃生门，也顺手把别的语言的 `::`（Rust 路径、pytest node id）挡在外面。
+- **门禁不管非 Go 文件**（`*.yml` / `*.sh` / `*.toml` / 文档），那些没有符号可指，仍然只能靠本条人工扫。
+
+📌 已归档的带日期文档（`docs/superpowers/` 下的 plans / notes / specs）不在扫描范围内 —— 理由同 `d2HistoricalDocs`：改写历史记录去追一次改名，本身是另一种不诚实。
+
 ### F4. 断言型陈述（最危险）
 
 形如「X 是 Y」「边界是 Z」的架构断言，读起来权威，但从没有人实测过。
@@ -375,4 +389,4 @@ go test -race ./internal/<改动的包>
 ## 关联
 
 - [ADR-0011](../adr/0011-ledger-clause-level-evidence-handshake.md) —— 台账子句级证据握手（GOV8）。本清单的 A、E、F 与它的边界互补：**GOV8 判不了的，落在这份清单上。**
-- `CLAUDE.md`「治理是机器强制的」段 —— 机器强制的部分（GOV1–GOV8）。**本清单覆盖的是机器判不了的那半。**
+- `CLAUDE.md`「治理是机器强制的」段 —— 机器强制的部分（GOV1–GOV9）。**本清单覆盖的是机器判不了的那半。**

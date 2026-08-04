@@ -91,6 +91,18 @@ const d2Tombstone = "D2/O12 已作废"
 // editor"), or that names a storefront rather than the product ("install it
 // from the marketplace"), slips through. Widening that far trades precision for
 // recall, and a gate that reddens on unrelated editor notes gets deleted.
+//
+// The limit in the OTHER direction is worth stating too, because everything
+// above is about recall and it would be easy to read this list as precise. It
+// is not: these patterns match the phrase, not the claim. A sentence that
+// mentions the product-plus-noun in order to DENY that yanshi ships one — the
+// competitor comparison, "unlike <rival>, which ships one of these, yanshi is
+// terminal-first" — reddens the gate even though it asserts the opposite of an
+// advertisement. No live document does that today. The escape is the same one
+// the historical documents use: land the sentence with a tombstone and an entry
+// in d2HistoricalDocs. Distinguishing assertion from denial needs a parser, not
+// a regexp, and this direction of error is the cheap one — it costs an author
+// one rewrite, whereas a recall miss costs the acceptance clause its evidence.
 const (
 	// d2Product matches the product name in both spellings. Hard-coding the
 	// abbreviation was the widest hole in this list: the official full name is

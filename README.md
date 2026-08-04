@@ -20,14 +20,33 @@ Yanshi 造的是会自己动的编码 agent：自驱动 goal loop、ReAct 编排
 ## Prerequisites
 
 - **Go 1.26.4+** (`go.mod`) — needed to build the binary.
-- **git 2.24+** (2019-11) — optional, and needed only by the `git_diff` tool's
-  `base_ref` and `commit` scopes. Those two pass `--end-of-options` to `git` so
-  that a ref beginning with `-` can never be read as a flag. Older git does not
-  recognise the marker and **rejects the command outright**, so on git < 2.24
-  those two scopes fail on every call rather than silently losing the
-  protection. The `working_tree` scope does not pass the marker and works with
-  any git. Nothing else in yanshi requires git — autoVCS is a SQLite store of
-  its own, not a git wrapper.
+- **git** — optional for the binary as a whole, but **five features shell out
+  to it**, each carrying its own version floor. Yanshi never bundles git; where
+  it is absent those features fail and the rest of the binary keeps working.
+
+  | Feature | What it runs | Floor |
+  | --- | --- | --- |
+  | `git_diff` tool, `base_ref` and `commit` scopes | `git diff` / `git show` with `--end-of-options` | **2.24** (2019-11) |
+  | `git_status` tool | `git status --porcelain=v2` | **2.11** (2016-11) |
+  | `goal` loop, when autoVCS is unconfigured | `git worktree add` / `list` / `remove` | **2.17** (2018-04) |
+  | `yanshi pr <number>` given a bare number | `git remote get-url origin` | **2.7** (2016-01) |
+  | `/skill install github:<owner>/<repo>` | `git clone --depth 1` | any |
+
+  The first row is the only floor that is a *hard* one in the sense of failing
+  loudly on purpose. Those two scopes pass `--end-of-options` so that a ref
+  beginning with `-` can never be read as a flag; older git does not recognise
+  the marker and **rejects the command outright**, so on git < 2.24 the two
+  scopes fail on every call rather than silently losing the protection.
+  `git_diff`'s `working_tree` scope emits no marker and works with any git.
+
+  Two more places invoke git but degrade instead of failing: the `diagnostics`
+  tool's repository probe and the orchestrator's environment probe both simply
+  report git as unavailable.
+
+  **autoVCS is not on this list** — it is a SQLite store of its own, not a git
+  wrapper, and it needs no git binary. The `goal` loop's git worktrees are the
+  *fallback* taken only when autoVCS is unconfigured (`App.VCSRepoID` empty);
+  with autoVCS active the loop branches and merges inside SQLite instead.
 
 ## Quick start
 
@@ -178,8 +197,9 @@ shell policy, and net hosts) before dispatch. Available tools:
 **Shell**
 - `shell_run` — run a single shell command; returns combined output, exit code, and duration. Shell metacharacters (`&&`, `||`, `;`, `|`, backticks, `$()`, `>`, `<`, newlines) are rejected — issue sequential commands instead.
 
-**Git** (read-only; see [Prerequisites](#prerequisites) for the version floor)
-- `git_status` — structured working-tree status.
+**Git** (read-only; see [Prerequisites](#prerequisites) for the per-feature version floors)
+- `git_status` — structured working-tree status. Reads `--porcelain=v2`, so it
+  needs git 2.11+.
 - `git_diff` — per-file structured diff. Scopes: `working_tree` (any git),
   `base_ref` and `commit` (git 2.24+).
 

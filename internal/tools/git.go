@@ -234,8 +234,13 @@ func collectGitDiffFiles(ctx context.Context, root string, args gitDiffArgs) ([]
 // Say the pre-2.24 half precisely, because "validateGitRef still covers those
 // versions" is true and misleading at the same time: on git < 2.24 the marker
 // is not a no-op that leaves a validated-but-unmarked argv, it is an argument
-// git does not know. `git diff --end-of-options <ref>` there fails outright
-// ("unknown option" / "ambiguous argument"), so git_diff's base_ref and commit
+// git does not know. `git diff --end-of-options <ref>` there fails outright,
+// and the two scopes fail in two different voices because they run two
+// different commands: `git diff` answers `error: invalid option:
+// --end-of-options` followed by its usage block, while `git show` (the commit
+// scope) goes through setup_revisions and answers `fatal: unrecognized
+// argument: --end-of-options`. Both are measurable today by feeding either
+// command any option it does not know. So git_diff's base_ref and commit
 // scopes do not degrade on those versions, they stop working — the tool
 // returns the git error for every call. Only the working_tree scope, which
 // emits no marker, keeps running. That makes git 2.24 (Nov 2019) a hard

@@ -128,7 +128,9 @@ func (m *Manager) Spawn(ctx context.Context, req SpawnRequest) (string, error) {
 			parentRT = rt
 			depth = m.records[parentID].Depth + 1
 			// --- depth vs concurrency: two orthogonal dimensions ---
-			// Depth (vertical, MaxSubAgentDepth=3 from subagent.go:99) is
+			// Depth (vertical, tools.MaxSubAgentDepth=3, declared in
+			// internal/tools/subagent.go — cited by symbol, not by line,
+			// because line numbers drift silently) is
 			// checked FIRST. When both depth and concurrency are exceeded,
 			// ErrTooDeep wins — a deeper agent will never starve a shallower
 			// slot (the concurrency limit governs independently). Both
