@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/x6nux/yanshi/internal/sandbox"
@@ -88,5 +89,109 @@ func TestRunTestsExecutesGoTestJSONWithWorkspaceWriteTier(t *testing.T) {
 	}
 	if res.Framework != "go" || res.Passed != 1 || res.Status != "pass" {
 		t.Fatalf("res=%+v", res)
+	}
+}
+
+// TestRunTestsReportsRunnerFailureInsteadOfPass is the regression test for
+// run_tests answering {"status":"pass","passed":0,"failed":0} for a `go test`
+// that never ran a single test.
+//
+// The parsers only see per-test events, so a runner that dies before the first
+// test (missing module cache, build error, unknown package, missing toolchain)
+// parses as "0 passed, 0 failed" and every parser then declares "pass". The
+// exit code is the only signal present in all of those cases, and testrun.go
+// did not read it anywhere. Reported as green, the model proceeds as if the
+// suite passed — the single worst failure mode a test tool can have.
+//
+// Each framework is exercised because each has its own parser and each one
+// reached the same wrong conclusion independently.
+func TestRunTestsReportsRunnerFailureInsteadOfPass(t *testing.T) {
+	for _, tc := range []struct {
+		marker string
+		stderr string
+	}{
+		{"go.mod", "go: module cache not found: neither GOMODCACHE nor GOPATH is set"},
+		{"Cargo.toml", "error: could not find `Cargo.toml`"},
+		{"package.json", "npm ERR! missing script: test"},
+	} {
+		t.Run(tc.marker, func(t *testing.T) {
+			factory := newScriptedFactory(t, func(secproc.SecureProcessSpec) cannedResult {
+				return cannedResult{Stderr: tc.stderr, ExitCode: 1}
+			})
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, tc.marker), []byte("{}\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			ctx := WithWorkRoot(secureTestContext(t, factory), root)
+			out, err := runTool(ctx, NewTestRunTool(), `{}`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var res testResult
+			if err := json.Unmarshal([]byte(out), &res); err != nil {
+				t.Fatalf("unmarshal %q: %v", out, err)
+			}
+			if res.Status == "pass" {
+				t.Fatalf("runner exited 1 with no test events but run_tests reported %q — "+
+					"a false green (result: %s)", res.Status, out)
+			}
+			if !strings.Contains(res.Summary, tc.stderr) {
+				t.Fatalf("summary %q must carry the runner's own failure text %q — "+
+					"it is the only place the reason exists", res.Summary, tc.stderr)
+			}
+		})
+	}
+}
+
+// TestRunTestsKeepsFailWhenTestsActuallyFailed pins the other half of the
+// exit-code reconciliation: a non-zero exit with parsed failures must stay
+// "fail" (the parser already knows what broke) and must not be flattened into
+// the coarser "error" bucket.
+func TestRunTestsKeepsFailWhenTestsActuallyFailed(t *testing.T) {
+	factory := newScriptedFactory(t, func(secproc.SecureProcessSpec) cannedResult {
+		return cannedResult{
+			Stdout:   `{"Action":"fail","Package":"p","Test":"TBroken"}` + "\n",
+			ExitCode: 1,
+		}
+	})
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithWorkRoot(secureTestContext(t, factory), root)
+	out, err := runTool(ctx, NewTestRunTool(), `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res testResult
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "fail" || res.Failed != 1 {
+		t.Fatalf("res=%+v, want status=fail failed=1", res)
+	}
+}
+
+// TestRunTestsStaysPassOnCleanRun guards against the reconciliation
+// over-reaching: exit 0 must remain "pass" no matter what the parser saw.
+func TestRunTestsStaysPassOnCleanRun(t *testing.T) {
+	factory := newScriptedFactory(t, func(secproc.SecureProcessSpec) cannedResult {
+		return cannedResult{Stdout: `{"Action":"pass","Package":"p","Test":"T"}` + "\n"}
+	})
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithWorkRoot(secureTestContext(t, factory), root)
+	out, err := runTool(ctx, NewTestRunTool(), `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res testResult
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "pass" || res.Passed != 1 {
+		t.Fatalf("res=%+v, want status=pass passed=1", res)
 	}
 }

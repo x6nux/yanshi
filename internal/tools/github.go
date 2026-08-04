@@ -117,6 +117,29 @@ func ghSpec(args ...string) secproc.SecureProcessSpec {
 	}
 }
 
+// ghFailure reports the error result for a `gh` invocation that did not
+// succeed, or "" when it did. Both failure shapes must be surfaced: a launch
+// error (err) AND a non-zero exit code. Only checking err made every gh
+// failure — not authenticated, PR not found, network refused — look like a
+// success with empty stdout, so github_comment answered {"id":""} for a
+// comment that was never posted.
+func ghFailure(res commandResult, err error) string {
+	if err != nil {
+		return errorResult("gh: " + err.Error())
+	}
+	if res.ExitCode == 0 {
+		return ""
+	}
+	detail := strings.TrimSpace(res.Stderr)
+	if detail == "" {
+		detail = strings.TrimSpace(res.Stdout)
+	}
+	if detail == "" {
+		detail = "no output"
+	}
+	return errorResult(fmt.Sprintf("gh: exited %d: %s", res.ExitCode, detail))
+}
+
 func runGitHubPRContext(ctx context.Context, argsJSON string) (string, error) {
 	var p struct {
 		Repo   string `json:"repo"`
@@ -127,8 +150,8 @@ func runGitHubPRContext(ctx context.Context, argsJSON string) (string, error) {
 	}
 	res, err := secureCommandRunner(ctx, ghSpec("pr", "view", "--repo", p.Repo, "--json",
 		"number,title,body,headRefName,baseRefName,author,files,changedFiles", fmt.Sprintf("%d", p.Number)), 30*time.Second)
-	if err != nil {
-		return errorResult("gh: " + err.Error()), nil
+	if fail := ghFailure(res, err); fail != "" {
+		return fail, nil
 	}
 	ghCtx, err := FetchGitHubContext(p.Repo, p.Number, res.Stdout)
 	if err != nil {
@@ -147,8 +170,8 @@ func runGitHubComment(ctx context.Context, argsJSON string) (string, error) {
 		return errorResult(err.Error()), nil
 	}
 	res, err := secureCommandRunner(ctx, ghSpec("pr", "comment", "--repo", p.Repo, "--body", p.Body, fmt.Sprintf("%d", p.Number)), 30*time.Second)
-	if err != nil {
-		return errorResult("gh: " + err.Error()), nil
+	if fail := ghFailure(res, err); fail != "" {
+		return fail, nil
 	}
 	return toJSON(struct {
 		ID string `json:"id"`
@@ -170,8 +193,8 @@ func runGitHubApprove(ctx context.Context, argsJSON string) (string, error) {
 	}
 	ghArgs = append(ghArgs, fmt.Sprintf("%d", p.Number))
 	res, err := secureCommandRunner(ctx, ghSpec(ghArgs...), 30*time.Second)
-	if err != nil {
-		return errorResult("gh: " + err.Error()), nil
+	if fail := ghFailure(res, err); fail != "" {
+		return fail, nil
 	}
 	return toJSON(struct {
 		Result string `json:"result"`
@@ -198,8 +221,8 @@ func runGitHubMerge(ctx context.Context, argsJSON string) (string, error) {
 	}
 	ghArgs = append(ghArgs, fmt.Sprintf("%d", p.Number))
 	res, err := secureCommandRunner(ctx, ghSpec(ghArgs...), 30*time.Second)
-	if err != nil {
-		return errorResult("gh: " + err.Error()), nil
+	if fail := ghFailure(res, err); fail != "" {
+		return fail, nil
 	}
 	return toJSON(struct {
 		Result string `json:"result"`

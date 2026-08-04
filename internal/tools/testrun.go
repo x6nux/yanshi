@@ -83,7 +83,7 @@ func runTests(ctx context.Context, argsJSON string) (string, error) {
 	if err != nil {
 		return errorResult("run_tests: " + err.Error()), nil
 	}
-	parsed := parseTestResult(framework, res)
+	parsed := reconcileExitCode(parseTestResult(framework, res), res)
 	parsed.DurationMS = duration
 	raw := res.Stdout + res.Stderr
 	if len(raw) > SpillThreshold {
@@ -147,6 +147,58 @@ func detectRunner(files map[string]bool) string {
 		return "npm"
 	}
 	return ""
+}
+
+// reconcileExitCode makes the runner's exit status authoritative over the
+// output parsers.
+//
+// Every parser derives status from the per-test events it can see, so a run
+// that never got as far as running a test parses as "0 passed, 0 failed" and
+// each parser then declares status "pass". That is how run_tests reported
+// {"status":"pass","passed":0,"failed":0} for `go test` failing with "module
+// cache not found": a green light for a command that never executed. The exit
+// code is the one signal that is present in every one of those cases.
+//
+// Non-zero exit with parsed failures stays "fail" (the parser already knows
+// what broke). Non-zero exit with no parsed failures becomes "error" and
+// carries the tail of the runner's own output, because that is the only place
+// the reason exists — including when a parser already said "error" with a
+// summary describing its own confusion ("npm: no JSON output") rather than the
+// runner's complaint ("npm ERR! missing script: test").
+func reconcileExitCode(result testResult, res commandResult) testResult {
+	if res.ExitCode == 0 {
+		return result
+	}
+	if result.Failed > 0 {
+		if result.Status == "pass" {
+			result.Status = "fail"
+		}
+		return result
+	}
+	result.Status = "error"
+	result.Summary = fmt.Sprintf("%s exited %d without reporting any test result: %s",
+		result.Framework, res.ExitCode, runnerFailureTail(res))
+	return result
+}
+
+// runnerFailureTail extracts the most informative slice of a failed runner's
+// output. stderr wins when present (build errors, "module cache not found",
+// "no such tool" all land there); otherwise the tail of stdout is used, since
+// -json runs put the failure text there. Capped so a huge log cannot flood the
+// model's context — the caller already spills the full output to an artifact.
+func runnerFailureTail(res commandResult) string {
+	const maxTail = 1024
+	text := strings.TrimSpace(res.Stderr)
+	if text == "" {
+		text = strings.TrimSpace(res.Stdout)
+	}
+	if text == "" {
+		return "(no output)"
+	}
+	if len(text) > maxTail {
+		text = "…" + text[len(text)-maxTail:]
+	}
+	return text
 }
 
 func parseTestResult(framework string, res commandResult) testResult {
