@@ -61,12 +61,22 @@
   - **「可执行」判到「`go test` 会不会跑它」为止，判不到「它跑的时候断言了什么」**。空壳测试仍然能过（见上一条边界）；`resolveTestRef` 只保证被引的东西是一个会被执行的 `func TestX(*testing.T)`，不保证它跑起来有意义。
   - **build 约束一律按「未执行」处理，包括 GOOS/GOARCH 约束，也包括只写在文件名里的那种**。`//go:build windows` 与 `foo_windows_test.go` 其实都会在 CI 的 windows leg 上跑，但这道门不区分 —— 判定标准是「默认 `go test ./...` 编不编译它」，好让规则只有一句话。**这条一致性是有代价换来的**：判定必须与运行门禁的机器无关，否则同一份台账在 ubuntu/windows/macos 三条 leg 上会给出三种结论，「GOV8 绿」就不再是一句能被引用的话。代价是这类测试也必须配一条无约束测试才能撑起子句；因为它只是**补充**限制而非禁用，代价可接受。
   - **无条件 `t.Skip` 的检测是窄的，而且只能是窄的**。`unconditionalSkip` 只在 skip **可证明支配整个函数体**时报警：函数体的每条顶层语句都是对本测试 `*testing.T` 的方法调用，skip 之前的那些取自一张不可能失败的白名单（`Helper`/`Parallel`/`Log`/`Logf`），出现任何别的东西（一个 `if`、一次赋值、一个 helper 调用）就放弃分析并返回「没有」。**藏在条件里、子测试闭包里、或 helper 里的 skip 检不出来**，要检出就得做可达性分析，那不是这道门该背的东西。这是**故意选的偏向**：漏检留一个洞，误检会让诚实的平台门控测试无故变红，而无故变红的门禁会被删掉 —— 那是更大的洞。
+  - **前置条件由被测对象自己计算的属性测试是恒真的，GOV8 不检测这一类。**
+
+    `unconditionalSkip` 只覆盖「skip 支配整个函数体」这一种形状。存在第二种：属性测试把 `t.Skip` 放在子测试闭包里，而 skip 条件是**用被测函数的产物**算出来的。被测函数一旦被掏空，每个 trial 都在守卫处 skip，`go test` 对 0 个执行 trial 报 PASS —— 与真正通过在退出码、在输出、在 CI 日志里都不可区分。`E2/PROP1#3` 的三条证据曾整体处于这个状态。
+
+    GOV8 不检测它，是判断而非疏漏：
+    - **静态检测不可行。** 判据是「某个 `t.Skip` 的条件传递依赖于被测包返回的值」，需要跨函数数据流分析。合法的条件 skip（`os.Getenv`、`runtime.GOOS`、由被测包构造的配置对象）与病态 skip 在 AST 上同形，误报会红掉诚实的平台门测试；按 `unconditionalSkip` 已经写下的权衡，会被删掉的门禁是更大的洞。
+    - **动态检测不可行。** 「跑被引测试、量 skip 率」要编译执行全部被引包，突破 ADR-0011「同一个问题，不编译」的预算；且台账引用了 `internal/archtest` 自身的测试，GOV8 会自我递归。
+
+    因此责任落在**属性测试作者**身上，约定是：*凡带前置条件守卫的属性测试，必须断言实际执行的 trial 数下限*。`internal/ctxcompact` 的 `runPairingProperty` / `minPairingTrials` 是参考实现 —— 守卫只读生成的输入，执行率低于阈值直接 fail。这条约定不是机器强制的，评审时要看。
   - **`go list` 是包集合的权威，但它答的是「是不是包」，不是「健不健康」**。`defaultTestPackages` 用 `-e`，编译坏掉的包仍在集合里：那是 CI 自己该报的红，让它顺带把台账门禁也打黑只会把一处失败读成两处不相干的失败。
   - **非终态 evidence 只校验「解析得开」，不校验「够不够」**。它是线索不是证据；`partial` 条目写 5 条引用也不代表覆盖了 5 条子句。台账文件头（`docs/feature-status.yaml` 开头的注释）已在 `6a1a2f0` 改成如实描述这条规则，与门禁一致。
 
 ## 关联
 
 - 来源：S0/W1 三轮评审的 12 条阻塞（其中 9 条同类）；`CLAUDE.md`「治理是机器强制的」段 GOV8 条目。
+- 评审侧对应物：[`docs/superpowers/review-checklist.md`](../superpowers/review-checklist.md) —— 本 ADR 逐条写明「这道门判不了什么」，那份清单把判不了的那些变成可执行的评审动作（变异测试、门禁正反探针、空壳测试识别）。上面「属性测试前置条件」这条边界所依赖的作者约定，机器强制不了，由它在评审时看。
 - 代码落点：`internal/archtest/status_evidence_test.go`（GOV8 双向握手：`checkTerminalEvidence`、`TestLedgerEvidenceIsClauseComplete`、`TestLedgerMarkersAreLive`）；`internal/archtest/acceptance_pin_test.go`（分母 pin：`acceptancePins`、`TestLedgerAcceptanceIsPinned`）；`internal/archtest/status_test.go`（台账完整性、`checkEvidence` 引用解析，以及「这条引用会不会被执行」的三个谓词：`defaultTestPackages`、`filenameConstraintOf`、`unconditionalSkip`，由 `TestResolveTestRefExecutabilityPredicates` 单测钉住 —— 台账自己只走通过路径，谓词若退化成「一律放行」整套门禁会静默全绿）；台账本体 `docs/feature-status.yaml`；统计工具 `cmd/featurestatus`。
 - 被否决的替代方案：
   - **单纯的条数比较（evidence 条数 ≥ 子句数）** —— 一行代码就能写出来，但也一行代码就能被满足：贴五个不相关的测试名即可凑数。它把「哪条测试证明哪条子句」这个关键映射留在台账作者的脑子里，等于把洞挪了个位置而没有堵上。逐句映射 + 测试侧回写才让「哪条证明哪条」变成可被 diff 审视的公开断言。
