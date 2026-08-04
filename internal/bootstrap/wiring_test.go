@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -19,6 +21,7 @@ import (
 	"github.com/x6nux/yanshi/internal/bootstrap"
 	"github.com/x6nux/yanshi/internal/guard"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
+	"github.com/x6nux/yanshi/internal/shell"
 	"github.com/x6nux/yanshi/internal/tools"
 )
 
@@ -459,7 +462,11 @@ func TestOrchestratorReceivesSecuritySubsystems(t *testing.T) {
 	rep := app.Orch.SecurityReport()
 	if rep.Sandbox == nil {
 		t.Error("orchestrator.Sandbox is nil — tools.WithSandbox is never called in " +
-			"bindExecutionContext, so every tool runs outside the sandbox posture")
+			"bindExecutionContext, so the diagnostics tool reports the posture as " +
+			"\"unknown\" instead of what the process is actually running under " +
+			"(see tools.sandboxProbe). Enforcement itself travels by constructor " +
+			"field into shell.SecureLaunchFactory / shell.DefaultSecureFactory, " +
+			"not through this context value.")
 	}
 	if rep.NetworkPolicy == nil {
 		t.Error("orchestrator.NetworkPolicy is nil — tools.WithNetworkPolicy is never " +
@@ -624,4 +631,134 @@ func TestShellV2EndToEndSpawnsRealProcess(t *testing.T) {
 		"shell_read did not return output; got %q", readRaw)
 	require.Containsf(t, out.Output, marker,
 		"shell_read returned %q — the real stdout of the spawned process never made it back", out.Output)
+}
+
+// TestShellRunEndToEndSeesHostPATHAndReportsExitCode drives legacy shell_run
+// through a real orchestrator turn built by bootstrap.Build, which is the only
+// configuration in which its SecureProcessFactory branch is taken at all.
+//
+// Two production regressions meet here, both invisible to every test that
+// substitutes its own factory:
+//
+//   - The child environment was built from SecureProcessSpec.Env, which no
+//     caller populates, so the process got HTTP_PROXY/HTTPS_PROXY/NO_PROXY and
+//     nothing else. `go version` answered "sh: go: command not found" — every
+//     PATH-resolved binary (go, node, python3, gh, cargo) was unreachable.
+//   - The branch returned at stdout EOF without calling Wait, so there was no
+//     "── exit N ──" footer and the model could not tell success from failure.
+//
+// `go version` is the probe because a Go test binary is running, so the
+// toolchain that built it is by construction installed; LookPath still gates
+// the case where it is not on PATH (e.g. an oddly packaged CI image).
+func TestShellRunEndToEndSeesHostPATHAndReportsExitCode(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skipf("go not on PATH: %v", err)
+	}
+	app := buildMinimalApp(t)
+	call := schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "s1", Type: "function", Function: schema.FunctionCall{
+			Name: "shell_run", Arguments: `{"command":"go version"}`,
+		},
+	}})
+	res := runShellTurn(t, app, []*schema.Message{call})
+
+	out, ok := res["shell_run"]
+	require.Truef(t, ok, "no shell_run tool_result (results: %v)", res)
+	require.NotContainsf(t, out, "command not found",
+		"the spawned child cannot resolve binaries through PATH — its environment was "+
+			"rebuilt from an empty spec.Env instead of the host's (result: %s)", out)
+	require.Containsf(t, out, "go version",
+		"shell_run did not return the command's stdout (result: %s)", out)
+	require.Containsf(t, out, "── exit 0 ·",
+		"shell_run returned no exit-code footer, so the model cannot distinguish a "+
+			"successful command from a failed one (result: %s)", out)
+}
+
+// TestShellV2TaskJobIsControllableWithTheIDItReturns spawns a REAL long-lived
+// process through the tools bootstrap registers, then drives the two job tools
+// with the id task_shell_start handed back.
+//
+// task_shell_stdin and task_shell_cancel used to pass that id to
+// Manager.Write/Manager.Cancel, which only ever consult the session map, so
+// both answered "shell: session/job not found" for the one id the model ever
+// sees. A background job could be started and never stopped — and none of the
+// four task_shell_* tools had a single test.
+//
+// It has to be a real process: a fake that exits immediately would let a
+// cancel that does nothing look identical to a cancel that works.
+func TestShellV2TaskJobIsControllableWithTheIDItReturns(t *testing.T) {
+	app := buildMinimalApp(t)
+
+	// A command that stays alive long enough to be canceled, on both families
+	// of platform shell. ping is the classic Windows sleep and, unlike
+	// `timeout /t`, tolerates redirected stdin.
+	longRunning := "sleep 30"
+	if runtime.GOOS == "windows" {
+		longRunning = "ping -n 30 127.0.0.1"
+	}
+	start := schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "j1", Type: "function", Function: schema.FunctionCall{
+			Name: "task_shell_start", Arguments: `{"command":"` + longRunning + `"}`,
+		},
+	}})
+	startRes := runShellTurn(t, app, []*schema.Message{start})
+
+	raw, ok := startRes["task_shell_start"]
+	require.Truef(t, ok, "no task_shell_start tool_result (results: %v)", startRes)
+	var job struct {
+		ID        string `json:"id"`
+		SessionID string `json:"session_id"`
+		PID       int    `json:"pid"`
+	}
+	require.NoErrorf(t, json.Unmarshal([]byte(raw), &job),
+		"task_shell_start did not return a job; got %q", raw)
+	require.NotEmpty(t, job.ID, "job id missing from task_shell_start result")
+	require.NotZerof(t, job.PID, "job PID is 0 — no OS process was spawned (result: %s)", raw)
+	require.NotEqualf(t, job.ID, job.SessionID,
+		"job id and session id must differ, otherwise this test cannot detect the namespace bug")
+
+	// Both tools are driven with job.ID — the ONLY id the model ever receives.
+	stdin := schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "j2", Type: "function", Function: schema.FunctionCall{
+			Name: "task_shell_stdin", Arguments: `{"id":"` + job.ID + `","data":"noop\n"}`,
+		},
+	}})
+	cancel := schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "j3", Type: "function", Function: schema.FunctionCall{
+			Name: "task_shell_cancel", Arguments: `{"id":"` + job.ID + `"}`,
+		},
+	}})
+	res := runShellTurn(t, app, []*schema.Message{stdin, cancel})
+
+	// task_shell_stdin resolves the id and reaches the console. It cannot
+	// succeed on this platform yet for an unrelated and much older reason:
+	// StartPTYProcess returns ErrPTYUnavailable everywhere in Phase 0, so every
+	// session gets a pipeConsole whose Write is documented read-only (stdin is
+	// not wired for non-PTY spawns — process.go). What this asserts is exactly
+	// what the id fix is responsible for: the call no longer dies at the lookup.
+	// Manager.WriteJob's success path is covered against a writable console in
+	// TestManagerJobMethodsResolveJobIDsNotSessionIDs.
+	stdinRaw, ok := res["task_shell_stdin"]
+	require.Truef(t, ok, "no task_shell_stdin tool_result (results: %v)", res)
+	require.NotContainsf(t, stdinRaw, "session/job not found",
+		"task_shell_stdin rejected the id task_shell_start returned (result: %s)", stdinRaw)
+	require.Truef(t,
+		strings.Contains(stdinRaw, `"written"`) || strings.Contains(stdinRaw, "pipe console is read-only"),
+		"task_shell_stdin neither wrote nor hit the known Phase 0 pipe-console limit (result: %s)", stdinRaw)
+
+	cancelRaw, ok := res["task_shell_cancel"]
+	require.Truef(t, ok, "no task_shell_cancel tool_result (results: %v)", res)
+	require.NotContainsf(t, cancelRaw, "session/job not found",
+		"task_shell_cancel rejected the id task_shell_start returned, so a background "+
+			"job cannot be stopped once started (result: %s)", cancelRaw)
+	require.Containsf(t, cancelRaw, `"canceled":true`, "unexpected cancel result: %s", cancelRaw)
+
+	// The manager's own view must agree: the process was really killed, not
+	// merely reported as canceled by a tool that returned early.
+	jobs := app.ShellManager.ListJobs()
+	require.Len(t, jobs, 1, "expected exactly one job in the table")
+	require.Equalf(t, shell.StateCanceled, jobs[0].State,
+		"job state = %s, want canceled", jobs[0].State)
+	require.Equalf(t, shell.StateCanceled, app.ShellManager.Snapshot(job.SessionID).State,
+		"the underlying session was not canceled")
 }
