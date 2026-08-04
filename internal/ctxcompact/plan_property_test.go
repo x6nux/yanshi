@@ -130,9 +130,6 @@ func minPairingTrials(numTrials int) int {
 // It runs 50 trials over randomly generated histories from genHistory, which
 // deliberately emits orphan tool_calls and orphan tool_results — the shapes
 // hand-written fixtures never think to include.
-//
-// ledger: E2/PROP1#1 ≥3 个属性
-// ledger: E2/PROP1#2 随机输入通过
 func TestProperty_PinSetIsSubsetOfOutput(t *testing.T) {
 	planPropertyGen(t, 50, 60, func(t *testing.T, msgs []*schema.Message) {
 		plan := Plan(msgs, PlanOpts{KeepRecent: 3})
@@ -168,8 +165,6 @@ func TestProperty_PinSetIsSubsetOfOutput(t *testing.T) {
 // vice versa. A history that keeps one half of a pair is rejected outright by
 // several providers, so this invariant is what makes compaction safe to run
 // mid-turn at all.
-//
-// ledger: E2/PROP1#3 工具对配对不变量成立
 func TestProperty_ToolCallPairingFixpointHolds(t *testing.T) {
 	runPairingProperty(t, 50, 60, func(t *testing.T, msgs []*schema.Message) {
 		plan := Plan(msgs, PlanOpts{KeepRecent: 3})
@@ -214,8 +209,6 @@ func TestProperty_ToolCallPairingFixpointHolds(t *testing.T) {
 // changes nothing. Without idempotence the "fixpoint" is not one, and the
 // pin set could oscillate across the mid-turn/pre-turn compaction paths that
 // both call it.
-//
-// ledger: E2/PROP1#3 工具对配对不变量成立
 func TestProperty_ToolCallPairFixpointIsIdempotent(t *testing.T) {
 	runPairingProperty(t, 30, 60, func(t *testing.T, msgs []*schema.Message) {
 		plan := Plan(msgs, PlanOpts{KeepRecent: 3})
@@ -253,8 +246,6 @@ func TestProperty_ToolCallPairFixpointIsIdempotent(t *testing.T) {
 // end for the same reason runPairingProperty asserts its executed count: a
 // property that silently returns from every trial is vacuous, and `go test`
 // cannot tell that apart from a genuine pass.
-//
-// ledger: E2/PROP1#3 工具对配对不变量成立
 func TestProperty_ToolCallPairFixpointRepairsCorruption(t *testing.T) {
 	injected := 0
 	runPairingProperty(t, 30, 60, func(t *testing.T, msgs []*schema.Message) {

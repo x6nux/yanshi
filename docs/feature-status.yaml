@@ -599,27 +599,28 @@
   acceptance: "覆盖率 ≥50%；最小 App 可构建并跑一轮 turn；软降级被验证"
   evidence: "internal/bootstrap::TestBuild_EndToEndTurn; internal/bootstrap::TestBuild_VCSSoftDegrade"
 
-# 2026-08-04 复核：partial → done。这是台账**低报**：internal/ctxcompact 下有 8 个
-# TestProperty_*，三条子句逐条都有可执行断言。
-#   1 ≥3 个属性 —— 三个互不相同的属性各自成立（pin 集是输出前缀且严格升序 /
-#     压缩后 token 严格下降 / 每次 summary 调用输入不超窗口），远超 3
-#   2 随机输入通过 —— genHistory(rng) 随机生成含孤儿 tool_call、孤儿 tool_result
-#     的历史；planPropertyGen 每属性跑 30–50 个 trial（实测子测试 pass=51/23/40…，
-#     skip 的是「历史以 summary 结尾」这一前置不成立的 trial，非全量跳过）
-#   3 工具对配对不变量成立 —— 不动点成立 / 幂等 / 人为破坏后可修复，三个角度
-# 已知弱点（不足以推翻 done）：属性生成器用固定种子（propSeed=42、123、777）而非
-# 每次运行换种子，所以它是「确定性重放的属性测试」—— 覆盖面来自 trial 数而不是
-# 跨运行的随机性。这是有意的（CI 可复现），但它意味着新 bug 只有落在这批种子的
-# 轨迹上才会被抓到。
+# 2026-08-04 复核：done → partial。理由与 C1/AU1 那次退回逐字相同 ——「掏空后测试
+# 仍 PASS」。前一次复核（见本条历史）把 8 个 TestProperty_* 当成覆盖面的证据，但只
+# 数了测试个数，没有对每条被引测试做变异测试。实测三次掏空（go test -overlay，工作
+# 树零写入）：
+#   ① Run 掏空成恒等（永不 summarize，原样返回）→ PinSetIsSubsetOfOutput /
+#      RunReducesTokens / EachSummaryCallWithinWindow 全 PASS
+#   ② Plan 掏空成 &PlanResult{} → PinSetIsSubsetOfOutput 的 50 个 trial 全部执行
+#      （51 行 === RUN、零 --- SKIP）且全部 PASS
+#   ③ RunSummary 掏空成恒返回 error → EachSummaryCallWithinWindow PASS，
+#      只多了 4 行 t.Logf
+# 三处根因是同一种：前置条件守卫读被测代码自己的产物（run_property_test.go 的
+# `&& len(rs.GenerateCalls)+... > 0`、plan_property_test.go 的
+# `if len(plan.SummarizeIndices) == 0 { return }`），以及 summarize_property_test.go
+# 的 `if err != nil { t.Logf; return }` 吞错。第 3 句的三条配对测试不在此列（它们走
+# runPairingProperty，守卫只读生成输入且有执行率下限），但 GOV8 是逐句握手，第 1、2
+# 句无效即整条不能是终态。evidence 清空、三个测试上的 ledger marker 一并删除。
 - id: "E2/PROP1"
   package: "W4"
-  verdict: done
+  verdict: partial
   title: "ctxcompact 属性测试"
   acceptance: "≥3 个属性；随机输入通过；工具对配对不变量成立"
-  evidence:
-    "1": "internal/ctxcompact::TestProperty_PinSetIsSubsetOfOutput; internal/ctxcompact::TestProperty_RunReducesTokens; internal/ctxcompact::TestProperty_EachSummaryCallWithinWindow"
-    "2": "internal/ctxcompact::TestProperty_PinSetIsSubsetOfOutput; internal/ctxcompact::TestProperty_RunReducesTokens"
-    "3": "internal/ctxcompact::TestProperty_ToolCallPairingFixpointHolds; internal/ctxcompact::TestProperty_ToolCallPairFixpointIsIdempotent; internal/ctxcompact::TestProperty_ToolCallPairFixpointRepairsCorruption"
+  evidence: ""
 
 # ⚠️ 2026-08-04 修复 acceptance 截断（范围决策，非状态变更）：第 5 句原文以字面
 #    省略号「Windows -r…」结尾 —— 那是 docs/feature-status-audit.md 逐条转录时被

@@ -54,9 +54,6 @@ func TestProperty_NoDoubleCompaction(t *testing.T) {
 // The input is a randomly generated 40-message history (genHistory over a
 // seeded PCG), not a fixture, so the property is asserted against shapes
 // nobody chose by hand.
-//
-// ledger: E2/PROP1#1 ≥3 个属性
-// ledger: E2/PROP1#2 随机输入通过
 func TestProperty_RunReducesTokens(t *testing.T) {
 	rng := rand.New(rand.NewPCG(123, 0))
 	msgs := genHistory(rng, 40)

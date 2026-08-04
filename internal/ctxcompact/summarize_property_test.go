@@ -46,8 +46,6 @@ func (r *recordingSummarizer) Stream(ctx context.Context, msgs []*schema.Message
 // The bound is checked at four window sizes against randomly generated
 // histories; the one tolerated overshoot (< 2x) is tool-call pair integrity,
 // which cannot be split without producing a history the provider rejects.
-//
-// ledger: E2/PROP1#1 ≥3 个属性
 func TestProperty_EachSummaryCallWithinWindow(t *testing.T) {
 	windows := []int{800, 400, 200, 100}
 	for _, mw := range windows {
