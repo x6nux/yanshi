@@ -221,3 +221,76 @@ func TestManagerCloseCancelsWaitsAndPersistsJobs(t *testing.T) {
 // Ensure strings import is used in this test file (some build configurations
 // flag unused imports when the test binary is reused as a helper subprocess).
 var _ = strings.TrimSpace
+
+// TestManagerJobMethodsResolveJobIDsNotSessionIDs pins the id namespace split
+// that made task_shell_stdin and task_shell_cancel unusable.
+//
+// StartJob mints "job-<session id>" and returns ONLY that; the session id is a
+// separate key in a separate map. The tools handed the job id straight to
+// Write/Cancel, which look at m.sessions, so every background job could be
+// started and then never written to or stopped — "shell: session/job not
+// found" for the exact id the tool had just handed out.
+//
+// The both-directions assertion is the point: WriteJob/CancelJob must accept a
+// job id AND Write/Cancel must still reject one, so a future refactor cannot
+// "fix" this by making the maps interchangeable.
+func TestManagerJobMethodsResolveJobIDsNotSessionIDs(t *testing.T) {
+	m := NewManager(Config{Root: t.TempDir(), MaxOutputBytes: 4096, Factory: &fakeFactory{}})
+	job, err := m.StartJob(context.Background(), "sleep", LaunchSpec{Program: "sleep"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.ID == job.SessionID {
+		t.Fatal("job id and session id must stay distinct namespaces for this test to mean anything")
+	}
+
+	if n, err := m.WriteJob(job.ID, []byte("input\n")); err != nil || n == 0 {
+		t.Fatalf("WriteJob(job id) = %d, %v; want the write to reach the session's stdin", n, err)
+	}
+	if _, err := m.Write(job.ID, []byte("input\n")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Write(job id) = %v, want ErrNotFound — session methods must not accept job ids", err)
+	}
+
+	if err := m.CancelJob(job.ID); err != nil {
+		t.Fatalf("CancelJob(job id) = %v, want success", err)
+	}
+	if got := m.Snapshot(job.SessionID).State; got != StateCanceled {
+		t.Fatalf("session state after CancelJob = %s, want canceled", got)
+	}
+	// The job record itself must stop advertising "running", otherwise /jobs
+	// and the persisted table keep showing a killed job as live.
+	jobs := m.ListJobs()
+	if len(jobs) != 1 || jobs[0].State != StateCanceled {
+		t.Fatalf("ListJobs = %+v, want the job marked canceled", jobs)
+	}
+	if jobs[0].EndedAt == nil {
+		t.Fatal("canceled job must be stamped with EndedAt")
+	}
+}
+
+// TestManagerJobMethodsRejectUnknownAndStaleIDs covers the two ways the lookup
+// legitimately fails: an id that was never issued, and a job restored from a
+// previous boot whose OS process is long gone (session == nil).
+func TestManagerJobMethodsRejectUnknownAndStaleIDs(t *testing.T) {
+	m := NewManager(Config{Root: t.TempDir(), MaxOutputBytes: 4096, Factory: &fakeFactory{}})
+	for _, tc := range []struct {
+		name string
+		call func() error
+	}{
+		{"WriteJob unknown", func() error { _, err := m.WriteJob("job-nope", nil); return err }},
+		{"CancelJob unknown", func() error { return m.CancelJob("job-nope") }},
+		{"ReadJob unknown", func() error { _, err := m.ReadJob("job-nope", 0); return err }},
+	} {
+		if err := tc.call(); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("%s = %v, want ErrNotFound", tc.name, err)
+		}
+	}
+
+	m.jobs["job-stale"] = &liveJob{meta: Job{ID: "job-stale", State: StateStale}, session: nil}
+	if _, err := m.WriteJob("job-stale", nil); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("WriteJob on a stale job = %v, want ErrNotFound (its process is gone)", err)
+	}
+	if err := m.CancelJob("job-stale"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CancelJob on a stale job = %v, want ErrNotFound", err)
+	}
+}

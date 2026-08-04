@@ -48,6 +48,14 @@ type ShellV2Tools struct {
 	root string
 }
 
+// shellV2JobIDNote documents the id namespace the four task_shell_* tools
+// share: task_shell_start returns a JOB id ("job-<session id>"), and every
+// other task_shell_* tool must resolve it through a *Job Manager method.
+// Handing a job id to a session-scoped method (Write/Cancel) silently misses
+// the sessions map and answers "session/job not found" — which is how
+// task_shell_cancel spent its whole existence unable to cancel anything.
+const shellV2JobIDNote = "id is the job id returned by task_shell_start"
+
 // NewShellV2Tools builds the nine-tool shell v2 surface, anchored at the work
 // root. Tools share nothing else at construction time; per-call state (session
 // id, job id) is in args.
@@ -94,19 +102,19 @@ func NewShellV2Tools(root string) *ShellV2Tools {
 		SyncStream(v.taskStart))
 	v.TaskWait = NewGuardedTool("task_shell_wait", "Shell Job", "Read background job state.", 30*time.Second,
 		params(map[string]*schema.ParameterInfo{
-			"id":        {Type: schema.String, Required: true},
+			"id":        {Type: schema.String, Required: true, Desc: shellV2JobIDNote},
 			"max_bytes": {Type: schema.Integer},
 		}),
 		SyncStream(v.taskWait))
 	v.TaskWrite = NewGuardedTool("task_shell_stdin", "Shell Job", "Write stdin to a background job.", 30*time.Second,
 		params(map[string]*schema.ParameterInfo{
-			"id":   {Type: schema.String, Required: true},
+			"id":   {Type: schema.String, Required: true, Desc: shellV2JobIDNote},
 			"data": {Type: schema.String, Required: true},
 		}),
 		SyncStream(v.taskWrite))
 	v.TaskCancel = NewGuardedTool("task_shell_cancel", "Shell Job", "Cancel a background job.", 30*time.Second,
 		params(map[string]*schema.ParameterInfo{
-			"id": {Type: schema.String, Required: true},
+			"id": {Type: schema.String, Required: true, Desc: shellV2JobIDNote},
 		}),
 		SyncStream(v.taskCancel))
 	return v
@@ -319,7 +327,9 @@ func (v *ShellV2Tools) taskWrite(ctx context.Context, raw string) (string, error
 	if err != nil {
 		return "", err
 	}
-	n, err := m.Write(a.ID, []byte(a.Data))
+	// WriteJob, not Write: a is the JOB id (what task_shell_start returned and
+	// what this tool documents), and Write only ever looks at the session map.
+	n, err := m.WriteJob(a.ID, []byte(a.Data))
 	if err != nil {
 		return "", err
 	}
@@ -338,7 +348,8 @@ func (v *ShellV2Tools) taskCancel(ctx context.Context, raw string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	if err := m.Cancel(a.ID); err != nil {
+	// CancelJob, not Cancel: see shellV2JobIDNote.
+	if err := m.CancelJob(a.ID); err != nil {
 		return "", err
 	}
 	return `{"canceled":true}`, nil

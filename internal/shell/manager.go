@@ -176,18 +176,71 @@ func (m *Manager) Read(id string, max int) (string, error) {
 	return s.output.Read(max), nil
 }
 
-// ReadJob mirrors Read but takes a job id (resolves to its owning session).
-func (m *Manager) ReadJob(id string, max int) (string, error) {
+// sessionForJob resolves a job id to the live session that job runs in.
+//
+// Job ids and session ids are DIFFERENT namespaces (StartJob mints
+// "job-<session id>"), and only the job id is what StartJob returns to the
+// caller. Every job-scoped Manager method must therefore go through this
+// lookup; calling a session-scoped method with a job id silently misses the
+// sessions map and answers ErrNotFound. A restored (stale) job from a previous
+// boot has no live session, which is also ErrNotFound — its OS process is gone.
+func (m *Manager) sessionForJob(id string) (*liveSession, error) {
 	m.mu.Lock()
 	j := m.jobs[id]
 	m.mu.Unlock()
-	if j == nil {
-		return "", ErrNotFound
+	if j == nil || j.session == nil {
+		return nil, ErrNotFound
 	}
-	if j.session == nil {
-		return "", ErrNotFound
+	return j.session, nil
+}
+
+// ReadJob mirrors Read but takes a job id (resolves to its owning session).
+func (m *Manager) ReadJob(id string, max int) (string, error) {
+	s, err := m.sessionForJob(id)
+	if err != nil {
+		return "", err
 	}
-	return j.session.output.Read(max), nil
+	return s.output.Read(max), nil
+}
+
+// WriteJob mirrors Write but takes a job id. Without it task_shell_stdin had
+// to be called with a session id the model never receives — task_shell_start
+// returns the job id — so writing to a background job was impossible through
+// the documented interface.
+func (m *Manager) WriteJob(id string, data []byte) (int, error) {
+	s, err := m.sessionForJob(id)
+	if err != nil {
+		return 0, err
+	}
+	return s.console.Write(data)
+}
+
+// CancelJob mirrors Cancel but takes a job id, and additionally stamps the job
+// record itself as canceled so ListJobs (and the persisted table behind it)
+// stops advertising a killed job as running.
+//
+// Same namespace bug as WriteJob: task_shell_cancel used to hand the job id to
+// Cancel, which only ever looks at the session map, so a background job could
+// be started but never stopped.
+func (m *Manager) CancelJob(id string) error {
+	m.mu.Lock()
+	j := m.jobs[id]
+	m.mu.Unlock()
+	if j == nil || j.session == nil {
+		return ErrNotFound
+	}
+	j.mu.Lock()
+	sessionID := j.meta.SessionID
+	j.mu.Unlock()
+	if err := m.Cancel(sessionID); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	j.mu.Lock()
+	j.meta.State = StateCanceled
+	j.meta.EndedAt = &now
+	j.mu.Unlock()
+	return nil
 }
 
 // Write sends bytes to the session's stdin (PTY/pipe depending on Console).

@@ -139,8 +139,12 @@ func TestShellV2TaskWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sesID := extractSessionIDFromJob(t, startOut)
-	out, err := runTool(ctx, v.TaskWrite, `{"id":"`+sesID+`","data":"input"}`)
+	// The JOB id, which is the only id task_shell_start returns. This test
+	// used to dig the session_id out of the result instead, which is exactly
+	// how it kept passing while the tool was unusable through its own
+	// documented interface.
+	jobID := extractSessionID(t, startOut)
+	out, err := runTool(ctx, v.TaskWrite, `{"id":"`+jobID+`","data":"input"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,8 +163,9 @@ func TestShellV2TaskCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sesID := extractSessionIDFromJob(t, startOut)
-	out, err := runTool(ctx, v.TaskCancel, `{"id":"`+sesID+`"}`)
+	// The JOB id — see the note in TestShellV2TaskWrite.
+	jobID := extractSessionID(t, startOut)
+	out, err := runTool(ctx, v.TaskCancel, `{"id":"`+jobID+`"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,21 +217,6 @@ func contextWithShellPerms(t *testing.T, manager *shell.Manager, allowedTools []
 	})
 	ctx = WithShellManager(ctx, manager)
 	return ctx
-}
-
-// extractSessionIDFromJob pulls the session_id from a job JSON result.
-func extractSessionIDFromJob(t *testing.T, jsonResult string) string {
-	t.Helper()
-	idx := strings.Index(jsonResult, `"session_id":"`)
-	if idx < 0 {
-		t.Fatalf("no session_id field in %q", jsonResult)
-	}
-	start := idx + len(`"session_id":"`)
-	end := strings.Index(jsonResult[start:], `"`)
-	if end < 0 {
-		t.Fatalf("malformed session_id in %q", jsonResult)
-	}
-	return jsonResult[start : start+end]
 }
 
 // extractSessionID pulls the first alphanumeric id value from a JSON result.
