@@ -61,11 +61,13 @@ func instructionMessage(wordLimit int) *schema.Message {
 //
 //	chunkBudget = ModelWindow − carry − ack − instruction
 //
-// so chunk + carry(prefix) + ack + instruction ≤ ModelWindow. When a tool_call/
-// tool_result pair straddles a would-be split, takeChunk keeps the pair intact
-// even at the cost of exceeding THAT chunk's budget for one chunk — severing a
-// pair hands the API an unpaired tool_result (400), which is worse than a brief
-// one-chunk overrun. Retries transient errors.
+// so chunk + carry(prefix) + ack + instruction ≤ ModelWindow.
+//
+// That inequality holds for the framing, NOT unconditionally for the chunk:
+// takeChunk may exceed its budget, and the excess is bounded by the largest
+// INDIVISIBLE run in the history rather than by any multiple of the window.
+// See takeChunk for the two ways a run becomes indivisible. Retries transient
+// errors.
 func RunSummary(ctx context.Context, msgs []*schema.Message, opts RunOpts, m ModelSummarizer, onChunk func(string)) (string, error) {
 	if len(msgs) == 0 {
 		return "", nil
@@ -139,6 +141,27 @@ func chunkBudgetFor(opts RunOpts, carry string, instructionTok int) int {
 // (splitIsSafe false), it is included in the current chunk EVEN IF that pushes
 // the chunk over budget — pair integrity outranks strict budget (a severed pair
 // means API 400). NB: never returns an empty chunk when len(msgs) > 0.
+//
+// THE OVERSHOOT IS NOT BOUNDED BY ANY MULTIPLE OF THE WINDOW. Two independent
+// mechanisms push a chunk past its budget, and only one of them is pairing:
+//
+//  1. `i > 0` in the test below means index 0 is never budget-checked. It
+//     cannot be — a chunk that came back empty would leave `remaining`
+//     unchanged and spin RunSummary's carry loop forever — so a single message
+//     larger than the whole budget ships as its own oversized chunk with no
+//     tool pair involved at all.
+//  2. splitIsSafe scans the ENTIRE left side for a matching call, so in
+//     `[call(id1..idN), r1..rN]` every interior cut point is unsafe and the
+//     whole parallel group ships as one chunk. That chunk is "one call message
+//     plus the sum of its results", which grows with the parallel tool count.
+//     Orchestrator classify.go emits exactly this shape.
+//
+// The real ceiling is therefore `budget + <largest indivisible run>`, a
+// property of the INPUT. It is documented rather than enforced: capping below
+// the head run would require severing a pair (400) or truncating message
+// content mid-chunk (silent information loss). See
+// TestProperty_EachSummaryCallWithinWindow, which asserts that ceiling, and
+// docs/compaction.md for the measurements.
 func takeChunk(msgs []*schema.Message, budget int) (chunk, rest []*schema.Message) {
 	tok := 0
 	for i := 0; i < len(msgs); i++ {

@@ -1153,7 +1153,7 @@
 - 依据：`help.go::model.collectHelpEntries` 的 commands/modes/themes 三段确为动态派生，**但键位段是三张互相独立的手工静态表**：
   - `help.go` `keyBindings`（F1 面板用，目前是准的），其上 `::keyBindings` 注释自认「Go 无法反射 keybinding，新增分支时同步更新此表」；
   - `commands.go::newCmdHelpEntry`（`/help` 命令的 "Keyboard shortcuts" 段）**已经错了**：`Ctrl+K → "clear input"`（真实是打开 action palette）、`Ctrl+S → "toggle spinner/sound"`（真实是存草稿）、`Ctrl+E → "toggle history view"`（`tea.KeyCtrlE` 在整个 TUI **不存在**）；并漏掉 Ctrl+V / F1 / Alt+R。
-  - 台账外真实缺陷：`commands.go::commandTable` 里有**两条逐字相同的 `/features` 条目**（`name`/`help`/`run` 三个字段完全一致，相邻两行），F1 面板与 Ctrl+K 面板都会显示两遍，无测试拦截。
+  - ~~台账外真实缺陷：`commands.go::commandTable` 里有**两条逐字相同的 `/features` 条目**~~ — ✅ **已修（`cf088f7`）**，该提交删掉了重复的那一行（`internal/cli/tui/commands.go`，1 行删除）。2026-08-04 复测：`awk '/^var commandTable/,/^}/' internal/cli/tui/commands.go | grep -oE 'name: "[a-z-]+"' | sort | uniq -d` **零输出**。⚠️ **但下面那道防重复门禁仍然欠着**：`cf088f7` 只删了行、没加断言，同一个重复随时可以再回来，`commandTable` 内 `name` 无重复至今无测试拦截。
   `TestHelp_KeybindingsCoreEntries` 是**恒真空壳**：它断言 `renderHelp()` 含 `"Enter"/"Ctrl+K"/"F1"`，而这些字符串正来自同文件的 `keyBindings` 字面量表；它对 `handlers.go` 的真实 `case tea.Key*` 分支一无所知（测试自己的 doc 注释也承认这点）。
 - 证据形状：一条**防漂移门禁** —— 用 `go/ast` 解析 `handlers.go` 里的 `case tea.KeyCtrl*/KeyF*` 集合，断言它与 `keyBindings` 和 `/help` 的 shortcuts 表**双向**一一对应（多一条、少一条都红）；外加断言 `commandTable` 内 `name` 无重复。**骗过去**：拿静态表里的字符串去断言同一张静态表渲染出的字符串（现状）。
 
@@ -1668,7 +1668,11 @@ PY
 
 > **读法**：本列表按发现时刻记账，条目**修好后就地标注而不删除** —— 删掉会让「这条是否被处理过」变得不可查。反过来，**已修的条目继续用现在时挂着同样是虚报**：读者会重做已完成的工作，或据此低估当前安全态。第 1 条曾经就是这个形状（它在修复提交 `03a6bb3` 落地后仍写着「已实测复现」）。改状态时同步改上面对应子句那一段。
 >
-> 除第 1 条外，以下 7 条在 2026-08-04 逐条实测**仍然成立**。
+> **复测状态（2026-08-04 逐条实测，逐条列出，不再用「除第 N 条外」这种概括）**：第 1 条已修（`03a6bb3`）；第 7 条**部分已修**（重复 `/features` 条目由 `cf088f7` 删除，快捷键描述错配仍在）；第 2、3、4、5、6、8 条**仍然成立**。
+>
+> ⚠️ **上一版这行横幅写的是「除第 1 条外，以下 7 条…仍然成立」，而第 7 条的后半句在同一天被 `cf088f7` 修掉了**——那次提交删了行、没更新描述它的这两处文档。这正是本段开头那条规则（「已修的条目继续用现在时挂着同样是虚报」）说的形状，而违反者就是当天那次修复提交本身。**「除 X 外全部成立」这种概括横幅是这个失败模式的温床**：它把 N 条状态压成一个数字，任何一条状态变化都不会在文本上留下痕迹。改用逐条列举。
+>
+> 复测所用命令：第 7 条 `awk '/^var commandTable/,/^}/' internal/cli/tui/commands.go | grep -oE 'name: "[a-z-]+"' | sort | uniq -d`（零输出）与 `grep -n 'Ctrl+E' internal/cli/tui/commands.go`（`895:{"Ctrl+E", "toggle history view"}` 仍在）；第 6 条 `go test ./internal/agent/orchestrator -run '^$' -bench '^BenchmarkOrchestratorTurn$' -benchtime=3x`（`--- FAIL: orchestrator: no assistant message produced`）；第 8 条 `grep -n 'Ctrl+J' README.md`（`71:…press Ctrl+J (Ctrl+Enter)` 仍在）。
 
 1. ~~**`git_diff` 参数注入 → 沙箱外写文件**（B3/W07#4）~~ — ✅ **已修（`03a6bb3`，W1 范围内）**。原缺陷：`validateGitRef` 不拒 `-` 开头的 ref，`commit` scope 原样透传 → `scope.ref="--output=<path>"` 让声明为 `sandbox.ReadOnly` 的工具在工作根外写出文件。现状：`argvsafe.go::validateArgvOperand` 拒绝一切 `-` 开头操作数，且每条 git argv 在 ref 前带 `git.go::gitEndOfOptions` 哨兵；证据见 `argvsafe_test.go::TestGitDiffRefCannotWriteFilesOutsideWorkRoot` 与 `::TestGitDiffPassesEndOfOptionsBeforeRef`，反向探针 `::TestGitDiffAcceptsRefsContainingDashes`。详见 B3/W07 第 4 句那一段。
 2. **`parseGitStatusZ` 两个解析 bug**（B3/W07#1）：已跟踪且含空格的路径被截断；rename 的 origPath 含 ≥2 空格时**伪造出不存在的 status 条目**。
@@ -1676,7 +1680,9 @@ PY
 4. **`--file` 绕过 `cfg.Input`**（D1/V12#1）：`--input jsonl --file <3 行>` 实测只跑 **1** 个 turn（stdin 同文件跑 3 个）。CI 跑的正是这条命令但输出丢 `/dev/null`；`examples/headless-batch/run.sh` 还用 `grep -c` **谎报** "processed 3 prompts"。
 5. **`item.toolName` AttributeError**（H2/APIREF1#2 / H2/EX1#2）：pydantic 字段是 `tool_name`，`toolName` 只是 alias。首条 item 无 text 故必然触发。CI 的 `py_compile` 吞掉它。
 6. **`BenchmarkOrchestratorTurn` 在 `b.N ≥ 2` 下必挂**（F2/BENCH1#1）：FakeModel 只脚本 1 条响应且未设 `Repeat`。失败被 `nightly.yml` 缺 `pipefail` + `continue-on-error` **吞掉两层**。
-7. **`/help` 快捷键表已与实际绑定不符**（C2/UX2#3）：`Ctrl+K`/`Ctrl+S` 描述错误，`Ctrl+E` 根本不存在，漏 Ctrl+V/F1/Alt+R；`commands.go::commandTable` 还有逐字重复的 `/features` 条目。
+7. **`/help` 快捷键表已与实际绑定不符**（C2/UX2#3）—— **部分已修**：
+   - 仍然成立：`Ctrl+K`/`Ctrl+S` 描述错误，`Ctrl+E` 根本不存在，漏 Ctrl+V/F1/Alt+R（2026-08-04 复测 `internal/cli/tui/commands.go::newCmdHelpEntry` 里那张快捷键字面量表，三行原样还在）。
+   - ~~`commands.go::commandTable` 还有逐字重复的 `/features` 条目~~ — ✅ **已修（`cf088f7`）**，`uniq -d` 复测零输出。防重复门禁仍欠着（见 C2/UX2 #3 那一段）。
 8. **README 按键说明是错的**（H2/UDOC1#3）：README 的「Quick start」段写「Ctrl+J (Ctrl+Enter) to send」，实际是 Enter 发送、Ctrl+Enter 换行。它在所有 diff-gate 覆盖范围之外。
 
 ---

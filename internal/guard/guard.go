@@ -276,9 +276,14 @@ func (g *Guard) checkFS(p PermissionProfile, a Action) Decision {
 // The metacharacter rejection is a STRUCTURAL HardDeny: no glob can ever
 // safely cover a chained command, so the interactive callback MUST NOT
 // override it. This is the second layer of defense on top of execpolicy
-// parsing (Task 4) — both stay. Structural HardDenies that remain even under
-// YOLO/Auto are only: metachars, execpolicy parse-error, and unknown policy.
-// Everything else the profile can say "no" with is an OVERRIDABLE HardDeny —
+// parsing (Task 4) — both stay. The metachar HardDeny is one of FIVE
+// structural denials that remain even under YOLO/Auto; the authoritative
+// enumeration lives on overridableDeny, and this comment deliberately does
+// not restate it. It used to, and it listed three — omitting catastrophic
+// mass deletion and the unknown-execpolicy-verdict default — which is how a
+// closed "only:" enumeration of the YOLO floor ended up copied into CLAUDE.md
+// two commits after the authoritative one was corrected.
+// Everything the profile can say "no" with is an OVERRIDABLE HardDeny —
 // policy="deny", a denylist match, execpolicy hard_deny rules, net.allow=false,
 // and the empty-MCP-allowlist gate — so YOLO bypasses it and Auto AI-judges it.
 // A non-allowlisted command under "allowlist" is PROMPTABLE — an interactive

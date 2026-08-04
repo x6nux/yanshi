@@ -66,15 +66,43 @@ S0/W1 工作包连续多轮评审、每轮都开出阻塞，「连续三轮干�
 3. 跑那条证据测试：`go test ./<pkg> -run '^<TestName>$' -v`
 4. 收掉掏空的代码。
 
-**第 2、4 步优先用 `go test -overlay`，不要直接改工作树。** 把掏空的副本写到 `/tmp`，用一份 overlay JSON 把原路径映射过去：
+**第 2、4 步先过判别式，再决定用 `go test -overlay` 还是改工作树。**
 
-```sh
-cp internal/foo/bar.go /tmp/bar_gutted.go   # 然后编辑 /tmp 里那份
-echo '{"Replace":{"'$PWD'/internal/foo/bar.go":"/tmp/bar_gutted.go"}}' > /tmp/ov.json
-go test -overlay /tmp/ov.json ./internal/foo -run '^<TestName>$' -v
-```
+> **判别式：被测代码（或那条证据测试）会不会在*运行时*从磁盘读源文件／文档？**
+> 也就是测试进程里出现 `os.ReadFile` / `os.ReadDir` / `os.Open` / `filepath.WalkDir` /
+> `parser.ParseFile` / `parser.ParseDir` / `exec.Command("go", "list", …)` 去读**仓库自己的文件**。
+> - **不读盘** → 用 overlay。掏空只需在编译期可见，overlay 就够。
+> - **读盘** → **overlay 无效，且失效是静默的**（测试照常绿），必须改工作树。
 
-工作树全程零写入，没有「忘了还原」这个失败模式。**直接改工作树 + `git checkout -- <file>` 还原是有过事故的**：同一文件上先前的正式编辑会被一起回退，而且是静默的。真要改工作树就用 `git stash`，别用 `checkout`。
+`-overlay` 只改变 **go 命令构建时看到的源文件**，不改变测试**进程运行时**从磁盘读到的字节，也不传播进它 fork 出来的子进程。凡是把源码/文档当**数据**读的门禁，overlay 里的掏空对它们**根本不存在**。
+
+**`internal/archtest` 全体门禁属于「读盘」这一类，一条都不能用 overlay 探测。** GOV8 的 marker 扫描（`status_evidence_test.go` 的 `parser.ParseFile`）、GOV9 的 `buildGoSymbolIndex` / `liveDocs`、GOV2/GOV3/`removal_test.go` 的目录遍历，全部走 `moduleRoot(t)` + 读盘。
+
+实测对照（同一份掏空、只差 overlay 与工作树）：给 `TestVSCodeExtensionRemoved` 开头插一条无条件 `t.Skip`，
+`go test -overlay … -run '^TestLedgerEvidenceIsClauseComplete$'` 报 **ok**；同一处改动写进工作树，同一条命令
+报 **FAIL: D2/O12: clause 1 bad evidence — …opens with an unconditional t.Skip(...)…**。
+**本轮评审就是照原来那条无条件建议操作，据此开出了两条并不存在的阻塞。**
+
+这条边界不靠人记：`internal/archtest/overlay_test.go` 的 `TestGateFilesReadFromDiskAtRuntime` 把它做成了机器判据，两个方向都测（列表里的门禁文件必须仍在读盘；新增的读盘门禁文件必须进列表）。
+
+**已实测的「读盘 → overlay 无效」包**（这一列随实测增补，别凭印象加）：
+
+| 包 / 文件 | 运行时读的是什么 | 结论 |
+| --- | --- | --- |
+| `internal/archtest`（全部门禁） | `moduleRoot` 下的 `.go` / `.md` / `docs/feature-status.yaml`，外加 `go list` 子进程 | overlay 无效 |
+| `internal/vcs/seam_race_test.go` | `parser.ParseDir` 解析 `internal/vcs` 自己的生产源码（`TestPublicRepoWritersAcquireRepoLane`） | overlay 无效 |
+| `internal/config/example_test.go` | `../../config.example.yaml` | overlay 无效（非 `.go` 文件，构建根本不看） |
+| `cmd/gendocs`（`repoRoot(t)`） | `docs/**.md` 生成物 | overlay 无效 |
+| `internal/skills`、`cmd/yanshi`（`repoSkillsDir`） | 仓库 `skills/` 下的 `SKILL.md` | overlay 无效 |
+
+**已实测的「不读盘 → overlay 有效」包**（反例同样要写下来，否则这条判别式会被当成「一律别用 overlay」）：
+
+| 包 | 为什么有效 |
+| --- | --- |
+| `internal/bootstrap`（GOV5/GOV7，`wiring_test.go`） | 全程用**进程内装配出来的** `App.ToolNames` 对账，零读盘 |
+| `internal/ctxcompact`、`internal/guard` 等普通单测 | 断言只针对编译进来的代码行为 |
+
+**改工作树时的还原纪律**：`cp <file> /tmp/<file>.bak` 备份 + 写回，或者 `git stash`。**别用 `git checkout -- <file>` 还原**——同一文件上先前的正式编辑会被一起回退，而且是静默的，这是有过事故的。
 
 **什么算发现问题**：
 

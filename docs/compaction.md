@@ -63,25 +63,50 @@ msgs ──► Plan() ──► {pinned, summarize, workingSetPaths}
 
 `RunSummary` 的核心承诺，以及它的**例外**：
 
-> 每次调用 summary 模型的输入**按窗口预算切分**，正常情况下 ≤ 模型窗口；
-> 唯一允许的超出来自 **tool_call ↔ tool_result 配对完整性**，此时上界放宽到
-> **< 2× 窗口**。
+> 每次调用 summary 模型的输入**按窗口预算切分**，多数情况下 ≤ 模型窗口；
+> 但超出量**对窗口无界** —— 真实上界是
+> **窗口 + 「历史中最大不可分割段」**，后者是输入的属性，不是窗口的倍数。
 
-这不是措辞让步，是代码写死的取舍：`takeChunk` 在「下一条消息会撑爆预算」但「在此处切会切断一对
-tool_call/result」时，**明确选择把它塞进当前 chunk**（`summarize.go` 的 `takeChunk` doc：
-*"it is included in the current chunk EVEN IF that pushes the chunk over budget — pair integrity
-outranks strict budget"*），因为切断配对会让 provider 直接 400，比略微超窗更致命。
+「不可分割段」有两个来源，它们**都不是**「配对完整性」这一个：
 
-`TestProperty_EachSummaryCallWithinWindow` 钉的就是这个真实上界：超窗只 `t.Logf` 记录，
-**> 2× 才 fail**。跑 `go test ./internal/ctxcompact -run TestProperty_EachSummaryCallWithinWindow -v`
-能直接看到实测的超出（如 `call[0] tok=805 exceeds window=800`）。
+1. **单条超大消息，完全不涉及配对。** `takeChunk` 的判据是
+   `if i > 0 && tok+mt > budget && splitIsSafe(msgs, i)` —— `i == 0` 不做预算检查。这不是疏忽：
+   chunk 为空会让 `RunSummary` 的 carry 循环永远推进不了（doc 自己写着 *"never returns an empty
+   chunk"*）。所以一条比窗口还大的消息**自己一个人**就能超窗。
+2. **并行 tool_call 组。** `splitIsSafe(msgs, i)` 的右侧判据扫 `j` 从 0 到 `i-1`（**整个左半边**），
+   于是 `[call(id1..idN), r1..rN]` 的**每一个内部切点都 unsafe**，整串必进同一 chunk。上界因此是
+   「一个 tool_call 消息 + 它全部 result 之和」，**随并行工具数线性增长**。
+   并行工具调用是本仓的常规形状 —— `classify.go::emitAssistant` 就是 `for _, tc := range msg.ToolCalls`。
+
+实测（budget=1000）：
+
+| 形状 | chunk tokens | 比值 |
+|---|---|---|
+| n=1 并行 result | 1032 | 1.03× |
+| n=5 并行 result | 5128 | 5.13× |
+| n=20 并行 result | 20488 | 20.49× |
+| 单条超大消息（无配对） | 10008 | 10.01× |
+
+**为什么不给 `takeChunk` 加硬上限（取舍）**：最小合法 chunk 就是「剩余消息头部的那个不可分割段」，
+它的大小是**输入**的属性。想压到它以下，只能二选一 —— 切断配对（provider 直接 400，而整条 carry
+循环存在的理由正是避免这个），或者在 chunk 中途截断消息正文（静默丢信息，且要再引入一套截断预算）。
+两者都比「一次偏大但格式合法的调用」更糟。所以这个界**被如实记录，而不是被强制**。
+
+`TestProperty_EachSummaryCallWithinWindow` 钉的是上面那个真实上界：断言
+`tok ≤ ModelWindow + maxAtomicGroupTokens(msgs)`，其中 `maxAtomicGroupTokens` 在测试里**独立于
+`splitIsSafe` 重写**（共用 helper 的 oracle 会跟被测代码同步退化）。它还要求整轮扫描中**至少有一次
+调用超过 2× 窗口** —— 那正是旧断言的阈值，用它当下限就等于持续证明旧界是假的。生成器
+`genAdversarialHistory` 负责产出上面两种形状；`genHistory` 单独跑时最多到 ~1.01×，这正是
+「< 2×」能在无人察觉中活这么久的原因。跑
+`go test ./internal/ctxcompact -run TestProperty_EachSummaryCallWithinWindow -v`
+能看到实测超出（如 `call[0] tok=4805 exceeds window=800 by 6.01x`，最高观测到 24.15×）。
 
 - 当 summarize 集合总 token ≤ `ChunkThreshold × ModelWindow`（默认 0.9）时，走**单次 cache-aligned 调用**：`[原消息 verbatim..., 末尾指令]`。前缀和原对话逐字节一致，命中之前累积的前缀缓存。
 - 否则走**携带式分块**（rolling summary）：按预算把 summarize 集合切成 chunk1, chunk2, …；串行压缩 `chunk1 → s1`，`[s1 作前缀, chunk2] → s2`，`[s2, chunk3] → s3` ……每块的预算 = `ModelWindow − carry(当前) − ack − instruction`。carry 每轮增长，预算跟着缩——这是动态的，不是固定 overhead（固定 overhead 会让大 carry 把后续块推过窗口边缘）。
 
 chunk1 的前缀 = 原对话开头，命中前缀缓存；chunk2+ 的前缀变了不命中——**丢缓存**才是分块的代价（优于截断丢信息，也优于单次爆窗口）。
 
-切分点回退到「安全边界」（不在 tool_call↔result 配对中间切）——注意因果方向：**安全边界回退不是「不超窗口」的代价，它正是打破那个上界的机制**。预算说该切，配对说不能切，配对赢，于是这个 chunk 超预算。
+切分点回退到「安全边界」（不在 tool_call↔result 配对中间切）——注意因果方向：**安全边界回退不是「不超窗口」的代价，它正是超窗的机制之一**。预算说该切，配对说不能切，配对赢，于是这个 chunk 超预算。另一个机制是 `i == 0` 不做预算检查（见上文），它连配对都不需要。
 
 ## summary 载体（修双 system 冲突）
 

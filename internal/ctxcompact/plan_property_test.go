@@ -9,13 +9,19 @@ import (
 
 const propSeed = 42
 
-func planPropertyGen(t *testing.T, numTrials, maxLen int, fn func(t *testing.T, msgs []*schema.Message)) {
+// historyGen builds one trial's history from a seeded rng.
+type historyGen func(rng *rand.Rand, n int) []*schema.Message
+
+func planPropertyGen(t *testing.T, numTrials, maxLen int, gens []historyGen, fn func(t *testing.T, msgs []*schema.Message)) {
 	t.Helper()
+	if len(gens) == 0 {
+		gens = []historyGen{genHistory}
+	}
 	for trial := 0; trial < numTrials; trial++ {
 		seed := uint64(propSeed*1000 + trial)
 		rng := rand.New(rand.NewPCG(seed, 0))
 		n := rng.IntN(maxLen) + 5
-		msgs := genHistory(rng, n)
+		msgs := gens[trial%len(gens)](rng, n)
 		t.Run("", func(t *testing.T) {
 			fn(t, msgs)
 		})
@@ -106,10 +112,19 @@ func skipAlreadyCompacted(t *testing.T, msgs []*schema.Message) {
 // token reduction) went on guarding themselves with the code under test's own
 // output and stayed green through every gutting. Anything in this package that
 // generates histories goes through here now.
-func runGeneratedProperty(t *testing.T, numTrials, maxLen int, fn func(t *testing.T, msgs []*schema.Message)) {
+//
+// The trailing gens are the generators to round-robin across; omitting them
+// means genHistory alone. They exist because genHistory's SHAPE, not just its
+// count of trials, can make a property vacuous: it never emits a message
+// larger than ~20 tokens and never emits a tool_call's results adjacently, so
+// the chunking bound went years asserted only against histories that could not
+// violate it. Passing genAdversarialHistory here is how a property opts into
+// the shapes that can. The entry stays single — one call site per property —
+// so the "properties == entry calls" count in the review checklist holds.
+func runGeneratedProperty(t *testing.T, numTrials, maxLen int, fn func(t *testing.T, msgs []*schema.Message), gens ...historyGen) {
 	t.Helper()
 	executed := 0
-	planPropertyGen(t, numTrials, maxLen, func(t *testing.T, msgs []*schema.Message) {
+	planPropertyGen(t, numTrials, maxLen, gens, func(t *testing.T, msgs []*schema.Message) {
 		skipAlreadyCompacted(t, msgs)
 		executed++
 		fn(t, msgs)

@@ -210,9 +210,15 @@ i18n:
   output_language: ""
 
 # D3-C15 TUI 键位/主题偏好。bindings 的方向固定为 key: action(与 keymap
-# 内置 builder 一致);/keymap reset 会写入 KeymapReset tombstone 屏蔽低优先级
-# project bindings。vim/high_contrast 为 *bool:省略 = 跟随 preferences.json,
-# 显式 false = 强制关闭。
+# 内置 builder 一致)。
+#
+# 接线现状(照抄本文件建 config.yaml 前先读这段):本块四个键当前只被
+# `yanshi doctor` 消费(internal/cli/doctor.go 的 checkKeymapConfig /
+# checkHighContrastConfig),TUI 不读它们——主题与键位都是硬编码默认值;
+# 没有任何运行时命令回写它们,也不加载任何 preferences 文件。也就是说:
+# 这几个键会被校验和体检报告,但不会被应用。vim/high_contrast 是 *bool,
+# 省略与显式 false 在配置层可区分,但目前两者的运行时效果相同(都不生效)。
+# 权威说明见 internal/config.TUIConfig 的 doc 注释。
 tui:
   keymap: default
   theme: default
