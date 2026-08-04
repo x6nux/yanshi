@@ -64,7 +64,17 @@ S0/W1 工作包连续多轮评审、每轮都开出阻塞，「连续三轮干�
    - 有返回值的函数 → 直接 `return` 零值 / 空切片 / `nil`
    - 纯变换函数 → `return` 输入本身（恒等变换，比零值更隐蔽，也更接近真实退化）
 3. 跑那条证据测试：`go test ./<pkg> -run '^<TestName>$' -v`
-4. **恢复改动**（`git checkout -- <file>`），不要把掏空的代码留在工作树里。
+4. 收掉掏空的代码。
+
+**第 2、4 步优先用 `go test -overlay`，不要直接改工作树。** 把掏空的副本写到 `/tmp`，用一份 overlay JSON 把原路径映射过去：
+
+```sh
+cp internal/foo/bar.go /tmp/bar_gutted.go   # 然后编辑 /tmp 里那份
+echo '{"Replace":{"'$PWD'/internal/foo/bar.go":"/tmp/bar_gutted.go"}}' > /tmp/ov.json
+go test -overlay /tmp/ov.json ./internal/foo -run '^<TestName>$' -v
+```
+
+工作树全程零写入，没有「忘了还原」这个失败模式。**直接改工作树 + `git checkout -- <file>` 还原是有过事故的**：同一文件上先前的正式编辑会被一起回退，而且是静默的。真要改工作树就用 `git stash`，别用 `checkout`。
 
 **什么算发现问题**：
 
