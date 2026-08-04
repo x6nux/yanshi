@@ -120,10 +120,21 @@ grep -rn '^func Test' internal/<pkg>/ | grep <关键字>
 
 | 形态 | 实际输出 | 可见性 |
 |---|---|---|
-| 顶层测试名写错 | `ok  <pkg>  0.298s [no tests to run]` | 有 `[no tests to run]` 标记，**可以看见** —— 前提是你读了整行 |
-| **子测试路径写错**（`-run 'TestX/nosuchsub'`） | `ok  <pkg>  0.229s` | **没有任何标记**，与真正全过逐字节相同 |
+| 顶层测试名写错 | `ok  <pkg>  0.298s [no tests to run]` | 有标记 |
+| 子测试路径写错（`-run 'TestX/nosuchsub'`） | `ok  <pkg>  0.229s [no tests to run]` | 有标记，但 `-v` 下同时出现一条真的 `--- PASS: TestX` |
 
-第二行是真正的陷阱：`TestX` 匹配上了、被执行了，但那个不存在的子测试路径把里面的断言全过滤掉了，Go 没有任何理由报警。
+`[no tests to run]` 标记**两种形态都会打**，`(cached)` 行上也保留 —— 所以它不是隐形的，只是容易被跳过。
+
+真正的陷阱在第二行：`TestX` 匹配上了、父测试体**真的执行并 PASS**，只有子测试被过滤掉。`-v` 输出长这样：
+
+```
+=== RUN   TestReal
+--- PASS: TestReal (0.00s)          ← 货真价实
+testing: warning: no tests to run   ← 但断言一条没跑
+ok  	tn	0.119s [no tests to run]
+```
+
+只盯 `--- PASS` 就会认定断言执行过了。多包 `go test ./...` 时更隐蔽 —— 标记只出现在不匹配的那一行，混在一堆 `ok` 里。
 
 **判别方法**（对两种形态都有效）：加 `-v`，数实际执行的测试。
 
@@ -131,9 +142,9 @@ grep -rn '^func Test' internal/<pkg>/ | grep <关键字>
 go test ./<pkg> -run '^<Name>$' -v 2>&1 | grep -c '^=== RUN'
 ```
 
-结果为 0 = 零匹配。用子测试路径时改数 `--- PASS`/`--- FAIL` 的条数，并与预期的子测试数对账。
+结果为 0 = 零匹配。用子测试路径时改数 `--- PASS`/`--- FAIL` 的条数，并与预期的子测试数对账 —— 父测试的那条 PASS 要减掉。
 
-**顺带**：`[no tests to run]` 在 `(cached)` 的行上也会保留，所以缓存命中不会掩盖第一种形态。
+更省事的办法：直接 `grep '[no tests to run]'`，两种形态一网打尽。
 
 **这条陷阱同时污染 A 和 B。** 变异测试用错名跑，会看到 `ok` 并错误地判定「掏空后仍通过 = 证据无效」；门禁探针用错名跑，会看到 `ok` 并错误地判定「探针没被抓住 = 漏检」。**两个方向都会产生假阳性指控。** 所以 C 必须在 A、B 之前执行。
 
