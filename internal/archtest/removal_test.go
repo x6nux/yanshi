@@ -136,9 +136,22 @@ const (
 	// Two things it deliberately is not. It is not `[\s_-]+`: a class mixing
 	// whitespace with connectors swallows a markdown line break plus the next
 	// bullet's dash, so an ignore list reading ".vscode" and then "- extension
-	// settings" reddens on two unrelated entries. And it is not optional —
-	// a zero-width glue would make "TestVSCodeExtensionRemoved", this gate's own
-	// test name, a match.
+	// settings" reddens on two unrelated entries.
+	//
+	// And it is not optional: a zero-width glue turns a CamelCase identifier
+	// that ENDS at the noun into a match — "VSCodeExtension" and its plural,
+	// which is the shape a Go symbol, a type name or a doc heading takes. Both
+	// are `want: false` rows in d2ScanCases, and making this group optional
+	// reddens exactly those two rows. That mutation is how this sentence is
+	// checked rather than believed; run it before editing this group.
+	//
+	// What this group does NOT do is keep the gate off its own test name.
+	// "TestVSCodeExtensionRemoved" survives an optional glue as well, because
+	// the pattern that would have to match it ends in `\b` and the noun is
+	// followed by the "R" of "Removed". The mechanism there is the word
+	// boundary, not this group. A previous revision of this comment credited
+	// the glue for it — and of the three neighbouring shapes, that is the one
+	// where the claim happens to be false.
 	d2GlueEN = `(?:['’]s)?(?:\s*(?:的|之)\s*|\s+|[_-])`
 )
 
@@ -238,6 +251,13 @@ var d2ScanCases = []struct {
 		"已知误伤：这句在否认 yanshi 交付，门禁照样变红。正则匹配短语不匹配主张，" +
 			"区分二者要的是 parser。这个方向的代价是作者改一次措辞，逃生门是墓碑 + d2HistoricalDocs",
 	},
+	{
+		"https://github.com/microsoft/vscode-extension-samples",
+		true,
+		"已知误伤（第 24 轮补记）：d2GlueEN 的 [_-] 分支让上游仓库的 URL 也变红，加进那个分支之前不会。" +
+			"当前没有任何活文档命中，所以不改正则——与本门禁「召回优先于精度」的取舍一致，" +
+			"且收窄它就等于放掉 vscode-extension 这个真实写法。要引用这个仓库，逃生门同上",
+	},
 
 	// --- 合法活用：不得误伤 ---
 	{".vscode", false, "docs/vcs.md 的 ignore 列表"},
@@ -248,8 +268,23 @@ var d2ScanCases = []struct {
 	{
 		"TestVSCodeExtensionRemoved",
 		false,
-		"本门禁自己的测试名，CLAUDE.md 与评审清单都引用它。" +
-			"把英文名词喂给零宽 glue 的中文模式会在这里误伤——d2GlueEN 强制非空正是为了它",
+		"本门禁自己的测试名，CLAUDE.md 与评审清单都引用它。守住它的是英文模式尾部的 `\\b`" +
+			"（撞上 Removed 的 R），不是 d2GlueEN——把 glue 零宽化这一行照样绿。" +
+			"它实际守的是另一件事：中文模式的 glue 本来就可以零宽，一旦把 d2NounEN 喂给它，" +
+			"这一行立刻误伤，所以中英名词不得合并进同一个零宽 glue 的模式",
+	},
+	{
+		"VSCodeExtension",
+		false,
+		"CamelCase 标识符：产品名与名词零宽相接，末尾没有别的词。" +
+			"d2GlueEN 强制非空正是为了它——把 glue 改成可选，这一行当场变红。" +
+			"这一行与下一行才是钉住那个设计选择的用例",
+	},
+	{
+		"VSCodeExtensions",
+		false,
+		"同上的复数形态。两条都留着，因为 `s?` 在组外意味着复数走的是另一条匹配路径，" +
+			"只钉单数会给「把 s 挪进组内」留一个静默的洞",
 	},
 	{"plug in the cable", false, "第 23 轮 (b)：裸动词短语"},
 	{
