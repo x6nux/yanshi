@@ -18,6 +18,21 @@ const (
 	carryAckContent    = "Understood — continuing with the prior summary as context."
 )
 
+// ErrNoWindowRoom reports that the carried summary plus the fixed framing
+// (ack + instruction) already fills the model window, leaving no budget for
+// even one message of the next chunk — so the carry loop cannot make progress
+// and RunSummary stops instead of silently over-running the window.
+//
+// It is a sentinel rather than an anonymous fmt.Errorf because it is the ONE
+// failure a caller may legitimately tolerate: a window small enough to hit it
+// was never going to be compacted at all. Everything else RunSummary can
+// return (a model error, a stream error, a retry exhaustion) is a real
+// failure. Without a distinguishable sentinel, a test that wants to tolerate
+// the first has to tolerate all of them — which is exactly how
+// TestProperty_EachSummaryCallWithinWindow ended up passing against a
+// RunSummary gutted to `return "", err`.
+var ErrNoWindowRoom = errors.New("compaction: carry + framing leaves no room in the model window")
+
 // summaryInstruction is the final user turn appended to ask for the summary.
 // It names the must-keep facts explicitly so the model doesn't drop them.
 func summaryInstruction(wordLimit int) string {
@@ -74,7 +89,7 @@ func RunSummary(ctx context.Context, msgs []*schema.Message, opts RunOpts, m Mod
 		if chunkBudget <= 0 {
 			// The carry alone (+framing) fills the window — no safe progress.
 			// Surfaces as an error rather than silently over-running the window.
-			return "", fmt.Errorf("compaction: carry (%d tok) + framing leaves no room in window %d",
+			return "", fmt.Errorf("%w: carry is %d tok, window is %d", ErrNoWindowRoom,
 				estimateMessageTokens(&schema.Message{Role: schema.User, Content: SummarySentinel + carry}),
 				opts.ModelWindow)
 		}

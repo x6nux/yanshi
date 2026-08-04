@@ -75,31 +75,38 @@ func pinnedSetIsConsistent(msgs []*schema.Message, pinned map[int]bool) bool {
 	return true
 }
 
-// skipAlreadyCompacted is the precondition shared by the three pairing
-// properties: Plan short-circuits on a history that already ends in a summary
-// (bug⑦) and pins every index including orphans, so the pairing invariant does
-// not apply to those trials.
+// skipAlreadyCompacted is the precondition shared by every property in this
+// package: Plan short-circuits on a history that already ends in a summary
+// (bug⑦) and pins every index including orphans, so neither the pairing
+// invariant nor the pin/summarize split applies to those trials.
 //
 // It reads the GENERATED INPUT (genHistory appends a sentinel with p=0.15),
 // never Plan's output — the guard must stay independent of the code under test
 // so a broken EnforceToolCallPairs cannot skip the whole suite into a vacuous
 // pass. It also fails outright if the skip rate is high enough that the
-// property is no longer really being exercised: see minPairingTrials.
+// property is no longer really being exercised: see minExecutedTrials.
 func skipAlreadyCompacted(t *testing.T, msgs []*schema.Message) {
 	t.Helper()
 	if lastMessageIsSummary(msgs) {
-		t.Skip("history ends with a summary: Plan short-circuits, pairing invariant N/A")
+		t.Skip("history ends with a summary: Plan short-circuits, the invariant is N/A")
 	}
 }
 
-// runPairingProperty runs fn over numTrials generated histories, skipping the
+// runGeneratedProperty runs fn over numTrials generated histories, skipping the
 // already-compacted ones, and fails if fewer than 60% of trials actually
 // executed. The floor is the machine check for the "vacuous property" failure
 // mode: a property whose precondition is (accidentally or deliberately) never
 // satisfiable still reports PASS from `go test`, because a test binary that
 // skips every subtest exits 0. Asserting on the executed count turns that
 // silence into a red build.
-func runPairingProperty(t *testing.T, numTrials, maxLen int, fn func(t *testing.T, msgs []*schema.Message)) {
+//
+// It was originally named runPairingProperty and wired only into the three
+// tool-pair properties. That scoping was the bug: the discipline it encodes is
+// not about pairing, and the two properties left outside it (pin-set subset,
+// token reduction) went on guarding themselves with the code under test's own
+// output and stayed green through every gutting. Anything in this package that
+// generates histories goes through here now.
+func runGeneratedProperty(t *testing.T, numTrials, maxLen int, fn func(t *testing.T, msgs []*schema.Message)) {
 	t.Helper()
 	executed := 0
 	planPropertyGen(t, numTrials, maxLen, func(t *testing.T, msgs []*schema.Message) {
@@ -107,18 +114,35 @@ func runPairingProperty(t *testing.T, numTrials, maxLen int, fn func(t *testing.
 		executed++
 		fn(t, msgs)
 	})
-	if min := minPairingTrials(numTrials); executed < min {
-		t.Fatalf("only %d/%d trials executed (need ≥%d): the property is vacuous, "+
-			"not passing — check the precondition guard", executed, numTrials, min)
-	}
+	requireTrialFloor(t, "executed", executed, numTrials)
 }
 
-// minPairingTrials is the executed-trial floor for a pairing property: 60% of
-// the requested trials. genHistory appends the already-compacted sentinel with
+// minExecutedTrials is the trial floor for a generated property: 60% of the
+// requested trials. genHistory appends the already-compacted sentinel with
 // probability 0.15, so the natural skip rate sits near that; 60% leaves room
 // for generator drift while still catching a guard that swallows everything.
-func minPairingTrials(numTrials int) int {
+func minExecutedTrials(numTrials int) int {
 	return numTrials * 60 / 100
+}
+
+// requireTrialFloor fails unless got trials of kind actually happened.
+//
+// runGeneratedProperty applies it to the trials that ran at all. The properties
+// that ALSO need an inner precondition — "this trial had something to
+// summarize" — apply it a second time to their own counter, because that inner
+// guard is the one place a property in this package is still allowed to consult
+// the code under test: whether Plan finds anything to summarize is not
+// computable from the generated input alone. Counting instead of returning
+// silently is what keeps that concession honest — a Plan gutted to an empty
+// PlanResult, or a Run that never summarizes, drives the count to zero and
+// reddens here rather than passing over trials that asserted nothing.
+func requireTrialFloor(t *testing.T, kind string, got, numTrials int) {
+	t.Helper()
+	if min := minExecutedTrials(numTrials); got < min {
+		t.Fatalf("only %d/%d trials %s (need ≥%d): the property is vacuous, not "+
+			"passing — the code under test is not reaching the assertions",
+			got, numTrials, kind, min)
+	}
 }
 
 // TestProperty_PinSetIsSubsetOfOutput is one of the suite's distinct
@@ -130,17 +154,30 @@ func minPairingTrials(numTrials int) int {
 // It runs 50 trials over randomly generated histories from genHistory, which
 // deliberately emits orphan tool_calls and orphan tool_results — the shapes
 // hand-written fixtures never think to include.
+//
+// Both floors matter. The outer one (runGeneratedProperty) counts trials that
+// were not skipped as already-compacted; the inner one counts trials that
+// actually reached Assemble. Without the inner floor this test passed against
+// a Plan gutted to `return &PlanResult{}`: every trial ran, found an empty
+// SummarizeIndices, returned before asserting anything, and `go test` printed
+// 50 passing subtests over zero assertions.
+//
+// ledger: E2/PROP1#1 ≥3 个属性
+// ledger: E2/PROP1#2 随机输入通过
 func TestProperty_PinSetIsSubsetOfOutput(t *testing.T) {
-	planPropertyGen(t, 50, 60, func(t *testing.T, msgs []*schema.Message) {
+	const trials = 50
+	assembled := 0
+	runGeneratedProperty(t, trials, 60, func(t *testing.T, msgs []*schema.Message) {
 		plan := Plan(msgs, PlanOpts{KeepRecent: 3})
-		if len(plan.SummarizeIndices) == 0 {
-			for _, i := range plan.PinnedIndices {
-				if i < 0 || i >= len(msgs) {
-					t.Fatalf("PinnedIndices[%d]=%d out of bounds", i, plan.PinnedIndices[i])
-				}
+		for _, idx := range plan.PinnedIndices {
+			if idx < 0 || idx >= len(msgs) {
+				t.Fatalf("PinnedIndices contains %d, out of bounds for %d messages", idx, len(msgs))
 			}
+		}
+		if len(plan.SummarizeIndices) == 0 {
 			return
 		}
+		assembled++
 		summary := "property test placeholder summary"
 		out := Assemble(msgs, plan, summary)
 
@@ -158,6 +195,7 @@ func TestProperty_PinSetIsSubsetOfOutput(t *testing.T) {
 			}
 		}
 	})
+	requireTrialFloor(t, "reached Assemble", assembled, trials)
 }
 
 // TestProperty_ToolCallPairingFixpointHolds is the core pairing invariant: in
@@ -165,8 +203,10 @@ func TestProperty_PinSetIsSubsetOfOutput(t *testing.T) {
 // vice versa. A history that keeps one half of a pair is rejected outright by
 // several providers, so this invariant is what makes compaction safe to run
 // mid-turn at all.
+//
+// ledger: E2/PROP1#3 工具对配对不变量成立
 func TestProperty_ToolCallPairingFixpointHolds(t *testing.T) {
-	runPairingProperty(t, 50, 60, func(t *testing.T, msgs []*schema.Message) {
+	runGeneratedProperty(t, 50, 60, func(t *testing.T, msgs []*schema.Message) {
 		plan := Plan(msgs, PlanOpts{KeepRecent: 3})
 		pinned := map[int]bool{}
 		for _, i := range plan.PinnedIndices {
@@ -209,8 +249,10 @@ func TestProperty_ToolCallPairingFixpointHolds(t *testing.T) {
 // changes nothing. Without idempotence the "fixpoint" is not one, and the
 // pin set could oscillate across the mid-turn/pre-turn compaction paths that
 // both call it.
+//
+// ledger: E2/PROP1#3 工具对配对不变量成立
 func TestProperty_ToolCallPairFixpointIsIdempotent(t *testing.T) {
-	runPairingProperty(t, 30, 60, func(t *testing.T, msgs []*schema.Message) {
+	runGeneratedProperty(t, 30, 60, func(t *testing.T, msgs []*schema.Message) {
 		plan := Plan(msgs, PlanOpts{KeepRecent: 3})
 		pinned := map[int]bool{}
 		for _, i := range plan.PinnedIndices {
@@ -243,12 +285,22 @@ func TestProperty_ToolCallPairFixpointIsIdempotent(t *testing.T) {
 //
 // A trial only counts once corruption was actually injected — histories with
 // no pinned tool_call have nothing to corrupt. `injected` is asserted at the
-// end for the same reason runPairingProperty asserts its executed count: a
+// end for the same reason runGeneratedProperty asserts its executed count: a
 // property that silently returns from every trial is vacuous, and `go test`
 // cannot tell that apart from a genuine pass.
+//
+// The assertion is "at least one", NOT the 60% requireTrialFloor applies
+// elsewhere, and the difference is measured rather than assumed: only 8 of 30
+// generated histories leave a tool_call pinned after Plan, so a proportional
+// floor here fails on correct code. Injectability is a property of the
+// generator, not of EnforceToolCallPairs; gutting the code under test does not
+// change this count, so a floor is not the mutation defence here — the repair
+// assertion inside the trial is.
+//
+// ledger: E2/PROP1#3 工具对配对不变量成立
 func TestProperty_ToolCallPairFixpointRepairsCorruption(t *testing.T) {
 	injected := 0
-	runPairingProperty(t, 30, 60, func(t *testing.T, msgs []*schema.Message) {
+	runGeneratedProperty(t, 30, 60, func(t *testing.T, msgs []*schema.Message) {
 		plan := Plan(msgs, PlanOpts{KeepRecent: 3})
 		pinned := map[int]bool{}
 		for _, i := range plan.PinnedIndices {

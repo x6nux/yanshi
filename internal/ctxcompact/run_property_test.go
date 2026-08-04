@@ -4,6 +4,8 @@ import (
 	"context"
 	"math/rand/v2"
 	"testing"
+
+	"github.com/cloudwego/eino/schema"
 )
 
 func TestProperty_NoDoubleCompaction(t *testing.T) {
@@ -51,33 +53,46 @@ func TestProperty_NoDoubleCompaction(t *testing.T) {
 // strictly fewer tokens than the input. A compaction that grows the history is
 // worse than no compaction — it burns a model call to move closer to the wall.
 //
-// The input is a randomly generated 40-message history (genHistory over a
-// seeded PCG), not a fixture, so the property is asserted against shapes
-// nobody chose by hand.
+// The inputs are randomly generated histories (genHistory over a seeded PCG),
+// not fixtures, so the property is asserted against shapes nobody chose by
+// hand.
+//
+// The summarizer-call count is a HARD REQUIREMENT here, not a condition on the
+// assertion. It used to be the latter — `if after >= before && calls > 0` —
+// which handed the verdict to the code under test: a Run gutted to return its
+// input verbatim makes zero summarizer calls, so the conjunction was false in
+// every trial and the test passed while proving that compaction does nothing.
+// Per-trial the count can legitimately be zero (Plan may find nothing to
+// summarize in a short history), so the requirement is enforced as a floor
+// across trials rather than a per-trial fatal — see requireTrialFloor.
+//
+// ledger: E2/PROP1#1 ≥3 个属性
+// ledger: E2/PROP1#2 随机输入通过
 func TestProperty_RunReducesTokens(t *testing.T) {
-	rng := rand.New(rand.NewPCG(123, 0))
-	msgs := genHistory(rng, 40)
-	if len(msgs) == 0 {
-		return
-	}
-
-	rs := &recordingSummarizer{Return: "compacted summary"}
-
-	result, err := Run(context.Background(), msgs, PlanOpts{KeepRecent: 3}, RunOpts{
-		ModelWindow:      2000,
-		ChunkThreshold:   0.9,
-		SummaryWordLimit: 200,
-	}, rs, nil)
-	if err != nil {
-		if len(rs.GenerateCalls)+len(rs.StreamCalls) == 0 {
-			return
+	const trials = 30
+	summarized := 0
+	runGeneratedProperty(t, trials, 60, func(t *testing.T, msgs []*schema.Message) {
+		rs := &recordingSummarizer{Return: "compacted summary"}
+		result, err := Run(context.Background(), msgs, PlanOpts{KeepRecent: 3}, RunOpts{
+			ModelWindow:      2000,
+			ChunkThreshold:   0.9,
+			SummaryWordLimit: 200,
+		}, rs, nil)
+		if err != nil {
+			t.Fatalf("Run failed on a %d-message history: %v", len(msgs), err)
 		}
-		t.Fatalf("Run failed: %v", err)
-	}
+		calls := len(rs.GenerateCalls) + len(rs.StreamCalls)
+		if calls == 0 {
+			return // nothing to summarize in this trial; the floor below covers it
+		}
+		summarized++
 
-	before := EstimateTokens(msgs)
-	after := EstimateTokens(result.Messages)
-	if after >= before && len(rs.GenerateCalls)+len(rs.StreamCalls) > 0 {
-		t.Fatalf("Run did not reduce tokens: before=%d, after=%d (summarizer called %d times)", before, after, len(rs.GenerateCalls)+len(rs.StreamCalls))
-	}
+		before := EstimateTokens(msgs)
+		after := EstimateTokens(result.Messages)
+		if after >= before {
+			t.Fatalf("Run did not reduce tokens: before=%d, after=%d (summarizer called %d times, %d/%d messages summarized)",
+				before, after, calls, len(msgs)-len(result.Messages)+1, len(msgs))
+		}
+	})
+	requireTrialFloor(t, "summarized anything", summarized, trials)
 }

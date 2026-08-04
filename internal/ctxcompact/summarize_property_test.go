@@ -2,6 +2,7 @@ package ctxcompact
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"testing"
@@ -46,8 +47,19 @@ func (r *recordingSummarizer) Stream(ctx context.Context, msgs []*schema.Message
 // The bound is checked at four window sizes against randomly generated
 // histories; the one tolerated overshoot (< 2x) is tool-call pair integrity,
 // which cannot be split without producing a history the provider rejects.
+//
+// Failures are NOT swallowed. The error branch used to be `t.Logf(...);
+// return`, which made the property hold for a RunSummary that fails every
+// time: gutting it to `return "", err` produced four log lines and a pass.
+// Only ErrNoWindowRoom is tolerated (a window too small to make any progress
+// is a real outcome, and window=100 hits it), only some of the windows may
+// take that branch, and a success must be followed by at least one real
+// summarizer call — three independent ways for a broken RunSummary to redden.
+//
+// ledger: E2/PROP1#1 ≥3 个属性
 func TestProperty_EachSummaryCallWithinWindow(t *testing.T) {
 	windows := []int{800, 400, 200, 100}
+	summarized := 0
 	for _, mw := range windows {
 		t.Run(fmt.Sprintf("window=%d", mw), func(t *testing.T) {
 			rs := &recordingSummarizer{Return: "summarized"}
@@ -59,13 +71,18 @@ func TestProperty_EachSummaryCallWithinWindow(t *testing.T) {
 			rng := rand.New(rand.NewPCG(uint64(mw), 0))
 			msgs := genHistory(rng, 30)
 			if len(msgs) == 0 {
-				return
+				t.Fatal("genHistory produced no messages: the property has no input")
 			}
 			_, err := RunSummary(context.Background(), msgs, opts, rs, nil)
 			if err != nil {
-				t.Logf("RunSummary returned error (expected for some tiny windows): %v", err)
+				if !errors.Is(err, ErrNoWindowRoom) {
+					t.Fatalf("RunSummary failed for a reason this property does not "+
+						"tolerate (only ErrNoWindowRoom is): %v", err)
+				}
+				t.Logf("window %d is too small for the carry loop to make progress: %v", mw, err)
 				return
 			}
+			summarized++
 			allCalls := append(rs.GenerateCalls, rs.StreamCalls...)
 			if len(allCalls) == 0 {
 				t.Fatal("RunSummary returned success but summarizer was never called")
@@ -80,6 +97,13 @@ func TestProperty_EachSummaryCallWithinWindow(t *testing.T) {
 				}
 			}
 		})
+	}
+	// A RunSummary gutted to return ErrNoWindowRoom itself would slip past the
+	// branch above; it does not slip past here. Only the smallest window is
+	// allowed to be unsummarizable.
+	if want := len(windows) - 1; summarized < want {
+		t.Fatalf("only %d of %d windows produced summarizer calls (want ≥%d): the "+
+			"in-window bound was asserted against almost nothing", summarized, len(windows), want)
 	}
 }
 

@@ -613,14 +613,36 @@
 # `&& len(rs.GenerateCalls)+... > 0`、plan_property_test.go 的
 # `if len(plan.SummarizeIndices) == 0 { return }`），以及 summarize_property_test.go
 # 的 `if err != nil { t.Logf; return }` 吞错。第 3 句的三条配对测试不在此列（它们走
-# runPairingProperty，守卫只读生成输入且有执行率下限），但 GOV8 是逐句握手，第 1、2
-# 句无效即整条不能是终态。evidence 清空、三个测试上的 ledger marker 一并删除。
+# 执行率下限的那条路径），但 GOV8 是逐句握手，第 1、2 句无效即整条不能是终态。
+#
+# 2026-08-04 同日修复后：partial → done。三处守卫都换掉了，并用同样的三次掏空
+# 复验，全部由 PASS 转 FAIL：
+#   ① Run 掏空成恒等 → RunReducesTokens FAIL
+#      「only 0/30 trials summarized anything (need ≥18)」
+#   ② Plan 掏空成 &PlanResult{} → PinSetIsSubsetOfOutput FAIL
+#      「only 0/50 trials reached Assemble (need ≥30)」，RunReducesTokens 同时 FAIL
+#   ③ RunSummary 掏空成恒返回 error → EachSummaryCallWithinWindow FAIL
+#      「RunSummary failed for a reason this property does not tolerate」
+#   ③b RunSummary 掏空成恒返回被容忍的 ErrNoWindowRoom（绕开 ③ 的那条路）→ 仍 FAIL
+#      「only 0 of 4 windows produced summarizer calls (want ≥3)」
+#   ④ 第 3 句独立复验：EnforceToolCallPairs 掏空成 no-op → 三条配对测试全 FAIL
+# 手法：go test -overlay，掏空只存在于 /tmp 的副本里，工作树零写入。
+# 修法：所有生成型属性统一走 runGeneratedProperty（守卫只读生成输入 + 60% 执行率
+# 下限），「这一趟真的压缩了吗」这类只能由被测代码回答的内层前提改成计数 +
+# requireTrialFloor（掏空使计数归零即变红），RunSummary 的可容忍失败收敛成一个
+# 哨兵 ErrNoWindowRoom（其余错误一律 t.Fatal）。
+# 遗留弱点（与上一版相同，不足以推翻 done）：属性生成器用固定种子（propSeed=42 等）
+# 而非每次运行换种子 —— 覆盖面来自 trial 数而不是跨运行的随机性。这是有意的
+# （CI 可复现），但新 bug 只有落在这批种子的轨迹上才会被抓到。
 - id: "E2/PROP1"
   package: "W4"
-  verdict: partial
+  verdict: done
   title: "ctxcompact 属性测试"
   acceptance: "≥3 个属性；随机输入通过；工具对配对不变量成立"
-  evidence: ""
+  evidence:
+    "1": "internal/ctxcompact::TestProperty_PinSetIsSubsetOfOutput; internal/ctxcompact::TestProperty_RunReducesTokens; internal/ctxcompact::TestProperty_EachSummaryCallWithinWindow"
+    "2": "internal/ctxcompact::TestProperty_PinSetIsSubsetOfOutput; internal/ctxcompact::TestProperty_RunReducesTokens"
+    "3": "internal/ctxcompact::TestProperty_ToolCallPairingFixpointHolds; internal/ctxcompact::TestProperty_ToolCallPairFixpointIsIdempotent; internal/ctxcompact::TestProperty_ToolCallPairFixpointRepairsCorruption"
 
 # ⚠️ 2026-08-04 修复 acceptance 截断（范围决策，非状态变更）：第 5 句原文以字面
 #    省略号「Windows -r…」结尾 —— 那是 docs/feature-status-audit.md 逐条转录时被
