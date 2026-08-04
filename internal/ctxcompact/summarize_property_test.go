@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/components/model"
@@ -42,12 +43,32 @@ func (r *recordingSummarizer) Stream(ctx context.Context, msgs []*schema.Message
 // without separating a tool_call from its result.
 //
 // It is written from the generated tool ids directly instead of calling the
-// production splitIsSafe. That duplication is the point: this predicate is the
-// ORACLE for takeChunk's bound, and an oracle that shares a helper with the
-// code under test degrades in lockstep with it — gut splitIsSafe to
-// `return true` and a delegating oracle would shrink its own bound by exactly
-// as much as takeChunk shrinks its chunks, and the property would stay green
-// while pairs were being severed.
+// production splitIsSafe. That duplication is deliberate — it is the one place
+// in this repo that is knowingly exempt from CLAUDE.md's "extract shared logic,
+// never copy-paste" rule — because this predicate is the ORACLE for takeChunk's
+// bound, and an oracle that shares a helper with the code under test degrades
+// in lockstep with it.
+//
+// The direction that proves it is splitIsSafe degrading to `return false` on
+// the interior: takeChunk then finds no safe cut anywhere, so it ships the
+// whole remaining history as one chunk, while a DELEGATING oracle would call
+// the entire history one indivisible run and inflate its own ceiling to
+// ModelWindow + everything. Both sides move together, the bound goes vacuous,
+// and TestProperty_EachSummaryCallWithinWindow stays green while every chunk it
+// is supposed to bound has grown without limit. The independent oracle keeps
+// the real group sizes and reddens (measured: `tok=1995 exceeds
+// ModelWindow=800 + largest indivisible run=153`).
+//
+// The OPPOSITE direction — gutting splitIsSafe to `return true`, which this
+// comment used to name as the motivating example — does not discriminate
+// between the two designs, and citing it was the bug: a delegating oracle would
+// then call every boundary safe, which only SHRINKS its ceiling, and the
+// assertion is an upper bound, so both oracles stay green either way. A DRY
+// refactor justified by that example would therefore read as safe and would
+// quietly remove the `return false` tooth.
+//
+// TestOracleIndependence_DelegationGoesVacuous pins both directions, so this
+// exemption is an executable claim rather than prose.
 func atomicBoundaryIsSafe(msgs []*schema.Message, i int) bool {
 	if i <= 0 || i >= len(msgs) {
 		return true
@@ -89,9 +110,18 @@ func atomicBoundaryIsSafe(msgs []*schema.Message, i int) bool {
 // Note what this quantity does NOT depend on: the model window. That is the
 // whole finding — see the doc on TestProperty_EachSummaryCallWithinWindow.
 func maxAtomicGroupTokens(msgs []*schema.Message) int {
+	return maxAtomicGroupTokensWith(msgs, atomicBoundaryIsSafe)
+}
+
+// maxAtomicGroupTokensWith is maxAtomicGroupTokens with the boundary predicate
+// injected. Production code never varies it — the seam exists so
+// TestOracleIndependence_DelegationGoesVacuous can compute the ceiling a
+// DELEGATING oracle would have produced under a degraded splitIsSafe, without
+// having to degrade production code.
+func maxAtomicGroupTokensWith(msgs []*schema.Message, boundaryIsSafe func([]*schema.Message, int) bool) int {
 	maxTok, cur := 0, 0
 	for i := range msgs {
-		if i > 0 && atomicBoundaryIsSafe(msgs, i) {
+		if i > 0 && boundaryIsSafe(msgs, i) {
 			if cur > maxTok {
 				maxTok = cur
 			}
@@ -103,6 +133,71 @@ func maxAtomicGroupTokens(msgs []*schema.Message) int {
 		maxTok = cur
 	}
 	return maxTok
+}
+
+// TestOracleIndependence_DelegationGoesVacuous is the executable half of the
+// copy-paste exemption documented on atomicBoundaryIsSafe. It substitutes the
+// two degenerate predicates a delegating oracle would inherit from a gutted
+// splitIsSafe and measures what each does to the ceiling
+// TestProperty_EachSummaryCallWithinWindow asserts.
+//
+//   - `return false` (no interior cut is ever safe): the ceiling swallows the
+//     entire history, so `EstimateTokens(anyChunk) <= ModelWindow + ceiling`
+//     holds for EVERY possible chunk. The property becomes unfalsifiable. This
+//     is the direction that discriminates, and the reason the oracle may not
+//     delegate.
+//   - `return true` (every cut is safe): the ceiling only shrinks, so the
+//     property gets STRICTER, never vacuous. This is the direction the comment
+//     used to cite; it proves nothing, which is why it was replaced.
+func TestOracleIndependence_DelegationGoesVacuous(t *testing.T) {
+	// Four tool pairs, each followed by a plain user message: cuts inside a pair
+	// are unsafe, the ones around the user messages are safe. The history has to
+	// be several groups wider than the window below, otherwise ModelWindow alone
+	// already covers everything and both oracles look equally vacuous.
+	const mw = 800
+	body := strings.Repeat("x", 1200) // ~300 tokens of tool output per pair
+	var msgs []*schema.Message
+	for i := 1; i <= 4; i++ {
+		id := fmt.Sprintf("id%d", i)
+		msgs = append(msgs,
+			&schema.Message{Role: schema.Assistant, ToolCalls: []schema.ToolCall{
+				{ID: id, Function: schema.FunctionCall{Name: "fs_read", Arguments: `{"path":"a.go"}`}}}},
+			&schema.Message{Role: schema.Tool, ToolCallID: id, Content: body},
+			&schema.Message{Role: schema.User, Content: "next"},
+		)
+	}
+	total := EstimateTokens(msgs)
+	real := maxAtomicGroupTokens(msgs)
+	neverSafe := maxAtomicGroupTokensWith(msgs, func([]*schema.Message, int) bool { return false })
+	alwaysSafe := maxAtomicGroupTokensWith(msgs, func([]*schema.Message, int) bool { return true })
+
+	if real >= total {
+		t.Fatalf("the independent oracle must bound a strict subset of the history "+
+			"(largest run %d, whole history %d); if they are equal this fixture no "+
+			"longer has a safe interior cut and proves nothing", real, total)
+	}
+	if neverSafe != total {
+		t.Fatalf("a delegating oracle under `splitIsSafe -> false` must call the whole "+
+			"history one indivisible run: got %d, whole history %d", neverSafe, total)
+	}
+	// Vacuity, stated the way the property states it: a chunk is always a
+	// sub-slice of the history, so tok <= total. Once the ceiling reaches total,
+	// no chunk can ever trip the assertion.
+	if total > mw+neverSafe {
+		t.Fatalf("expected the delegated ceiling %d+%d to dominate every possible chunk "+
+			"(<= %d tokens); it does not, so this test is not demonstrating vacuity",
+			mw, neverSafe, total)
+	}
+	if mw+real >= total {
+		t.Fatalf("this fixture is too small for the window: with the independent oracle "+
+			"the ceiling %d+%d already covers the whole history %d, so both oracles look "+
+			"vacuous and the contrast above is not being measured", mw, real, total)
+	}
+	if alwaysSafe > real {
+		t.Fatalf("`splitIsSafe -> true` must not LOOSEN the ceiling (got %d, independent "+
+			"oracle %d): if it could, that direction would discriminate after all and "+
+			"the doc comment on atomicBoundaryIsSafe is wrong", alwaysSafe, real)
+	}
 }
 
 // TestProperty_EachSummaryCallWithinWindow is a third, independent property,

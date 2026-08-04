@@ -55,6 +55,7 @@ reference/
 
 # local dev worktrees (subagent-driven execution)
 .worktrees/
+.claude/worktrees/
 
 # runtime scratch dir (spillover temp files, etc.)
 .yanshi/

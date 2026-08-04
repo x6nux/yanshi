@@ -78,14 +78,16 @@ msgs ──► Plan() ──► {pinned, summarize, workingSetPaths}
    「一个 tool_call 消息 + 它全部 result 之和」，**随并行工具数线性增长**。
    并行工具调用是本仓的常规形状 —— `classify.go::emitAssistant` 就是 `for _, tc := range msg.ToolCalls`。
 
-实测（budget=1000）：
+实测（budget=1000）由下面这条命令**现场打印**，本文不写死数字 —— 这里原先摆着一张四行的表，
+和它下面那个 24.15× 不同（那个给了复现命令），四个数没有任何复核或防腐手段：
 
-| 形状 | chunk tokens | 比值 |
-|---|---|---|
-| n=1 并行 result | 1032 | 1.03× |
-| n=5 并行 result | 5128 | 5.13× |
-| n=20 并行 result | 20488 | 20.49× |
-| 单条超大消息（无配对） | 10008 | 10.01× |
+```sh
+go test ./internal/ctxcompact -run TestTakeChunk_OvershootShapesAreMeasured -v
+```
+
+输出逐行给出 n=1 / n=5 / n=20 并行 result 与「单条超大消息（无配对）」四种形状的 chunk tokens 与比值。
+测试**断言的是形状不是数字**（比值随并行工具数单调增长；超大消息在完全没有配对的情况下自己超窗），
+数字随 fixture 变化，正是原来那张表腐烂的方式。
 
 **为什么不给 `takeChunk` 加硬上限（取舍）**：最小合法 chunk 就是「剩余消息头部的那个不可分割段」，
 它的大小是**输入**的属性。想压到它以下，只能二选一 —— 切断配对（provider 直接 400，而整条 carry

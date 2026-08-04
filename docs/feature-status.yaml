@@ -444,7 +444,7 @@
   title: "思考流式展示"
   acceptance: "思考模型可见流式思考;正文与思考分离;非思考模型无影响;可折叠"
   evidence:
-    "1": "internal/agent/orchestrator::TestClassifyEvents_EmitsThinkingForReasoning; internal/cli/tui::TestModel_ThinkingLiveThenCollapses"
+    "1": "internal/agent/orchestrator::TestClassifyEvents_EmitsThinkingForReasoning; internal/agent/orchestrator::TestClassifyEvents_StreamingEmitsThinkingPerReasoningDelta; internal/cli/tui::TestModel_ThinkingLiveThenCollapses"
     "2": "internal/cli/tui::TestThinkingParity_NonThinkingFinalizesLive; internal/agent/orchestrator::TestClassifyEvents_ReasoningOnlyEmitsOnlyThinking"
     "3": "internal/cli/tui::TestThinkingParity_NoThinkingNoEntry"
     "4": "internal/cli/tui::TestModel_ThinkingCtrlOTogglesExpand; internal/cli/tui::TestThinkingParity_LiveBlockNotExpandable"

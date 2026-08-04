@@ -196,9 +196,8 @@ func TestVSCodeExtensionNotAdvertisedInDocs(t *testing.T) {
 		rel := filepath.ToSlash(mustRel(t, root, path))
 		if d.IsDir() {
 			switch {
-			case rel == ".git", rel == "docs/archive", rel == "third_party",
-				rel == "reference",
-				strings.HasSuffix(rel, "/node_modules"), rel == "node_modules":
+			case nestedCheckoutDirNames[d.Name()],
+				rel == "docs/archive", rel == "third_party", rel == "reference":
 				return filepath.SkipDir
 			}
 			return nil

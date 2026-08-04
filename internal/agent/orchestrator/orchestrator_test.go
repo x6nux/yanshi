@@ -669,6 +669,79 @@ func TestClassifyEvents_NoReasoningEmitsNoThinking(t *testing.T) {
 	assert.Equal(t, []string{"agent_chunk"}, types)
 }
 
+// TestClassifyEvents_StreamingEmitsThinkingPerReasoningDelta is the STREAMING
+// half of the same clause, and it exists because the two tests above did not
+// cover production at all.
+//
+// New(...) builds its ADK runner with EnableStreaming: true, so every model
+// output arrives as a variant with IsStreaming set and MessageStream non-nil,
+// and classifyEvents routes those to classifyStream. The two tests above drive
+// newFakeEventIter, which only ever produces materialized messages, i.e. the
+// classifyMessage branch — the one whose own doc comment calls itself the
+// "non-streaming path". Deleting the reasoning from every streaming delta
+// (`msg.ReasoningContent = ""` in classifyStream's assistant branch) left both
+// of them green, so the server half of this clause was asserted exclusively
+// against a path production never takes.
+//
+// What is shared between the two paths is only the frame constructor
+// (emitAssistantContent). The CALL SITE is what this repo keeps getting wrong,
+// so this test drives the exported ClassifyEvents with a streaming variant and
+// asserts the per-delta behaviour end to end: one thinking frame per reasoning
+// delta (not one merged frame at stream end), in arrival order, and every one
+// of them ahead of the first agent_chunk so the TUI can render the thinking
+// block above the answer.
+//
+// ledger: C2/UX8#1 思考模型可见流式思考
+func TestClassifyEvents_StreamingEmitsThinkingPerReasoningDelta(t *testing.T) {
+	iter := newFakeStreamEventIter(t, schema.Assistant, []*schema.Message{
+		{Role: schema.Assistant, ReasoningContent: "step one"},
+		{Role: schema.Assistant, ReasoningContent: "step two"},
+		{Role: schema.Assistant, ReasoningContent: "step three", Content: "par"},
+		{Role: schema.Assistant, Content: "tial answer"},
+	})
+
+	var frames []proto.ServerFrame
+	ClassifyEvents(iter, func(f proto.ServerFrame) { frames = append(frames, f) })
+
+	var thinking, chunks []string
+	firstChunk := -1
+	for i, f := range frames {
+		switch f.Type {
+		case "thinking":
+			thinking = append(thinking, f.Text)
+			if firstChunk >= 0 {
+				t.Errorf("frames[%d] is a thinking frame after the first agent_chunk at %d: "+
+					"reasoning must lead its answer text", i, firstChunk)
+			}
+		case "agent_chunk":
+			chunks = append(chunks, f.Text)
+			if firstChunk < 0 {
+				firstChunk = i
+			}
+		}
+	}
+	assert.Equal(t, []string{"step one", "step two", "step three"}, thinking,
+		"one thinking frame per reasoning delta, in stream order — a single merged "+
+			"frame at stream end would fail here")
+	assert.Equal(t, []string{"par", "tial answer"}, chunks,
+		"content deltas still stream one agent_chunk each")
+}
+
+// newFakeStreamEventIter builds an event iterator carrying ONE streaming
+// MessageVariant (IsStreaming=true, MessageStream set, Message nil) — the shape
+// the ADK actually delivers under EnableStreaming, and therefore the shape
+// classifyEvents routes to classifyStream. newFakeEventIter cannot produce it.
+func newFakeStreamEventIter(t *testing.T, role schema.RoleType, deltas []*schema.Message) *adk.AsyncIterator[*adk.AgentEvent] {
+	t.Helper()
+	mv := newStreamMessageVariant(t, role, deltas)
+	iter, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+	go func() {
+		gen.Send(&adk.AgentEvent{Output: &adk.AgentOutput{MessageOutput: mv}})
+		gen.Close()
+	}()
+	return iter
+}
+
 // fakeEvt pairs a message with an optional error for fakeEventIter.
 type fakeEvt struct {
 	msg *schema.Message

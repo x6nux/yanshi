@@ -63,12 +63,24 @@ var overlayImmuneGateFiles = []string{
 // exec.Command is included because buildImportGraph shells out to `go list`:
 // a subprocess inherits none of the parent's -overlay mapping, which makes it
 // the most overlay-opaque read of all.
+// os.OpenFile, os.DirFS and the io/fs walkers are here because leaving them
+// out was a hole with a name: os.Open, os.Stat and os.Lstat were all listed
+// while their sibling os.OpenFile was not, and `os.DirFS(root)` handed to
+// fs.WalkDir reads exactly what filepath.WalkDir reads through an interface
+// the table could not see. All three were measured to pass unnoticed.
 var runtimeDiskReads = map[string]bool{
 	"os.ReadFile":           true,
 	"os.ReadDir":            true,
 	"os.Open":               true,
+	"os.OpenFile":           true,
 	"os.Stat":               true,
 	"os.Lstat":              true,
+	"os.DirFS":              true,
+	"os.Readlink":           true,
+	"fs.WalkDir":            true,
+	"fs.ReadFile":           true,
+	"fs.ReadDir":            true,
+	"fs.Glob":               true,
 	"filepath.Walk":         true,
 	"filepath.WalkDir":      true,
 	"filepath.Glob":         true,
@@ -95,31 +107,42 @@ func TestGateFilesReadFromDiskAtRuntime(t *testing.T) {
 		t.Fatalf("ParseDir(%s): %v", dir, err)
 	}
 
-	// funcs maps a function name to its declaration; owner maps it to the
-	// base name of the file that declares it. Archtest test helpers are all
-	// package-level functions without receivers, so a name is a unique key.
-	funcs := map[string]*ast.FuncDecl{}
+	// funcs maps a name to every declaration carrying it; owner maps a name to
+	// the file that declares it. METHODS ARE INCLUDED, keyed by their bare
+	// method name, which is why funcs holds a slice: a method may share a name
+	// with a package-level function.
+	//
+	// Skipping receivers (the earlier shape) was the widest of the three holes
+	// this gate had. A helper that reads the repo is just as opaque to -overlay
+	// when it hangs off a type, and moving one there silently dropped its file
+	// out of the mirror — the gate would then advise a reviewer to probe it with
+	// -overlay, which is the direction of error the gate exists to prevent.
+	funcs := map[string][]*ast.FuncDecl{}
 	owner := map[string]string{}
 	for _, pkg := range pkgs {
 		for path, file := range pkg.Files {
 			base := filepath.Base(path)
 			for _, decl := range file.Decls {
 				fn, ok := decl.(*ast.FuncDecl)
-				if !ok || fn.Recv != nil || fn.Body == nil {
+				if !ok || fn.Body == nil {
 					continue
 				}
-				funcs[fn.Name.Name] = fn
-				owner[fn.Name.Name] = base
+				funcs[fn.Name.Name] = append(funcs[fn.Name.Name], fn)
+				if fn.Recv == nil {
+					owner[fn.Name.Name] = base
+				}
 			}
 		}
 	}
 
 	reads := map[string]bool{}
 	calls := map[string][]string{}
-	for name, fn := range funcs {
-		direct, callees := scanFuncBody(fn)
-		reads[name] = direct
-		calls[name] = callees
+	for name, decls := range funcs {
+		for _, fn := range decls {
+			direct, callees := scanFuncBody(fn)
+			reads[name] = reads[name] || direct
+			calls[name] = append(calls[name], callees...)
+		}
 	}
 
 	// Backward fixpoint: a function touches disk if it reads directly or
@@ -187,10 +210,16 @@ func TestGateFilesReadFromDiskAtRuntime(t *testing.T) {
 // names of the package-level functions it calls (for the backward fixpoint).
 //
 // Unqualified calls are recorded by name; qualified ones (pkg.Func) are looked
-// up in runtimeDiskReads. A qualified call that is not in that table is
-// ignored rather than assumed to read disk — the table is an allow/deny list
-// the maintainer curates, and guessing in either direction would make the
-// mirror unstable.
+// up in runtimeDiskReads. A qualified call that is not in that table is not
+// assumed to read disk — the table is an allow/deny list the maintainer
+// curates, and guessing there would make the mirror unstable.
+//
+// A qualified call IS however recorded as a callee under its bare selector
+// name, so `x.readsTheRepo()` links to a method declared in this package. That
+// over-approximates (a call to t.Helper() looks for a local "Helper"), but only
+// in the safe direction: a spurious edge can add a file to the mirror, i.e.
+// advise a worktree probe where overlay would have worked, whereas a missing
+// edge produces a silent false PASS.
 func scanFuncBody(fn *ast.FuncDecl) (direct bool, callees []string) {
 	seen := map[string]bool{}
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
@@ -205,12 +234,13 @@ func scanFuncBody(fn *ast.FuncDecl) (direct bool, callees []string) {
 				callees = append(callees, f.Name)
 			}
 		case *ast.SelectorExpr:
-			pkgIdent, ok := f.X.(*ast.Ident)
-			if !ok {
-				return true
-			}
-			if runtimeDiskReads[pkgIdent.Name+"."+f.Sel.Name] {
+			if pkgIdent, ok := f.X.(*ast.Ident); ok &&
+				runtimeDiskReads[pkgIdent.Name+"."+f.Sel.Name] {
 				direct = true
+			}
+			if !seen[f.Sel.Name] {
+				seen[f.Sel.Name] = true
+				callees = append(callees, f.Sel.Name)
 			}
 		}
 		return true

@@ -278,7 +278,7 @@ t.chatModelOptions = opts   // 第二次调用覆盖第一次
 
 | 文档位置 | 声称 | 实际 |
 |---|---|---|
-| `docs/user-guide/tui.md:19,27` | `/keymap`、`/vim`、`/contrast` 可用，写入 `preferences.json` | 三个命令都不在 `commandTable` 里 |
+| `docs/user-guide/tui.md:19,27` | `/keymap`、`/vim`、`/contrast` 可用，写入 `preferences.json` | 三个命令都不在 `commandTable` 里（从未注册） |
 | `docs/user-guide/configuration.md:93` | 同上 | 同上 |
 | `ide/vscode/README.md`「Recovery model」 | 扩展支持断线自动重连 | `runWithRecovery` 从未被 `extension.ts` import |
 | `docs/api/jsonrpc.md` | `config/read\|write` 是运行时配置读写 | 只操作进程内 `MemoryConfig`，与 `-config` 指向的 YAML 无关 |
@@ -680,14 +680,14 @@ t.chatModelOptions = opts   // 第二次调用覆盖第一次
 
 - **优先级** P3 ｜ **路线图原状态** 缺失 ｜ **接进运行时** 否 ｜ **有针对性测试** 是
 - **验收标准**：核心按键可重映射；Vim 开关；高对比主题；冲突可诊断
-- **实测缺口**：规划落点是 `internal/cli/tui/`（keymap 加载）+ 配置文件；实际做成了一个**独立叶子包 internal/keymap**，语义 Action / 冲突诊断 / Vim 状态机都是真实完整实现，但**没有任何一条路径把它接进 TUI**：TUI 按键仍走 handlers.go 的硬编码 tea.Key* switch，internal/keymap 唯一生产消费者是 doctor 的静态配置校验。逐条验收：核心按键可重映射=否（配置 tui.bindings 只被 doctor 校验，运行时不生效）；Vim 开关=否（VimMachine 无消费者，无 /vim 命令，cfg.TUI.Vim 无运行时读取）；高对比主题=是（但这是 C15 之前既有的 /theme + ThemeHighContrast，非本批新增，且 cfg.TUI.high_contrast 不影响启动主题）；冲突可诊断=部分（`yanshi doctor` 能报 keymap 检查，但 plan/文档承诺的 `/keymap diagnostics` 与 `/keymap reset` 不存在，KeymapReset tombstone 字段定义在 preferences.go:27 却无写入者）。另：plan 自述“C15 正式豁免 OBS3 前置门控并精确同步 roadmap”，但 docs/archive/fea…
+- **实测缺口**：规划落点是 `internal/cli/tui/`（keymap 加载）+ 配置文件；实际做成了一个**独立叶子包 internal/keymap**，语义 Action / 冲突诊断 / Vim 状态机都是真实完整实现，但**没有任何一条路径把它接进 TUI**：TUI 按键仍走 handlers.go 的硬编码 tea.Key* switch，internal/keymap 唯一生产消费者是 doctor 的静态配置校验。逐条验收：核心按键可重映射=否（配置 tui.bindings 只被 doctor 校验，运行时不生效）；Vim 开关=否（VimMachine 无消费者，无 /vim 命令，cfg.TUI.Vim 无运行时读取）；高对比主题=是（但这是 C15 之前既有的 /theme + ThemeHighContrast，非本批新增，且 cfg.TUI.high_contrast 不影响启动主题）；冲突可诊断=部分（`yanshi doctor` 能报 keymap 检查，但 plan/文档承诺的 `/keymap diagnostics` 与 `/keymap reset` 从未注册，KeymapReset tombstone 字段定义在 preferences.go:27 却无写入者）。另：plan 自述“C15 正式豁免 OBS3 前置门控并精确同步 roadmap”，但 docs/archive/fea…
 - **证据**：/Users/ll/code/yanshi/internal/keymap/keymap.go:21-298 — Action 语义常量（send/newline/cancel/scroll_up/scroll_down/clear/help/quit/command_mode）、Builder 收集后统一 Build 校验、NewDefaultBuilder(overrides) 内建 8 条默认绑定 + 用户覆盖、Diagnostic 四类（conflict / normalized_duplicate / unknown_action / invalid_key）确定性排序、Map.Lo…
 
 #### `D3` I18N1 — locale / i18n（en / zh-Hans）
 
 - **优先级** P3 ｜ **路线图原状态** 缺失 ｜ **接进运行时** 否 ｜ **有针对性测试** 是
 - **验收标准**：至少 en/zh-Hans 切换；UI 与输出语言独立；自动检测
-- **实测缺口**：规划：TUI 文案外提 + `/config locale` 切换 + 自动检测；实际：i18n 核心库、catalog、自动检测、output_language 独立、doctor 校验都是真实完整实现，但**用户无法在运行时切到 zh-Hans**。具体缺口：(a) TUI 固定用英文 bundle（state.go:120 硬编码 "en"），cfg.I18N.UILocale 与 YANSHI_UI_LOCALE 环境变量都进不了 TUI；(b) 没有 /locale（或 /config locale）slash 命令；(c) 四层 preferences 合并（mergeTUIPrefs）与持久化写好了却零生产调用点，是孤立代码；(d) 65 个 catalog key 只有 22 个（全是 /help 行 + placeholder）真被使用，其余 43 个是为尚未实现的命令预留的死条目。plan 文档 Task 11 明确要求“TUI 接线 + output_language”，output_language 那一半做了，TUI locale 接线这一半没做。
+- **实测缺口**：规划：TUI 文案外提 + `/config locale` 切换 + 自动检测；实际：i18n 核心库、catalog、自动检测、output_language 独立、doctor 校验都是真实完整实现，但**用户无法在运行时切到 zh-Hans**。具体缺口：(a) TUI 固定用英文 bundle（state.go:120 硬编码 "en"），cfg.I18N.UILocale 与 YANSHI_UI_LOCALE 环境变量都进不了 TUI；(b) 没有 /locale（或 /config locale）slash 命令，从未注册；(c) 四层 preferences 合并（mergeTUIPrefs）与持久化写好了却零生产调用点，是孤立代码；(d) 65 个 catalog key 只有 22 个（全是 /help 行 + placeholder）真被使用，其余 43 个是为尚未实现的命令预留的死条目。plan 文档 Task 11 明确要求“TUI 接线 + output_language”，output_language 那一半做了，TUI locale 接线这一半没做。
 - **证据**：/Users/ll/code/yanshi/internal/i18n/i18n.go:96-228 — Bundle（persistent/effective 分离）、NewBundle 每次调用重算 auto（L112-113）、detectLocale 真 LC_ALL > LANG（L166-176）、normalizeLocale 处理 @modifier/.codeset/C/POSIX/zh-CN/zh-SG→zh-Hans、zh-TW/zh-HK/zh-Hant→en（L183-207）、Get/GetF 占位符替换、缺 key 回退 key 本身 ； /Users/ll/co…
 
 #### `D3` S10 — secrets / keyring（OS keyring + 统一脱敏）
@@ -810,7 +810,7 @@ t.chatModelOptions = opts   // 第二次调用覆盖第一次
 - **优先级** P2 ｜ **路线图原状态** 部分 ｜ **接进运行时** 是 ｜ **有针对性测试** 是
 - **验收标准**：覆盖主要用法；getting started 可零依赖跑通；与实际不漂移
 - **实测缺口**：核心全部落地，但有两处守门与入口的缺口：(1) docs.yml 的 paths 过滤器只列了 docs/** examples/** cmd/api-schema/** cmd/gendocs/** internal/docgen/** internal/config/** internal/api/v1/**，**缺 cmd/yanshi/****——而 CLI 帮助快照的真相源正是 cmd/yanshi/main.go 的 25 个 FlagSet 定义（如 main.go:445 的 -addr）。只改 main.go 的 flag 文案/新增 flag 的 PR 不会触发 docs job，help:* 快照可静默漂移，直到下次有人碰 docs/ 才被抓到。这正是 UDOC1 验收"与实际不漂移"要防的场景。(2) 根 README.md（254 行）对 docs/user-guide、docs/api、docs/adr、examples/、CONTRIBUTING.md 的引用数为 0（实测 grep -cE 结果 0），只提了 docs/skills-authoring.md 与 docs/vcs.md——plan Architecture 段明确写"README=精简入口"，但入口没接上，新用户从 README 找不到用户指南。
-- **二审改判理由**：一审的"结构与生成器为真"我复核后确认属实，但它漏掉了验收标准第三条"与实际不漂移"的**实锤违反**：手写 prose 已经漂移，且是可证伪的事实性错误，不是一审所说的"只是守门缺口"。 【实锤 1：文档里的三个斜杠命令在运行时根本不存在】 docs/user-guide/tui.md:27 写「`/keymap`、`/vim`、`/contrast`：切换键位 / Vim 模式 / 高对比度主题（写入 preferences.json）」，tui.md:19 又写「`/keymap` 可切换键位方案」。configuration.md:93 同样写「C15 TUI 偏好（也可运行时 `/keymap`、`/vim`、`/contrast` 改）」。 但 /Users/ll/code/yanshi/internal/cli/tui/commands.go:51 的 `commandTable` 共 35 项，逐项枚举后**不含 keymap / vim / contrast**。commands.go:114 `runCommand` 的唯一分发路径是：`name == "help"` 特判 → `lookupCommand(name)`（commands.go:90）→ 查不到就走 commands.go:121 `m.entries = append(m.entries, errorEntry{text: "unk…
+- **二审改判理由**：一审的"结构与生成器为真"我复核后确认属实，但它漏掉了验收标准第三条"与实际不漂移"的**实锤违反**：手写 prose 已经漂移，且是可证伪的事实性错误，不是一审所说的"只是守门缺口"。 【实锤 1：文档里的三个斜杠命令在运行时根本不存在】 docs/user-guide/tui.md:27 写「`/keymap`、`/vim`、`/contrast`：切换键位 / Vim 模式 / 高对比度主题（写入 preferences.json）」，tui.md:19 又写「`/keymap` 可切换键位方案」。configuration.md:93 同样写「C15 TUI 偏好（也可运行时 `/keymap`、`/vim`、`/contrast` 改）」。 但 /Users/ll/code/yanshi/internal/cli/tui/commands.go:51 的 `commandTable` 共 35 项，逐项枚举后**不含 keymap / vim / contrast**（三者从未注册）。commands.go:114 `runCommand` 的唯一分发路径是：`name == "help"` 特判 → `lookupCommand(name)`（commands.go:90）→ 查不到就走 commands.go:121 `m.entries = append(m.entries, errorEntry{text: "unk…
 - **证据**：/Users/ll/code/yanshi/docs/user-guide/README.md:13-22 — 索引表列出全部 8 个专页且链接全部可达 ； /Users/ll/code/yanshi/docs/user-guide/getting-started.md:1-57 — 全程 --fake-model 零 API key 四步（build / cp config / -inprocess TUI / exec headless） ； /Users/ll/code/yanshi/docs/user-guide/configuration.md:1-50+ — server/stor…
 
 ---

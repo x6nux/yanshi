@@ -66,6 +66,33 @@ func moduleRoot(t *testing.T) string {
 	return mustModuleRoot()
 }
 
+// nestedCheckoutDirNames are directory NAMES (not paths) that every gate in
+// this package must refuse to descend into, because they hold whole copies of
+// the repository rather than repository content.
+//
+// .claude/worktrees/ is where subagent-driven execution parks its git
+// worktrees. A copy of the tree sitting inside the tree breaks these gates in
+// two directions at once, and both were observed:
+//
+//   - Every path-keyed exemption stops matching. The skip lists here are exact
+//     relative paths ("docs/superpowers/plans"), so the copy's version of that
+//     directory is scanned as if it were live content, and one worktree turns
+//     a clean run into a pile of duplicate findings.
+//   - Measurements taken across the tree silently change value, which is worse
+//     than a failure because it looks like a result. A catalog key that is
+//     referenced only from the worktree copy counts as referenced, so the
+//     zero-reference tally in docs/superpowers/acceptance-breakdown.md drops to
+//     zero while a worktree exists and recovers when it is removed.
+//
+// Matching by name rather than by path is deliberate: the offending directory
+// is at the root today, but nothing stops a nested checkout, and a name match
+// costs nothing.
+var nestedCheckoutDirNames = map[string]bool{
+	".git":         true,
+	"node_modules": true,
+	".claude":      true,
+}
+
 // modulePath reads go.mod and returns the module path declared on the
 // "module <path>" line (e.g. "github.com/x6nux/yanshi").
 func modulePath(t *testing.T) string {

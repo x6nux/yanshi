@@ -3,6 +3,8 @@ package ctxcompact
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
@@ -190,4 +192,70 @@ func TestTakeChunk_NilMessageInList(t *testing.T) {
 	chunk, rest := takeChunk(msgs, 100)
 	assert.Equal(t, 3, len(chunk), "nil messages stay in chunk")
 	assert.Nil(t, rest)
+}
+
+// TestTakeChunk_OvershootShapesAreMeasured is the reproduction command behind
+// the overshoot discussion in docs/compaction.md. That section used to state
+// four measured ratios with no way to re-derive them: unlike the neighbouring
+// 24.15x figure, which names the `go test -run` that prints it, the table was
+// four bare numbers nobody could check and nothing could keep honest.
+//
+// Run it with -v to see the numbers:
+//
+//	go test ./internal/ctxcompact -run TestTakeChunk_OvershootShapesAreMeasured -v
+//
+// The ASSERTIONS are deliberately about shape rather than digits, because the
+// digits are fixture-dependent and would rot exactly the way the table did.
+// What the doc claims, and what is checked here, is that both overshoot
+// mechanisms are real and that only one of them is pairing:
+//
+//   - the parallel-result ratio grows with the parallel tool count, unbounded
+//     by any multiple of the window;
+//   - a single oversized message overshoots on its own, with no tool pair
+//     anywhere in the input.
+func TestTakeChunk_OvershootShapesAreMeasured(t *testing.T) {
+	const budget = 1000
+	// One result is already about the size of the whole budget, which is the
+	// regime docs/compaction.md describes: even n=1 cannot be split off.
+	result := strings.Repeat("r", 4000)
+
+	ratios := map[int]float64{}
+	for _, n := range []int{1, 5, 20} {
+		var calls []schema.ToolCall
+		msgs := []*schema.Message{nil} // placeholder for the call message
+		for i := 0; i < n; i++ {
+			id := fmt.Sprintf("id%d", i)
+			calls = append(calls, schema.ToolCall{
+				ID: id, Function: schema.FunctionCall{Name: "fs_read", Arguments: `{"path":"a.go"}`}})
+			msgs = append(msgs, &schema.Message{Role: schema.Tool, ToolCallID: id, Content: result})
+		}
+		msgs[0] = &schema.Message{Role: schema.Assistant, ToolCalls: calls}
+
+		chunk, _ := takeChunk(msgs, budget)
+		tok := EstimateTokens(chunk)
+		ratios[n] = float64(tok) / budget
+		t.Logf("n=%d parallel results: chunk=%d tok, %.2fx budget=%d (whole group is one indivisible run)",
+			n, tok, ratios[n], budget)
+		assert.Len(t, chunk, len(msgs),
+			"every interior cut point in a parallel group is unsafe, so the whole group ships as one chunk")
+	}
+	assert.Greater(t, ratios[1], 1.0, "one pair of this size already exceeds the budget")
+	assert.Greater(t, ratios[5], ratios[1])
+	assert.Greater(t, ratios[20], ratios[5],
+		"the overshoot tracks the parallel tool count, which is why no multiple of the window bounds it")
+
+	// Mechanism 2: index 0 is never budget-checked, so one huge message
+	// overshoots with no pairing involved.
+	huge := []*schema.Message{
+		{Role: schema.User, Content: strings.Repeat("x", 40000)},
+		{Role: schema.User, Content: "short"},
+	}
+	chunk, rest := takeChunk(huge, budget)
+	tok := EstimateTokens(chunk)
+	t.Logf("single oversized message (no tool pair): chunk=%d tok, %.2fx budget=%d",
+		tok, float64(tok)/budget, budget)
+	assert.Len(t, chunk, 1, "the oversized message ships alone; the next one is cut normally")
+	assert.Len(t, rest, 1)
+	assert.Greater(t, tok, budget,
+		"index 0 is never budget-checked, so this overshoot owes nothing to tool pairing")
 }

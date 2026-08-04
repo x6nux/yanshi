@@ -281,7 +281,7 @@ func buildGoSymbolIndex(t *testing.T, root string) *goSymbolIndex {
 		}
 		rel := short(p, root)
 		if d.IsDir() {
-			if docScanSkipDirs[rel] || d.Name() == ".git" || d.Name() == "node_modules" {
+			if docScanSkipDirs[rel] || nestedCheckoutDirNames[d.Name()] {
 				return filepath.SkipDir
 			}
 			return nil
@@ -364,7 +364,7 @@ func liveDocs(t *testing.T, root string) []string {
 		}
 		rel := short(p, root)
 		if d.IsDir() {
-			if docScanSkipDirs[rel] || d.Name() == ".git" || d.Name() == "node_modules" {
+			if docScanSkipDirs[rel] || nestedCheckoutDirNames[d.Name()] {
 				return filepath.SkipDir
 			}
 			return nil

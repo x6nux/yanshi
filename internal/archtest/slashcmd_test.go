@@ -38,22 +38,39 @@ var phantomSlashCommands = map[string]string{
 }
 
 // phantomDenialMarkers are the phrases that mark a mention as a DENIAL ("this
-// command does not exist") rather than an advertisement. A file carrying one
-// is allowed to name a phantom, which is what lets the codebase keep saying
-// out loud that these commands are not real — the doc comments on
+// command does not exist") rather than an advertisement. A mention sitting next
+// to one is allowed to name a phantom, which is what lets the codebase keep
+// saying out loud that these commands are not real — the doc comments on
 // tui.Model.prefs and doctor.checkKeymapConfig exist precisely to say that.
 //
-// The check is file-scoped, so a file that both advertises and denies passes.
-// That is the same concession removal_test.go makes for the D2/O12 tombstone
-// and for the same reason: telling assertion from denial in the general case
-// needs a parser for prose, not a substring scan. The scope this gate is
-// actually defending is "no carrier advertises a phantom while being silent
-// about its non-existence", and a file-level marker covers that.
+// The match is scoped to a WINDOW OF LINES around the mention, not to the whole
+// file, and the file-scoped version this replaces was worse than no exemption
+// at the two carriers it mattered most for. docs/user-guide/tui.md and
+// docs/user-guide/configuration.md are where the retired phantoms were
+// advertised in the first place; both were then fixed by writing the denial
+// down, and a file-scoped marker turned each of those fixes into a permanent
+// blanket immunity for the whole file. Appending a brand-new advertisement to
+// either one passed silently, i.e. the gate was guaranteed not to catch its own
+// defect recurring in situ, while the same line appended to any other document
+// reddened immediately.
+//
+// Distinguishing assertion from denial in the general case still needs a parser
+// for prose rather than a substring scan; what a window buys is that the
+// concession has to be re-earned at every mention instead of once per file.
 var phantomDenialMarkers = []string{
 	"not registered", "no such command", "never registered",
 	"从未注册", "未注册", "并不存在", "不存在的命令",
 	"命令不存在", "命令都不存在",
 }
+
+// phantomDenialWindow is how many lines away from a mention a denial marker may
+// sit and still cover it. Zero (same line only) is too tight for real prose:
+// wrapped Go comments and multi-sentence Markdown routinely put the name and
+// the "…is not registered" clause on neighbouring lines. Three is the smallest
+// value that covers every legitimate denial in the tree today, and it is
+// deliberately small enough that a marker somewhere else in the same section
+// does not launder an advertisement.
+const phantomDenialWindow = 3
 
 // slashCarrierExts are the text carriers scanned. The point of the list is
 // that it is longer than one: .yaml is here because that is the carrier the
@@ -114,12 +131,16 @@ func TestPhantomSlashCommandsNotAdvertised(t *testing.T) {
 	for name := range phantomSlashCommands {
 		// A left boundary that is not a path/URL character, and a right
 		// boundary that is not a further path segment: this is what keeps
-		// "/var/log/..." and "https://host/keymap-ish" out while catching
-		// "/keymap reset" and "`/keymap`".
+		// an absolute filesystem path and a URL whose last segment merely
+		// starts with the name out, while catching the command written bare
+		// with an argument after it, or wrapped in backticks.
 		patterns[name] = regexp.MustCompile(`(^|[^A-Za-z0-9_./:\-])/` + name + `([^A-Za-z0-9_/.\-]|$)`)
 	}
 
-	type finding struct{ rel, name string }
+	type finding struct {
+		rel, name string
+		line      int
+	}
 	var findings []finding
 
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -129,10 +150,10 @@ func TestPhantomSlashCommandsNotAdvertised(t *testing.T) {
 		rel := filepath.ToSlash(mustRel(t, root, path))
 		if d.IsDir() {
 			switch {
-			case rel == ".git", rel == "third_party", rel == "reference",
+			case nestedCheckoutDirNames[d.Name()],
+				rel == "third_party", rel == "reference",
 				rel == "docs/archive", rel == "docs/superpowers/plans",
-				rel == "docs/superpowers/specs", rel == "docs/superpowers/notes",
-				rel == "node_modules", strings.HasSuffix(rel, "/node_modules"):
+				rel == "docs/superpowers/specs", rel == "docs/superpowers/notes":
 				return filepath.SkipDir
 			}
 			return nil
@@ -144,20 +165,14 @@ func TestPhantomSlashCommandsNotAdvertised(t *testing.T) {
 		if rerr != nil {
 			return rerr
 		}
-		body := string(data)
-		denied := false
-		for _, marker := range phantomDenialMarkers {
-			if strings.Contains(body, marker) {
-				denied = true
-				break
-			}
-		}
-		if denied {
-			return nil
-		}
-		for name, re := range patterns {
-			if re.MatchString(body) {
-				findings = append(findings, finding{rel, name})
+		lines := strings.Split(string(data), "\n")
+		denials := denialLines(lines)
+		for i, line := range lines {
+			for name, re := range patterns {
+				if !re.MatchString(line) || nearDenial(denials, i) {
+					continue
+				}
+				findings = append(findings, finding{rel, name, i + 1})
 			}
 		}
 		return nil
@@ -170,12 +185,42 @@ func TestPhantomSlashCommandsNotAdvertised(t *testing.T) {
 		if findings[i].rel != findings[j].rel {
 			return findings[i].rel < findings[j].rel
 		}
+		if findings[i].line != findings[j].line {
+			return findings[i].line < findings[j].line
+		}
 		return findings[i].name < findings[j].name
 	})
 	for _, f := range findings {
-		t.Errorf("%s advertises /%s, which commandTable does not register (%s). "+
-			"Delete the claim, or — if the file needs to discuss the phantom — say "+
-			"plainly that it is not registered (one of %v).",
-			f.rel, f.name, phantomSlashCommands[f.name], phantomDenialMarkers)
+		t.Errorf("%s:%d advertises /%s, which commandTable does not register (%s). "+
+			"Delete the claim, or — if the line needs to discuss the phantom — say "+
+			"plainly within %d lines of it that the command is not registered (one "+
+			"of %v). A denial elsewhere in the file no longer covers this line.",
+			f.rel, f.line, f.name, phantomSlashCommands[f.name],
+			phantomDenialWindow, phantomDenialMarkers)
 	}
+}
+
+// denialLines reports which line indices carry a denial marker.
+func denialLines(lines []string) map[int]bool {
+	out := map[int]bool{}
+	for i, line := range lines {
+		for _, marker := range phantomDenialMarkers {
+			if strings.Contains(line, marker) {
+				out[i] = true
+				break
+			}
+		}
+	}
+	return out
+}
+
+// nearDenial reports whether a denial marker sits within phantomDenialWindow
+// lines of index i.
+func nearDenial(denials map[int]bool, i int) bool {
+	for d := -phantomDenialWindow; d <= phantomDenialWindow; d++ {
+		if denials[i+d] {
+			return true
+		}
+	}
+	return false
 }

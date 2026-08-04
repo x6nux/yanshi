@@ -564,10 +564,20 @@
 - 依据：`internal/ctxcompact/` 共 8 个 `TestProperty_*`，互相独立的性质 ≥3。ledger 挂的三条逐条掏空实测（全部 `go test -overlay`，工作树零写入）：
   - `TestProperty_PinSetIsSubsetOfOutput` — **真**（见 #2）
   - `TestProperty_RunReducesTokens` — **真**（见 #2）
-  - `TestProperty_EachSummaryCallWithinWindow` — **真**。它曾经是「吞错」形态（`if err != nil { t.Logf(...); return }`，一个永远失败的 `RunSummary` 也满足这条属性），现在有三道独立防线，逐道实测：
+  - `TestProperty_EachSummaryCallWithinWindow` — **真**。它曾经是「吞错」形态（`if err != nil { t.Logf(...); return }`，一个永远失败的 `RunSummary` 也满足这条属性），现在整条属性的 `t.Fatal*` 不止一处，数法（**不写死条数**）：
+
+      ```sh
+      awk '/^func TestProperty_EachSummaryCallWithinWindow/,/^}/' \
+        internal/ctxcompact/summarize_property_test.go | grep -c 't\.Fatal'
+      ```
+
+      逐条：
     - 掏空成「返回常量 summary，从不调 summarizer」→ 四个 window 子测试全 FAIL，落进 `summarize_property_test.go::TestProperty_EachSummaryCallWithinWindow` 里那句 `t.Fatal("RunSummary returned success but summarizer was never called")`
     - 掏空成「无条件返回 `ErrNoWindowRoom`」→ FAIL，落进同一测试末尾的跨 window 下限 `t.Fatalf("only %d of %d windows produced summarizer calls (want ≥%d)…")`，实测 `only 0 of 4`
     - 掏空成「返回任何别的 error」→ 落进 `t.Fatalf("RunSummary failed for a reason this property does not tolerate")`，只有 `ErrNoWindowRoom` 被容忍
+    - **上界本身换过一次**：原先断言「`< 2×` 窗口」，**已被证伪并收回**（索引 0 从不做预算检查；`splitIsSafe` 扫描整个左侧，使 `[call(id1..idN), r1..rN]` 的每个内部切点都不安全，超出倍率跟并行工具数走而不跟窗口走）。现在断言的是 `ModelWindow + 最大不可分割段`（`::maxAtomicGroupTokens`）。两种证伪形状与实测倍率写在该测试的 doc 注释里，本文不复述数字
+    - 末尾还有一道**反向下限**：整条 sweep 里若一次调用都没超过 2× 窗口就 `t.Fatal` —— 那说明证伪旧界的输入形状根本没到 `RunSummary`，上面那条容忍度就成了没人碰的摆设
+    - 这条属性的 oracle（`::atomicBoundaryIsSafe`，全仓唯一一处明示豁免 CLAUDE.md「禁止复制粘贴」的复制）**不再只靠散文说明**：`::TestOracleIndependence_DelegationGoesVacuous` 把两个方向都钉住 —— 委托型 oracle 在 `splitIsSafe → return false` 下会把整条历史算成一个不可分割段、上界随之吞掉全部输入（属性变得不可证伪），而 `return true` 只会收紧上界、区分不出两种设计
 - 证据形状：这是计数主张，应该挂「互不重复**且各自变异敏感**」的 3 个测试（现状即是）。**骗过去**：把 8 个测试名都列上而不管其中几个是空的。
 
 **2. 随机输入通过** — 已兑现（`TestProperty_PinSetIsSubsetOfOutput` 与 `TestProperty_RunReducesTokens` 两条同时扛）
@@ -578,7 +588,7 @@
 
 **3. 工具对配对不变量成立** — 已兑现（**指控不成立**）
 - 依据：`internal/ctxcompact/pairs.go` `EnforceToolCallPairs`（call_id/result_id 双索引 + `permanentlyRemoved` 防振荡 + 不动点循环），调用点 `plan.go::Plan`。三个测试**全部变异敏感**（见上）。三道防空壳机制都在位：① `plan_property_test.go::skipAlreadyCompacted` 只读**生成输入**的 `lastMessageIsSummary(msgs)`，不读 `Plan` 输出；② `plan_property_test.go::runGeneratedProperty` 强制执行率 ≥60%（`::minExecutedTrials`，由 `::requireTrialFloor` 断言），把「全 skip 也算 PASS」变红，且它是**包内所有生成型属性的统一入口** —— 现在是 8 条属性对 8 个调用点，跨文件的 `run_property_test.go` 与 `summarize_property_test.go` 都走它（这句曾在只接了 5/8 时就被写成「全覆盖」，核对方法见 review-checklist A 段：数 `^func TestProperty_` 与数 `runGeneratedProperty(t,`，两个数相等才算数）；③ `RepairsCorruption` 末尾 `if injected == 0 { t.Fatal }`。
-- 已知弱点（不足以推翻 done，与台账注释一致）：种子固定（`propSeed=42`/`123`/`777`），是「确定性重放的属性测试」，覆盖来自 trial 数而非跨运行随机性。
+- 已知弱点（不足以推翻 done，与台账注释一致）：种子固定（`plan_property_test.go::propSeed` 一个常量，每个 trial 的种子由 `propSeed*1000+trial` 派生；此前这里列过三个种子常量，另外两个从不存在），是「确定性重放的属性测试」，覆盖来自 trial 数而非跨运行随机性。
 - 证据形状：不动点成立 + 幂等 + 人为破坏可修复三角度；且**守卫只读生成输入 + 有执行率下限**。**骗过去**：用 `pinnedSetIsConsistent(msgs, pinned)` 当 skip 条件 —— 那正是历史上的坏形态。
 
 > **处置**：`done` 保留，三句的 evidence 引用**全部有效**。曾经空心的两条（`TestProperty_RunReducesTokens` 在 #1、#2 各引一次，`TestProperty_EachSummaryCallWithinWindow` 在 #1 引一次，共 3 处）已在 `8dcc7d2` 由测试侧修复 —— 不是改挂别的引用，是把这两条测试本身改成变异敏感的：调用计数从「条件」升级为「跨 trial 硬下限」，错误分支从 `t.Logf` 升级为按错误类型分流的 `t.Fatalf`。本条无遗留动作。
@@ -1262,8 +1272,8 @@
 - 证据形状：`m.theme` 取 default 与 high-contrast 两次 `statusHeader()` 输出**必须不等**，且高对比版含 bold SGR；再加一条「配置 `high_contrast:true` 启动后 `m.theme == ThemeHighContrast`」。
 
 **4. 冲突可诊断** — 部分（四条里最实的一条）
-- 依据：`keymap.go`（`Build` 聚合 error）、`::Builder.buildInternal`（区分 `conflict`/`normalized_duplicate`/`unknown_action`/`invalid_key`）、`::Map.Diagnostics`（`Diagnostics()`）。测试真实：`TestNewDefaultBuilder_DetectsNormalizedOverrideDuplicate`（`CTRL+K` vs `ctrl+k`，断言 `Kind=="normalized_duplicate"` 且 `Key=="ctrl+k"`）、`TestBuilder_RejectsInvalidConfigKey`、`TestBuilder_RejectsUnknownActionAfterCollection`、`internal/cli::TestCheckKeymapConfig_InvalidBindingsFail`。**缺的是用户可见半边**：唯一生产出口 `internal/cli/doctor.go::checkKeymapConfig` 刻意只输出 `"use /keymap diagnostics"`，而 **`/keymap` 命令不存在** —— 指引是死链。
-- 证据形状：`/keymap diagnostics` 后 `m.entries` 含冲突条目。**骗过去**：只在 keymap 包内断言 `Diagnostic.Kind`（现状）。
+- 依据：`keymap.go`（`Build` 聚合 error）、`::Builder.buildInternal`（区分 `conflict`/`normalized_duplicate`/`unknown_action`/`invalid_key`）、`::Map.Diagnostics`（`Diagnostics()`）。测试真实：`TestNewDefaultBuilder_DetectsNormalizedOverrideDuplicate`（`CTRL+K` vs `ctrl+k`，断言 `Kind=="normalized_duplicate"` 且 `Key=="ctrl+k"`）、`TestBuilder_RejectsInvalidConfigKey`、`TestBuilder_RejectsUnknownActionAfterCollection`、`internal/cli::TestCheckKeymapConfig_InvalidBindingsFail`。**缺的是用户可见半边**：唯一生产出口是 `internal/cli/doctor.go::checkKeymapConfig`，即 `yanshi doctor` 的一次性静态校验，TUI 运行时没有任何诊断出口。该函数的补救指引本身已经可执行 —— `cf088f7` 把它改成指向配置文件里的 `tui.bindings`，取代了原先指向一个从未注册的斜杠命令的死链，并由 `internal/cli::TestCheckKeymapConfig_InvalidBindingsFail` 两个方向同时钉住（消息必须含 `tui.bindings` 与诊断 `Kind`，且不得含那个幻影命令名，也不得回显未经信任的 binding 文本）。所以这一条现在缺的不是「指引指向不存在的东西」，而是**用户只能在 doctor 里看到冲突**。
+- 证据形状：走生产构造让 TUI 自身暴露冲突（今天不存在的出口）。在此之前，doctor 侧的上界已由上面那条测试给到：`Bindings` 非法时 `CheckResult.Message` 同时命名可编辑字段与诊断 `Kind`。**骗过去**：只在 keymap 包内断言 `Diagnostic.Kind`。
 
 ---
 
@@ -1272,7 +1282,7 @@
 > acceptance：至少 en/zh-Hans 切换；UI 与输出语言独立；自动检测
 
 **1. 至少 en/zh-Hans 切换** — 未兑现（**虚报：连第 1 句都没有**）
-- 依据：catalog 齐全（`internal/i18n/catalog/{en,zh-Hans}.json` + `i18n.go::NewBundle`），**但 TUI 运行时 locale 恒为 `"en"`** —— `internal/cli/tui/state.go::defaultBundle` 写死 `i18n.NewBundle("en")`，是 `newModel`（`model.go`）的唯一 bundle 来源；`cfg.I18N.UILocale` 从不到达 TUI（唯一消费者是 `doctor.go::checkLocaleConfig`）；无 `/locale` 命令。**走 i18n 的 UI 字符串只有 3 处**（`model.go::newModel` 的 placeholder，`commands.go::newCmdHelpEntry` 的标题键与 `b.Get(c.helpKey)`），catalog 里绝大多数 key 零引用 —— 总数与零引用数按 F1 **现算**而不写死：
+- 依据：catalog 齐全（`internal/i18n/catalog/{en,zh-Hans}.json` + `i18n.go::NewBundle`），**但 TUI 运行时 locale 恒为 `"en"`** —— `internal/cli/tui/state.go::defaultBundle` 写死 `i18n.NewBundle("en")`，是 `newModel`（`model.go`）的唯一 bundle 来源；`cfg.I18N.UILocale` 从不到达 TUI（唯一消费者是 `doctor.go::checkLocaleConfig`）；`/locale` 命令从未注册。**走 i18n 的 UI 字符串只有 3 处**（`model.go::newModel` 的 placeholder，`commands.go::newCmdHelpEntry` 的标题键与 `b.Get(c.helpKey)`），catalog 里绝大多数 key 零引用 —— 总数与零引用数按 F1 **现算**而不写死：
 
 ```sh
 python3 - <<'PY'
@@ -1280,7 +1290,8 @@ import json, os
 cat = json.load(open('internal/i18n/catalog/en.json'))
 src = {}
 for root, dirs, files in os.walk('.'):
-    dirs[:] = [d for d in dirs if d not in ('.git', 'third_party', 'node_modules')]
+    # .claude 里可能停着 worktree（整棵树的副本）：不排除的话，只被副本引用的 key 会被算成有引用
+    dirs[:] = [d for d in dirs if d not in ('.git', 'third_party', 'node_modules', '.claude')]
     for f in files:
         p = os.path.join(root, f)
         # internal/i18n 自己排除在外：那里的 key 清单是登记，不是消费
@@ -1291,7 +1302,7 @@ print('keys', len(cat), 'zero-ref', len(zero))
 PY
 ```
 
-上次实测输出：`keys 65 zero-ref 44`。原稿写的「67 个 key 约 55 个零引用」**两个数都是错的**，且不是漂移而是初稿就写错：`en.json` 只有过一次提交，落地时就是 65 个 key；55 那个数把 `commandTable` 的全部 `helpKey` 当成了零引用，而它们无一例外经 `newCmdHelpEntry` 里那一个 `b.Get(c.helpKey)` 点消费 —— 这正是 F1 说的「写死的计数在写下的那一刻就开始腐烂」的更坏形态：写下的那一刻就已经不对。`TestCmdHelpEntry_NoHardcodedEnglish` 是**恒真空壳（断言选的字面量恰好避开硬编码）** —— 它用 zh-Hans bundle 渲染 /help 只断言输出**不含 `"Commands"`**，而同一函数（`commands.go::newCmdHelpEntry`）硬编码的 `"▌ Keyboard shortcuts"` 与 10 条英文描述原封不动进了 zh-Hans 输出，测试照绿。`TestCmdHelpEntry_PreRendered` 断言 `Contains(out, b.Get(c.helpKey))` —— 用同一 bundle 查同一 key 比对自身。两条都从参数注入 bundle，**绕开生产里 bundle 恒为 en 的事实**。
+两个数以上面这段脚本的输出为准，本文不复述 —— 这不是洁癖：本条初稿写下的那对数字，被随后一次清理零消费幻影 key 的提交当场作废，而那次提交同时改了本文件却没回来改这一段。原稿更早写的「67 个 key 约 55 个零引用」则连漂移都算不上，是初稿就错：55 那个数把 `commandTable` 的全部 `helpKey` 当成了零引用，而它们无一例外经 `newCmdHelpEntry` 里那一个 `b.Get(c.helpKey)` 点消费 —— 这正是 F1 说的「写死的计数在写下的那一刻就开始腐烂」的更坏形态：写下的那一刻就已经不对。`TestCmdHelpEntry_NoHardcodedEnglish` 是**恒真空壳（断言选的字面量恰好避开硬编码）** —— 它用 zh-Hans bundle 渲染 /help 只断言输出**不含 `"Commands"`**，而同一函数（`commands.go::newCmdHelpEntry`）硬编码的 `"▌ Keyboard shortcuts"` 与 10 条英文描述原封不动进了 zh-Hans 输出，测试照绿。`TestCmdHelpEntry_PreRendered` 断言 `Contains(out, b.Get(c.helpKey))` —— 用同一 bundle 查同一 key 比对自身。两条都从参数注入 bundle，**绕开生产里 bundle 恒为 en 的事实**。
 - 证据形状：从**生产构造路径**（`ui_locale: zh-Hans`）建 model，断言 `View()`/placeholder 含中文值且与 `en` 构造不等；再加反向断言「zh-Hans 渲染的 /help 不含任何 `helpKey==""` 项的静态英文」（现在会红，正因如此才有价值）。
 
 **2. UI 与输出语言独立** — 部分（输出侧真接线，UI 侧不存在 → 「独立」是以「一维缺席」的方式成立）
