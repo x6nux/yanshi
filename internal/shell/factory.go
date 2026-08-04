@@ -28,45 +28,40 @@ type DefaultSecureFactory struct {
 }
 
 // Start runs the full spawn pipeline:
-//  1. Strip inherited proxy vars and (when Policy is set) append the managed
-//     HTTP_PROXY/HTTPS_PROXY/NO_PROXY entries via netpolicy.PrepareEnv.
-//  2. Build a LaunchSpec that forwards the cleaned env (CB1/CB2 fix).
-//  3. (Phase 0) Leave the Sandbox seam explicit — a real Phase 1+ adapter
-//     would call f.Sandbox.Prepare(ctx, cmd, CommandSpec{Tier: spec.UseSandboxTier})
-//     here.
-//  4. Delegate to the OS factory and wrap the Console into the io.Reader
+//  1. Build the child environment through the shared childLaunchPosture: host
+//     env as the baseline, caller-supplied spec.Env layered on top, inherited
+//     proxy vars stripped and the managed HTTP_PROXY/HTTPS_PROXY/NO_PROXY
+//     appended.
+//  2. Run the Sandbox seam with THIS invocation's spec.UseSandboxTier (the
+//     field every secproc caller already populates; it used to be dropped on
+//     the floor together with f.Sandbox).
+//  3. Delegate to the OS factory and wrap the Console into the io.Reader
 //     shape secproc.StartedProcess exposes.
+//
+// Step 1 previously started from spec.Env alone. No secproc caller populates
+// Env, so the child ended up with three proxy variables and nothing else — no
+// PATH, no HOME, no GOMODCACHE — which is why `go version` used to answer
+// "command not found" from shell_run. See childLaunchPosture for the full
+// story.
 //
 // Fails closed when OS is nil — never silently skips the spawn.
 func (f DefaultSecureFactory) Start(ctx context.Context, spec secproc.SecureProcessSpec) (*secproc.StartedProcess, error) {
 	if f.OS == nil {
 		return nil, fmt.Errorf("shell: DefaultSecureFactory.OS is nil (fail-closed)")
 	}
-	env := spec.Env
-	if f.Policy != nil {
-		proxyURL := f.ProxyURL
-		if proxyURL == "" {
-			proxyURL = "http://127.0.0.1:0"
-		}
-		env = netpolicy.PrepareEnv(env, proxyURL)
-	} else {
-		// Even without a policy we strip inherited proxy vars — silently
-		// inheriting a developer's http_proxy is a known TOCTOU vector.
-		env = netpolicy.PrepareEnv(env, "")
-	}
-	launch := LaunchSpec{
+	posture := childLaunchPosture{Policy: f.Policy, ProxyURL: f.ProxyURL, Sandbox: f.Sandbox}
+	launch, err := posture.prepare(ctx, LaunchSpec{
 		ShellName: spec.Shell,
-		Env:       env,
+		Env:       spec.Env,
 		Command:   spec.Shell,
 		Program:   spec.Program,
 		Args:      spec.Args,
 		Dir:       spec.Dir,
 		PTY:       false,
+	}, spec.UseSandboxTier)
+	if err != nil {
+		return nil, err
 	}
-	// Phase 0: Sandbox.Prepare is a no-op. Keep the seam explicit so a real
-	// adapter (A1c follow-up) just calls f.Sandbox.Prepare here without
-	// changing the call-site shape.
-	_ = f.Sandbox
 	proc, console, err := f.OS.Start(ctx, launch)
 	if err != nil {
 		return nil, err
