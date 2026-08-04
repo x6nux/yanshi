@@ -178,7 +178,7 @@
   evidence: ""
 
 # 2026-08-04 复核：missing → partial。「missing」是台账**低报**：工具存在
-# （internal/tools/testrun.go）、被装配（bootstrap.go::Build 里的 tools.NewTestRunTool()）、在出厂 profile 里。
+# （internal/tools/testrun.go）、被装配（internal/bootstrap/bootstrap.go::Build 里的 tools.NewTestRunTool()）、在出厂 profile 里。
 # W1 的 1598cc9（run_tests 假绿）修的就是它。
 # 不翻 done 的原因是第 3、4 两条：
 #   3 超时/取消干净 ——【缺】只有下一层的 internal/tools::
@@ -186,7 +186,7 @@
 #     自己的 10min 超时从未被驱动。⚠️ internal/tools::TestRunTestsDefaultTimeout
 #     是**空壳**：它把 error 用 t.Logf 吞掉、结果 `_ = out`，无论超时行为对错都会绿，
 #     不能当这条的证据。
-#   4 大输出成 artifact ——【缺】testrun.go::runTests 有 SpillThreshold 分支，但没有任何
+#   4 大输出成 artifact ——【缺】internal/tools/testrun.go::runTests 有 SpillThreshold 分支，但没有任何
 #     测试让 raw 超过阈值。与 B3/W07 第 3 条同一个形状。
 # 第 1、2 条已覆盖（TestParseGoJSONCountsPassFailSkip /
 # TestRunTestsExecutesGoTestJSONWithWorkspaceWriteTier /
@@ -199,9 +199,9 @@
   evidence: "internal/tools::TestRunTestsExecutesGoTestJSONWithWorkspaceWriteTier"
 
 # 2026-08-04 复核：missing → done。「missing」是台账**低报**：diagnostics 工具一直
-# 存在（internal/tools/diagnostics.go）、一直被装配（bootstrap.go::Build 里的
+# 存在（internal/tools/diagnostics.go）、一直被装配（internal/bootstrap/bootstrap.go::Build 里的
 # tools.NewDiagnosticsTool(nil)）、也一直在出厂 profile 的 allow 列表里
-# （bootstrap/profile.go::DefaultOrchestratorProfile）。W1 的 10a2762 / 3d7dabc 修的正是这个工具的
+# （internal/bootstrap/profile.go::DefaultOrchestratorProfile）。W1 的 10a2762 / 3d7dabc 修的正是这个工具的
 # toolchain 探针 argv —— 修不了一个不存在的工具。
 # 三条子句逐条对账后全部有可执行断言，故直接翻终态而不是停在 partial：
 #   1 一次调用聚合 —— 一次 runTool 同时拿到 git / toolchain / lsp 三段结果
@@ -241,7 +241,7 @@
   evidence: ""
 
 # 2026-08-04 复核：保持 missing，但要点明「不是没有代码」——
-# web_search 已注册（tools/web.go::NewWebTools）、已装配（bootstrap.go::Build 里的 webTools.Search）、在出厂 profile 里。
+# web_search 已注册（internal/tools/web.go::NewWebTools）、已装配（internal/bootstrap/bootstrap.go::Build 里的 webTools.Search）、在出厂 profile 里。
 # 判 missing 的依据是**输出契约本身是残桩**，不是文件不存在：
 #   1 返回标题/摘要/URL ——【残桩】runSearch 把原始 HTML 行整行塞进 Title，URL 恒为
 #     ""，Snippet 从不填充。唯一的测试 TestCov_WebRunSearchHTMLParse 断言的是
@@ -274,10 +274,10 @@
   evidence: "internal/tools::TestStreamReviewDedupesAndSortsFindings"
 
 # 2026-08-04 复核：missing → partial。「missing」是台账**低报**：两个工具存在
-# （internal/tools/git.go）、被装配（bootstrap.go::Build 里的 gitTools.Status / gitTools.Diff）、在出厂 profile 里。
+# （internal/tools/git.go）、被装配（internal/bootstrap/bootstrap.go::Build 里的 gitTools.Status / gitTools.Diff）、在出厂 profile 里。
 # W1 的 32217b6（git 退出码）修的就是它们。
 # 不翻 done 的原因只有第 3 条：「大 diff 成 artifact」。runGitDiff 里确实有
-# writeArtifactOrSpill（git.go::collectGitDiffFiles），但**没有任何测试让 patch 超过 SpillThreshold**
+# writeArtifactOrSpill（internal/tools/git.go::collectGitDiffFiles），但**没有任何测试让 patch 超过 SpillThreshold**
 # —— internal/tools::TestWriteArtifactOrSpillUsesTaskManager /
 #   ::TestWriteArtifactOrSpillMarksFallbackDegraded / ::TestWriteArtifactOrSpillNoWorkRoot
 #   测的是通用 helper，那里的 "git-diff"
@@ -430,7 +430,7 @@
 
 # 2026-08-04 复核：partial → done。这是台账**低报**：四条子句各有具名测试，且整条
 # 生产链路完整（不是「层层有测、接缝没接」那种形状）——
-#   anthropic.go 解析 thinking block → orchestrator/classify.go::classifyEvents
+#   anthropic.go 解析 thinking block → internal/agent/orchestrator/classify.go::classifyEvents
 #   emit(proto.NewThinking) → ws → cli/wsbackend.go 里 StreamEvent 的 Kind: f.Type 透传 →
 #   tui applyEvent 的 "thinking" 分支。
 # 第 1 条特意同时挂生产端与渲染端：TestClassifyEvents_EmitsThinkingForReasoning
@@ -446,7 +446,7 @@
   evidence:
     "1": "internal/agent/orchestrator::TestClassifyEvents_EmitsThinkingForReasoning; internal/agent/orchestrator::TestClassifyEvents_StreamingEmitsThinkingPerReasoningDelta; internal/cli/tui::TestModel_ThinkingLiveThenCollapses"
     "2": "internal/cli/tui::TestThinkingParity_NonThinkingFinalizesLive; internal/agent/orchestrator::TestClassifyEvents_ReasoningOnlyEmitsOnlyThinking"
-    "3": "internal/cli/tui::TestThinkingParity_NoThinkingNoEntry"
+    "3": "internal/agent/orchestrator::TestClassifyEvents_NoReasoningEmitsNoThinking; internal/cli/tui::TestThinkingParity_NoThinkingNoEntry"
     "4": "internal/cli/tui::TestModel_ThinkingCtrlOTogglesExpand; internal/cli/tui::TestThinkingParity_LiveBlockNotExpandable"
 
 - id: "C3/E03"
@@ -491,7 +491,7 @@
 #     （原子性也钉住了）、TestRegistryNonStrictIgnoresUnknown、
 #     TestRegistrySetAlwaysRejectsUnknown，另有 bootstrap 端到端的具名报错
 #   3 新功能可灰度 ——【缺】全仓只有一个真实消费点
-#     （bootstrap.go::Build 传给 otelobs.Setup 的 otelobs.Config.Enabled，是 cfg 与
+#     （internal/bootstrap/bootstrap.go::Build 传给 otelobs.Setup 的 otelobs.Config.Enabled，是 cfg 与
 #     "observe.otel_export" 的与），而**没有
 #     任何测试驱动这个门的两个方向**：TestBuildSetsUpOTelAndShutsDown 只跑 flag=true
 #     一侧，且 App.OTel 在关闭时也是非 nil 的 no-op runtime，所以它对 flag 是否真的
@@ -711,7 +711,7 @@
 
 # 2026-08-04 复核：missing → partial。「missing」是台账**低报**：cooldown 实现完整
 # 且已接通配置链 —— config.Compaction.CooldownFraction / CooldownDuration /
-# HardForceFraction（默认 0.05 / "" / 0.95）→ bootstrap.go::Build →
+# HardForceFraction（默认 0.05 / "" / 0.95）→ internal/bootstrap/bootstrap.go::Build →
 # orchestrator.wrapCompaction → einollm.CompactingModel.inCooldown。
 # 不翻 done 的原因是第 3 条「keepRecent 文档清晰」**没有可执行证据**：
 #   唯一沾边的 internal/llm/eino::TestCompactingModel_KeepRecentBridge 是**恒真的

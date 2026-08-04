@@ -659,6 +659,17 @@ func TestClassifyEvents_ReasoningOnlyEmitsOnlyThinking(t *testing.T) {
 // TestClassifyEvents_NoReasoningEmitsNoThinking proves a plain assistant message
 // (no ReasoningContent) emits no thinking frame — the block simply never appears
 // for non-reasoning models (graceful).
+//
+// This is the PRODUCER half of the no-impact clause; the TUI half is
+// internal/cli/tui::TestThinkingParity_NoThinkingNoEntry. The two halves fail
+// to different defects and neither substitutes for the other: the TUI test
+// would stay green if the server started emitting a spurious empty thinking
+// frame that the TUI happened to drop, and this one would stay green if the
+// TUI grew a thinking entry out of nothing. The clause carried only the TUI
+// half for a while even though this test already existed and passed — an
+// unreferenced test is indistinguishable from an absent one at ledger level.
+//
+// ledger: C2/UX8#3 非思考模型无影响
 func TestClassifyEvents_NoReasoningEmitsNoThinking(t *testing.T) {
 	iter := newFakeEventIter(t, []*schema.Message{
 		{Role: schema.Assistant, Content: "just text"},

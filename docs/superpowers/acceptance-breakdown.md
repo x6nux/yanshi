@@ -14,7 +14,7 @@
 
 **规模**：63 条 / 230 子句。
 
-**引用约定（读之前先看）**：代码引用一律写成 `路径::符号`（或「路径 + 就近的反引号符号名」），**不带行号**。这份文档最初 386 处引用全部是 `file.go:NNN` 形式，写下 14 分钟后就有 4 处指错了符号 —— 紧接着的一次提交给 `internal/tools/git.go` 与 `internal/tools/testrun.go` 各加了几十行，行号原地漂移。**行号越界能被扫出来，范围内漂移是无声的**，而这份文档被 `docs/feature-status.yaml` 指定为翻牌前的唯一查表依据，无声错位比缺失更贵。符号名同时也是更好的定位手段（`grep` 一次即得）。**这条约定只覆盖 Go 引用**：本文与 `docs/feature-status.yaml` 的 Go 行号引用现在都是零，而且**这句话本身由机器算出来**（`internal/archtest/docsymbols_test.go::TestNoGoLineCitationsInLedgerInputs`）—— 因为它腐烂过一次：某个提交在宣布「刚修好台账里三处漂移的行号」的同时，重写了两个属性测试文件，把本文三处行号写漂了 6–10 行，而这一段仍旧写着「已清零」。**一句断言计数的话在有人去算之前只是愿望**，所以现在有人算。非 Go 文件（`*.yml` / `*.sh` / `*.toml` / 其他文档）没有符号可指，那些 `file:line` 仍在，也仍会漂移 —— 它们是**写作时快照**，读到时请按内容而非行号核对。Go 符号引用的活性由 GOV9（`internal/archtest/docsymbols_test.go::TestGOV9DocSymbolReferencesResolve`）守着：路径解析得出而符号解析不出即判红；台账 yaml 在 GOV9 的扫描范围外（它只读 `*.md`），那里的符号引用只能人工核。
+**引用约定（读之前先看）**：代码引用一律写成 `路径::符号`（或「路径 + 就近的反引号符号名」），**不带行号**。这份文档最初 386 处引用全部是 `file.go:NNN` 形式，写下 14 分钟后就有 4 处指错了符号 —— 紧接着的一次提交给 `internal/tools/git.go` 与 `internal/tools/testrun.go` 各加了几十行，行号原地漂移。**行号越界能被扫出来，范围内漂移是无声的**，而这份文档被 `docs/feature-status.yaml` 指定为翻牌前的唯一查表依据，无声错位比缺失更贵。符号名同时也是更好的定位手段（`grep` 一次即得）。**这条约定只覆盖 Go 引用**：本文与 `docs/feature-status.yaml` 的 Go 行号引用现在都是零，而且**这句话本身由机器算出来**（`internal/archtest/docsymbols_test.go::TestNoGoLineCitationsInLedgerInputs`）—— 因为它腐烂过一次：某个提交在宣布「刚修好台账里三处漂移的行号」的同时，重写了两个属性测试文件，把本文三处行号写漂了 6–10 行，而这一段仍旧写着「已清零」。**一句断言计数的话在有人去算之前只是愿望**，所以现在有人算。非 Go 文件（`*.yml` / `*.sh` / `*.toml` / 其他文档）没有符号可指，那些 `file:line` 仍在，也仍会漂移 —— 它们是**写作时快照**，读到时请按内容而非行号核对。Go 符号引用的活性由 GOV9（`internal/archtest/docsymbols_test.go::TestGOV9DocSymbolReferencesResolve`）守着：路径解析得出而符号解析不出即判红；扫描范围**含台账 yaml**（`internal/archtest/docsymbols_test.go::ledgerDoc`），所以本文与台账两侧的 Go 符号引用受同一道门禁保护。台账里的非 Go `file:line` 仍在门禁之外，只能人工核。
 
 **否定式断言与计数的约定**：本文里的「某文件完全没有 X」「某 struct 有 N 个字段」这类断言**没有任何门禁**（GOV9 只管符号解析，`TestNoGoLineCitationsInLedgerInputs` 只管行号），而它们已经错过两次：一条说 `config.example.yaml` 没有 `subagents:` 段（实际一直都在，还有绿测试钉着），一条把 `Evidence` 的字段数写成 11（实际 10，且同条自己的枚举也等于 10）。为什么不给它们加门禁，理由与实测分母见 `docs/superpowers/review-checklist.md` 的 F1/F2。**写作要求**：否定式断言必须当场附上产生空输出的那条命令；字段/元素计数一律**不写数字**，改写枚举或「见 `路径::符号`」。撤回一条错断言时用删除线保留原文并写明「撤回」，不要静默改掉 —— 虚增的缺口已经进过工作包，读者需要知道它作废了。
 
@@ -1266,7 +1266,7 @@
 - 证据形状：`Bindings{"ctrl+g":"scroll_up"}` 经**生产构造**建 model，`Update(KeyMsg{KeyCtrlG})` 后断言 `viewport.YOffset` 变化，同时断言默认键不再触发旧行为。**骗过去**：任何只在 `internal/keymap` 内 `Build().Lookup()` 的测试。
 
 **2. Vim 开关** — 未兑现（**虚报：连第 1 句都没有**）
-- 依据：状态机 `internal/keymap/vim.go::VimMachine`/`::VimMachine.HandleKey` 存在但**零生产消费者**；`vim.go::effectiveVimMode` 的注释自称「production TUI calls this through (EffectivePreferences).Vim」—— **该路径不存在**。`commandTable`（`commands.go`）无 `/vim`；model struct 无 vim 字段。`config.go::Config` 的注释宣称「可通过 /keymap、/vim、/contrast 运行时设置」，**这三个命令都不存在**。约 8 条 `TestVim_*` / `TestCov_Vim_*` 完整覆盖一个无调用方的状态机（**纯函数孤岛**）。
+- 依据：状态机 `internal/keymap/vim.go::VimMachine`/`::VimMachine.HandleKey` 存在但**零生产消费者**；`vim.go::effectiveVimMode` 的注释自称「production TUI calls this through (EffectivePreferences).Vim」—— **该路径不存在**。`commandTable`（`commands.go`）无 `/vim`；model struct 无 vim 字段。`config.go::Config` 的注释宣称「可通过 /keymap、/vim、/contrast 运行时设置」，**这三个命令都不存在**。`internal/keymap/vim_test.go` 的 `TestVim_*` 与 `internal/keymap/keymap_cov_test.go` 的 `TestCov_Vim_*` 两组测试完整覆盖一个无调用方的状态机（**纯函数孤岛**）；现存条数用 `grep -rhoE '^func Test[A-Za-z0-9_]*[Vv]im[A-Za-z0-9_]*' --include='*_test.go' . | sort -u | wc -l` 现算。
 - 证据形状：`/vim on` 后 `Update(KeyMsg{Runes:['j']})` 使 viewport 下移且 textarea 不含 `j`；`/vim off` 后同一按键使 `input.Value()=="j"`。
 
 **3. 高对比主题** — 部分
@@ -1358,7 +1358,7 @@ PY
 - 证据形状：端到端 —— 第一次 exec 说「记住 X」拿到 sessionID，第二次 `--resume <id>` 问「X 是什么」，断言**服务端喂给 model 的历史里含第一轮的消息**（fake model 可记录收到的 history）。**骗过去**：任何用 fake backend 自造 `session_restored` 回复的测试。
 
 **4. CI 可脚本化** — 部分（**现成门禁可以顶，但有两个洞**）
-- 依据：`.github/workflows/docs.yml` 的「Headless smoke」步骤：`out=$(./yanshi exec --fake-model -p "hi"); [ -n "$out" ]` + jsonl 那条。两个洞：① 第二条命令**零断言**（`>/dev/null`），正好掩盖了 #1 的 bug；② `docs.yml` 的 `paths:` 触发器是 `docs/** examples/** cmd/api-schema/** cmd/gendocs/** internal/docgen/** internal/config/** internal/api/v1/**` —— **`cmd/yanshi/**` 与 `internal/cli/**` 都不在里面**，改 headless 实现本身不会触发这道 smoke。
+- 依据：`.github/workflows/docs.yml` 的「Headless smoke」步骤：`out=$(./yanshi exec --fake-model -p "hi"); [ -n "$out" ]` + jsonl 那条。两个洞：① 第二条命令**零断言**（`>/dev/null`），正好掩盖了 #1 的 bug；② `docs.yml` 的 `paths:` 触发器是 `docs/** examples/** cmd/api-schema/** cmd/gendocs/** internal/docgen/** internal/config/** internal/api/v1/** .github/workflows/docs.yml` —— **`cmd/yanshi/**` 与 `internal/cli/**` 都不在里面**，改 headless 实现本身不会触发这道 smoke。
 - 证据形状：把 headless smoke 挪进 `ci.yml`（无条件跑），或给 `docs.yml` 的 paths 加上 `cmd/yanshi/**`、`internal/cli/**`；且第二条命令必须断言输出条数。
 
 ---
@@ -1369,9 +1369,17 @@ PY
 
 **1. start/resume/interrupt + 流式 item 可用** — 已兑现（台账**低报**）
 - 依据：`internal/api/http/agent_v1.go::Server.AgentV1/decodeAgentJSON`（5 条路由）+ `internal/api/v1/service.go`。测试 `TestV1TurnStreamItemsAreVersionedAndOrdered`（真跑 SSE 流，逐条断言 version/sequence/threadId/turnId）、`TestAgentV1ResumeEndpoint`、`TestAgentV1InterruptEndpoint`、`internal/api/v1::TestServiceStartTurnStreamsItemsInSequence`、`TestServiceInterruptIsIdempotent`。
-- ⚠️ **一个对外契约谎报**：`ThreadSnapshot.Items`（`internal/api/v1/types.go::ThreadSnapshot/ThreadResumeResponse`）**永远为空** —— `service.go snapshot()` 返回 `ThreadSnapshot{Version, Thread}`，两条 Resume 路径都走它，无人填 Items；而 `agent_v1.go::Server.AgentV1` 与 `appserver/server.go::Server.dispatch` **都在转发 `snapshot.Items`**。两条传输同时对外暴露一个恒空字段。
+- ⚠️ **一个对外契约谎报**：`ThreadSnapshot.Items`（`internal/api/v1/types.go::ThreadSnapshot/ThreadResumeResponse`）**永远为空** —— `service.go snapshot()` 返回 `ThreadSnapshot{Version, Thread}`，两条 Resume 路径都走它，无人填 Items；而 `agent_v1.go::Server.AgentV1` 与 `appserver/server.go::Server.dispatch` **都在转发 `snapshot.Items`**。两条传输同时转发同一个恒空切片 —— 但**恒空只暴露在类型 / schema / SDK / 生成文档层，不在 wire 层**：两处 Items 字段都**已经**带 `omitempty`，键在 JSON 里根本不出现，客户端看到的是「服务端没给」而不是「给了空数组」。核对命令与输出：
+
+  ```sh
+  $ grep -n 'Items \[\]Item' internal/api/v1/types.go
+  101:	Items   []Item `json:"items,omitempty"`
+  154:	Items   []Item `json:"items,omitempty"`
+  ```
+
+  所以恒空真正可见的地方是 `internal/api/v1/types.go::ThreadSnapshot`、`sdk/schema/v1/agent-api.schema.json` 的 `ThreadSnapshot.items`、`sdk/python/src/yanshi_sdk/generated.py` 的 `ThreadSnapshot.items`、以及 `docs/api/resources.md` 的 ThreadSnapshot 字段表 —— 这四处承诺了一个 wire 上永不出现的字段。
 - ℹ️ **纠正过时结论**：W9 旧核验 note 里「`TurnStartParams.Images` 是死字段」**已过时** —— `service.go::Service.runTurn` 现在真的把 `p.Images` 填进 `TurnOpts`，`internal/api/v1::TestServiceTurnCarriesImagesToTheOrchestrator` 是端到端断言（fake vision model 回 `fake-vision(1 image)`）。
-- 证据形状（针对 Items）：断言 resume 一个有历史的 thread 后 `len(resp.Items) > 0` 且 sequence 单调；或从 wire 契约里删掉该字段。**骗过去**：给它加 `omitempty` 让它在 JSON 里消失，于是没人发现。
+- 证据形状（针对 Items）：断言 resume 一个有历史的 thread 后 `len(resp.Items) > 0` 且 sequence 单调；或从 wire 契约里删掉该字段（连带上面那四处镜像）。**骗过去**：任何只在 JSON 层看这个键的测试 —— 因为 `omitempty` **已经在了**，「响应体里没有 `items` 键」和「`resp.Items == nil`」这两条断言**今天就是绿的**，它们证明的恰好是缺陷本身。⚠️ 别把这条读成「可以事后加 `omitempty` 来掩盖」：它不是一条待防范的作弊路径，而是**已经生效的现状**，W9 照这句去加 tag 只会重复一次无操作，并对「为什么这个恒空字段一直没人发现」得出错误因果。
 
 **2. 有版本+Schema** — 部分（`divergent` 判定成立）
 - 依据：**三份不同的 schema 并存，`$id` 互不相同** —— `internal/api/v1/schema.go`（`schemaDocument`，仅 3 个 `$defs`：Thread/Turn/Item，`$id: …/agent-api-v1.json`，**唯一被 `GET /api/v1/schema/agent-v1.json` 服务的那份**）／`sdk/schema/v1/agent-api.schema.json`（21 个 `$defs`）／`sdk/schema/v1.1/…`（自述 "Not served by D1"）。`schema.go::schemaDocument` 的注释仍写着「Task 9 expands this document」，那次扩展从未落到运行时。`TestSchemaDeclaresVersionAndCamelCaseResources` / `TestSchemaBytesAreStableForContractReview` 只测运行时那份自身自洽；**全仓没有任何测试比较任意两份 schema**。
@@ -1388,7 +1396,7 @@ PY
 > acceptance：start/resume/run/stream/cancel 可用；类型生成；契约测试
 
 **1. start/resume/run/stream/cancel 可用** — 部分
-- 依据：`sdk/ts/src/client.ts`、`sdk/python/src/yanshi_sdk/client.py` 两侧五个方法都在，transport 覆盖 HTTP+SSE+WS；`sdk/ts/tests/client.test.ts`（4 it）、`sdk/python/tests/test_client.py`（5 test）断言不弱（路由、camelCase body、item 流、HttpError 包装、断线保留 lastSequence）。**两个致命问题**：① **全部走假 `fetch` / 假 httpx**，从不打真 Go server ——「可用」是对着 mock 证的；② **CI 从不执行它们**（`docs.yml` 只做 `tsc --noEmit` 和 `python -c "import yanshi_sdk"`）。
+- 依据：`sdk/ts/src/client.ts`、`sdk/python/src/yanshi_sdk/client.py` 两侧五个方法都在，transport 覆盖 HTTP+SSE+WS；`sdk/ts/tests/client.test.ts`、`sdk/python/tests/test_client.py` 断言不弱（路由、camelCase body、item 流、HttpError 包装、断线保留 lastSequence）。**两个致命问题**：① **全部走假 `fetch` / 假 httpx**，从不打真 Go server ——「可用」是对着 mock 证的；② **CI 从不执行它们**（`docs.yml` 只做 `tsc --noEmit` 和 `python -c "import yanshi_sdk"`）。
 - 证据形状：起一个 `yanshi serve --fake-model`（或 httptest 起的 in-process server），SDK 打真实端点走完 start→run→interrupt。**骗过去**：现在这种全 mock 的 transport 测试。**并且必须加一个 CI job 真跑 vitest/pytest**，否则测试再好也只是死代码。
 
 **2. 类型生成** — 未兑现（**虚报**，与 D1/APS1#2 同一根因）
@@ -1396,7 +1404,7 @@ PY
 - 证据形状：同 APS1#2 —— 「改 Go 类型 ⇒ 生成物变化」。或者**改写 acceptance**：如果决定接受手工镜像，就把子句改成「类型镜像有 parity 门禁」而不是「可生成」。
 
 **3. 契约测试** — 部分（存在但无门禁，且 GOV8 引用不了）
-- 依据：`sdk/ts/tests/contract.test.ts`（7 it）、`sdk/python/tests/test_contract.py`（8 test）用 ajv/jsonschema 对 `sdk/schema/v1/fixtures/` 做真校验，断言不弱（sequence 严格单调、未知 item type 保留、坏 envelope 被拒）。**不是假证据，但有两个结构性问题**：① **不会被执行**（CI 无任何 job 跑它们）；② **fixture 是手写的**，不是从 Go server 生成的 —— 没有任何东西保证 `sdk/schema/v1/fixtures/*.json` 与真实响应一致，所以它校验的是「手写 fixture 符合手写 schema」。
+- 依据：`sdk/ts/tests/contract.test.ts`、`sdk/python/tests/test_contract.py` 用 ajv/jsonschema 对 `sdk/schema/v1/fixtures/` 做真校验，断言不弱（sequence 严格单调、未知 item type 保留、坏 envelope 被拒）。**不是假证据，但有两个结构性问题**：① **不会被执行**（CI 无任何 job 跑它们）；② **fixture 是手写的**，不是从 Go server 生成的 —— 没有任何东西保证 `sdk/schema/v1/fixtures/*.json` 与真实响应一致，所以它校验的是「手写 fixture 符合手写 schema」。
 - 证据形状：fixture 必须由 Go 侧生成（golden），或 Go 侧加一条测试读入这批 fixture 并断言它们能反序列化成 `v1.Item` / `v1.ThreadStartResponse`。⚠️ **GOV8 引用锚点必须落在 Go 侧。**
 
 ---

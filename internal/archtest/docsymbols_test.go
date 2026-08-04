@@ -34,11 +34,13 @@ import (
 // lookup table on the gate's first run — both evidence citations, both naming
 // tests that do not exist.
 //
-// WHAT IS SCANNED: live documents only. Dated archives under
-// docs/superpowers/{plans,notes,specs} are records of a moment, exactly like
-// the d2HistoricalDocs carve-out in removal_test.go — rewriting them to track
-// a rename would falsify the record. reference/ holds vendored third-party
-// material and is not ours to correct.
+// WHAT IS SCANNED: live documents only — every live .md, plus the one file
+// named by ledgerDoc, which is where the reasoning behind every open ledger
+// item lives and cites Go symbols the same way the breakdown does. Dated
+// archives under docs/superpowers/{plans,notes,specs} are records of a moment,
+// exactly like the d2HistoricalDocs carve-out in removal_test.go — rewriting
+// them to track a rename would falsify the record. reference/ holds vendored
+// third-party material and is not ours to correct.
 //
 // WHAT IS FLAGGED: a reference whose PATH resolves but whose SYMBOL does not.
 // An unresolvable path is skipped on purpose, and that skip carries three jobs
@@ -353,8 +355,25 @@ func addTypeMembers(names map[string]bool, ts *ast.TypeSpec) {
 	}
 }
 
-// liveDocs returns the module-relative paths of every markdown document GOV9
-// holds to the symbol-reference rule.
+// ledgerDoc is the one non-markdown file GOV9 scans.
+//
+// It is not markdown, so it was outside the scan for as long as the scan was
+// spelled ".md only" — and that omission was not neutral. The ledger is the
+// single document GOV8 reads before a verdict is flipped, its comment blocks
+// carry the reasoning behind every open item, and those comments cite Go
+// symbols exactly the way the breakdown does. A review probe made the gap
+// concrete: appending `internal/bootstrap/bootstrap.go::NoSuchSymbolZZZ` to
+// this file left TestGOV9DocSymbolReferencesResolve green, while the same text
+// in any live .md reddened it. Six citations here had been written with
+// ABBREVIATED path prefixes (`bootstrap.go::Build`, `testrun.go::runTests`, …)
+// whose paths did not resolve — under GOV9's rules an unresolvable path is
+// discarded unconditionally, so completing them would have bought nothing at
+// all while reading exactly like protection. Completing the prefixes and
+// widening the scan are therefore one change, not two.
+const ledgerDoc = "docs/feature-status.yaml"
+
+// liveDocs returns the module-relative paths of every document GOV9 holds to
+// the symbol-reference rule: every live markdown file, plus ledgerDoc.
 func liveDocs(t *testing.T, root string) []string {
 	t.Helper()
 	var docs []string
@@ -369,7 +388,7 @@ func liveDocs(t *testing.T, root string) []string {
 			}
 			return nil
 		}
-		if strings.HasSuffix(p, ".md") && rel != "CHANGELOG.md" {
+		if (strings.HasSuffix(p, ".md") && rel != "CHANGELOG.md") || rel == ledgerDoc {
 			docs = append(docs, rel)
 		}
 		return nil
@@ -769,6 +788,42 @@ func TestGOV9AcceptsLegitimateShapes(t *testing.T) {
 	}
 }
 
+// TestGOV9ScansTheLedger pins the ledger inside GOV9's scan.
+//
+// Without this the widening is one character away from silent reversal: the
+// filter is a single boolean and a stale citation in the ledger produces no
+// output whatsoever when the file drops out of scope, so the regression is
+// invisible in exactly the way the gate exists to prevent. The reverse probe
+// (the ledger citing something real, staying green) is not written separately
+// — TestGOV9DocSymbolReferencesResolve is that probe on every run.
+func TestGOV9ScansTheLedger(t *testing.T) {
+	root := moduleRoot(t)
+
+	var inScope bool
+	for _, doc := range liveDocs(t, root) {
+		if doc == ledgerDoc {
+			inScope = true
+		}
+	}
+	if !inScope {
+		t.Fatalf("%s is not in liveDocs — its Go citations have no machine protection", ledgerDoc)
+	}
+
+	// The scan reaching the file is only half of it: the citations inside must
+	// also survive parseDocSymbolRefs, which was written for markdown and runs
+	// stripMarkdownEmphasis over every line. A yaml comment is not markdown, so
+	// assert a real citation from this very file still parses out.
+	body, err := os.ReadFile(filepath.Join(root, ledgerDoc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := parseDocSymbolRefs(ledgerDoc, string(body))
+	if len(refs) == 0 {
+		t.Fatalf("no path::Symbol citations parsed out of %s — the parse is broken, "+
+			"not the ledger", ledgerDoc)
+	}
+}
+
 // goLineCiteRe matches a Go source citation carrying a line number, in either
 // the `<file>.go:<line>` or the `<file>.go:<line>-<line>` spelling (written
 // with placeholders here for the same reason the pattern is). It is written as a
@@ -802,12 +857,14 @@ var goLineCiteFreeDocs = []string{
 // A sentence asserting a count is a wish until something computes the count, so
 // this test computes it.
 //
-// The yaml half matters independently: docs/feature-status.yaml is outside
-// GOV9's reach entirely (that scan reads .md only), so its citations have no
-// machine protection at all. Line numbers there were all still accurate when
-// this test was written, which is exactly when to remove the rot source —
-// afterwards there is no way to tell drift from a citation that was always
-// wrong.
+// The yaml half was written when the ledger was outside GOV9's reach entirely
+// (that scan read .md only) and its citations therefore had no machine
+// protection at all. GOV9 now covers the ledger too — see ledgerDoc — so the
+// two gates finally divide the same file the way they divide the breakdown:
+// GOV9 takes the symbol names, this test takes the line numbers. Line numbers
+// there were all still accurate when this test was written, which is exactly
+// when to remove the rot source — afterwards there is no way to tell drift
+// from a citation that was always wrong.
 //
 // KNOWN OVER-REACH, recorded because it has no instance yet and would be
 // mistaken for a real finding if one appeared: the pattern also matches QUOTED
