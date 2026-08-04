@@ -28,14 +28,19 @@ type FSWant struct {
 
 // Verdict is the typed outcome of a guard check. Allow = explicit pass; Prompt
 // = static profile did not allow but the action is safe enough to escalate to
-// an interactive callback; HardDeny = structural fail-closed (no profile,
-// empty Tools.Allow, shell metachar, unknown policy, deny rule, deny flag,
-// parser failure) — the callback layer MUST NOT override HardDeny.
+// an interactive callback; HardDeny = fail-closed (no profile, empty
+// Tools.Allow, shell metachar, unknown policy, deny rule, deny flag, parser
+// failure) — the callback layer MUST NOT override a HardDeny on its own.
 //
 // HardDeny splits further by the Decision.Overridable flag:
-//   - Overridable=false (structural): shell metachar, execpolicy parse-error,
-//     unknown policy. Never overridable — not by the callback, not by YOLO/auto.
-//     This is the immovable floor.
+//   - Overridable=false (structural): catastrophic mass deletion, shell
+//     metachar, execpolicy parse-error, unknown shell policy, unknown
+//     execpolicy verdict. Never overridable — not by the callback, not by
+//     YOLO/auto. This is the immovable floor, and it is exactly the set
+//     produced by hardDeny() plus the two inline HardDenies in checkShell.
+//     Catastrophic deletion belongs here and is the one an operator is most
+//     likely to reason about: `rm -rf /` under yolo is refused by THIS flag,
+//     not by any profile.
 //   - Overridable=true (profile-policy choice): empty Tools.Allow, empty FS
 //     read/write list, shell policy="deny", denylist match, execpolicy hard_deny
 //     rules, net.allow=false, empty MCP allowlist. These are all configuration

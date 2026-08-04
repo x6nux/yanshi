@@ -55,8 +55,11 @@ type SecureProcessSpec struct {
 //     alone. A single byte of stderr spliced into that buffer is not noise, it
 //     is a fabricated record: git's own "warning: …" line, split on NUL by the
 //     porcelain parser, becomes an extra changed file that does not exist.
-//   - Display (shell_run streaming to the TUI) wants exactly what a terminal
-//     would show, stderr interleaved. Those callers use MergedOutput.
+//   - Display (shell_run streaming to the TUI) wants both streams, stderr
+//     included rather than dropped. Those callers use MergedOutput. Note that
+//     this is approximately, not exactly, what a terminal would show: the
+//     merge preserves line integrity but not the child's write order — see
+//     MergeOutput.
 //
 // A Factory that cannot separate the two MUST put everything on Stdout rather
 // than duplicating it — Stderr is allowed to be an empty stream, never a copy.
@@ -99,8 +102,26 @@ func (p *StartedProcess) MergedOutput() io.ReadCloser {
 // Wait closes the child's pipes, so a caller that reaps before draining reads
 // "file already closed" and silently truncates the output.
 //
-// Closing the returned reader unblocks the copiers, so an abandoned stream
-// cannot leak goroutines. A nil source is skipped.
+// What "interleaved" does and does not promise:
+//
+//   - It does NOT reproduce the child's chronological write order. Two
+//     independent copier goroutines race, so a stdout chunk read first can be
+//     written second. Measured against a child alternating numbered lines
+//     between the two streams: ~440 of 4000 lines come out ahead of a line the
+//     child wrote earlier, where the single-fd path scores exactly 0. Callers
+//     that need true ordering must ask the OS factory for one fd (PTY /
+//     SeparateStderr=false), not merge afterwards.
+//   - It does guarantee no SPLICING: io.Pipe serializes Writes, so one
+//     stream's chunk never lands inside the other's, and lines are not cut in
+//     half (0 split lines in the same measurement).
+//
+// Closing the returned reader unblocks a copier parked in Write, but NOT one
+// parked in its source's Read — that one exits when the source closes. In
+// production the source is the child's pipe and (*exec.Cmd).Wait is what
+// closes it, so the copiers are reclaimed by reaping, not by Close. A caller
+// that abandons the stream without ever reaping leaks one goroutine per
+// source; the fix is to call Wait, which every caller on this path does on
+// every exit path. A nil source is skipped.
 func MergeOutput(stdout, stderr io.Reader) io.ReadCloser {
 	pr, pw := io.Pipe()
 	var wg sync.WaitGroup

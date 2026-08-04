@@ -199,10 +199,12 @@ func auditPermission(ctx context.Context, tool, decision, source, reasonCode str
 // Resolution order:
 //  1. No profile bound       -> DenyErr (fail-closed). Callback/manager are NOT consulted.
 //  2. guard.Check verdict    -> Allow: allow. Structural HardDeny (Overridable=false:
-//     metachar, parse-error, denylist, unknown policy, empty
-//     MCP): DenyErr firewall — callback/manager MUST NOT
-//     override. Overridable HardDeny (profile-policy default)
-//     + Prompt: continue to escalation.
+//     catastrophic mass deletion, shell metachar, execpolicy
+//     parse-error, unknown shell policy, unknown execpolicy
+//     verdict): DenyErr firewall — callback/manager MUST NOT
+//     override. Overridable HardDeny (anything a profile merely
+//     has an opinion about, INCLUDING a denylist match and an
+//     empty MCP allowlist) + Prompt: continue to escalation.
 //  3. Approval manager hit   -> allow (a prior session/persistent rule for this scope).
 //  4. Callback resolves      -> honor the decision:
 //     - allow            -> allow
@@ -281,9 +283,16 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 		return nil
 	case guard.HardDeny:
 		if !dec.Overridable {
-			// Structural firewall (metachar, parse-error, denylist match, unknown
-			// policy, empty MCP allowlist): never overridable — not by the approval
-			// manager, not by the callback, not by YOLO/auto.
+			// Structural firewall (catastrophic mass deletion, shell metachar,
+			// execpolicy parse-error, unknown shell policy, unknown execpolicy
+			// verdict): never overridable — not by the approval manager, not by
+			// the callback, not by YOLO/auto.
+			//
+			// A denylist match and an empty MCP allowlist are NOT in this set,
+			// though this comment used to claim they were. Both are profile
+			// policy, both arrive here with Overridable=true, and both therefore
+			// take the escalation path below. Reading them as structural makes
+			// yolo look narrower than it is.
 			auditPermission(ctx, action.Tool, "deny", "hard_deny", "firewall")
 			return &DenyErr{Reason: dec.Reason}
 		}

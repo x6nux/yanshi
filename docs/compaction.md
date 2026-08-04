@@ -59,14 +59,29 @@ msgs ──► Plan() ──► {pinned, summarize, workingSetPaths}
 
 没有这些，summary 模型根本看不到工具做了什么（原始 bug①）。截断按 rune 边界（多字节安全，yanshi 中文环境必要）。
 
-## 携带式分块（保证不超窗口）
+## 携带式分块（把每次调用压回窗口量级）
 
-`RunSummary` 的核心承诺：**每次调用 summary 模型的输入严格 ≤ 模型窗口**。
+`RunSummary` 的核心承诺，以及它的**例外**：
+
+> 每次调用 summary 模型的输入**按窗口预算切分**，正常情况下 ≤ 模型窗口；
+> 唯一允许的超出来自 **tool_call ↔ tool_result 配对完整性**，此时上界放宽到
+> **< 2× 窗口**。
+
+这不是措辞让步，是代码写死的取舍：`takeChunk` 在「下一条消息会撑爆预算」但「在此处切会切断一对
+tool_call/result」时，**明确选择把它塞进当前 chunk**（`summarize.go` 的 `takeChunk` doc：
+*"it is included in the current chunk EVEN IF that pushes the chunk over budget — pair integrity
+outranks strict budget"*），因为切断配对会让 provider 直接 400，比略微超窗更致命。
+
+`TestProperty_EachSummaryCallWithinWindow` 钉的就是这个真实上界：超窗只 `t.Logf` 记录，
+**> 2× 才 fail**。跑 `go test ./internal/ctxcompact -run TestProperty_EachSummaryCallWithinWindow -v`
+能直接看到实测的超出（如 `call[0] tok=805 exceeds window=800`）。
 
 - 当 summarize 集合总 token ≤ `ChunkThreshold × ModelWindow`（默认 0.9）时，走**单次 cache-aligned 调用**：`[原消息 verbatim..., 末尾指令]`。前缀和原对话逐字节一致，命中之前累积的前缀缓存。
 - 否则走**携带式分块**（rolling summary）：按预算把 summarize 集合切成 chunk1, chunk2, …；串行压缩 `chunk1 → s1`，`[s1 作前缀, chunk2] → s2`，`[s2, chunk3] → s3` ……每块的预算 = `ModelWindow − carry(当前) − ack − instruction`。carry 每轮增长，预算跟着缩——这是动态的，不是固定 overhead（固定 overhead 会让大 carry 把后续块推过窗口边缘）。
 
-chunk1 的前缀 = 原对话开头，命中前缀缓存；chunk2+ 的前缀变了不命中——这是「不超窗口」的必要代价（优于截断丢信息，也优于单次爆窗口）。切分点回退到「安全边界」（不在 tool_call↔result 配对中间切）。
+chunk1 的前缀 = 原对话开头，命中前缀缓存；chunk2+ 的前缀变了不命中——**丢缓存**才是分块的代价（优于截断丢信息，也优于单次爆窗口）。
+
+切分点回退到「安全边界」（不在 tool_call↔result 配对中间切）——注意因果方向：**安全边界回退不是「不超窗口」的代价，它正是打破那个上界的机制**。预算说该切，配对说不能切，配对赢，于是这个 chunk 超预算。
 
 ## summary 载体（修双 system 冲突）
 
