@@ -26,6 +26,12 @@ func planPropertyGen(t *testing.T, numTrials, maxLen int, fn func(t *testing.T, 
 // matching tool_result also pinned, and every tool_result has its call.
 // Plan normally guarantees this via EnforceToolCallPairs, except when it
 // short-circuits on lastMessageIsSummary (bug⑦).
+//
+// This is an ORACLE, never a precondition. Using it as a skip guard is what
+// made the three pairing properties vacuous: gutting EnforceToolCallPairs made
+// Plan emit inconsistent pin sets, every trial hit the guard, and `go test`
+// reported PASS over zero executed trials. Preconditions here must be
+// computable from the generated input alone — see skipAlreadyCompacted.
 func pinnedSetIsConsistent(msgs []*schema.Message, pinned map[int]bool) bool {
 	for i, m := range msgs {
 		if !pinned[i] || m == nil {
@@ -67,6 +73,52 @@ func pinnedSetIsConsistent(msgs []*schema.Message, pinned map[int]bool) bool {
 		}
 	}
 	return true
+}
+
+// skipAlreadyCompacted is the precondition shared by the three pairing
+// properties: Plan short-circuits on a history that already ends in a summary
+// (bug⑦) and pins every index including orphans, so the pairing invariant does
+// not apply to those trials.
+//
+// It reads the GENERATED INPUT (genHistory appends a sentinel with p=0.15),
+// never Plan's output — the guard must stay independent of the code under test
+// so a broken EnforceToolCallPairs cannot skip the whole suite into a vacuous
+// pass. It also fails outright if the skip rate is high enough that the
+// property is no longer really being exercised: see minPairingTrials.
+func skipAlreadyCompacted(t *testing.T, msgs []*schema.Message) {
+	t.Helper()
+	if lastMessageIsSummary(msgs) {
+		t.Skip("history ends with a summary: Plan short-circuits, pairing invariant N/A")
+	}
+}
+
+// runPairingProperty runs fn over numTrials generated histories, skipping the
+// already-compacted ones, and fails if fewer than 60% of trials actually
+// executed. The floor is the machine check for the "vacuous property" failure
+// mode: a property whose precondition is (accidentally or deliberately) never
+// satisfiable still reports PASS from `go test`, because a test binary that
+// skips every subtest exits 0. Asserting on the executed count turns that
+// silence into a red build.
+func runPairingProperty(t *testing.T, numTrials, maxLen int, fn func(t *testing.T, msgs []*schema.Message)) {
+	t.Helper()
+	executed := 0
+	planPropertyGen(t, numTrials, maxLen, func(t *testing.T, msgs []*schema.Message) {
+		skipAlreadyCompacted(t, msgs)
+		executed++
+		fn(t, msgs)
+	})
+	if min := minPairingTrials(numTrials); executed < min {
+		t.Fatalf("only %d/%d trials executed (need ≥%d): the property is vacuous, "+
+			"not passing — check the precondition guard", executed, numTrials, min)
+	}
+}
+
+// minPairingTrials is the executed-trial floor for a pairing property: 60% of
+// the requested trials. genHistory appends the already-compacted sentinel with
+// probability 0.15, so the natural skip rate sits near that; 60% leaves room
+// for generator drift while still catching a guard that swallows everything.
+func minPairingTrials(numTrials int) int {
+	return numTrials * 60 / 100
 }
 
 // TestProperty_PinSetIsSubsetOfOutput is one of the suite's distinct
@@ -119,17 +171,11 @@ func TestProperty_PinSetIsSubsetOfOutput(t *testing.T) {
 //
 // ledger: E2/PROP1#3 工具对配对不变量成立
 func TestProperty_ToolCallPairingFixpointHolds(t *testing.T) {
-	planPropertyGen(t, 50, 60, func(t *testing.T, msgs []*schema.Message) {
+	runPairingProperty(t, 50, 60, func(t *testing.T, msgs []*schema.Message) {
 		plan := Plan(msgs, PlanOpts{KeepRecent: 3})
 		pinned := map[int]bool{}
 		for _, i := range plan.PinnedIndices {
 			pinned[i] = true
-		}
-
-		// When Plan short-circuits on an already-summarized history it
-		// pins all indices including orphans — skip those trials.
-		if !pinnedSetIsConsistent(msgs, pinned) {
-			t.Skip("initial pinned set not consistent (history ends with summary)")
 		}
 
 		pinnedCallIDs := map[string]bool{}
@@ -171,15 +217,14 @@ func TestProperty_ToolCallPairingFixpointHolds(t *testing.T) {
 //
 // ledger: E2/PROP1#3 工具对配对不变量成立
 func TestProperty_ToolCallPairFixpointIsIdempotent(t *testing.T) {
-	planPropertyGen(t, 30, 60, func(t *testing.T, msgs []*schema.Message) {
+	runPairingProperty(t, 30, 60, func(t *testing.T, msgs []*schema.Message) {
 		plan := Plan(msgs, PlanOpts{KeepRecent: 3})
 		pinned := map[int]bool{}
 		for _, i := range plan.PinnedIndices {
 			pinned[i] = true
 		}
-
 		if !pinnedSetIsConsistent(msgs, pinned) {
-			t.Skip("initial pinned set not consistent (history ends with summary)")
+			t.Fatalf("Plan produced an inconsistent pin set on a non-compacted history")
 		}
 
 		before := make(map[int]bool, len(pinned))
@@ -198,23 +243,28 @@ func TestProperty_ToolCallPairFixpointIsIdempotent(t *testing.T) {
 	})
 }
 
-// TestProperty_ToolCallPairFixpointRepairsCorruption is the third angle, and
-// the only one that can fail when the fixpoint is a no-op: it deliberately
-// unpins one half of a pair and requires EnforceToolCallPairs to restore
-// consistency. The first two properties would still pass against an
-// implementation that never repaired anything.
+// TestProperty_ToolCallPairFixpointRepairsCorruption is the third angle: it
+// deliberately unpins one half of a pair and requires EnforceToolCallPairs to
+// restore consistency, so it exercises the repair path rather than only
+// observing that Plan's output happens to be consistent.
+//
+// A trial only counts once corruption was actually injected — histories with
+// no pinned tool_call have nothing to corrupt. `injected` is asserted at the
+// end for the same reason runPairingProperty asserts its executed count: a
+// property that silently returns from every trial is vacuous, and `go test`
+// cannot tell that apart from a genuine pass.
 //
 // ledger: E2/PROP1#3 工具对配对不变量成立
 func TestProperty_ToolCallPairFixpointRepairsCorruption(t *testing.T) {
-	planPropertyGen(t, 30, 60, func(t *testing.T, msgs []*schema.Message) {
+	injected := 0
+	runPairingProperty(t, 30, 60, func(t *testing.T, msgs []*schema.Message) {
 		plan := Plan(msgs, PlanOpts{KeepRecent: 3})
 		pinned := map[int]bool{}
 		for _, i := range plan.PinnedIndices {
 			pinned[i] = true
 		}
-
 		if !pinnedSetIsConsistent(msgs, pinned) {
-			t.Skip("initial pinned set not consistent (history ends with summary)")
+			t.Fatalf("Plan produced an inconsistent pin set on a non-compacted history")
 		}
 
 		var callIdx int
@@ -229,6 +279,7 @@ func TestProperty_ToolCallPairFixpointRepairsCorruption(t *testing.T) {
 		if !foundCall {
 			return
 		}
+		injected++
 
 		delete(pinned, callIdx)
 		EnforceToolCallPairs(msgs, pinned)
@@ -237,4 +288,7 @@ func TestProperty_ToolCallPairFixpointRepairsCorruption(t *testing.T) {
 			t.Fatal("pinned set still inconsistent after repair")
 		}
 	})
+	if injected == 0 {
+		t.Fatal("no trial injected corruption: the repair path was never exercised")
+	}
 }

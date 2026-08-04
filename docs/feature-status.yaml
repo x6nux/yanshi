@@ -7,7 +7,9 @@
 # verdict: partial | missing | divergent | done | removed
 #   done / removed 是两档终态，都计入「S0 完成」。
 # evidence:
-#   非终态条目可以留空，也可以写一条线索引用（当前有 5 条 partial 这样写）。线索
+#   非终态条目可以留空，也可以写一条线索引用（当前有几条这样写，用
+#   `go test ./internal/archtest -run TestFeatureStatusLedgerProgress -v` 重数，
+#   不要在这里写死数字 —— 写死过一次，七条 partial 加线索的那次提交就把它改漂了）。线索
 #   必须解析得开，否则 GOV8 变红 —— 但它只是「查到哪儿了」，不代表覆盖，因此非终态
 #   不接受子句映射写法。
 #   终态（done / removed）条目必须写成「验收子句号 -> 证据」的映射，acceptance 按

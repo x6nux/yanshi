@@ -10,9 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/build/constraint"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -226,46 +228,159 @@ func defaultTestPackages(t *testing.T) map[string]bool {
 	return listedPackages
 }
 
+// testFilesIn returns the *_test.go files of pkgDir split by whether the
+// toolchain can see them at all.
+//
+// filepath.Glob's "*" is NOT the shell's: it matches "_"- and "."-prefixed
+// names like any other, while go/build's matchFile rejects both outright
+// before it even looks at the extension. So a glob for "*_test.go" happily
+// returns _scratch_test.go and .bak_test.go — files `go test` has never
+// compiled — and the caller then reports a live assertion for each. The gate
+// already refused "_"- and "."-prefixed DIRECTORIES (it asks `go list`), and
+// its rejection message said so in as many words, which made the identical
+// file-level rule look covered when nothing enforced it.
+//
+// Hidden files are returned rather than dropped so resolveTestRef can say why
+// a citation into one fails, instead of the misleading "no test named X".
+func testFilesIn(pkgDir string) (visible, hidden []string, err error) {
+	matches, err := filepath.Glob(filepath.Join(pkgDir, "*_test.go"))
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, path := range matches {
+		if base := filepath.Base(path); strings.HasPrefix(base, "_") || strings.HasPrefix(base, ".") {
+			hidden = append(hidden, path)
+			continue
+		}
+		visible = append(visible, path)
+	}
+	return visible, hidden, nil
+}
+
+// nonPlatform is a GOOS/GOARCH value no port will ever use, so a probe context
+// carrying it matches no platform-tagged file name.
+const nonPlatform = "yanshi-archtest-nonplatform"
+
+// probeContext builds a go/build context that answers name questions only: the
+// file body is stubbed out via OpenFile, so MatchFile's verdict depends on the
+// NAME alone and never on a //go:build line (buildConstraintOf already reads
+// those, host-independently, and folding them in here would double-count).
+// BuildTags and ToolTags are cleared so the host's environment cannot make a
+// tagged name look untagged.
+func probeContext(goos, goarch string) build.Context {
+	c := build.Default
+	c.GOOS, c.GOARCH = goos, goarch
+	c.BuildTags, c.ToolTags = nil, nil
+	c.OpenFile = func(string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader("package p\n")), nil
+	}
+	return c
+}
+
 var (
-	platformTokensOnce sync.Once
-	knownGOOS          map[string]bool
-	knownGOARCH        map[string]bool
-	platformTokensErr  error
+	// neutralProbe matches nothing platform-tagged: both GOOS and GOARCH are
+	// impossible values, so MatchFile returns false for exactly those names
+	// whose trailing elements the toolchain recognises as a platform.
+	neutralProbe = probeContext(nonPlatform, nonPlatform)
+	// osProbe pins GOARCH to a real arch so goodOSArchFile's two-element clause
+	// (KnownOS + KnownArch) can fire; GOOS stays impossible, so the clause
+	// firing is itself the signal that the first element is a KnownOS.
+	osProbe = probeContext(nonPlatform, "amd64")
 )
 
-// platformTokens returns the GOOS and GOARCH names the toolchain recognises,
-// read from `go tool dist list` rather than hard-coded.
+// probeRejects reports whether a build context refuses a file purely on its
+// name.
+func probeRejects(ctxt build.Context, name string) bool {
+	match, err := ctxt.MatchFile("archtest-probe", name)
+	return err == nil && !match
+}
+
+// isPlatformToken reports whether tok is a name the toolchain treats as a
+// GOOS or GOARCH in a file-name suffix.
 //
-// A frozen copy of the list would rot in the one direction that matters: a new
-// port lands, someone writes foo_<newos>_test.go, and the constraint becomes
-// invisible to this gate exactly when it is newest and least reviewed.
-func platformTokens(t *testing.T) (map[string]bool, map[string]bool) {
+// It asks (*go/build.Context).MatchFile instead of consulting a token list,
+// because every list this gate has tried was the WRONG list. The first version
+// hard-coded one; the second read `go tool dist list`, which enumerates
+// BUILDABLE platforms, while file-name matching uses $GOROOT/src/internal/
+// syslist — a deliberately larger set whose own comment reads "Do not remove
+// from this list, as it is used for filename matching". Thirteen names live in
+// syslist and not in the dist list (amd64p32, hurd, nacl, ppc, riscv, s390,
+// sparc, sparc64, zos, …), so foo_zos_test.go resolved as an unconstrained,
+// CI-executed assertion while `go list` reported it under IgnoredGoFiles. That
+// is the same hole the dist-list change claimed to close, relocated.
+//
+// MatchFile has no such second copy to drift from: it IS the function the
+// toolchain uses. syslist is internal and cannot be imported, so probing the
+// exported matcher with a synthetic name is the only way to reach the real set.
+func isPlatformToken(tok string) bool {
+	return probeRejects(neutralProbe, "p_"+tok+"_test.go")
+}
+
+// isKnownGOOS reports whether tok is a GOOS name.
+//
+// The probe leans on goodOSArchFile's two-element clause: in p_<tok>_amd64_
+// test.go the pair rule fires only when tok is a KnownOS, and osProbe's GOOS
+// can never equal tok, so a rejection means "tok is a GOOS". When tok is not a
+// GOOS the rule falls through to the trailing "amd64", which osProbe's GOARCH
+// satisfies — so the file is accepted and the answer is no.
+func isKnownGOOS(tok string) bool {
+	return probeRejects(osProbe, "p_"+tok+"_amd64_test.go")
+}
+
+// isKnownGOARCH reports whether tok is a GOARCH name. KnownOS and KnownArch
+// are disjoint in syslist, so "a platform token that is not an OS" is exactly
+// the arch set.
+func isKnownGOARCH(tok string) bool {
+	return isPlatformToken(tok) && !isKnownGOOS(tok)
+}
+
+var (
+	platformProbeOnce sync.Once
+	platformProbeErr  error
+)
+
+// requirePlatformProbe fails the test unless the MatchFile probes still behave
+// as isPlatformToken documents.
+//
+// The probes read a bool out of a function whose contract is "would this file
+// be included", not "is this name platform-tagged". That inference is sound
+// today and is how the toolchain has worked since Go 1.4, but it is an
+// inference: if a future go/build stopped rejecting unmatched platform names
+// here, every probe would answer "not a platform token", filenameConstraintOf
+// would return "" for everything, and the gate would go permanently green —
+// the exact failure signature of the two token lists that preceded it. A
+// canary turns that silent reopening into a loud one.
+func requirePlatformProbe(t *testing.T) {
 	t.Helper()
-	platformTokensOnce.Do(func() {
-		out, err := exec.Command("go", "tool", "dist", "list").Output()
-		if err != nil {
-			platformTokensErr = fmt.Errorf("go tool dist list failed: %w", err)
-			return
-		}
-		oses, arches := map[string]bool{}, map[string]bool{}
-		for _, pair := range strings.Fields(string(out)) {
-			goos, goarch, ok := strings.Cut(pair, "/")
-			if !ok {
-				continue
+	platformProbeOnce.Do(func() {
+		for _, c := range []struct {
+			tok      string
+			os, arch bool
+			why      string
+		}{
+			{"linux", true, false, "a GOOS that has existed for the whole life of the tool"},
+			{"windows", true, false, "the GOOS this repo actually build-tags on"},
+			{"amd64", false, true, "the GOARCH osProbe pins, so its own premise is checked"},
+			{"zos", true, false, "syslist-only GOOS: the name the dist-list version missed"},
+			{"riscv", false, true, "syslist-only GOARCH: same class, arch side"},
+			{"unix", false, false, "a build tag that is NOT a file-name platform token"},
+			{"helper", false, false, "an ordinary identifier must stay unconstrained"},
+		} {
+			if got := isKnownGOOS(c.tok); got != c.os {
+				platformProbeErr = fmt.Errorf("go/build platform probe broken: isKnownGOOS(%q) = %v, want %v (%s)",
+					c.tok, got, c.os, c.why)
+				return
 			}
-			oses[goos] = true
-			arches[goarch] = true
+			if got := isKnownGOARCH(c.tok); got != c.arch {
+				platformProbeErr = fmt.Errorf("go/build platform probe broken: isKnownGOARCH(%q) = %v, want %v (%s)",
+					c.tok, got, c.arch, c.why)
+				return
+			}
 		}
-		if len(oses) == 0 || len(arches) == 0 {
-			platformTokensErr = errors.New("go tool dist list produced no GOOS/GOARCH pairs")
-			return
-		}
-		knownGOOS, knownGOARCH = oses, arches
 	})
-	if platformTokensErr != nil {
-		t.Fatal(platformTokensErr)
+	if platformProbeErr != nil {
+		t.Fatal(platformProbeErr)
 	}
-	return knownGOOS, knownGOARCH
 }
 
 // filenameConstraintOf returns a description of the implicit build constraint a
@@ -285,9 +400,13 @@ func platformTokens(t *testing.T) (map[string]bool, map[string]bool) {
 // two easy-to-miss clauses: everything before the FIRST underscore is discarded
 // (so a package-level `windows.go` is not tagged, per Go 1.4), and a trailing
 // `_test` element is stripped before the platform elements are examined.
+//
+// Which names count as platforms comes from isKnownGOOS/isKnownGOARCH, i.e.
+// from the toolchain's own matcher — see isPlatformToken for why every attempt
+// to keep a second copy of that list has leaked.
 func filenameConstraintOf(t *testing.T, name string) string {
 	t.Helper()
-	goos, goarch := platformTokens(t)
+	requirePlatformProbe(t)
 	stem, _, _ := strings.Cut(name, ".")
 	i := strings.Index(stem, "_")
 	if i < 0 {
@@ -298,10 +417,10 @@ func filenameConstraintOf(t *testing.T, name string) string {
 		parts = parts[:n-1]
 	}
 	n := len(parts)
-	if n >= 2 && goos[parts[n-2]] && goarch[parts[n-1]] {
+	if n >= 2 && isKnownGOOS(parts[n-2]) && isKnownGOARCH(parts[n-1]) {
 		return "file name suffix _" + parts[n-2] + "_" + parts[n-1]
 	}
-	if n >= 1 && (goos[parts[n-1]] || goarch[parts[n-1]]) {
+	if n >= 1 && isPlatformToken(parts[n-1]) {
 		return "file name suffix _" + parts[n-1]
 	}
 	return ""
@@ -431,12 +550,12 @@ func resolveTestRef(t *testing.T, root, pkg, name string) testRefInfo {
 			"citing a helper claims coverage from code that never runs"}
 	}
 
-	matches, err := filepath.Glob(filepath.Join(pkgDir, "*_test.go"))
+	visible, hidden, err := testFilesIn(pkgDir)
 	if err != nil {
 		return testRefInfo{Problem: "cannot list test files in " + pkg + ": " + err.Error()}
 	}
 	fset := token.NewFileSet()
-	for _, path := range matches {
+	for _, path := range visible {
 		f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 		if err != nil {
 			continue
@@ -463,7 +582,32 @@ func resolveTestRef(t *testing.T, root, pkg, name string) testRefInfo {
 			return testRefInfo{Constrained: cons != "", Constraint: cons}
 		}
 	}
+	// Only now look in the files the toolchain ignores, so a name that exists
+	// in both places resolves against the compiled copy and the diagnosis below
+	// is reserved for citations that genuinely have nowhere else to land.
+	if file := declaringFile(fset, hidden, name); file != "" {
+		return testRefInfo{Problem: pkg + "::" + name + " is declared in " + file +
+			", whose name starts with \"_\" or \".\" — go/build ignores such files exactly as " +
+			"it ignores such directories, so `go test` has never compiled this test"}
+	}
 	return testRefInfo{Problem: "no test named " + name + " in package " + pkg}
+}
+
+// declaringFile returns the base name of the first file in paths that declares
+// a top-level func called name, or "" when none does.
+func declaringFile(fset *token.FileSet, paths []string, name string) string {
+	for _, path := range paths {
+		f, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			continue
+		}
+		for _, decl := range f.Decls {
+			if fd, ok := decl.(*ast.FuncDecl); ok && fd.Recv == nil && fd.Name.Name == name {
+				return filepath.Base(path)
+			}
+		}
+	}
+	return ""
 }
 
 // checkEvidence validates an evidence string and returns "" when valid or a
@@ -555,8 +699,10 @@ func TestFeatureStatusLedgerIntegrity(t *testing.T) {
 		if !terminalVerdicts[e.Verdict] {
 			// Non-terminal evidence is OPTIONAL, but it is no longer
 			// UNCHECKED. The ledger header says non-terminal entries write "";
-			// five of them carry real references anyway. The documented shape
-			// and the actual shape had drifted, and the gate agreed with
+			// a good many of them carry real references anyway (the live count
+			// is logged by TestFeatureStatusLedgerProgress — quoting it here is
+			// what made this comment wrong the first time). The documented
+			// shape and the actual shape had drifted, and the gate agreed with
 			// neither — it `continue`d before checkEvidence could run, which
 			// made those references the only strings in the file that nothing
 			// verifies. A dangling lead is worse than no lead: it reads as
@@ -622,11 +768,56 @@ func TestResolveTestRefExecutabilityPredicates(t *testing.T) {
 			// Only the trailing elements count: an OS name in the middle is
 			// part of the identifier, not a constraint.
 			{"windows_helper_test.go", ""},
+			// "unix" is a build TAG, never a file-name platform token — this
+			// direction guards against a probe that reddens honest files.
+			{"sock_unix_test.go", ""},
+		}
+		// The thirteen names that live in $GOROOT/src/internal/syslist but not
+		// in `go tool dist list`. Reading the dist list — the version this
+		// replaced — made every one of them resolve as an unconstrained,
+		// CI-executed assertion, which is why they are pinned individually
+		// rather than sampled.
+		for _, tok := range []string{
+			"amd64p32", "arm64be", "armbe", "hurd", "mips64p32", "mips64p32le",
+			"nacl", "ppc", "riscv", "s390", "sparc", "sparc64", "zos",
+		} {
+			cases = append(cases, struct{ file, want string }{
+				"probe_" + tok + "_test.go", "file name suffix _" + tok,
+			})
 		}
 		for _, c := range cases {
 			if got := filenameConstraintOf(t, c.file); got != c.want {
 				t.Errorf("filenameConstraintOf(%q) = %q, want %q", c.file, got, c.want)
 			}
+		}
+	})
+
+	t.Run("toolchain-invisible test files", func(t *testing.T) {
+		// filepath.Glob's "*" matches "_"- and "."-prefixed names; the
+		// toolchain's does not. Before testFilesIn, a test declared only in
+		// such a file resolved as a live, unconstrained assertion — the same
+		// hole the gate had already closed for DIRECTORIES, and whose rejection
+		// message claimed the file form was covered too.
+		dir := t.TempDir()
+		for _, f := range []string{"ok_test.go", "_hidden_test.go", ".dot_test.go"} {
+			if err := os.WriteFile(filepath.Join(dir, f), []byte("package p\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		visible, hidden, err := testFilesIn(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(visible) != 1 || filepath.Base(visible[0]) != "ok_test.go" {
+			t.Errorf("visible = %v, want only ok_test.go", visible)
+		}
+		var hiddenNames []string
+		for _, h := range hidden {
+			hiddenNames = append(hiddenNames, filepath.Base(h))
+		}
+		sort.Strings(hiddenNames)
+		if len(hiddenNames) != 2 || hiddenNames[0] != ".dot_test.go" || hiddenNames[1] != "_hidden_test.go" {
+			t.Errorf("hidden = %v, want [.dot_test.go _hidden_test.go]", hiddenNames)
 		}
 	})
 
@@ -678,15 +869,28 @@ func TestResolveTestRefExecutabilityPredicates(t *testing.T) {
 
 // TestFeatureStatusLedgerProgress prints the current tally. It never fails —
 // it exists so CI logs carry the number without anyone running a tool.
+//
+// It also prints how many NON-terminal entries carry an evidence lead, which
+// is the one ledger statistic prose kept getting wrong: the header of
+// docs/feature-status.yaml and two comments in this package all quoted "5",
+// and all three went stale the moment seven partial entries gained leads in
+// one commit. Prose now points here instead of restating a number, so the
+// count is derived where it is read.
 func TestFeatureStatusLedgerProgress(t *testing.T) {
 	entries := loadLedger(t)
 	counts := make(map[string]int)
+	var leads []string
 	for _, e := range entries {
 		counts[e.Verdict]++
+		if !terminalVerdicts[e.Verdict] && !e.Evidence.Empty() {
+			leads = append(leads, e.ID)
+		}
 	}
 	done := counts["done"] + counts["removed"]
 	t.Logf("S0 progress: %d/%d terminal (done=%d removed=%d) | "+
 		"remaining: partial=%d missing=%d divergent=%d",
 		done, len(entries), counts["done"], counts["removed"],
 		counts["partial"], counts["missing"], counts["divergent"])
+	sort.Strings(leads)
+	t.Logf("non-terminal entries carrying an evidence lead: %d %v", len(leads), leads)
 }

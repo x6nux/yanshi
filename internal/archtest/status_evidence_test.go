@@ -62,10 +62,14 @@ import (
 //
 // The non-terminal scalar is USUALLY empty — there is nothing proven yet — but
 // it is not required to be, and this comment used to claim otherwise ("always
-// the empty string") while five partial entries carried reference lists. The
-// rule actually enforced, in TestFeatureStatusLedgerIntegrity, is the weaker
-// and truthful one: a non-terminal entry may record leads, and any lead it
-// records must resolve.
+// the empty string") while a number of partial entries carried reference
+// lists. The rule actually enforced, in TestFeatureStatusLedgerIntegrity, is
+// the weaker and truthful one: a non-terminal entry may record leads, and any
+// lead it records must resolve.
+//
+// How many carry one is deliberately not written down here: the count is
+// logged by TestFeatureStatusLedgerProgress, and the two places that did quote
+// it went stale in a single commit.
 //
 // The two shapes share one field because they answer the same question at
 // different resolutions, and a second field would let a terminal entry keep a
@@ -190,6 +194,11 @@ var testDocsCache sync.Map // pkgDir -> map[string]string
 // testDocs returns, for every top-level test function declared in pkgDir, its
 // doc comment body keyed by function name.
 //
+// Only files the toolchain compiles are read (testFilesIn), for the same
+// reason resolveTestRef reads only those: a marker sitting in _scratch_test.go
+// describes code `go test` never runs, and surfacing it here would report it
+// as a stale marker — a true statement pointing at the wrong problem.
+//
 // The returned map is shared with other callers and must not be mutated.
 func testDocs(t *testing.T, pkgDir string) map[string]string {
 	t.Helper()
@@ -198,12 +207,12 @@ func testDocs(t *testing.T, pkgDir string) map[string]string {
 	}
 	docs := map[string]string{}
 	defer func() { testDocsCache.Store(pkgDir, docs) }()
-	matches, err := filepath.Glob(filepath.Join(pkgDir, "*_test.go"))
+	visible, _, err := testFilesIn(pkgDir)
 	if err != nil {
 		return docs
 	}
 	fset := token.NewFileSet()
-	for _, path := range matches {
+	for _, path := range visible {
 		f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 		if err != nil {
 			continue
