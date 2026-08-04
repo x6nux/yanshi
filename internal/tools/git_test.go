@@ -246,3 +246,116 @@ func TestGitToolsDoNotWriteGitConfig(t *testing.T) {
 		t.Fatalf("global config mutated:\nwant=%q\ngot=%q", original, got)
 	}
 }
+
+// gitCallKind classifies a git invocation into one of the call sites git.go
+// makes, so a scripted factory can fail exactly one of them and let the rest
+// succeed. Both numstat and the patch builder go through `git show` in commit
+// scope, so --numstat is what separates them.
+func gitCallKind(spec secproc.SecureProcessSpec) string {
+	has := func(tok string) bool {
+		for _, a := range spec.Args {
+			if a == tok {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	case has("status"):
+		return "status"
+	case has("ls-files"):
+		return "ls-files"
+	case has("--numstat") && has("--cached"):
+		return "diff-cached-numstat"
+	case has("--numstat") && has("show"):
+		return "show-numstat"
+	case has("--numstat"):
+		return "diff-numstat"
+	case has("show"):
+		return "show-patch"
+	default:
+		return "diff-patch"
+	}
+}
+
+// TestGitToolsReportFailureInsteadOfEmptyResult is the regression test for
+// git.go reading only res.Stdout and never res.ExitCode.
+//
+// Every failure git can hit — not a repository, corrupt index, unreadable
+// object, ambiguous ref, permission denied — writes its reason to stderr,
+// exits non-zero and leaves stdout EMPTY. The parsers happily turn an empty
+// stdout into zero entries, so git_status answered {"entries":null}: a clean
+// working tree for a repository it could not read at all, and git_diff
+// answered {"files":[]}. The model then proceeds as if there were no changes.
+//
+// Each of git.go's call sites gets its own case, because each one had to be
+// fixed separately and each one alone is enough to fabricate an empty answer.
+func TestGitToolsReportFailureInsteadOfEmptyResult(t *testing.T) {
+	// Canned success output for the call sites that are NOT under test in a
+	// given case, so the run reaches the one that is.
+	stdoutFor := map[string]string{
+		"status":              "",
+		"diff-numstat":        "1\t0\tfile.go\x00",
+		"diff-cached-numstat": "",
+		"ls-files":            "",
+		"show-numstat":        "1\t0\tfile.go\x00",
+		"diff-patch":          "diff --git a/file.go b/file.go\n+x\n",
+		"show-patch":          "diff --git a/file.go b/file.go\n+x\n",
+	}
+	for _, tc := range []struct {
+		failing string
+		tool    string
+		args    string
+		stderr  string
+	}{
+		{"status", "git_status", `{}`, "fatal: not a git repository (or any of the parent directories): .git"},
+		{"diff-numstat", "git_diff", `{"scope":{"kind":"working_tree"}}`, "error: bad index file sha1 signature"},
+		{"diff-cached-numstat", "git_diff", `{"scope":{"kind":"working_tree"}}`, "fatal: unable to read index file"},
+		{"ls-files", "git_diff", `{"scope":{"kind":"working_tree"}}`, "fatal: could not open directory: Permission denied"},
+		{"diff-patch", "git_diff", `{"scope":{"kind":"working_tree"}}`, "error: unable to read sha1 file of file.go"},
+		{"show-numstat", "git_diff", `{"scope":{"kind":"commit","ref":"deadbeef"}}`, "fatal: ambiguous argument 'deadbeef': unknown revision"},
+		{"show-patch", "git_diff", `{"scope":{"kind":"commit","ref":"HEAD"}}`, "fatal: unable to read tree object"},
+	} {
+		t.Run(tc.failing, func(t *testing.T) {
+			factory := newScriptedFactory(t, func(spec secproc.SecureProcessSpec) cannedResult {
+				kind := gitCallKind(spec)
+				if kind == tc.failing {
+					return cannedResult{Stderr: tc.stderr, ExitCode: 128}
+				}
+				return cannedResult{Stdout: stdoutFor[kind]}
+			})
+			ctx := WithWorkRoot(secureTestContext(t, factory), t.TempDir())
+			tl := NewGitTools().Status
+			if tc.tool == "git_diff" {
+				tl = NewGitTools().Diff
+			}
+			out, err := runTool(ctx, tl, tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(out, "✗ ") {
+				t.Fatalf("%s exited 128 but %s returned a success result: %s", tc.failing, tc.tool, out)
+			}
+			if !strings.Contains(out, tc.stderr) {
+				t.Fatalf("result %q must carry git's own failure text %q — stderr is the only place the reason exists", out, tc.stderr)
+			}
+		})
+	}
+}
+
+// TestGitDiffSucceedsWhenGitExitsZeroWithNoOutput guards the other direction:
+// an empty diff is a legitimate exit-0 answer (nothing changed), and the exit
+// code check must not turn it into an error.
+func TestGitDiffSucceedsWhenGitExitsZeroWithNoOutput(t *testing.T) {
+	factory := newScriptedFactory(t, func(secproc.SecureProcessSpec) cannedResult {
+		return cannedResult{}
+	})
+	ctx := WithWorkRoot(secureTestContext(t, factory), t.TempDir())
+	out, err := runTool(ctx, NewGitTools().Diff, `{"scope":{"kind":"working_tree"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"files":[]`) {
+		t.Fatalf("clean tree must stay a success, got %s", out)
+	}
+}

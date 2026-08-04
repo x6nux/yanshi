@@ -130,14 +130,7 @@ func ghFailure(res commandResult, err error) string {
 	if res.ExitCode == 0 {
 		return ""
 	}
-	detail := strings.TrimSpace(res.Stderr)
-	if detail == "" {
-		detail = strings.TrimSpace(res.Stdout)
-	}
-	if detail == "" {
-		detail = "no output"
-	}
-	return errorResult(fmt.Sprintf("gh: exited %d: %s", res.ExitCode, detail))
+	return errorResult(fmt.Sprintf("gh: exited %d: %s", res.ExitCode, commandFailureTail(res)))
 }
 
 func runGitHubPRContext(ctx context.Context, argsJSON string) (string, error) {

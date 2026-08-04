@@ -177,28 +177,8 @@ func reconcileExitCode(result testResult, res commandResult) testResult {
 	}
 	result.Status = "error"
 	result.Summary = fmt.Sprintf("%s exited %d without reporting any test result: %s",
-		result.Framework, res.ExitCode, runnerFailureTail(res))
+		result.Framework, res.ExitCode, commandFailureTail(res))
 	return result
-}
-
-// runnerFailureTail extracts the most informative slice of a failed runner's
-// output. stderr wins when present (build errors, "module cache not found",
-// "no such tool" all land there); otherwise the tail of stdout is used, since
-// -json runs put the failure text there. Capped so a huge log cannot flood the
-// model's context — the caller already spills the full output to an artifact.
-func runnerFailureTail(res commandResult) string {
-	const maxTail = 1024
-	text := strings.TrimSpace(res.Stderr)
-	if text == "" {
-		text = strings.TrimSpace(res.Stdout)
-	}
-	if text == "" {
-		return "(no output)"
-	}
-	if len(text) > maxTail {
-		text = "…" + text[len(text)-maxTail:]
-	}
-	return text
 }
 
 func parseTestResult(framework string, res commandResult) testResult {

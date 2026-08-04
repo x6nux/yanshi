@@ -47,6 +47,59 @@ func gitEnvIsolation(root string) []string {
 	}
 }
 
+// gitCapture runs one git command and folds BOTH failure shapes into err: a
+// launch error AND a non-zero exit code.
+//
+// Every way git can fail — not a repository, corrupt index, unreadable object,
+// ambiguous ref, permission denied — writes its reason to stderr, exits
+// non-zero and leaves stdout EMPTY. git.go used to read only res.Stdout, and
+// the parsers turn an empty stdout into zero records, so git_status answered
+// {"entries":null} — a clean working tree — for a repository it could not read
+// at all, and git_diff answered {"files":[]}. Both look like a successful
+// "nothing changed", which is the one answer that makes the model stop
+// looking.
+//
+// Non-zero is unambiguously a failure for ALL of git.go's call sites, which is
+// why the check lives here and not per-caller: a non-zero exit code carries
+// normal semantics only under --exit-code / --quiet (`git diff --quiet`
+// returns 1 to mean "there are differences"), and none of the commands built
+// in this file pass either flag. Their success-with-nothing-to-report case is
+// exit 0 with empty stdout — a clean tree, an empty diff, no untracked files —
+// which stays a success here. Any future git command in this file that DOES
+// use --exit-code must bypass gitCapture and document why.
+//
+// The error text carries git's own stderr because that is the only place the
+// reason exists; res is returned even on failure so callers may still inspect
+// partial output.
+func gitCapture(ctx context.Context, spec secproc.SecureProcessSpec, timeout time.Duration) (commandResult, error) {
+	res, err := secureCommandRunner(ctx, spec, timeout)
+	if err != nil {
+		return res, fmt.Errorf("%s: %w", gitCommandLabel(spec), err)
+	}
+	if res.ExitCode != 0 {
+		return res, fmt.Errorf("%s: exited %d: %s", gitCommandLabel(spec), res.ExitCode, commandFailureTail(res))
+	}
+	return res, nil
+}
+
+// gitCommandLabel renders the invocation as "git <subcommand>" for error
+// messages, skipping the leading `-c key=value` configuration pairs every spec
+// in this file carries so the label names the sub-command the model asked for
+// ("git status", "git diff") rather than "git -c".
+func gitCommandLabel(spec secproc.SecureProcessSpec) string {
+	for i := 0; i < len(spec.Args); i++ {
+		if spec.Args[i] == "-c" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(spec.Args[i], "-") {
+			continue
+		}
+		return "git " + spec.Args[i]
+	}
+	return "git"
+}
+
 // NewGitTools constructs the git_status and git_diff guarded tools.
 func NewGitTools() *GitTools {
 	return &GitTools{
@@ -70,9 +123,9 @@ func runGitStatus(ctx context.Context, argsJSON string) (string, error) {
 		Env:            gitEnvIsolation(root),
 		UseSandboxTier: sandbox.ReadOnly,
 	}
-	res, err := secureCommandRunner(ctx, spec, 10*time.Second)
+	res, err := gitCapture(ctx, spec, 10*time.Second)
 	if err != nil {
-		return errorResult("git status: " + err.Error()), nil
+		return errorResult(err.Error()), nil
 	}
 	return toJSON(parseGitStatusZ(res.Stdout)), nil
 }
@@ -114,7 +167,7 @@ func collectGitDiffFiles(ctx context.Context, root string, args gitDiffArgs) ([]
 	numstatSpec.Tool = "git_diff"
 	numstatSpec.UseSandboxTier = sandbox.ReadOnly
 	numstatSpec.Env = gitEnvIsolation(root)
-	res, err := secureCommandRunner(ctx, numstatSpec, 30*time.Second)
+	res, err := gitCapture(ctx, numstatSpec, 30*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +180,7 @@ func collectGitDiffFiles(ctx context.Context, root string, args gitDiffArgs) ([]
 			Env:            gitEnvIsolation(root),
 			UseSandboxTier: sandbox.ReadOnly,
 		}
-		res, err := secureCommandRunner(ctx, cachedSpec, 10*time.Second)
+		res, err := gitCapture(ctx, cachedSpec, 10*time.Second)
 		if err != nil {
 			return nil, err
 		}
@@ -139,7 +192,7 @@ func collectGitDiffFiles(ctx context.Context, root string, args gitDiffArgs) ([]
 			Env:            gitEnvIsolation(root),
 			UseSandboxTier: sandbox.ReadOnly,
 		}
-		res, err = secureCommandRunner(ctx, untrackedSpec, 10*time.Second)
+		res, err = gitCapture(ctx, untrackedSpec, 10*time.Second)
 		if err != nil {
 			return nil, err
 		}
@@ -204,10 +257,16 @@ func gitPatchForFile(ctx context.Context, root, path string, args gitDiffArgs, b
 	spec.Tool = "git_diff"
 	spec.UseSandboxTier = sandbox.ReadOnly
 	spec.Env = gitEnvIsolation(root)
-	res, err := secureCommandRunner(ctx, spec, 15*time.Second)
+	res, err := gitCapture(ctx, spec, 15*time.Second)
 	if err != nil {
 		return "", false, err
 	}
+	// An empty patch here means git had nothing textual to print for a file the
+	// numstat pass already listed as changed: a binary blob (git only emits the
+	// literal patch under --binary for tracked binaries it can encode) or an
+	// untracked file, whose content git diff never renders. Reachable only
+	// after gitCapture confirmed exit 0 — before that, this line also swallowed
+	// every git failure as "binary", since a crashed git prints nothing.
 	binary := strings.Contains(res.Stdout, "Binary files") || res.Stdout == ""
 	return res.Stdout, binary, nil
 }

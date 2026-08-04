@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -85,6 +86,31 @@ func exitCodeFromWaitErr(waitErr error) (int, error) {
 // process: skipping it leaves a zombie behind on every launch.
 func waitExitCode(wait func() error) (int, error) {
 	return exitCodeFromWaitErr(wait())
+}
+
+// commandFailureTail extracts the most informative slice of a failed
+// subprocess's output. stderr wins when present (build errors, "module cache
+// not found", "fatal: not a git repository", "gh: not authenticated" all land
+// there); otherwise the tail of stdout is used, since -json runs put the
+// failure text there. Capped so a huge log cannot flood the model's context —
+// run_tests already spills the full output to an artifact.
+//
+// Shared by every tool that turns a non-zero exit into a reported failure
+// (run_tests, github_*, git_status/git_diff) so the answer to "what did the
+// command actually complain about" is assembled in exactly one place.
+func commandFailureTail(res commandResult) string {
+	const maxTail = 1024
+	text := strings.TrimSpace(res.Stderr)
+	if text == "" {
+		text = strings.TrimSpace(res.Stdout)
+	}
+	if text == "" {
+		return "(no output)"
+	}
+	if len(text) > maxTail {
+		text = "…" + text[len(text)-maxTail:]
+	}
+	return text
 }
 
 func runSecureCapture(ctx context.Context, spec secproc.SecureProcessSpec, timeout time.Duration) (commandResult, error) {
