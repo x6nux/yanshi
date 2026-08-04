@@ -280,9 +280,17 @@ func TestMandatoryPermissionSurvivesYOLOAndAuto(t *testing.T) {
 // with `pendingPermissions` empty and one permission_response{allow} frame
 // sent — an authorization the user never gave.
 //
-// It drives the real frame -> StreamEvent -> applyEvent path on purpose:
+// It enters at cli.StreamEvent and drives StreamEvent -> applyEvent on purpose:
 // constructing the permissionEntry directly would set `mandatory` by hand and
-// pass even with the wire field missing.
+// pass even with the wire field missing. It does NOT cover the two hops in
+// front of it — this package cannot reach the unexported mapper — so the chain
+// is pinned in three pieces and this is only the last one:
+// `internal/api/http/ws_perm_test.go::TestPermissionRequestFrameCarriesForcePrompt`
+// (server flags -> ServerFrame),
+// `internal/cli/streamevent_parity_test.go::TestWSBackend_ForcePromptReachesStreamEvent`
+// (ServerFrame -> wire -> StreamEvent), then this one. The middle piece was
+// missing until a mutation showed the whole suite staying green with
+// toStreamEvent's ForcePrompt assignment deleted.
 func TestForcePromptPermissionSurvivesYOLOAndAuto(t *testing.T) {
 	for _, tool := range []string{"task_cancel", "revert_turn"} {
 		for _, mode := range []guard.PermissionMode{guard.ModeYOLO, guard.ModeAuto} {

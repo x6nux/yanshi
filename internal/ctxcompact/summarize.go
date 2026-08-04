@@ -244,6 +244,18 @@ func summaryRetryBackoffs() []time.Duration {
 	return d
 }
 
+// summaryAfter is the timer seam callWithRetry waits on between attempts. It
+// is a var solely so a test can record the durations the loop ACTUALLY sleeps
+// and reconcile them against summaryRetryBackoffs.
+//
+// Without that reconciliation summaryRetryBackoffs is only pinned as a pure
+// function: inline the doubling back into the loop (deleting the `backoffs :=`
+// line to dodge the unused-variable error) and the function becomes an orphan
+// no test and no compiler complains about — while docs/compaction.md keeps
+// pointing operators at a value that no longer drives anything. The seam turns
+// "the docs quote this" into "the loop obeys this".
+var summaryAfter = time.After
+
 // callWithRetry invokes m.Stream (preferring streaming so onChunk gets deltas)
 // and falls back to Generate. Retries only transient errors up to summaryRetryMax
 // with exponential backoff. Permanent errors surface immediately.
@@ -253,7 +265,7 @@ func callWithRetry(ctx context.Context, m ModelSummarizer, msgs []*schema.Messag
 	for attempt := 0; attempt < summaryRetryMax; attempt++ {
 		if attempt > 0 {
 			select {
-			case <-time.After(backoffs[attempt-1]):
+			case <-summaryAfter(backoffs[attempt-1]):
 			case <-ctx.Done():
 				return "", ctx.Err()
 			}

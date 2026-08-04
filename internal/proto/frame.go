@@ -311,10 +311,10 @@ type ServerFrame struct {
 	// ContextWindow is the session's compaction context-window budget (tokens),
 	// carried on a status frame so the client can render "ctx: <in>/<window>" in
 	// its header. Comes from the server's configured Compaction.ContextWindow.
-	ContextWindow    int      `json:"context_window,omitempty"`
-	ID               string   `json:"id,omitempty"`                // permission_request
-	Reason           string   `json:"reason,omitempty"`            // permission_request
-	ApprovalRequired bool     `json:"approval_required,omitempty"` // permission_request: must be explicit one-shot allow/deny
+	ContextWindow    int    `json:"context_window,omitempty"`
+	ID               string `json:"id,omitempty"`                // permission_request
+	Reason           string `json:"reason,omitempty"`            // permission_request
+	ApprovalRequired bool   `json:"approval_required,omitempty"` // permission_request: must be explicit one-shot allow/deny
 	// ForcePrompt is the wire half of the server's two force-a-prompt flags:
 	// tools.PermissionRequest.ForcePrompt (the forcePromptTools list, e.g.
 	// task_cancel) and tools.PermissionRequest.Force (RequireApproval, e.g.
@@ -323,8 +323,8 @@ type ServerFrame struct {
 	// counts. Without it on the wire the server's refusal to auto-resolve is
 	// silently undone client-side (the TUI's autoResolvePendingByMode answered
 	// "allow" on the user's behalf the moment they switched to YOLO).
-	ForcePrompt bool `json:"force_prompt,omitempty"` // permission_request: cannot be auto-approved or pre-approved
-	Servers          []string `json:"servers,omitempty"`           // mcp_list
+	ForcePrompt bool     `json:"force_prompt,omitempty"` // permission_request: cannot be auto-approved or pre-approved
+	Servers     []string `json:"servers,omitempty"`      // mcp_list
 	// Compaction fields (Task 35b). Compacted is set on a status frame after a
 	// compaction completed; TokensBefore/After carry the estimated token counts
 	// across the compaction so the client can render "compacted (X → Y tokens)".

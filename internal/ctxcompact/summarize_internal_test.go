@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestIsTransient_NilError covers nil error returning false.
@@ -285,4 +287,51 @@ func TestSummaryRetryBackoffSequence(t *testing.T) {
 		assert.NotEqual(t, 4*time.Second, d, "no 4s step is reachable")
 	}
 	assert.Equal(t, 3*time.Second, total, "worst-case time spent sleeping across a full exhaustion")
+}
+
+// alwaysTransientModel fails every Stream/Generate with a retryable error, so
+// callWithRetry walks its whole backoff schedule and then gives up.
+type alwaysTransientModel struct{ calls int }
+
+func (m *alwaysTransientModel) Stream(context.Context, []*schema.Message, ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	m.calls++
+	return nil, errors.New("connection reset by peer")
+}
+
+func (m *alwaysTransientModel) Generate(context.Context, []*schema.Message, ...model.Option) (*schema.Message, error) {
+	return nil, errors.New("connection reset by peer")
+}
+
+// TestCallWithRetrySleepsTheDerivedBackoffs is the behavioural half of
+// TestSummaryRetryBackoffSequence, which only proves the function computes
+// 1s/2s — not that anything sleeps them. Inlining the doubling back into
+// callWithRetry (and deleting `backoffs :=` so the compiler stays quiet) would
+// orphan summaryRetryBackoffs without failing a single test, leaving
+// docs/compaction.md pointing at a value that no longer drives behaviour.
+//
+// It substitutes the timer seam instead of sleeping, so the assertion is on the
+// exact requested durations rather than on wall-clock slop, and the test costs
+// no real time.
+func TestCallWithRetrySleepsTheDerivedBackoffs(t *testing.T) {
+	var slept []time.Duration
+	orig := summaryAfter
+	summaryAfter = func(d time.Duration) <-chan time.Time {
+		slept = append(slept, d)
+		fired := make(chan time.Time, 1)
+		fired <- time.Now()
+		return fired
+	}
+	t.Cleanup(func() { summaryAfter = orig })
+
+	m := &alwaysTransientModel{}
+	_, err := callWithRetry(context.Background(), m,
+		[]*schema.Message{{Role: schema.User, Content: "x"}}, nil)
+	require.Error(t, err, "an always-transient model must exhaust the retries")
+
+	assert.Equal(t, summaryRetryMax, m.calls,
+		"the loop must make summaryRetryMax attempts, not summaryRetryMax retries")
+	assert.Equal(t, summaryRetryBackoffs(), slept,
+		"callWithRetry did not sleep the sequence summaryRetryBackoffs derives — "+
+			"either the loop stopped using it (making the function an orphan the "+
+			"docs still quote) or the two have diverged")
 }

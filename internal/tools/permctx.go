@@ -51,7 +51,11 @@ type PermissionRequest struct {
 	// client cannot tell such a prompt apart from a plain one — switching to
 	// allow-edits then auto-approves an edit tool that the server's own
 	// allow-edits gate would have denied. Narrowing that divergence is an
-	// authorization change and belongs in a work package, not here.
+	// authorization change, so it is deferred — to S0/W5 (安全底座) Task 7
+	// 移交项 C, filed in docs/superpowers/plans/2026-08-03-s0-w5-security.md
+	// with the three candidate fixes. W5 owns it because it is the same
+	// allow-edits auto-approval surface as that task's other two handovers,
+	// not because the code lives here.
 	ProfileHardDeny bool
 	// Shell carries the shell command for shell_run (empty otherwise) so the
 	// interactive mode layer can apply its destructive-deletion gate
@@ -79,9 +83,17 @@ type PermissionRequest struct {
 //     `internal/api/http/ws.go` 从 `req.ForcePrompt || req.Force` 填充。这两半
 //     曾经看的是不同字段 —— ServerFrame 当时根本没有 ForcePrompt，于是服务端
 //     拒绝 auto-resolve、弹窗照常出现，可用户一切到 YOLO，TUI 就替他答了
-//     allow，**用户从未做出授权表示**。钉住它的是
+//     allow，**用户从未做出授权表示**。这条链**分三段**钉住，缺任何一段都会让
+//     整条链在全绿状态下断开（第二段一度就是空的：删掉映射那一行，全量套件不红）：
+//     `internal/api/http/ws_perm_test.go::TestPermissionRequestFrameCarriesForcePrompt`
+//     （服务端两个 flag -> ServerFrame）、
+//     `internal/cli/streamevent_parity_test.go::TestWSBackend_ForcePromptReachesStreamEvent`
+//     （ServerFrame -> wire -> cli.StreamEvent）、
 //     `internal/cli/tui/perm_mode_test.go::TestForcePromptPermissionSurvivesYOLOAndAuto`
-//     与 `internal/api/http/ws_perm_test.go::TestPermissionRequestFrameCarriesForcePrompt`。
+//     （StreamEvent -> TUI 的 mandatory）。第二段还有一道结构性孪生
+//     `internal/cli/streamevent_parity_test.go::TestToStreamEventCarriesEveryServerFrameField`
+//     ——它对 ServerFrame 的**每个**字段要求一条「carried / not carried」声明，
+//     所以下一个上 wire 的字段不会重蹈同样的静默丢弃。
 var forcePromptTools = map[string]struct{}{
 	"task_cancel": {},
 }

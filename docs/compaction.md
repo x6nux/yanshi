@@ -136,7 +136,7 @@ summary 调用失败（重试耗尽）→ `Run` 返回 error，**绝不产出空
 - **mid-turn**（`CompactingModel`）：回退原始 msgs（best-effort），真实调用可能仍能成；若已超窗口，真实错误浮出来给用户。
 - **pre-turn**（`MaybeCompact`）：返回 `(原 msgs, before, before, false)`，WS handler 保留完整历史 + 不发 compacted 状态。
 
-transient 错误（网络/429/超时）最多 **3 次尝试 / 2 次重试**，退避 1s、2s（`internal/ctxcompact/summarize.go::summaryRetryBackoffs`，由 `summaryRetryMax`/`summaryRetryBaseMs` 推出，`internal/ctxcompact/summarize_internal_test.go::TestSummaryRetryBackoffSequence` 钉住）——一次耗尽最多睡 3s。此前这里写的是「重试 3 次（1s/2s/4s）」，两处都错：3 是**尝试数**不是重试数，而 4s 那一档因为末次尝试后不再 sleep 而**任何路径都到不了**，照它估算最坏耗时会高估一倍。permanent（401/400/解析）立即返回。`isTransient` 是第二道防线——生产环境 summary 模型通常是 `ResilientChatModel`，已过滤 4xx。
+transient 错误（网络/429/超时）最多 **3 次尝试 / 2 次重试**，退避 1s、2s（`internal/ctxcompact/summarize.go::summaryRetryBackoffs`，由 `summaryRetryMax`/`summaryRetryBaseMs` 推出，`internal/ctxcompact/summarize_internal_test.go::TestSummaryRetryBackoffSequence` 钉住取值，`internal/ctxcompact/summarize_internal_test.go::TestCallWithRetrySleepsTheDerivedBackoffs` 钉住 `callWithRetry` 确实按它睡 —— 前者只证明函数**算得对**，若有人把公式内联回循环、这个指针就指向一个不再驱动行为的值）——一次耗尽最多睡 3s。此前这里写的是「重试 3 次（1s/2s/4s）」，两处都错：3 是**尝试数**不是重试数，而 4s 那一档因为末次尝试后不再 sleep 而**任何路径都到不了**，照它估算最坏耗时会高估一倍。permanent（401/400/解析）立即返回。`isTransient` 是第二道防线——生产环境 summary 模型通常是 `ResilientChatModel`，已过滤 4xx。
 
 ## TUI 呈现
 

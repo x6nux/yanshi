@@ -224,24 +224,99 @@ func execPolicySourceFiles(t *testing.T, dir string) []string {
 	return files
 }
 
-// isResultType reports whether expr names execpolicy.Result (or a pointer to
-// it) as written inside the execpolicy package itself.
-func isResultType(expr ast.Expr) bool {
-	switch t := expr.(type) {
-	case *ast.Ident:
-		return t.Name == "Result"
-	case *ast.StarExpr:
-		return isResultType(t.X)
+// collectNamedTypes records every package-local `type X …` declaration in
+// parsed into named, mapping the name to the type expression it is defined as.
+// The map is what lets the elision walk see through a named container
+// (`type Results []Result`), whose AST node is a bare *ast.Ident carrying no
+// hint that it is a slice at all.
+func collectNamedTypes(parsed *ast.File, named map[string]ast.Expr) {
+	for _, decl := range parsed.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			if ts, ok := spec.(*ast.TypeSpec); ok {
+				named[ts.Name.Name] = ts.Type
+			}
+		}
 	}
-	return false
+}
+
+// namedTypeDecls collects collectNamedTypes over every file of the package, so
+// a named container declared in one file is resolvable from a literal written
+// in another.
+func namedTypeDecls(t *testing.T, files []string) map[string]ast.Expr {
+	t.Helper()
+	named := map[string]ast.Expr{}
+	for _, file := range files {
+		fset := token.NewFileSet()
+		parsed, err := parser.ParseFile(fset, file, nil, 0)
+		require.NoError(t, err, "parse %s", file)
+		collectNamedTypes(parsed, named)
+	}
+	return named
+}
+
+// resolveNamed unwraps a chain of package-local named types down to the first
+// expression that is not a bare identifier (`Results` -> `[]Result`). An
+// identifier that names nothing local is returned unchanged. The visited set is
+// belt-and-braces: Go rejects a definition cycle at compile time, so it can only
+// fire on a malformed synthetic AST, where looping forever would be worse than
+// returning early.
+func resolveNamed(typ ast.Expr, named map[string]ast.Expr) ast.Expr {
+	visited := map[string]bool{}
+	for {
+		id, ok := typ.(*ast.Ident)
+		if !ok || visited[id.Name] {
+			return typ
+		}
+		next, ok := named[id.Name]
+		if !ok {
+			return typ
+		}
+		visited[id.Name] = true
+		typ = next
+	}
+}
+
+// isResultType reports whether expr names execpolicy.Result (or a pointer to
+// it) as written inside the execpolicy package itself, following package-local
+// named types: `type R2 Result` writes the SAME Verdict field, so a literal of
+// R2 must be harvested too. named may be nil (then only the literal spelling
+// `Result` matches).
+func isResultType(expr ast.Expr, named map[string]ast.Expr) bool {
+	visited := map[string]bool{}
+	for {
+		if star, ok := expr.(*ast.StarExpr); ok {
+			expr = star.X
+			continue
+		}
+		id, ok := expr.(*ast.Ident)
+		if !ok {
+			return false
+		}
+		if id.Name == "Result" {
+			return true
+		}
+		if visited[id.Name] {
+			return false
+		}
+		next, ok := named[id.Name]
+		if !ok {
+			return false
+		}
+		visited[id.Name] = true
+		expr = next
+	}
 }
 
 // registerElidedResultLits marks the type-elided element literals of a
 // []Result / map[K]Result composite literal, so `[]Result{{Verdict: "x"}}` is
 // followed as well as `[]Result{Result{Verdict: "x"}}`. Without this the inner
 // literal has a nil Type and looks like a literal of some unrelated type.
-func registerElidedResultLits(lit *ast.CompositeLit, elided map[*ast.CompositeLit]bool) {
-	registerElidedResultLitsAs(lit, lit.Type, elided)
+func registerElidedResultLits(lit *ast.CompositeLit, named map[string]ast.Expr, elided map[*ast.CompositeLit]bool) {
+	registerElidedResultLitsAs(lit, lit.Type, named, elided)
 }
 
 // registerElidedResultLitsAs is the recursive worker. typ is the KNOWN type of
@@ -256,8 +331,14 @@ func registerElidedResultLits(lit *ast.CompositeLit, elided map[*ast.CompositeLi
 // reconciliation against checkShell silently stopped covering it. One level
 // (`[]Result{{Verdict: "…"}}`) was caught the whole time, which is exactly why
 // the gap read as covered.
-func registerElidedResultLitsAs(lit *ast.CompositeLit, typ ast.Expr, elided map[*ast.CompositeLit]bool) {
-	elem := compositeElemType(typ)
+//
+// named carries the package's own type declarations so a NAMED container
+// (`type Results []Result; Results{{Verdict: "…"}}`) is followed too. That was
+// the second silent miss of the same shape: such a literal's type is a bare
+// *ast.Ident, compositeElemType returned nil for it, and the walk returned
+// having marked nothing — no verdict, no failure.
+func registerElidedResultLitsAs(lit *ast.CompositeLit, typ ast.Expr, named map[string]ast.Expr, elided map[*ast.CompositeLit]bool) {
+	elem := compositeElemType(typ, named)
 	if elem == nil {
 		return
 	}
@@ -269,23 +350,24 @@ func registerElidedResultLitsAs(lit *ast.CompositeLit, typ ast.Expr, elided map[
 		if !ok || inner.Type != nil {
 			continue
 		}
-		if isResultType(elem) {
+		if isResultType(elem, named) {
 			elided[inner] = true
 			continue
 		}
 		// elem is itself a container (the []Result inside a
 		// map[string][]Result): inner is that container with its type elided,
 		// so its OWN elements are the elided Result literals.
-		registerElidedResultLitsAs(inner, elem, elided)
+		registerElidedResultLitsAs(inner, elem, named, elided)
 	}
 }
 
 // compositeElemType returns the element type a composite literal of type typ
-// elides in its elements, or nil when typ is not an array/slice/map. Struct
-// types are deliberately absent: Go does not permit type elision for a struct
-// field's value, so there is no third nesting shape to model here.
-func compositeElemType(typ ast.Expr) ast.Expr {
-	switch t := typ.(type) {
+// elides in its elements, or nil when typ neither is nor names an
+// array/slice/map. Struct types are deliberately absent: Go does not permit
+// type elision for a struct field's value, so there is no third nesting shape
+// to model here.
+func compositeElemType(typ ast.Expr, named map[string]ast.Expr) ast.Expr {
+	switch t := resolveNamed(typ, named).(type) {
 	case *ast.ArrayType:
 		return t.Elt
 	case *ast.MapType:
@@ -396,13 +478,23 @@ func recordResultVerdict(t *testing.T, file string, lit *ast.CompositeLit, verdi
 // registerElidedResultLitsAs, which recurses through nested array/slice/map
 // element types. The single-level version missed
 // `map[string][]Result{"k": {{Verdict: "…"}}}` silently while catching
-// `[]Result{{Verdict: "…"}}`, so the gap read as covered.
+// `[]Result{{Verdict: "…"}}`, so the gap read as covered. Package-local NAMED
+// container types (`type Results []Result`) are resolved to their underlying
+// container first (namedTypeDecls / resolveNamed), because their AST node is a
+// bare identifier that an unresolved walk skips without a word — the same
+// silent-skip shape one nesting level up.
 //
-// What is NOT covered, said plainly: a verdict that reaches Result.Verdict
-// through a value flowing out of this package's own helpers by some fourth
-// route (reflection, unsafe) would still be missed. The three shapes above are
-// the ones Go offers for writing a struct field directly, which is why they
-// are enumerated rather than approximated.
+// What is NOT covered, said plainly, and each item is a SILENT miss rather
+// than a failure, which is why they are listed instead of trusted:
+//
+//   - a container type declared in a DIFFERENT package (`[]somepkg.Results{…}`):
+//     namedTypeDecls only reads internal/execpolicy's own files;
+//   - a verdict reaching Result.Verdict through reflection or unsafe.
+//
+// Everything the walk does reach and cannot interpret — a call, a conversion,
+// a concatenation, a multi-value assignment — fails the test instead. The
+// three shapes above are the ones Go offers for writing a struct field
+// directly, which is why they are enumerated rather than approximated.
 //
 // TestRegisterElidedResultLitsHandlesNesting pins the elision depths so this
 // paragraph cannot drift away from the walk again.
@@ -411,6 +503,7 @@ func execPolicyVerdictSet(t *testing.T) map[string]bool {
 	const dir = "../execpolicy"
 	files := execPolicySourceFiles(t, dir)
 	verdictField := resultVerdictFieldIndex(t, files)
+	named := namedTypeDecls(t, files)
 
 	verdicts := map[string]bool{}
 	type identRef struct{ file, fn, name string }
@@ -463,8 +556,8 @@ func execPolicyVerdictSet(t *testing.T) map[string]bool {
 						record(node.Rhs[i])
 					}
 				case *ast.CompositeLit:
-					registerElidedResultLits(node, elided)
-					if !isResultType(node.Type) && !elided[node] {
+					registerElidedResultLits(node, named, elided)
+					if !isResultType(node.Type, named) && !elided[node] {
 						return true
 					}
 					recordResultVerdict(t, file, node, verdictField, record)
@@ -519,6 +612,20 @@ func TestRegisterElidedResultLitsHandlesNesting(t *testing.T) {
 		// An explicit inner type is not elided, so the walk reaches it through
 		// isResultType instead and must not double-register it here.
 		{"explicit_inner_type", `var x = []Result{Result{Verdict: "a"}}`, 0},
+		// Named containers: the literal's type is a bare identifier, so without
+		// resolveNamed the walk marks nothing and reports nothing.
+		{"named_slice", "type Results []Result\nvar x = Results{{Verdict: \"a\"}}", 1},
+		{"named_map", "type ResultMap map[string]Result\nvar x = ResultMap{\"k\": {Verdict: \"a\"}}", 1},
+		{"named_array", "type Pair [1]Result\nvar x = Pair{{Verdict: \"a\"}}", 1},
+		{"named_of_named", "type Results []Result\ntype ByKey map[string]Results\n" +
+			"var x = ByKey{\"k\": {{Verdict: \"a\"}}}", 1},
+		{"named_elem_type", "type R2 Result\nvar x = []R2{{Verdict: \"a\"}}", 1},
+		// Reverse probes for the named path: a named container of an unrelated
+		// element type must stay unmarked, and a named STRUCT is not a container
+		// at all (its fields cannot elide a type).
+		{"named_slice_unrelated", "type Others []Other\nvar x = Others{{Verdict: \"a\"}}", 0},
+		{"named_struct_is_not_a_container", "type Wrapper struct{ R Result }\n" +
+			"var x = Wrapper{R: Result{Verdict: \"a\"}}", 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -528,10 +635,12 @@ func TestRegisterElidedResultLitsHandlesNesting(t *testing.T) {
 			parsed, err := parser.ParseFile(fset, "synthetic.go", src, 0)
 			require.NoError(t, err)
 
+			named := map[string]ast.Expr{}
+			collectNamedTypes(parsed, named)
 			elided := map[*ast.CompositeLit]bool{}
 			ast.Inspect(parsed, func(n ast.Node) bool {
 				if lit, ok := n.(*ast.CompositeLit); ok {
-					registerElidedResultLits(lit, elided)
+					registerElidedResultLits(lit, named, elided)
 				}
 				return true
 			})
