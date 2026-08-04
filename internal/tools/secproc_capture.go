@@ -89,28 +89,54 @@ func waitExitCode(wait func() error) (int, error) {
 }
 
 // commandFailureTail extracts the most informative slice of a failed
-// subprocess's output. stderr wins when present (build errors, "module cache
-// not found", "fatal: not a git repository", "gh: not authenticated" all land
-// there); otherwise the tail of stdout is used, since -json runs put the
-// failure text there. Capped so a huge log cannot flood the model's context —
+// subprocess's output. Capped so a huge log cannot flood the model's context —
 // run_tests already spills the full output to an artifact.
+//
+// It reports BOTH streams when both carry text, stderr first. "stderr wins,
+// stdout as fallback" is the intuitive rule and it is wrong often enough to
+// matter, because which stream holds the reason is per-tool and sometimes
+// per-invocation:
+//
+//   - git and gh do put the reason on stderr ("fatal: not a git repository",
+//     "gh: not authenticated"), and stdout is empty or irrelevant.
+//   - `go test -json` puts even COMPILE ERRORS on stdout, as build-output
+//     events; on Go 1.26 stderr is 0 bytes for a package that fails to build.
+//     What does reach stderr is progress chatter ("go: downloading …"). Under
+//     a strict stderr-wins rule a build failure was reported to the model as
+//     "go: downloading github.com/google/uuid v1.6.0" — a true statement that
+//     answers nothing, with the actual "undefined: foo" sitting unused in
+//     stdout.
+//
+// Emitting both costs at most one extra line and removes the whole class of
+// "the tool told the model the wrong reason". Each stream keeps half the
+// budget so neither can crowd the other out.
 //
 // Shared by every tool that turns a non-zero exit into a reported failure
 // (run_tests, github_*, git_status/git_diff) so the answer to "what did the
 // command actually complain about" is assembled in exactly one place.
 func commandFailureTail(res commandResult) string {
 	const maxTail = 1024
-	text := strings.TrimSpace(res.Stderr)
-	if text == "" {
-		text = strings.TrimSpace(res.Stdout)
-	}
-	if text == "" {
+	errText := strings.TrimSpace(res.Stderr)
+	outText := strings.TrimSpace(res.Stdout)
+	switch {
+	case errText == "" && outText == "":
 		return "(no output)"
+	case outText == "":
+		return tailOf(errText, maxTail)
+	case errText == "":
+		return tailOf(outText, maxTail)
 	}
-	if len(text) > maxTail {
-		text = "…" + text[len(text)-maxTail:]
+	return "stderr: " + tailOf(errText, maxTail/2) + "\nstdout: " + tailOf(outText, maxTail/2)
+}
+
+// tailOf returns the last max bytes of s, marked with a leading ellipsis when
+// it truncated. The tail (not the head) is kept because runners print the
+// summary of what went wrong last.
+func tailOf(s string, max int) string {
+	if len(s) <= max {
+		return s
 	}
-	return text
+	return "…" + s[len(s)-max:]
 }
 
 func runSecureCapture(ctx context.Context, spec secproc.SecureProcessSpec, timeout time.Duration) (commandResult, error) {

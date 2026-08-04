@@ -10,7 +10,7 @@ import (
 
 func TestStreamFromReader(t *testing.T) {
 	ch := make(chan ToolChunk, 32)
-	reader := strings.NewReader("line1\nline2\nline3\n")
+	reader := io.NopCloser(strings.NewReader("line1\nline2\nline3\n"))
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -50,7 +50,7 @@ func TestStreamFromReaderContextCancel(t *testing.T) {
 
 func TestStreamFromReaderEmpty(t *testing.T) {
 	ch := make(chan ToolChunk, 32)
-	reader := strings.NewReader("")
+	reader := io.NopCloser(strings.NewReader(""))
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 

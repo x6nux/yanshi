@@ -120,10 +120,13 @@ func (s *ShellTools) stream(ctx context.Context, argsJSON string) <-chan ToolChu
 		// first word appears in safeShellCommands. The map remains for UI
 		// display hints (Task 18's TUI may surface a "known safe command"
 		// affordance), but it no longer affects the security path — the guard's
-		// structural HardDeny on shell metachar / unknown policy / denylist, and
-		// the overridable HardDeny on shell-policy=deny (which YOLO/Auto may
-		// still bypass via the callback), MUST NOT be affected by knowing the
-		// safe-list. Workdir = s.root feeds the destructive-deletion dimension
+		// structural HardDeny on shell metachar / unknown policy / execpolicy
+		// parse-error, and the overridable HardDeny on shell-policy=deny and on
+		// a denylist match (both of which YOLO/Auto may still bypass via the
+		// callback), MUST NOT be affected by knowing the safe-list. A denylist
+		// hit is profile policy, not the structural floor; filing it under
+		// "structural" here overstated what the safe-list is being kept away
+		// from. Workdir = s.root feeds the destructive-deletion dimension
 		// (catastrophic block / out-of-workdir escalation) for yolo/auto.
 		if err := Authorize(ctx, guard.Action{Tool: "shell_run", Shell: a.Command, Workdir: s.root}, argsJSON); err != nil {
 			pushErrChunk(ch, err)
@@ -167,13 +170,48 @@ func (s *ShellTools) stream(ctx context.Context, argsJSON string) <-chan ToolChu
 				pushErrChunk(ch, fmt.Errorf("shell: Factory returned a process with no reaper (fail-closed)"))
 				return
 			}
-			// shell_run is a DISPLAY consumer: the model must see what a
-			// terminal would, stderr interleaved with stdout — a compiler
-			// error or a "permission denied" is the whole answer for most
-			// commands, and the legacy pipe path below merges them for exactly
-			// that reason. The factory hands the two streams back separately
-			// (so the capture path's parsers get an unpolluted stdout), so
-			// re-merge them here rather than dropping stderr on the floor.
+			// Reap on EVERY exit path, not just the successful one. The
+			// success path calls waitExitCode below; the streaming-error path
+			// (which is how cancellation and per-call timeouts leave this
+			// function — Esc in the TUI, `timeout_s` expiry) used to return
+			// straight to the caller, so the fix above only ever covered the
+			// commands that ran to completion.
+			//
+			// Wait is not just bookkeeping here: for the production factory it
+			// is (*exec.Cmd).Wait, which is what closes the child's pipes.
+			// Skipping it left both the unreaped child AND the goroutines
+			// pumping those pipes parked forever.
+			//
+			// A guarded defer rather than an unconditional one, because the
+			// success path needs Wait's exit STATUS and Wait must not be
+			// called twice. No synchronization is needed on `reaped`: both the
+			// write below and the deferred read happen on this goroutine.
+			// Registered after `defer close(ch)`, so LIFO reaps the child
+			// before the channel closes.
+			reaped := false
+			reap := func() {
+				if !reaped {
+					reaped = true
+					_ = started.Wait()
+				}
+			}
+			defer reap()
+			// shell_run is a DISPLAY consumer: the model must see stderr as
+			// well as stdout — a compiler error or a "permission denied" is
+			// the whole answer for most commands, and the legacy pipe path
+			// below merges them for exactly that reason. The factory hands the
+			// two streams back separately (so the capture path's parsers get
+			// an unpolluted stdout), so re-merge them here rather than
+			// dropping stderr on the floor.
+			//
+			// "What a terminal would show" is the intent, not the guarantee.
+			// MergeOutput races two copiers, so relative order between the two
+			// streams is approximate (~11% of lines land ahead of an earlier
+			// one in a stress measurement); the legacy single-fd path below
+			// preserves order exactly. Lines are never split or spliced on
+			// either path. Order matters less than presence here — the exit
+			// footer, not the interleaving, is what tells the model whether the
+			// command failed — but do not describe this stream as faithful.
 			//
 			// Drain to EOF BEFORE Wait: (*exec.Cmd).Wait closes the child's
 			// pipes, so reading after it races into "file already closed" and
@@ -187,6 +225,7 @@ func (s *ShellTools) stream(ctx context.Context, argsJSON string) <-chan ToolChu
 					return
 				}
 			}
+			reaped = true
 			exitCode, err := waitExitCode(started.Wait)
 			if err != nil {
 				pushErrChunk(ch, fmt.Errorf("shell: %w", err))
@@ -330,7 +369,23 @@ func shellCommand(ctx context.Context, env, command string) *exec.Cmd {
 //
 // The ticker is identical to the legacy path's, so both code paths produce
 // the same TUI experience ("running·Xs").
-func streamFromReader(ctx context.Context, ch chan<- ToolChunk, r io.Reader) error {
+//
+// r is an io.ReadCloser rather than an io.Reader because the cancellation path
+// REQUIRES closing it, and a signature that accepted a bare Reader let callers
+// hand over something this function cannot terminate. On ctx.Done the scanner
+// goroutine is typically parked inside sc.Scan → r.Read, which no amount of
+// context cancellation reaches; closing r is what unblocks it.
+//
+// Returning before that goroutine exits is a DATA RACE, not merely untidy: the
+// caller's `defer close(ch)` fires the moment this returns, while the scanner
+// may still be inside `ch <- ToolChunk{…}`. Its select has ctx.Done() as the
+// other arm, but a select with two ready cases picks either one, and even the
+// ctx.Done arm carries no happens-before edge to the caller's close. An earlier
+// comment here asserted "scanner already stopped via select before caller
+// closes ch" — that was an assumption, and `go test -race` on a cancelled
+// factory-path shell_run reports closechan/chansend on exactly this pair.
+// Closing r and then awaiting scanDone is what makes the assertion true.
+func streamFromReader(ctx context.Context, ch chan<- ToolChunk, r io.ReadCloser) error {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	scanDone := make(chan struct{})
@@ -352,7 +407,11 @@ func streamFromReader(ctx context.Context, ch chan<- ToolChunk, r io.Reader) err
 	for {
 		select {
 		case <-ctx.Done():
-			// scanner already stopped via select before caller closes ch
+			// Close first (unblocks a scanner parked in Read), then wait for
+			// the goroutine to be gone before returning to a caller whose
+			// deferred close(ch) is the other half of the race.
+			_ = r.Close()
+			<-scanDone
 			return ctx.Err()
 		case <-scanDone:
 			return sc.Err()

@@ -181,14 +181,35 @@ func reconcileExitCode(result testResult, res commandResult) testResult {
 	return result
 }
 
+// parseTestResult routes a finished run to its framework parser. EVERY parser
+// gets res.Stdout ALONE — never Stdout+Stderr — because all three runners emit
+// their machine-readable result on stdout and their chatter on stderr, and
+// splicing the two makes the parser report things that did not happen:
+//
+//   - npm: the reporter's JSON document is the whole of stdout, so appending
+//     stderr puts trailing text after the top-level value and json.Unmarshal
+//     fails. A passing suite plus one "npm WARN config …" line came back as
+//     status:"error", summary:"npm: invalid character 'n' after top-level
+//     value" — a green run reported as a broken runner.
+//   - cargo: the failure roster is found by searching for "failures:\n". Any
+//     stderr line ending in "failures:" (a rustc note, a build warning
+//     preamble) makes the following stderr lines get harvested as test names,
+//     fabricating failures that no test binary ever produced.
+//   - go: already stdout-only; `go test -json` puts even build errors on
+//     stdout as build-output events (verified on Go 1.26: stderr is empty for
+//     a package that fails to compile).
+//
+// Nothing is lost by dropping stderr here: a runner that dies without emitting
+// a parseable result exits non-zero, and reconcileExitCode then reports
+// commandFailureTail(res), which reads stderr precisely for that case.
 func parseTestResult(framework string, res commandResult) testResult {
 	switch framework {
 	case "go":
 		return parseGoJSON(res.Stdout)
 	case "cargo":
-		return parseCargoOutput(res.Stdout + res.Stderr)
+		return parseCargoOutput(res.Stdout)
 	case "npm":
-		return parseNPMOutput(res.Stdout + res.Stderr)
+		return parseNPMOutput(res.Stdout)
 	}
 	return testResult{Framework: framework, Status: "error", Summary: "unknown framework"}
 }

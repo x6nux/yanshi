@@ -43,6 +43,48 @@ func TestParseNPMOutputAggregates(t *testing.T) {
 	}
 }
 
+// TestParseTestResultIgnoresStderr pins the stdout-only contract of
+// parseTestResult for all three frameworks. Before this, cargo and npm were
+// handed res.Stdout+res.Stderr, which turned ordinary runner chatter into
+// fabricated verdicts: one "npm WARN" line made a fully passing suite report
+// status:"error", and any stderr line ending in "failures:" made cargo harvest
+// the following stderr lines as failed test names.
+func TestParseTestResultIgnoresStderr(t *testing.T) {
+	t.Run("npm warning does not break a passing suite", func(t *testing.T) {
+		res := commandResult{
+			Stdout: `{"stats":{"passes":12,"failures":0,"pending":1},"failures":[]}`,
+			Stderr: "npm WARN config production Use `--omit=dev` instead.\n",
+		}
+		got := parseTestResult("npm", res)
+		if got.Status != "pass" || got.Passed != 12 || got.Failed != 0 {
+			t.Fatalf("npm stderr poisoned the result: %+v", got)
+		}
+	})
+	t.Run("cargo stderr cannot fabricate failures", func(t *testing.T) {
+		res := commandResult{
+			Stdout: "running 3 tests\ntest result: ok. 3 passed; 0 failed; 0 ignored\n",
+			Stderr: "note: previous failures:\nphantom_case\n",
+		}
+		got := parseTestResult("cargo", res)
+		if got.Status != "pass" || got.Failed != 0 {
+			t.Fatalf("cargo stderr poisoned the result: %+v", got)
+		}
+		if len(got.Failures) != 0 {
+			t.Fatalf("cargo harvested phantom failures from stderr: %+v", got.Failures)
+		}
+	})
+	t.Run("go already stdout-only", func(t *testing.T) {
+		res := commandResult{
+			Stdout: `{"Action":"pass","Package":"p","Test":"TestA"}` + "\n",
+			Stderr: `{"Action":"fail","Package":"p","Test":"TestGhost"}` + "\n",
+		}
+		got := parseTestResult("go", res)
+		if got.Passed != 1 || got.Failed != 0 {
+			t.Fatalf("go stderr poisoned the result: %+v", got)
+		}
+	})
+}
+
 func TestDetectRunnerPriority(t *testing.T) {
 	cases := []struct {
 		files map[string]bool

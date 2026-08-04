@@ -189,3 +189,52 @@ func TestRunSecureCaptureDrainsAndReportsTruncation(t *testing.T) {
 }
 
 var _ secproc.Factory = (*scriptedFactory)(nil)
+
+// TestCommandFailureTailKeepsBothStreams pins the both-streams contract. A
+// strict stderr-wins rule reported a Go build failure as the progress line
+// "go: downloading …" while the real "undefined: foo" sat unused in stdout,
+// because `go test -json` emits build errors as stdout build-output events
+// (verified on Go 1.26: stderr is empty for a package that fails to compile).
+func TestCommandFailureTailKeepsBothStreams(t *testing.T) {
+	got := commandFailureTail(commandResult{
+		Stdout: `{"Action":"build-output","Output":"x_test.go:3: undefined: undefinedSymbol\n"}`,
+		Stderr: "go: downloading github.com/google/uuid v1.6.0",
+	})
+	if !strings.Contains(got, "undefined: undefinedSymbol") {
+		t.Fatalf("stdout reason dropped in favor of stderr noise: %q", got)
+	}
+	if !strings.Contains(got, "go: downloading") {
+		t.Fatalf("stderr dropped: %q", got)
+	}
+}
+
+// TestCommandFailureTailSingleStreamStaysBare keeps the common git/gh shape
+// unlabeled — those tools put the whole reason on stderr and callers embed the
+// result in their own "✗ git_status: …" prefix.
+func TestCommandFailureTailSingleStreamStaysBare(t *testing.T) {
+	got := commandFailureTail(commandResult{Stderr: "fatal: not a git repository"})
+	if got != "fatal: not a git repository" {
+		t.Fatalf("stderr-only tail = %q", got)
+	}
+	if got := commandFailureTail(commandResult{Stdout: "boom"}); got != "boom" {
+		t.Fatalf("stdout-only tail = %q", got)
+	}
+	if got := commandFailureTail(commandResult{}); got != "(no output)" {
+		t.Fatalf("empty tail = %q", got)
+	}
+}
+
+// TestCommandFailureTailCapsEachStream keeps one runaway stream from crowding
+// the other out of the model's context.
+func TestCommandFailureTailCapsEachStream(t *testing.T) {
+	got := commandFailureTail(commandResult{
+		Stdout: strings.Repeat("o", 4000) + "STDOUT-END",
+		Stderr: strings.Repeat("e", 4000) + "STDERR-END",
+	})
+	if !strings.Contains(got, "STDOUT-END") || !strings.Contains(got, "STDERR-END") {
+		t.Fatalf("tail lost the end of a stream: %q", got)
+	}
+	if len(got) > 1200 {
+		t.Fatalf("tail = %d bytes, exceeds the ~1 KiB budget", len(got))
+	}
+}

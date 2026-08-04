@@ -2,8 +2,11 @@ package tools
 
 import (
 	"context"
+	"io"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/x6nux/yanshi/internal/secproc"
 )
@@ -63,5 +66,59 @@ func TestShellRunFactoryPathFailsClosedWithoutReaper(t *testing.T) {
 	}
 	if !strings.Contains(out, "reaper") {
 		t.Fatalf("result = %q, want a fail-closed reaper error", out)
+	}
+}
+
+// parkedFactory hands back a process whose output stream never reaches EOF, so
+// the only way out of shell_run's streaming loop is context cancellation. Wait
+// records that it was called and returns immediately — the assertion is about
+// whether the caller reaps at all, not about how long reaping takes.
+type parkedFactory struct {
+	waited  atomic.Bool
+	release chan struct{}
+}
+
+func (f *parkedFactory) Start(context.Context, secproc.SecureProcessSpec) (*secproc.StartedProcess, error) {
+	pr, pw := io.Pipe()
+	go func() {
+		_, _ = io.WriteString(pw, "child-stdout-marker\n")
+		<-f.release
+		_ = pw.Close()
+	}()
+	return &secproc.StartedProcess{
+		PID:    4242,
+		Stdout: pr,
+		Wait: func() error {
+			f.waited.Store(true)
+			return nil
+		},
+	}, nil
+}
+
+// TestShellRunFactoryPathReapsOnCancel is the regression test for the CANCEL
+// half of shell_run's factory branch. TestShellRunFactoryPathEmitsExitFooter
+// covers the success half, and the comment next to that branch's nil-Wait
+// check reads as if the whole "never call Wait at all, leaking one unreaped
+// child per shell_run" bug were fixed. It was not: the streaming-error return
+// — which is how every cancelled or timed-out shell_run leaves — still
+// bypassed Wait entirely.
+//
+// A cancelled turn is not a rare path; it is what the TUI's Esc key and every
+// per-call timeout do. Each one leaked an unreaped child plus the goroutines
+// pumping its pipes, because (*exec.Cmd).Wait is also what closes those pipes.
+func TestShellRunFactoryPathReapsOnCancel(t *testing.T) {
+	factory := &parkedFactory{release: make(chan struct{})}
+	defer close(factory.release)
+	sh := NewShellTools(t.TempDir())
+	base := WithSecureProcessFactory(WithProfile(context.Background(), allowAllProfile()), factory)
+	ctx, cancel := context.WithTimeout(base, 300*time.Millisecond)
+	defer cancel()
+
+	if _, err := runTool(ctx, sh.Run, `{"command":"echo hi"}`); err != nil {
+		t.Logf("shell_run returned err (expected on cancel): %v", err)
+	}
+	if !factory.waited.Load() {
+		t.Fatal("shell_run returned on cancellation without calling started.Wait — " +
+			"the child is never reaped and its pipe pumps leak")
 	}
 }
