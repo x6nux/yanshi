@@ -25,20 +25,19 @@ func TestSubagentPermModelAllowlist(t *testing.T) {
 	require.Error(t, p.Subagent.CheckReasoning("bogus"))
 }
 
-// TestShellPolicyCatalogMatchesCheckShell holds ShellPolicies() and
-// checkShell's switch together. The two are separate pieces of code — a
-// catalog consumed by config validation and a switch consumed at call time —
-// so nothing but this test stops them from drifting apart, and either
-// direction of drift is harmful:
+// TestShellPolicyCatalogMatchesCheckShell is the BEHAVIOURAL half of holding
+// ShellPolicies() and checkShell's switch together: it drives the real Check
+// (not checkShell directly) so the assertion reflects what a caller observes.
 //
-//   - A value in the catalog that checkShell does not handle would pass
-//     startup validation and then produce a structural HardDeny at the first
-//     shell_run, which is exactly the failure this validation exists to remove.
-//   - A value checkShell handles but the catalog omits would make a working
-//     config fail to load.
-//
-// The probe drives the real Check (not checkShell directly) so the assertion
-// reflects what a caller observes.
+// It covers ONE direction. Every catalog entry is run through Check and must
+// not reach the unknown-policy branch, so a catalog value checkShell dropped
+// fails here. The second loop is not the other direction — it is a fixed list
+// of near-miss spellings, and four literals cannot notice that checkShell grew
+// a case ShellPolicies() omits. That drift is the one that makes a config the
+// guard CAN enforce fail to load, and it is caught by set equality against the
+// parsed source in TestShellPolicyCatalogEqualsCheckShellSwitch
+// (verdictcatalog_test.go). Neither test subsumes the other: this one pins the
+// verdict tiers a caller sees, that one pins the vocabularies.
 func TestShellPolicyCatalogMatchesCheckShell(t *testing.T) {
 	g := New()
 	profile := func(policy string) PermissionProfile {

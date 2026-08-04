@@ -85,6 +85,8 @@ S0/W1 工作包连续多轮评审、每轮都开出阻塞，「连续三轮干�
 
 这条边界不靠人记：`internal/archtest/overlay_test.go` 的 `TestGateFilesReadFromDiskAtRuntime` 把它做成了机器判据，两个方向都测（列表里的门禁文件必须仍在读盘；新增的读盘门禁文件必须进列表）。
 
+⚠️ **那个判据只扫 `internal/archtest` 这一个目录**（它 `ParseDir` 的就是这个包）。所以**别的包里新写的读盘测试不要往 `overlayImmuneGateFiles` 里加** —— 加进去会被当成死条目判红（`got` 里永远不会出现非 archtest 的文件名）。它们只能登记到下面这张表，那张表是人工维护的。
+
 **已实测的「读盘 → overlay 无效」包**（这一列随实测增补，别凭印象加）：
 
 | 包 / 文件 | 运行时读的是什么 | 结论 |
@@ -92,6 +94,7 @@ S0/W1 工作包连续多轮评审、每轮都开出阻塞，「连续三轮干�
 | `internal/archtest`（全部门禁） | `moduleRoot` 下的 `.go` / `.md` / `docs/feature-status.yaml`，外加 `go list` 子进程 | overlay 无效 |
 | `internal/vcs/seam_race_test.go` | `parser.ParseDir` 解析 `internal/vcs` 自己的生产源码（`TestPublicRepoWritersAcquireRepoLane`） | overlay 无效 |
 | `internal/config/example_test.go` | `../../config.example.yaml` | overlay 无效（非 `.go` 文件，构建根本不看） |
+| `internal/guard/verdictcatalog_test.go` | `parser.ParseFile` 解析 `internal/guard/guard.go` 与 `internal/execpolicy/policy.go` 的生产源码 | overlay 无效 |
 | `cmd/gendocs`（`repoRoot(t)`） | `docs/**.md` 生成物 | overlay 无效 |
 | `internal/skills`、`cmd/yanshi`（`repoSkillsDir`） | 仓库 `skills/` 下的 `SKILL.md` | overlay 无效 |
 

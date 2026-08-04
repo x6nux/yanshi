@@ -34,7 +34,9 @@ shell 维度按顺序过三层，任一层给出结论就短路：
 | `denylist` | 命中 `patterns` 之一 → 拒绝（**可覆盖**）；否则放行。**"不限制 shell" 用空 patterns 的 `denylist` 表达。** |
 | `deny` | 一律拒绝（**可覆盖**）。 |
 
-> ⚠️ **写错 policy 会让 shell 永久锁死。** 未知值落进 `checkShell` 的 default 分支，返回的是**结构性 HardDeny** —— `yolo` 和 `auto` 都越不过去（见下方"两档 HardDeny"）。因此配置加载时就会校验：`profiles.<名>.shell.policy` 不在上表里，`config.Load` 直接报错退出，不会让它拖到第一次 `shell_run` 才炸。
+> ⚠️ **`rules` 为空时写错 policy 会让 shell 永久锁死。** 未知值落进 `checkShell` 的 default 分支，返回的是**结构性 HardDeny** —— `yolo` 和 `auto` 都越不过去（见下方"两档 HardDeny"）。因此配置加载时就会校验：`profiles.<名>.shell.policy` 不在上表里，`config.Load` 直接报错退出，不会让它拖到第一次 `shell_run` 才炸。
+>
+> **`rules` 非空时这道校验不跑**，和上面第 2 层说的一致：`rules` 完全接管，`policy` 根本不会被读到，写错的值是**惰性**的，不影响这个 profile 今天的任何行为。校验只在那个值真的能拒绝东西时才拦，不会因为一个 guard 从不读的字段拒绝一次启动。清空 `rules` 后该值变成活的，下一次加载就会被拒。范围与理由见 `internal/config::Config.validateProfiles` 的 doc 注释。
 
 ## 两档 HardDeny：结构性 vs 可覆盖
 
@@ -42,6 +44,8 @@ shell 维度按顺序过三层，任一层给出结论就短路：
 
 - **结构性 HardDeny**（`Overridable=false`）—— **任何模式都越不过**：shell 元字符、execpolicy parse-error、未知 shell policy、灾难性批量删除。
 - **可覆盖 HardDeny**（`Overridable=true`）—— profile 能说"不"的一切：空的 tools/fs allowlist、空的 mcp allowlist、`shell.policy: "deny"`、denylist 命中、execpolicy `hard_deny` 规则、`net.allow: false`。`yolo` 直接越过，`auto` 交给 AI 风险评分。
+
+> **本页列 4 条，`CLAUDE.md` 列 5 条，两边都对。** 源码里 `checkShell` 还有第 5 个结构性分支（`switch result.Verdict` 的 `default`），但它是**防御性的、从任何配置都到不了**：`execpolicy.Evaluate` 的出口集合是 `allow` / `prompt` / `hard_deny`，三个都被前面的 `case` 接住了。规则里把 `decision` 写错（比如 `decision: warn`）不会走到那里 —— `Evaluate` 自己先把它转成 `hard_deny`，落进 `case "hard_deny", "deny":`，那是**可覆盖**的一档，`yolo` 能越过。所以对着 yaml 配置的操作者，能碰到的结构性 HardDeny 就是上面 4 条；`CLAUDE.md` 那份枚举面向改 guard 源码的人，把源码分支也数进去。这个"出口集合到不了 default"由 `internal/guard::TestExecPolicyVerdictsAreHandledByCheckShell` 钉住。
 
 ## 破坏性删除门（profile 无关）
 

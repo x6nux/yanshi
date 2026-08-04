@@ -49,6 +49,15 @@ func TestExampleConfigDocumentsSubagents(t *testing.T) {
 // TestExampleConfigDocumentsSubagents: Load also validates api_key references
 // against the host environment, which would make this assertion depend on
 // whether the developer has ANTHROPIC_API_KEY exported.
+//
+// require.NoError alone would not be evidence of anything. Gutting
+// validateProfiles to `return nil` leaves this test green, and so would an
+// example that stopped setting shell.policy at all — the assertion would then
+// be vacuously true forever. Hence the second half: at least one shipped
+// profile must actually carry a non-empty policy, so the example keeps
+// exercising the branch it claims to certify. The rejection itself is pinned
+// by TestLoadBytesRejectsUnknownShellPolicy, which does fail when the
+// validation is gutted.
 func TestExampleConfigProfilesAreEnforceable(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "config.example.yaml"))
 	require.NoError(t, err, "config.example.yaml must be readable from the repo root")
@@ -58,4 +67,14 @@ func TestExampleConfigProfilesAreEnforceable(t *testing.T) {
 	require.NotEmpty(t, cfg.Profiles, "the example must ship at least one profile to validate")
 	require.NoError(t, cfg.validate(),
 		"config.example.yaml must pass the validation Load performs")
+
+	var withPolicy []string
+	for name, p := range cfg.Profiles {
+		if p.Shell.Policy != "" {
+			withPolicy = append(withPolicy, name)
+		}
+	}
+	require.NotEmpty(t, withPolicy,
+		"every example profile omits shell.policy, so the NoError above certifies nothing "+
+			"about policy validation; keep at least one profile with an explicit policy")
 }

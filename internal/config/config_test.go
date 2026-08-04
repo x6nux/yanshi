@@ -783,3 +783,56 @@ func TestLoadBytesAcceptsEveryEnforceableShellPolicy(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, cfg.Profiles["coding"].Shell.Policy)
 }
+
+// TestLoadBytesAllowsInertShellPolicyBesideRules pins the scope of
+// validateProfiles: a profile that carries an execpolicy rules table keeps
+// loading even when shell.policy is a value the guard cannot enforce.
+//
+// This is not leniency for its own sake. The test drives the real guard on the
+// same profile first and asserts the command is ALLOWED — that is the proof
+// that the config is a working deployment, not an already-dead one. checkShell
+// returns from inside the `len(Shell.Rules) > 0` branch on every path, so the
+// policy switch never runs and the bad value never denies anything. Rejecting
+// this shape at startup would be a behavioural regression: the operator is
+// told by docs/user-guide/guard.md that `policy` is not read when `rules` is
+// present, and would then be refused a boot over exactly that field.
+//
+// The second half is the other side of the scope: emptying the rules table
+// makes the same policy load-bearing, and the check fires on that reload. The
+// deferred typo is caught at the moment it stops being inert, not never.
+func TestLoadBytesAllowsInertShellPolicyBesideRules(t *testing.T) {
+	const withRules = `
+profiles:
+  coding:
+    tools: { allow: ["*"] }
+    net: { allow: true }
+    shell:
+      policy: "allow"
+      rules:
+        - id: go-test
+          program: go
+          prefix: ["test"]
+          decision: allow
+          justification: "tests are safe"
+`
+	cfg, err := LoadBytes([]byte(withRules))
+	require.NoError(t, err, "an inert shell.policy beside a rules table must still load")
+
+	d := guard.New().Check(cfg.Profiles["coding"], guard.Action{Tool: "shell_run", Shell: "go test"})
+	require.Equal(t, guard.Allow, d.Verdict,
+		"the rules table decides; the unenforceable policy must be unreachable")
+	require.Equal(t, "go-test", d.RuleID)
+
+	// Same profile, rules removed: the policy is now the live code path.
+	const withoutRules = `
+profiles:
+  coding:
+    tools: { allow: ["*"] }
+    net: { allow: true }
+    shell:
+      policy: "allow"
+`
+	_, err = LoadBytes([]byte(withoutRules))
+	require.Error(t, err, "with rules emptied the policy is live and must be rejected")
+	require.Contains(t, err.Error(), "profiles.coding.shell.policy")
+}

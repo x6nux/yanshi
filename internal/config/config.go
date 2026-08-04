@@ -644,16 +644,31 @@ func (c *Config) validate() error {
 // (glob lists, booleans) or degrades toward the restrictive end in a way the
 // interactive modes can still override.
 //
-// Rejecting the config outright is a tightening only in appearance. A profile
-// carrying an unknown policy has no working shell dimension today: every
-// shell_run through it is denied unconditionally. The configs this check turns
-// away are exactly the configs that were already dead, so no deployment that
-// works today stops working — it only stops failing silently.
+// Rejecting the config outright is a tightening only in appearance, but ONLY
+// because the check is scoped to profiles whose shell.rules is empty. That
+// scoping is the whole correctness argument and must not be widened casually:
 //
-// The check runs even when shell.rules is populated, where the legacy switch is
-// unreachable and the bad value is inert. That case is still a lie about the
-// operator's intent, and it becomes a live lockout the moment the rules table
-// is emptied.
+//   - shell.rules empty — the legacy switch is the live code path, so an
+//     unknown policy denies every shell_run unconditionally. The profile is
+//     already dead; refusing to start turns a mid-session structural HardDeny
+//     into a startup error that names the field. Nothing that works stops
+//     working.
+//   - shell.rules non-empty — checkShell returns from inside the execpolicy
+//     branch on every path, so the policy switch is unreachable and the bad
+//     value is INERT. Such a profile enforces its rules today exactly as
+//     written; a `policy: "allow"` typo next to a working rules table costs
+//     nothing at runtime. Validating it would be a real behavioural
+//     regression: a deployment that runs fine would refuse to boot after an
+//     upgrade, and it would be refused over a field docs/user-guide/guard.md
+//     tells the operator is ignored when rules is present.
+//
+// The inert typo is not lost, only deferred to the moment it stops being
+// inert. A value only becomes load-bearing when the rules table is emptied,
+// which requires editing config, and the edit is followed by a reload through
+// this same function — where Rules is now empty and the check fires. So the
+// narrow form still catches every configuration in which the policy can
+// actually deny anything; it just declines to fail a boot over a field the
+// guard never reads.
 //
 // Profiles is a bare map[string]guard.PermissionProfile, so profile names are
 // sorted before reporting to keep the error deterministic across runs.
@@ -664,7 +679,11 @@ func (c *Config) validateProfiles() error {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		if err := guard.ValidateShellPolicy(c.Profiles[name].Shell.Policy); err != nil {
+		p := c.Profiles[name]
+		if len(p.Shell.Rules) > 0 {
+			continue
+		}
+		if err := guard.ValidateShellPolicy(p.Shell.Policy); err != nil {
 			return fmt.Errorf("profiles.%s.shell.policy: %w", name, err)
 		}
 	}

@@ -449,7 +449,7 @@
 > acceptance：gate 证据结构完整；大输出成 artifact；挂到正确 task；退出码/duration 准确
 
 **1. gate 证据结构完整** — 部分
-- 依据：`internal/task/work::Evidence` 的全部字段（`internal/task/work/types.go`）、填充（`internal/tools/gate.go::GateTools.runGate`）、落 `task_work_gates` + timeline（`store.go::Store.RecordGate`）。`internal/tools::TestTaskGateRun_PassEvidence` 只断言 4 个字段（Classification / ExitCode / Gate / Command），**ID、Cwd、DurationMs、RecordedAt、Summary 五个未断言**，且走 FakeManager 不经 SQLite 往返；`internal/task/work::TestStoreRecordGate` 走真实 Store 但只断言 `Gates[0].Classification`。
+- 依据：`internal/task/work::Evidence` 的全部字段（`internal/task/work/types.go`）、填充（`internal/tools/gate.go::GateTools.runGate`）、落 `task_work_gates` + timeline（`store.go::Store.RecordGate`）。`internal/tools::TestTaskGateRun_PassEvidence` 只断言 Classification / ExitCode / Gate / Command，**ID、Cwd、DurationMs、RecordedAt、Summary、LogArtifactID 未断言**（字段全集见 `internal/task/work::Evidence`），且走 FakeManager 不经 SQLite 往返；`internal/task/work::TestStoreRecordGate` 走真实 Store 但只断言 `Gates[0].Classification`。
 - 证据形状：真实 gate 跑完后从 SQLite **读回**，逐字段非零/相等（ID 非空、Cwd == 解析后的 cwd、RecordedAt 落在 [before, after] 区间）。**骗过去**：只断言输入里手填的那几个字段。
 
 **2. 大输出成 artifact** — 未兑现（**虚报**）
@@ -1022,7 +1022,7 @@
 > acceptance：关键路径结构化日志；secret 不入日志；级别可配；采样不丢关键错误
 
 **1. 关键路径结构化日志** — 部分
-- 依据：`internal/tools/permctx.go`（`auditPermission`，每次权限决策）、`internal/api/http/ws.go::Server.ChatWS`（turn started/finished）、3 处 `obslog.WarnErr`。**全仓生产侧结构化日志点就这些** —— 工具执行、provider 调用、VCS 提交、压缩均无。`internal/tools::TestAuthorizeLogsDecisionWithoutArguments` / `TestAuthorizeLogsDenyDecision` 是**真证据**（换掉 `slog.Default()` 后驱动真实 `Authorize`，断言 `"decision":"allow"` / `"tool":"fs_read"` 出现）；`ws.go` 的两条 turn 日志**零测试**。
+- 依据：`internal/tools/permctx.go`（`auditPermission`，每次权限决策）、`internal/api/http/ws.go::Server.ChatWS`（turn started/finished）、`obslog.WarnErr`（bootstrap 的 VCS 初始化与插件发现失败、`internal/cli/session.go` 的进程内 server 停止）、以及 `internal/observe/otel::Setup` 里三条 collector/exporter 不可用的 `slog.WarnContext`（`bootstrap.Build` 无条件调用它）。**当前全集现算，别信这里的枚举**：`grep -rnE 'slog\.(Debug|Info|Warn|Error|Log)[A-Za-z]*\(|obslog\.(Debug|Info|Warn|Error)[A-Za-z]*\(' --include='*.go' internal cmd | grep -v '_test\.go'`。工具执行、provider 调用、VCS 提交、压缩仍然一处都没有。`internal/tools::TestAuthorizeLogsDecisionWithoutArguments` / `TestAuthorizeLogsDenyDecision` 是**真证据**（换掉 `slog.Default()` 后驱动真实 `Authorize`，断言 `"decision":"allow"` / `"tool":"fs_read"` 出现）；`ws.go` 的两条 turn 日志**零测试**。
 - 证据形状：驱动**生产入口**（不是直接调 logger），捕获 slog 输出，断言字段名+值。**骗过去**：在测试里自己 `logger.Info(...)` 再断言。
 
 **2. secret 不入日志** — 已兑现

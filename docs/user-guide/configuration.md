@@ -35,7 +35,11 @@ agent 声明列表（`name`/`type`=`local`|`external`|`remote`/`chain` provider 
 - `orchestrator` —— 聊天/TUI 编排器固定读这个键（`internal/bootstrap::Build`）；缺失则退回内置的 `internal/bootstrap::DefaultOrchestratorProfile`。
 - **worker 名** —— task API 的 `GET /api/v1/agent/profile?worker=<名>` 拿 `<名>` 当键名查（`internal/api/http::Server.TaskAPI`）。所以示例里的 `coding` profile 只对 `agent-worker -name coding` 生效；查不到时 fail-closed 退回 deny-all。
 
-`shell.policy` 只接受四个值：`""`（等同 `allowlist`）、`allowlist`、`deny`、`denylist`；**没有 `allow`**，"不限制 shell" 用空 `patterns` 的 `denylist` 表达。写了别的值会在 `config.Load` 阶段直接报错退出（`profiles.<名>.shell.policy: unknown shell policy ...`）—— 因为运行时它会变成连 `yolo`/`auto` 都越不过的结构性 HardDeny。维度顺序与两档 HardDeny 详见 [guard.md](guard.md)。
+`shell.policy` 只接受四个值：`""`（等同 `allowlist`）、`allowlist`、`deny`、`denylist`；**没有 `allow`**，"不限制 shell" 用空 `patterns` 的 `denylist` 表达。写了别的值会在 `config.Load` 阶段直接报错退出（`profiles.<名>.shell.policy: unknown shell policy ...`）—— 因为运行时它会变成连 `yolo`/`auto` 都越不过的结构性 HardDeny。
+
+> **这道校验只看 `shell.rules` 为空的 profile。** `rules` 非空时它完全接管 shell 维度、`policy` 根本不会被读到，那个值是**惰性**的（照它配的 profile 今天跑得好好的），所以校验放过它，不把一个不影响运行的字段变成启动失败。把 `rules` 清空后同一个值就变成活的了，下一次加载会拒。权威实现见 `internal/config::Config.validateProfiles` 的 doc 注释。
+
+维度顺序与两档 HardDeny 详见 [guard.md](guard.md)。
 
 ## skills
 

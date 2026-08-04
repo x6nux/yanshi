@@ -64,6 +64,12 @@ compaction:
 # "denylist" with no patterns. An unrecognized value is rejected at startup,
 # because at runtime it would be a STRUCTURAL HardDeny that not even yolo/auto
 # can override.
+#
+# That startup check only looks at profiles whose shell.rules is EMPTY. A rules
+# table takes the shell dimension over completely and the policy switch is
+# never reached, so a stale policy sitting next to rules is inert and is left
+# alone rather than made into a boot failure. Empty the rules table and the
+# same value becomes live — and is rejected on that reload.
 profiles:
   orchestrator:
     fs: { read: ["**"], write: [] }
