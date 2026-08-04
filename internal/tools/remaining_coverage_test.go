@@ -107,27 +107,27 @@ func TestParseToolList(t *testing.T) {
 
 func TestTestSpec(t *testing.T) {
 	t.Run("go with packages", func(t *testing.T) {
-		spec := testSpec("go", runTestsArgs{Packages: []string{"./..."}, Filter: "TestFoo"}, "/root")
-		if spec.Program != "go" {
-			t.Fatalf("unexpected: %+v", spec)
+		spec, err := testSpec("go", runTestsArgs{Packages: []string{"./..."}, Filter: "TestFoo"}, "/root")
+		if err != nil || spec.Program != "go" {
+			t.Fatalf("unexpected: %+v %v", spec, err)
 		}
 	})
 	t.Run("go default packages", func(t *testing.T) {
-		spec := testSpec("go", runTestsArgs{}, "/root")
-		if spec.Program != "go" {
-			t.Fatalf("unexpected: %+v", spec)
+		spec, err := testSpec("go", runTestsArgs{}, "/root")
+		if err != nil || spec.Program != "go" {
+			t.Fatalf("unexpected: %+v %v", spec, err)
 		}
 	})
 	t.Run("cargo with filter", func(t *testing.T) {
-		spec := testSpec("cargo", runTestsArgs{Filter: "test_foo"}, "/root")
-		if spec.Program != "cargo" {
-			t.Fatalf("unexpected: %+v", spec)
+		spec, err := testSpec("cargo", runTestsArgs{Filter: "test_foo"}, "/root")
+		if err != nil || spec.Program != "cargo" {
+			t.Fatalf("unexpected: %+v %v", spec, err)
 		}
 	})
 	t.Run("npm with filter", func(t *testing.T) {
-		spec := testSpec("npm", runTestsArgs{Filter: "test foo"}, "/root")
-		if spec.Program != "npm" {
-			t.Fatalf("unexpected: %+v", spec)
+		spec, err := testSpec("npm", runTestsArgs{Filter: "test foo"}, "/root")
+		if err != nil || spec.Program != "npm" {
+			t.Fatalf("unexpected: %+v %v", spec, err)
 		}
 	})
 }

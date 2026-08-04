@@ -80,6 +80,9 @@ func TestValidateGitRef(t *testing.T) {
 	assert.Error(t, validateGitRef(""))
 	assert.Error(t, validateGitRef("has space"))
 	assert.Error(t, validateGitRef("has\nnewline"))
+	// A dash-leading value is an OPTION to git, not a ref — see
+	// TestGitDiffRefCannotWriteFilesOutsideWorkRoot for the file it used to write.
+	assert.Error(t, validateGitRef("--output=/tmp/pwn"))
 }
 
 func TestFilterGitByPaths(t *testing.T) {

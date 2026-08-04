@@ -221,6 +221,23 @@ func collectGitDiffFiles(ctx context.Context, root string, args gitDiffArgs) ([]
 	return files, nil
 }
 
+// gitEndOfOptions is git's own end-of-option-parsing marker (git 2.24+, Nov
+// 2019): every argv element after it is read as a revision or pathspec, never
+// as an option, no matter what it starts with.
+//
+// It is the SECOND layer under validateGitRef, and the two are deliberately
+// not redundant. validateGitRef is enforced by yanshi and therefore also
+// covers the git versions that predate this marker; gitEndOfOptions is
+// enforced by git and therefore survives a future call site here that forgets
+// to validate — which is exactly how the ref hole got in. Note the placement
+// rule: `--end-of-options` must come after all real options and before the
+// first revision, and `--` still separates revisions from pathspecs after it.
+//
+// Pathspec operands are NOT protected by this marker and do not need to be:
+// every path in this file is already emitted after the `--` separator, where
+// git's own parser has stopped looking for options.
+const gitEndOfOptions = "--end-of-options"
+
 func gitDiffCommands(args gitDiffArgs) (secproc.SecureProcessSpec, func(path string) secproc.SecureProcessSpec, error) {
 	baseArgs := []string{"-c", "core.quotepath=false"}
 	switch args.Scope.Kind {
@@ -233,17 +250,17 @@ func gitDiffCommands(args gitDiffArgs) (secproc.SecureProcessSpec, func(path str
 		if err := validateGitRef(args.Scope.Ref); err != nil {
 			return secproc.SecureProcessSpec{}, nil, err
 		}
-		numstat := secproc.SecureProcessSpec{Program: "git", Args: append(baseArgs, "diff", "--numstat", "-z", "--no-ext-diff", args.Scope.Ref+"...HEAD", "--")}
+		numstat := secproc.SecureProcessSpec{Program: "git", Args: append(baseArgs, "diff", "--numstat", "-z", "--no-ext-diff", gitEndOfOptions, args.Scope.Ref+"...HEAD", "--")}
 		return numstat, func(path string) secproc.SecureProcessSpec {
-			return secproc.SecureProcessSpec{Program: "git", Args: append(baseArgs, "diff", "--no-ext-diff", "--binary", args.Scope.Ref+"...HEAD", "--", path)}
+			return secproc.SecureProcessSpec{Program: "git", Args: append(baseArgs, "diff", "--no-ext-diff", "--binary", gitEndOfOptions, args.Scope.Ref+"...HEAD", "--", path)}
 		}, nil
 	case "commit":
 		if err := validateGitRef(args.Scope.Ref); err != nil {
 			return secproc.SecureProcessSpec{}, nil, err
 		}
-		numstat := secproc.SecureProcessSpec{Program: "git", Args: append(baseArgs, "show", "--numstat", "-z", "--format=", args.Scope.Ref, "--")}
+		numstat := secproc.SecureProcessSpec{Program: "git", Args: append(baseArgs, "show", "--numstat", "-z", "--format=", gitEndOfOptions, args.Scope.Ref, "--")}
 		return numstat, func(path string) secproc.SecureProcessSpec {
-			return secproc.SecureProcessSpec{Program: "git", Args: append(baseArgs, "show", "--format=", "--binary", args.Scope.Ref, "--", path)}
+			return secproc.SecureProcessSpec{Program: "git", Args: append(baseArgs, "show", "--format=", "--binary", gitEndOfOptions, args.Scope.Ref, "--", path)}
 		}, nil
 	default:
 		return secproc.SecureProcessSpec{}, nil, fmt.Errorf("unknown scope %q", args.Scope.Kind)
@@ -365,9 +382,26 @@ func filterGitByPaths(entries []gitNumstatEntry, paths []string) []gitNumstatEnt
 
 var gitRefDisallowed = strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "", "\x00", "")
 
+// validateGitRef screens a model-supplied revision before it is spliced into
+// git's argv.
+//
+// The leading-dash rule comes from validateArgvOperand and is the security
+// property: this function used to strip-compare whitespace and NUL only, which
+// let `--output=/etc/anything` through as a "ref" and turned the ReadOnly
+// git_diff tool into an arbitrary-file-write primitive (git happily accepts
+// `--output` after the sub-command and writes the diff there). See
+// validateArgvOperand for why the fix is a shape rule and not a flag blacklist.
+//
+// The whitespace rule is kept on top of it as a plain sanity check, not a
+// security boundary: git-check-ref-format forbids space, tab, newline and NUL
+// in a ref name, so a value carrying one is a caller bug worth naming early
+// rather than letting git reject it three processes later.
 func validateGitRef(ref string) error {
-	if ref == "" || gitRefDisallowed.Replace(ref) != ref {
-		return fmt.Errorf("invalid git ref %q", ref)
+	if err := validateArgvOperand("git ref", ref); err != nil {
+		return err
+	}
+	if gitRefDisallowed.Replace(ref) != ref {
+		return fmt.Errorf("invalid git ref %q: contains whitespace", ref)
 	}
 	return nil
 }

@@ -76,7 +76,10 @@ func runTests(ctx context.Context, argsJSON string) (string, error) {
 	if args.TimeoutS > 0 {
 		timeout = time.Duration(clampInt(args.TimeoutS, 1, 1800)) * time.Second
 	}
-	spec := testSpec(framework, args, root)
+	spec, err := testSpec(framework, args, root)
+	if err != nil {
+		return errorResult("run_tests: " + err.Error()), nil
+	}
 	start := time.Now()
 	res, err := secureCommandRunner(ctx, spec, timeout)
 	duration := time.Since(start).Milliseconds()
@@ -95,12 +98,38 @@ func runTests(ctx context.Context, argsJSON string) (string, error) {
 	return toJSON(parsed), nil
 }
 
-func testSpec(framework string, args runTestsArgs, root string) secproc.SecureProcessSpec {
+// testSpec builds the runner invocation, refusing to build one at all when a
+// caller-supplied value would land in argv as an option instead of as data.
+//
+// Only the OPERAND slots are screened, and the distinction is what keeps the
+// check free of false positives:
+//
+//   - `go test … <packages…>` and `cargo test <filter>` put the value in a bare
+//     positional slot, where the callee's own parser decides "leading dash =
+//     option". `packages: ["-o", "/tmp/x", "./..."]` made `go test` link the
+//     test binary to an arbitrary absolute path — a write far outside the
+//     WorkspaceWrite tier this spec declares. These are validated.
+//   - `go test -run <filter>` and `npm test -- --testNamePattern <filter>` put
+//     the value in a FLAG slot, and both parsers (cmd/go's testFlags and
+//     pflag/yargs) consume the following argv element unconditionally, dash or
+//     not. Screening those would buy no safety and would reject legitimate
+//     patterns — a jest test name may begin with anything at all.
+//
+// See validateArgvOperand for why the rule is "must not look like an option"
+// rather than a list of the flags that happen to be dangerous today. Note that
+// neither `go` nor `cargo` offers git's `--end-of-options`, so for these two
+// runners validation is the only available layer.
+func testSpec(framework string, args runTestsArgs, root string) (secproc.SecureProcessSpec, error) {
 	base := secproc.SecureProcessSpec{Tool: "run_tests", Dir: root, UseSandboxTier: sandbox.WorkspaceWrite}
 	switch framework {
 	case "go":
 		argv := []string{"test", "-json"}
 		if len(args.Packages) > 0 {
+			for _, pkg := range args.Packages {
+				if err := validateArgvOperand("go package pattern", pkg); err != nil {
+					return secproc.SecureProcessSpec{}, err
+				}
+			}
 			argv = append(argv, args.Packages...)
 		} else {
 			argv = append(argv, "./...")
@@ -112,6 +141,9 @@ func testSpec(framework string, args runTestsArgs, root string) secproc.SecurePr
 	case "cargo":
 		argv := []string{"test"}
 		if args.Filter != "" {
+			if err := validateArgvOperand("cargo test filter", args.Filter); err != nil {
+				return secproc.SecureProcessSpec{}, err
+			}
 			argv = append(argv, args.Filter)
 		}
 		base.Program, base.Args = "cargo", argv
@@ -122,7 +154,7 @@ func testSpec(framework string, args runTestsArgs, root string) secproc.SecurePr
 		}
 		base.Program, base.Args = "npm", argv
 	}
-	return base
+	return base, nil
 }
 
 func detectMarkerFiles(root string) map[string]bool {

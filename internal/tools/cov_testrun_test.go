@@ -83,6 +83,7 @@ func TestDetectRunner_All(t *testing.T) {
 }
 
 func TestTestSpec_UnknownFramework(t *testing.T) {
-	spec := testSpec("unknown", runTestsArgs{}, "/root")
+	spec, err := testSpec("unknown", runTestsArgs{}, "/root")
+	assert.NoError(t, err)
 	assert.Equal(t, "", spec.Program)
 }
