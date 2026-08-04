@@ -160,11 +160,19 @@ type ProcessCapabilities struct {
 	CanKillTree bool
 }
 
-// ProcessFactory is the seam the Manager (Task 17) calls to spawn. It returns
-// a Process AND a Console so the Manager can pump output without holding the
-// process handle directly. The Task 17 Manager uses this; the Task 19
-// DefaultSecureFactory implements it on top of SecureProcessFactory + the
-// platform Console.
+// ProcessFactory is the seam the Manager calls to spawn. It returns a Process
+// AND a Console so the Manager can pump output without holding the process
+// handle directly.
+//
+// The production implementation is SecureLaunchFactory (procfactory.go), which
+// carries the compile-time assertion. DefaultSecureFactory does NOT implement
+// this interface and cannot: its Start takes a secproc.SecureProcessSpec and
+// returns *secproc.StartedProcess, so one type cannot carry both signatures
+// under the same method name. That is not an accident to be tidied up later —
+// it is why shell v2 is a separate launch path from secproc, and therefore why
+// each shell v2 tool must call guard Authorize itself instead of relying on
+// secproc's Authorize firewall. See procfactory.go's header and CLAUDE.md's
+// "子进程发射" paragraph.
 type ProcessFactory interface {
 	Start(ctx context.Context, spec LaunchSpec) (Process, Console, error)
 }

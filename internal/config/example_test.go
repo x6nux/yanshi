@@ -54,10 +54,21 @@ func TestExampleConfigDocumentsSubagents(t *testing.T) {
 // validateProfiles to `return nil` leaves this test green, and so would an
 // example that stopped setting shell.policy at all — the assertion would then
 // be vacuously true forever. Hence the second half: at least one shipped
-// profile must actually carry a non-empty policy, so the example keeps
-// exercising the branch it claims to certify. The rejection itself is pinned
-// by TestLoadBytesRejectsUnknownShellPolicy, which does fail when the
-// validation is gutted.
+// profile must actually reach the policy check.
+//
+// "Reach" is the load-bearing word, and it is why the guard tests BOTH halves
+// of the condition. validateProfiles skips any profile whose shell.rules is
+// non-empty (the policy switch is unreachable there, so the value is inert and
+// rejecting it would be a behavioural regression — see its doc comment). A
+// guard that only demanded a non-empty policy would therefore go vacuous the
+// day someone adds a rules table to every example profile: validateProfiles
+// would `continue` past all of them, require.NoError would be trivially true
+// again, and the guard meant to detect exactly that would still be green.
+// Today both example profiles have no rules, so the pair is satisfied by the
+// same profiles either way.
+//
+// The rejection itself is pinned by TestLoadBytesRejectsUnknownShellPolicy,
+// which does fail when the validation is gutted.
 func TestExampleConfigProfilesAreEnforceable(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "config.example.yaml"))
 	require.NoError(t, err, "config.example.yaml must be readable from the repo root")
@@ -68,13 +79,18 @@ func TestExampleConfigProfilesAreEnforceable(t *testing.T) {
 	require.NoError(t, cfg.validate(),
 		"config.example.yaml must pass the validation Load performs")
 
-	var withPolicy []string
+	var checked []string
 	for name, p := range cfg.Profiles {
-		if p.Shell.Policy != "" {
-			withPolicy = append(withPolicy, name)
+		// Both halves: an explicit policy AND an empty rules table, which is
+		// exactly the pair validateProfiles requires before it looks at the
+		// policy at all.
+		if p.Shell.Policy != "" && len(p.Shell.Rules) == 0 {
+			checked = append(checked, name)
 		}
 	}
-	require.NotEmpty(t, withPolicy,
-		"every example profile omits shell.policy, so the NoError above certifies nothing "+
-			"about policy validation; keep at least one profile with an explicit policy")
+	require.NotEmpty(t, checked,
+		"no example profile has both an explicit shell.policy and an empty shell.rules, so "+
+			"validateProfiles skipped every one of them and the NoError above certifies "+
+			"nothing about policy validation; keep at least one rules-free profile with an "+
+			"explicit policy")
 }

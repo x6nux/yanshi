@@ -6,8 +6,11 @@ import (
 	"go/parser"
 	"go/printer"
 	"go/token"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -191,71 +194,253 @@ func TestExecPolicyVerdictsAreHandledByCheckShell(t *testing.T) {
 	}
 }
 
-// execPolicyVerdictSet derives, from the source of internal/execpolicy, every
-// string execpolicy.Evaluate can put in Result.Verdict.
+// execPolicySourceFiles returns every non-test .go file in dir.
 //
-// Two shapes produce a verdict and both are covered:
-//   - a string literal in a Result composite literal (hard's "hard_deny"), and
-//   - an identifier (Evaluate's `decision`), which is admitted only by a
-//     `switch <ident>` whose default diverts everything else; that switch's
-//     case labels are the reachable values.
-//
-// Any third shape fails the test rather than being ignored. Silently skipping
-// an unrecognised initialiser is how a derivation like this rots into a
-// permanently empty set that agrees with everything.
-func execPolicyVerdictSet(t *testing.T) map[string]bool {
+// The derivation below reads the whole package directory rather than a single
+// named file. A one-file derivation goes blind the moment someone splits the
+// package or moves a constructor, and it goes blind SILENTLY: the set shrinks,
+// the subset assertion against checkShell gets easier, and nothing reports it.
+func execPolicySourceFiles(t *testing.T, dir string) []string {
 	t.Helper()
-	const file = "../execpolicy/policy.go"
-	fset := token.NewFileSet()
-	parsed, err := parser.ParseFile(fset, file, nil, 0)
-	require.NoError(t, err, "parse %s", file)
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err, "read %s", dir)
+	var files []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		files = append(files, filepath.Join(dir, name))
+	}
+	require.NotEmpty(t, files, "no non-test sources under %s — the derivation is blind", dir)
+	return files
+}
 
-	verdicts := map[string]bool{}
-	var idents []string
-	ast.Inspect(parsed, func(n ast.Node) bool {
-		lit, ok := n.(*ast.CompositeLit)
-		if !ok {
-			return true
+// isResultType reports whether expr names execpolicy.Result (or a pointer to
+// it) as written inside the execpolicy package itself.
+func isResultType(expr ast.Expr) bool {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t.Name == "Result"
+	case *ast.StarExpr:
+		return isResultType(t.X)
+	}
+	return false
+}
+
+// registerElidedResultLits marks the type-elided element literals of a
+// []Result / map[K]Result composite literal, so `[]Result{{Verdict: "x"}}` is
+// followed as well as `[]Result{Result{Verdict: "x"}}`. Without this the inner
+// literal has a nil Type and looks like a literal of some unrelated type.
+func registerElidedResultLits(lit *ast.CompositeLit, elided map[*ast.CompositeLit]bool) {
+	var elem ast.Expr
+	switch t := lit.Type.(type) {
+	case *ast.ArrayType:
+		elem = t.Elt
+	case *ast.MapType:
+		elem = t.Value
+	default:
+		return
+	}
+	if !isResultType(elem) {
+		return
+	}
+	for _, e := range lit.Elts {
+		if kv, ok := e.(*ast.KeyValueExpr); ok {
+			e = kv.Value
 		}
-		if name, ok := lit.Type.(*ast.Ident); !ok || name.Name != "Result" {
-			return true
+		if inner, ok := e.(*ast.CompositeLit); ok && inner.Type == nil {
+			elided[inner] = true
 		}
-		for _, elt := range lit.Elts {
-			kv, ok := elt.(*ast.KeyValueExpr)
-			if !ok {
+	}
+}
+
+// resultVerdictFieldIndex returns the position of Verdict in the declared field
+// order of `type Result struct`, which is what a POSITIONAL composite literal
+// (`Result{"hard_deny", …}`) indexes into. Resolving it from the struct
+// declaration rather than hard-coding 0 means reordering the struct cannot
+// silently re-point the derivation at the wrong field.
+func resultVerdictFieldIndex(t *testing.T, files []string) int {
+	t.Helper()
+	for _, file := range files {
+		fset := token.NewFileSet()
+		parsed, err := parser.ParseFile(fset, file, nil, 0)
+		require.NoError(t, err, "parse %s", file)
+		for _, decl := range parsed.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.TYPE {
 				continue
 			}
+			for _, spec := range gen.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok || ts.Name.Name != "Result" {
+					continue
+				}
+				st, ok := ts.Type.(*ast.StructType)
+				require.True(t, ok, "%s: Result is not a struct type", file)
+				idx := 0
+				for _, field := range st.Fields.List {
+					if len(field.Names) == 0 {
+						idx++ // embedded field still occupies a position
+						continue
+					}
+					for _, n := range field.Names {
+						if n.Name == "Verdict" {
+							return idx
+						}
+						idx++
+					}
+				}
+				t.Fatalf("%s: type Result has no Verdict field", file)
+			}
+		}
+	}
+	t.Fatalf("no `type Result struct` found in %v — positional literals cannot be resolved", files)
+	return -1
+}
+
+// recordResultVerdict feeds the expression a Result literal puts into Verdict
+// to record, handling both the keyed and the positional literal forms.
+func recordResultVerdict(t *testing.T, file string, lit *ast.CompositeLit, verdictField int, record func(ast.Expr)) {
+	t.Helper()
+	if len(lit.Elts) == 0 {
+		return
+	}
+	if _, keyed := lit.Elts[0].(*ast.KeyValueExpr); keyed {
+		for _, elt := range lit.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			require.True(t, ok, "%s: Result literal mixes keyed and positional elements", file)
 			if key, ok := kv.Key.(*ast.Ident); !ok || key.Name != "Verdict" {
 				continue
 			}
-			switch v := kv.Value.(type) {
-			case *ast.BasicLit:
-				require.Equal(t, token.STRING, v.Kind, "%s: non-string Verdict literal", file)
-				s, err := strconv.Unquote(v.Value)
-				require.NoError(t, err)
-				verdicts[s] = true
-			case *ast.Ident:
-				idents = append(idents, v.Name)
-			default:
-				t.Fatalf("%s: Result.Verdict is initialised from an expression this "+
-					"derivation cannot follow (%T). Extend execPolicyVerdictSet, or the "+
-					"reconciliation against checkShell silently stops covering it.", file, v)
-			}
+			record(kv.Value)
 		}
-		return true
-	})
-	require.NotEmpty(t, verdicts,
-		"%s: no literal Verdict found — the derivation is broken, not the code", file)
+		return
+	}
+	// Positional. Go requires a value for every field, so Verdict's declared
+	// position indexes the literal directly.
+	require.Greater(t, len(lit.Elts), verdictField,
+		"%s: positional Result literal has %d elements, too few to reach Verdict at position %d",
+		file, len(lit.Elts), verdictField)
+	record(lit.Elts[verdictField])
+}
 
-	for _, name := range idents {
-		labels, hasDefault, found := switchCases(t, file, "Evaluate", name)
+// execPolicyVerdictSet derives, from the source of internal/execpolicy, every
+// string execpolicy.Evaluate can put in Result.Verdict.
+//
+// SCOPE, stated before the result is trusted. The derivation reads EVERY
+// non-test .go file in the package directory (execPolicySourceFiles), not one
+// named file, and it follows three syntactic shapes:
+//
+//   - a KEYED composite literal (`Result{Verdict: "hard_deny"}`), including the
+//     type-elided form nested in a []Result / map[K]Result literal;
+//   - a POSITIONAL composite literal (`Result{"hard_deny", …}`), resolved
+//     against the declared field order of Result. This shape was a silent miss
+//     for as long as the walk only looked at KeyValueExpr elements — a
+//     positional element simply failed the type assertion and was skipped;
+//   - an ASSIGNMENT to a .Verdict field (`r.Verdict = …`), which is not a
+//     composite literal at all and so was invisible to a walk that matched only
+//     CompositeLit nodes.
+//
+// The assignment case deliberately OVER-approximates: it matches any selector
+// named Verdict regardless of the receiver's static type, because a file-local
+// AST carries no type information. Inside this package Verdict is a field of
+// Result alone, and over-approximating only ever makes the reconciliation
+// against checkShell stricter.
+//
+// In every shape, a value the derivation cannot follow — a call, a conversion,
+// a concatenation, a multi-value assignment — fails the test rather than being
+// skipped. Silently skipping an unrecognised initialiser is how a derivation
+// like this rots into a permanently empty set that agrees with everything.
+//
+// What is NOT covered, said plainly: a verdict that reaches Result.Verdict
+// through a value flowing out of this package's own helpers by some fourth
+// route (reflection, unsafe, a generic container the walk does not model) would
+// still be missed. The three shapes above are the ones Go offers for writing a
+// struct field directly, which is why they are enumerated rather than
+// approximated.
+func execPolicyVerdictSet(t *testing.T) map[string]bool {
+	t.Helper()
+	const dir = "../execpolicy"
+	files := execPolicySourceFiles(t, dir)
+	verdictField := resultVerdictFieldIndex(t, files)
+
+	verdicts := map[string]bool{}
+	type identRef struct{ file, fn, name string }
+	var idents []identRef
+
+	for _, file := range files {
+		fset := token.NewFileSet()
+		parsed, err := parser.ParseFile(fset, file, nil, 0)
+		require.NoError(t, err, "parse %s", file)
+
+		render := func(n ast.Node) string {
+			var buf bytes.Buffer
+			require.NoError(t, printer.Fprint(&buf, fset, n))
+			return buf.String()
+		}
+
+		for _, decl := range parsed.Decls {
+			enclosing := ""
+			if fd, ok := decl.(*ast.FuncDecl); ok {
+				enclosing = fd.Name.Name
+			}
+			record := func(v ast.Expr) {
+				switch e := v.(type) {
+				case *ast.BasicLit:
+					require.Equal(t, token.STRING, e.Kind, "%s: non-string Verdict literal", file)
+					s, err := strconv.Unquote(e.Value)
+					require.NoError(t, err)
+					verdicts[s] = true
+				case *ast.Ident:
+					idents = append(idents, identRef{file: file, fn: enclosing, name: e.Name})
+				default:
+					t.Fatalf("%s: Result.Verdict is set from an expression this derivation "+
+						"cannot follow (%T: %s). Extend execPolicyVerdictSet, or the "+
+						"reconciliation against checkShell silently stops covering it.",
+						file, v, render(v))
+				}
+			}
+			elided := map[*ast.CompositeLit]bool{}
+			ast.Inspect(decl, func(n ast.Node) bool {
+				switch node := n.(type) {
+				case *ast.AssignStmt:
+					for i, lhs := range node.Lhs {
+						sel, ok := lhs.(*ast.SelectorExpr)
+						if !ok || sel.Sel.Name != "Verdict" {
+							continue
+						}
+						require.Equal(t, len(node.Lhs), len(node.Rhs),
+							"%s: %s is assigned from a multi-value expression this derivation "+
+								"cannot follow", file, render(lhs))
+						record(node.Rhs[i])
+					}
+				case *ast.CompositeLit:
+					registerElidedResultLits(node, elided)
+					if !isResultType(node.Type) && !elided[node] {
+						return true
+					}
+					recordResultVerdict(t, file, node, verdictField, record)
+				}
+				return true
+			})
+		}
+	}
+	require.NotEmpty(t, verdicts,
+		"%s: no literal Verdict found — the derivation is broken, not the code", dir)
+
+	for _, ref := range idents {
+		require.NotEmpty(t, ref.fn,
+			"%s: Result.Verdict is set from identifier %q outside any function body, so no "+
+				"switch can bound its reachable values", ref.file, ref.name)
+		labels, hasDefault, found := switchCases(t, ref.file, ref.fn, ref.name)
 		require.True(t, found,
-			"%s: Result.Verdict is set from %q but Evaluate has no `switch %s` restricting "+
-				"it, so its reachable values are unbounded", file, name, name)
+			"%s: %s sets Result.Verdict from %q but has no `switch %s` restricting it, so "+
+				"its reachable values are unbounded", ref.file, ref.fn, ref.name, ref.name)
 		require.True(t, hasDefault,
-			"%s: `switch %s` has no default, so a value outside its cases would flow into "+
-				"Result.Verdict unchecked", file, name)
-		require.NotEmpty(t, labels, "%s: `switch %s` has no case labels", file, name)
+			"%s: `switch %s` in %s has no default, so a value outside its cases would flow "+
+				"into Result.Verdict unchecked", ref.file, ref.name, ref.fn)
+		require.NotEmpty(t, labels, "%s: `switch %s` has no case labels", ref.file, ref.name)
 		for _, l := range labels {
 			verdicts[l] = true
 		}

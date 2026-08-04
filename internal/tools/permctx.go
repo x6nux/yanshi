@@ -56,8 +56,14 @@ type PermissionRequest struct {
 //
 // 加新工具到这里时，**必须同时**：
 //  1. 在 Authorize 的 force-prompt 分支测试它；
-//  2. 在 cli/tui/permissions.go 的 resolvePermissionMode 里确保 YOLO/Auto 模式
-//     仍回问用户（force-prompt 决不能被 auto-approve 短路）。
+//  2. 确认服务端的模式闸门仍把它交回用户 ——
+//     `internal/api/http/ws_perm.go::resolvePermissionMode` 在函数最开头就对
+//     `req.ForcePrompt` 返回 `(deny, false)`，即"不自动放行、交回 callback 显式
+//     审批"。这是唯一一处 resolvePermissionMode，它住在 WS 服务端，**不在
+//     internal/cli/tui 下**（TUI 侧那半边叫
+//     `internal/cli/tui/permissions.go::modeAutoAllows`，只在用户切换模式时经
+//     `autoResolvePendingByMode` 生效，且它看的是 ApprovalRequired 而不是
+//     ForcePrompt —— 别把这两个半边搞混）。
 var forcePromptTools = map[string]struct{}{
 	"task_cancel": {},
 }

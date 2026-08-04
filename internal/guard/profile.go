@@ -114,10 +114,24 @@ type ShellPerm struct {
 //
 // This slice is the single source of truth for policy validation, consumed by
 // ValidateShellPolicy so a typo is rejected when the config loads. It has to
-// agree with checkShell's switch, and TestShellPolicyCatalogMatchesCheckShell
-// holds it there in both directions: every entry here must survive Check
-// without hitting the unknown-policy branch, and a value outside this list must
-// hit it.
+// agree with checkShell's switch, and TWO tests hold it there — one per
+// direction, neither subsuming the other:
+//
+//   - TestShellPolicyCatalogMatchesCheckShell (profile_test.go) is the
+//     behavioural half and covers ONE direction: every entry here is driven
+//     through the real Check and must not reach the unknown-policy branch, so a
+//     catalog value checkShell dropped fails there. Its second loop is a fixed
+//     list of near-miss spellings, NOT the other direction — four literals
+//     cannot notice that checkShell grew a case this list omits.
+//   - TestShellPolicyCatalogEqualsCheckShellSwitch (verdictcatalog_test.go) is
+//     the other direction: it parses checkShell's switch with go/ast and
+//     asserts SET EQUALITY against this slice. An extra case there — a value
+//     the guard can actually enforce but this list omits — makes a working
+//     config fail to load, and only that test sees it.
+//
+// So: adding a value here without a case in checkShell, and adding a case in
+// checkShell without a value here, are both caught, but by different tests.
+// Change this slice and run both.
 func ShellPolicies() []string { return []string{"", "allowlist", "deny", "denylist"} }
 
 // ValidateShellPolicy reports whether policy is one the guard can enforce.

@@ -1012,7 +1012,7 @@
 - 证据形状：反序列化 + 字段校验（现状即是）。
 
 **3. 失败明确指引** — 未兑现
-- 依据：**部分有**（`doctor.go::checkConfig` 「run `yanshi serve`…」、`::checkProviders`「set llm.providers in config」、`::checkConfigVersion`、`::checkLockfile`），**部分完全没有**（`::checkDatabase` 只有 `open %q: %v`、`::checkSecretsRefs` 不说什么才合法、`::checkLocaleConfig` 直接 `err.Error()`、`::checkKeymapConfig` 不列支持值）。**全仓没有任何测试断言 fail/warn 消息里带可执行指引。**
+- 依据：**部分有**（`doctor.go::checkConfig` 「run `yanshi serve`…」、`::checkProviders`「set llm.providers in config」、`::checkConfigVersion`、`::checkLockfile`），**部分完全没有**（`::checkDatabase` 只有 `open %q: %v`、`::checkSecretsRefs` 不说什么才合法、`::checkLocaleConfig` 直接 `err.Error()`）。**指引测试是零星的、不成体系的**：`internal/cli::TestCheckKeymapConfig_InvalidBindingsFail` 确实断言 `::checkKeymapConfig` 的失败消息里含 `tui.bindings`（并反向断言不得含那个幻影斜杠命令名），但那是**唯一**一条这样的测试，其余能产生 `StatusFail` 的 check 一条都没有。
 - 证据形状：对每个能产生 `StatusFail` 的 check，断言其 Message 匹配一个「指引词表」（含祈使动词 + 配置键名或命令名）。**骗过去**：只断言 Message 非空，或只断言某一个 check 的字符串。
 
 ---
@@ -1034,7 +1034,7 @@
 - 证据形状：`New(Config{Level:"warn"})` 后调 `logger.Info(...)` 断言 buffer **为空**，再调 `Warn` 断言非空。**骗过去**：只断言 `ParseLevel` 的返回值。
 
 **4. 采样不丢关键错误** — 未兑现（**无实现**）
-- 依据：全仓唯一的 "sample" 是 OTel 的 `SampleRatio`（与日志无关）；`config.example.yaml:152-158` 的 `observability.log` 块也没有采样项。
+- 依据：全仓唯一的 "sample" 是 OTel 的 `SampleRatio`（与日志无关）；`config.example.yaml` 的 `observability.log` 块（键 `level`/`format`/`file`/`stderr_in_tui`）也没有采样项。
 - 证据形状：需先有实现（如按 key 限流的 handler），再断言「高频 Info 被丢弃时，同批次里的 Error 记录 100% 保留」。**当前这条子句只能靠补实现或改写 acceptance 结项，不能靠补测试。**
 
 ---
@@ -1375,7 +1375,7 @@ PY
 
 **2. 有版本+Schema** — 部分（`divergent` 判定成立）
 - 依据：**三份不同的 schema 并存，`$id` 互不相同** —— `internal/api/v1/schema.go`（`schemaDocument`，仅 3 个 `$defs`：Thread/Turn/Item，`$id: …/agent-api-v1.json`，**唯一被 `GET /api/v1/schema/agent-v1.json` 服务的那份**）／`sdk/schema/v1/agent-api.schema.json`（21 个 `$defs`）／`sdk/schema/v1.1/…`（自述 "Not served by D1"）。`schema.go::schemaDocument` 的注释仍写着「Task 9 expands this document」，那次扩展从未落到运行时。`TestSchemaDeclaresVersionAndCamelCaseResources` / `TestSchemaBytesAreStableForContractReview` 只测运行时那份自身自洽；**全仓没有任何测试比较任意两份 schema**。
-- 证据形状：一条 Go 侧 parity 测试（**必须落在 `internal/api/v1`** —— `go test ./...` 是无条件硬跑，而 Node/Python 在 CI 里是可选步骤），把 `types.go` 的 struct tag 集合 ↔ `sdk/schema/v1` 的 properties 集合逐 `$def` 对账，**有意差异登记进一张只减不增的表**（`ContextItem`/`FileChange`/`Range` 是 `sdk/schema/CONTRACT_HANDOFF.md:37-49` 记录的前瞻字段，属有意）。**骗过去**：只断言两份文件都能 parse。
+- 证据形状：一条 Go 侧 parity 测试（**必须落在 `internal/api/v1`** —— `go test ./...` 是无条件硬跑，而 Node/Python 在 CI 里是可选步骤），把 `types.go` 的 struct tag 集合 ↔ `sdk/schema/v1` 的 properties 集合逐 `$def` 对账，**有意差异登记进一张只减不增的表**（初始内容是 `ContextItem` 与 `FileChange` —— `sdk/schema/CONTRACT_HANDOFF.md` 的「Diff IDE context」与「Diff fileChange」两节把它们记为 D2 前瞻字段，属有意；外加 `Range`，它在 CONTRACT_HANDOFF 里**没有自己的条目**，只作为 `sdk/schema/v1/agent-api.schema.json` 里 `ContextItem.range` 指向的 `$defs.Range` 传递性地存在，登记时别照 CONTRACT_HANDOFF 的节标题去找它）。**骗过去**：只断言两份文件都能 parse。
 
 **3. 兼容测试完善** — 部分
 - 依据：`X-Yanshi-API-Version` 头 + 请求体 `version` 字段；`internal/api/http::TestV1CompatibilityMatrix` 有 3 个 case（缺省 version、未知字段忽略、坏 JSON 400）+ 头断言。其中「所有 key 都是 camelCase」的断言是 `!strings.Contains(body, "_")` —— **过于粗糙**（response body 里任何值含下划线都会误报，且是启发式而非结构校验）。`TestUnknownFieldsAreIgnored`、`TestItemJSONUsesCamelCaseAndVersion` 是真断言。

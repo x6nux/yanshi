@@ -821,6 +821,33 @@ var goLineCiteFreeDocs = []string{
 // the shape (a `:col:` suffix, or a fenced block), not to weaken the pattern:
 // the surrounding-context test that would tell a transcript from a citation is
 // the same guessing game the `::Symbol` shorthand was left out of.
+//
+// DELIBERATELY NOT EXTENDED TO NON-GO LINE CITATIONS, and the reasoning is
+// recorded here so it is not re-litigated every review. The breakdown also
+// cites yaml, yml, toml, sh, md, py, ts and mod files by line, and at least one
+// of those citations HAS already drifted (an observability block reference kept
+// its old numbers after two config sections were inserted above it), so the rot
+// is real, not hypothetical. The extension is still wrong today:
+//
+//   - The Go half works because it has a MACHINE-CHECKED replacement. GOV9
+//     resolves `path.go::Symbol`, so trading a drifting number for a symbol
+//     name trades a silent failure for a caught one.
+//   - No such resolver exists for the other file types. Rewriting a line
+//     citation into a yaml key path, a shell variable or a markdown heading
+//     trades a drifting NUMBER for a drifting NAME — and the checklist's own
+//     F3 finding is that a stale name is WORSE, because it still reads as
+//     legitimate while a number that points at unrelated content is visibly
+//     wrong to anyone who opens the file.
+//   - A naive pattern also over-reaches badly here: the breakdown quotes a
+//     loopback address with a port, which any "extension colon digits" regex
+//     reads as a citation. Restricting to an extension whitelist fixes that
+//     but is exactly the per-filetype work that the resolver would need
+//     anyway.
+//
+// So the precondition for extending this gate is a non-Go anchor resolver (a
+// GOV9 for yaml key paths first, since that is the only one with unambiguous
+// structure). Until then, non-Go citations stay on the manual side, under
+// section F3 of the review checklist.
 func TestNoGoLineCitationsInLedgerInputs(t *testing.T) {
 	root := moduleRoot(t)
 	for _, doc := range goLineCiteFreeDocs {
