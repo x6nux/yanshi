@@ -31,6 +31,23 @@ const (
 	FullAccess
 )
 
+// String makes AccessTier satisfy fmt.Stringer so log lines, the diagnostics
+// tool, and anything wrapping it in %s / %q render the operator-facing token
+// rather than a bare integer. An out-of-range value renders as "unknown"
+// rather than panicking — it can only arise from a corrupted config parse,
+// and a diagnostic must not take the process down.
+func (t AccessTier) String() string {
+	switch t {
+	case ReadOnly:
+		return "read-only"
+	case WorkspaceWrite:
+		return "workspace-write"
+	case FullAccess:
+		return "full-access"
+	}
+	return "unknown"
+}
+
 // EffectiveMode is the truth about what the sandbox is actually enforcing.
 // OSIsolated = real OS-level mechanisms in effect; DegradedHostGuard = no OS
 // isolation, only the host guard layer (Phase 0 honesty); Disabled = the

@@ -89,13 +89,29 @@ func runGitProbe(ctx context.Context, root string) probeDiag {
 	return probeDiag{Available: true}
 }
 
+// sandboxProbe reports the security posture the CURRENT turn actually runs
+// under, read from the sandbox the orchestrator binds into the tool context.
+//
+// This is the sole production consumer of tools.WithSandbox. Until it existed,
+// the whole chain (orchestrator.Config.Sandbox → o.sandbox → tools.WithSandbox
+// → securityctx) bound a value nothing ever read, while this function returned
+// a hardcoded "unknown" — so `diagnostics` claimed ignorance about a posture
+// the process was holding in a context value two frames up the stack.
+//
+// "unknown" survives only as the honest answer for the case it describes: no
+// sandbox bound in ctx (SSE requests, unit tests, any turn built outside the
+// orchestrator). A bound sandbox always yields its real CapabilityReport.
 func sandboxProbe(ctx context.Context) sandboxDiag {
-	// The sandbox package (internal/sandbox) is delivered by A1c together
-	// with secproc. If A1c exposes a SandboxFromContext helper and a Report
-	// struct with Requested/Effective/Enforced fields, prefer that. Until
-	// then, degrade gracefully: secproc specs already carry UseSandboxTier
-	// so the diagnostic loses no information by reporting "unknown" here.
-	return sandboxDiag{Requested: "unknown", Effective: "unknown", Enforced: false}
+	sb, ok := SandboxFromContext(ctx)
+	if !ok {
+		return sandboxDiag{Requested: "unknown", Effective: "unknown", Enforced: false}
+	}
+	rep := sb.Report()
+	return sandboxDiag{
+		Requested: rep.Requested.String(),
+		Effective: string(rep.Effective),
+		Enforced:  rep.Enforced,
+	}
 }
 
 func runToolchainProbes(ctx context.Context) toolchainDiag {
