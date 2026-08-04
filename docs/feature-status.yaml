@@ -7,7 +7,9 @@
 # verdict: partial | missing | divergent | done | removed
 #   done / removed 是两档终态，都计入「S0 完成」。
 # evidence:
-#   非终态条目写 ""（还没有要证明的东西）。
+#   非终态条目可以留空，也可以写一条线索引用（当前有 5 条 partial 这样写）。线索
+#   必须解析得开，否则 GOV8 变红 —— 但它只是「查到哪儿了」，不代表覆盖，因此非终态
+#   不接受子句映射写法。
 #   终态（done / removed）条目必须写成「验收子句号 -> 证据」的映射，acceptance 按
 #   「；」/「;」切成 N 条子句，evidence 的 key 必须恰好是 1..N —— 少一条 = 有承诺没
 #   兑现，多一条 = 引用了已不存在的子句。两者都会让 GOV8 变红。
