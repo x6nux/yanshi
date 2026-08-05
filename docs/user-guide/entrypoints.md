@@ -133,6 +133,8 @@ Usage of goal:
     	goal text (alternatively, pass as positional arg)
   -max-iters int
     	maximum goal loop iterations (default 5)
+  -max-tokens int
+    	token budget for the whole goal run (0 = unlimited)
   -tier string
     	difficulty tier: "auto" (RuleTierer) or t0..t4 (quick-fix, standard, designed, team, autonomous) (default "auto")
   -workdir string

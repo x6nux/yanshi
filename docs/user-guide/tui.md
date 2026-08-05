@@ -58,7 +58,7 @@ Usage:
   yanshi exec    [-p "prompt" | stdin] [--input text|lines|jsonl] [-output text|jsonl] [-timeout 1m] [-resume ID]
   yanshi serve   [-config config.yaml] [-fake-model] [-addr ADDR]
   yanshi app     [-config config.yaml] [-fake-model]
-  yanshi goal    [-config config.yaml] [-fake-model] [-workdir DIR] [-agent claudecode] [-max-iters 5] [-goal "text"] [-tier auto|t0..t4]
+  yanshi goal    [-config config.yaml] [-fake-model] [-workdir DIR] [-agent claudecode] [-max-iters 5] [-max-tokens 0] [-goal "text"] [-tier auto|t0..t4]
   yanshi vcs-mcp (env-driven; spawned by the ACP adapter — YANSHI_DB_PATH/YANSHI_REPO_ID/YANSHI_WT_ID/YANSHI_AGENT/YANSHI_WORKTREE_DIR)
   yanshi doctor [-config FILE] [-json] [-release]
 

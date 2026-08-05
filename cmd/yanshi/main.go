@@ -44,7 +44,7 @@ Usage:
   yanshi exec    [-p "prompt" | stdin] [--input text|lines|jsonl] [-output text|jsonl] [-timeout 1m] [-resume ID]
   yanshi serve   [-config config.yaml] [-fake-model] [-addr ADDR]
   yanshi app     [-config config.yaml] [-fake-model]
-  yanshi goal    [-config config.yaml] [-fake-model] [-workdir DIR] [-agent claudecode] [-max-iters 5] [-goal "text"] [-tier auto|t0..t4]
+  yanshi goal    [-config config.yaml] [-fake-model] [-workdir DIR] [-agent claudecode] [-max-iters 5] [-max-tokens 0] [-goal "text"] [-tier auto|t0..t4]
   yanshi vcs-mcp (env-driven; spawned by the ACP adapter — YANSHI_DB_PATH/YANSHI_REPO_ID/YANSHI_WT_ID/YANSHI_AGENT/YANSHI_WORKTREE_DIR)
   yanshi doctor [-config FILE] [-json] [-release]
 
@@ -659,6 +659,7 @@ func runGoal(args []string) int {
 	workdir := fs.String("workdir", ".", "working directory for implementation")
 	agent := fs.String("agent", "claudecode", "external agent for implementation (real path)")
 	maxIters := fs.Int("max-iters", 5, "maximum goal loop iterations")
+	maxTokens := fs.Int("max-tokens", 0, "token budget for the whole goal run (0 = unlimited)")
 	goalText := fs.String("goal", "", "goal text (alternatively, pass as positional arg)")
 	tierFlag := fs.String("tier", "auto", `difficulty tier: "auto" (RuleTierer) or t0..t4 (quick-fix, standard, designed, team, autonomous)`)
 	if err := fs.Parse(args); err != nil {
@@ -699,8 +700,12 @@ func runGoal(args []string) int {
 	defer stop()
 
 	var (
-		loop      *goalloop.Loop
-		loopSink  *goalloop.UsageSink
+		loop *goalloop.Loop
+		// Allocated before the branch so BOTH paths accumulate usage. Leaving
+		// it nil on the fake path made the demo silently unmeterable: Loop.spent
+		// falls back to its internal counter, so a budget could not be observed
+		// to work there at all.
+		loopSink  = &goalloop.UsageSink{}
 		loopStore *store.Store
 	)
 
@@ -720,7 +725,12 @@ func runGoal(args []string) int {
 			Implementer: impl,
 			Evaluators:  []goalloop.Evaluator{eval},
 			Judge:       goalloop.AggregateJudge{},
-			Budget:      goalloop.Budget{MaxIterations: *maxIters},
+			Budget:      goalloop.Budget{MaxIterations: *maxIters, MaxTokens: *maxTokens},
+			Sink:        loopSink,
+			// Tier is load-bearing even on the demo path: EscalationHint reads it
+			// to name the next tier up, so leaving it zero made `-tier t3` end by
+			// advising a DOWNGRADE to t1 (TierQuickFix+1) — measured, not feared.
+			Tier: resolvedTier,
 		})
 	} else {
 		// Real path: build the app to get the LLM model + orchestrator + store,
@@ -740,7 +750,6 @@ func runGoal(args []string) int {
 
 		// Shared token sink (G02): every LLM-calling component adds to it; the
 		// loop drives its budget from it and the persisted record carries it.
-		loopSink = &goalloop.UsageSink{}
 
 		if resolvedTier.Path() == "lightweight" {
 			// --- T0-T2: one orchestrator turn with the tier's skill body ---
@@ -771,7 +780,7 @@ func runGoal(args []string) int {
 			Implementer: impl,
 			Evaluators:  evals,
 			Judge:       goalloop.AggregateJudge{},
-			Budget:      goalloop.Budget{MaxIterations: *maxIters},
+			Budget:      goalloop.Budget{MaxIterations: *maxIters, MaxTokens: *maxTokens},
 			Sink:        loopSink,
 			Tier:        resolvedTier,
 		})
