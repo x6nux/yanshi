@@ -276,3 +276,35 @@ func TestACPImplementerWorkerAccumulatesSubprocessUsage(t *testing.T) {
 	assert.Equal(t, 40, got.CompletionTokens, "output must accumulate (30+10)")
 	assert.Equal(t, 110, got.TotalTokens, "total must accumulate (80+30)")
 }
+
+// TestUsageWatchDistinguishesUnmeteredFromFree pins the predicate behind the
+// zero-usage warning.
+//
+// The distinction is the entire point: an agent that reports nothing and an
+// agent that genuinely spent nothing produce the same sink total, and the
+// budget cannot tell them apart. Only this flag can.
+func TestUsageWatchDistinguishesUnmeteredFromFree(t *testing.T) {
+	w := &worker{sink: &UsageSink{}}
+
+	forward, sawUsage := w.usageWatch()
+	require.NotNil(t, forward, "a worker with a sink must install a forwarder")
+	require.False(t, sawUsage(), "no events yet")
+
+	// Events that carry no usage must not count as metered.
+	forward(acp.Event{Kind: "agent_message_chunk", Text: "working"})
+	assert.False(t, sawUsage(), "a text chunk is not a usage report")
+
+	forward(acp.Event{Kind: "usage", Usage: &acp.Usage{InputTokens: 7, TotalTokens: 7}})
+	assert.True(t, sawUsage(), "a real usage event must flip the flag")
+	assert.Equal(t, 7, w.sink.Snapshot().TotalTokens, "and must still reach the sink")
+}
+
+// TestUsageWatchWithoutSinkInstallsNoForwarder pins the pre-existing contract
+// that a sink-less worker gets a nil handler, so the ACP client keeps its
+// no-handler path rather than being handed a closure that discards everything.
+func TestUsageWatchWithoutSinkInstallsNoForwarder(t *testing.T) {
+	w := &worker{}
+	forward, sawUsage := w.usageWatch()
+	assert.Nil(t, forward)
+	assert.False(t, sawUsage(), "nothing was watched, so nothing was seen")
+}

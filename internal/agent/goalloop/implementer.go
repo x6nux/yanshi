@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/x6nux/yanshi/internal/acp"
 	"github.com/x6nux/yanshi/internal/guard"
@@ -343,9 +345,9 @@ func (w *worker) runWithGit(ctx context.Context, task workerTask) (string, error
 		spawned.Cmd.Wait()
 	}()
 
-	stopReason, err := spawned.Client.Prompt(ctx, spawned.SessionID, task.Step, w.usageForwarder())
+	stopReason, err := w.promptWithUsageWatch(ctx, spawned, task)
 	if err != nil {
-		return "", fmt.Errorf("worker %d: prompt: %w", task.Index, err)
+		return "", err
 	}
 	return fmt.Sprintf("step %d done (stop=%s)", task.Index, stopReason), nil
 }
@@ -372,8 +374,8 @@ func (w *worker) runWithAutoVCS(ctx context.Context, task workerTask) (string, e
 		spawned.Cmd.Wait()
 	}()
 
-	if _, err := spawned.Client.Prompt(ctx, spawned.SessionID, task.Step, w.usageForwarder()); err != nil {
-		return "", fmt.Errorf("worker %d: prompt: %w", task.Index, err)
+	if _, err := w.promptWithUsageWatch(ctx, spawned, task); err != nil {
+		return "", err
 	}
 	return w.commitAndMerge(wt.ID, task)
 }
@@ -383,19 +385,61 @@ func (w *worker) runWithAutoVCS(ctx context.Context, task workerTask) (string, e
 // when no sink is configured, preserving the pre-F2 behavior of not installing
 // an event handler. The mapping is input→prompt, output→completion, total→total.
 func (w *worker) usageForwarder() func(acp.Event) {
+	fwd, _ := w.usageWatch()
+	return fwd
+}
+
+// usageWatch returns the forwarder plus a predicate reporting whether any usage
+// actually arrived during the turn.
+//
+// The predicate exists because a silent zero is the failure mode this whole
+// path is prone to and the hardest to notice: the budget keeps working, the
+// agent keeps running, and the only symptom is that a limit never trips. It
+// went unnoticed for as long as it did precisely because nothing distinguished
+// "spent nothing" from "measured nothing".
+//
+// Reporting zero is all this does. It deliberately does NOT estimate: a budget
+// that hard-stops a user's long task on invented numbers is worse than one that
+// admits it cannot see the spend, because the error direction is uncontrollable
+// in both directions — over-estimate and work is cut off for no reason,
+// under-estimate and the gate is decorative. An agent confirmed never to report
+// usage should be constrained by -max-iters instead.
+//
+// seen is atomic: the forwarder runs under the ACP client's delivery lock,
+// while the predicate is read afterwards on the caller's goroutine.
+func (w *worker) usageWatch() (forward func(acp.Event), sawUsage func() bool) {
+	var seen atomic.Bool
 	if w.sink == nil {
-		return nil
+		return nil, seen.Load
 	}
 	return func(ev acp.Event) {
 		if ev.Usage == nil {
 			return
 		}
+		seen.Store(true)
 		w.sink.Add(Usage{
 			PromptTokens:     ev.Usage.InputTokens,
 			CompletionTokens: ev.Usage.OutputTokens,
 			TotalTokens:      ev.Usage.TotalTokens,
 		})
+	}, seen.Load
+}
+
+// promptWithUsageWatch runs one ACP turn and warns when the agent finished work
+// without reporting any token usage, so an unmetered run is visible rather than
+// looking like a free one. Returns the stop reason.
+func (w *worker) promptWithUsageWatch(ctx context.Context, spawned *acp.Spawned, task workerTask) (string, error) {
+	forward, sawUsage := w.usageWatch()
+	stopReason, err := spawned.Client.Prompt(ctx, spawned.SessionID, task.Step, forward)
+	if err != nil {
+		return "", fmt.Errorf("worker %d: prompt: %w", task.Index, err)
 	}
+	if w.sink != nil && !sawUsage() {
+		slog.Warn("acp agent reported no token usage for a completed turn; "+
+			"the token budget cannot see this agent's spend — constrain it with -max-iters instead",
+			"agent", w.agent, "step", task.Index, "stop_reason", stopReason)
+	}
+	return stopReason, nil
 }
 
 // commitAndMerge folds any pending worktree edits into a worktree commit and
