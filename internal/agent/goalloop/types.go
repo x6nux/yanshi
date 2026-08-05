@@ -58,5 +58,4 @@ const (
 type Budget struct {
 	MaxIterations int // maximum number of plan-implement-evaluate-judge cycles
 	MaxTokens     int // token budget across all LLM calls
-	SpentTokens   int // tokens consumed so far
 }

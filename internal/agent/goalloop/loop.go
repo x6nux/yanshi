@@ -13,10 +13,10 @@ type Config struct {
 	Evaluators  []Evaluator
 	Judge       Judge
 	Budget      Budget
-	// Sink, when non-nil, is the shared token accumulator every LLM-calling
-	// component writes to (G02). The loop drives its budget check from this sink
-	// (spent = sink.Snapshot().Total()); when nil the loop falls back to the
-	// static Budget.SpentTokens field so existing pre-G02 callers/tests work.
+	// Sink is the shared token accumulator every LLM-calling component writes
+	// to (G02), and the sole source of the loop's spend figure. A nil Sink means
+	// spend is zero and MaxTokens can never trip — which is why cmd/yanshi
+	// allocates one before the fake/real branch rather than inside it.
 	Sink *UsageSink
 	// Tier is the difficulty tier this run was dispatched at (G03). It only
 	// affects the exhaustion message (EscalationHint) — it does not change the
@@ -38,15 +38,24 @@ func New(cfg Config) *Loop {
 	return &Loop{cfg: cfg}
 }
 
-// spent returns the current total token spend. When a UsageSink is wired
-// (Config.Sink != nil) it is the live, accumulated total across every model
-// call; otherwise it falls back to the static Budget.SpentTokens field for
-// pre-G02 callers. This fallback is what keeps TestLoop_BudgetExceeded green.
+// spent returns the current total token spend: the live accumulated total
+// across every model call that writes to the shared UsageSink.
+//
+// A nil Sink yields 0, so the budget silently never trips. That is the correct
+// reading rather than a gap — nothing has reported any spend — but it makes
+// wiring the sink load-bearing, which is why it is allocated before the
+// fake/real branch in cmd/yanshi rather than inside the real one.
+//
+// The predecessor fell back to a static Budget.SpentTokens field when the sink
+// was nil. Nothing in production ever assigned that field, so the fallback
+// existed solely to let tests hand-write a spend figure — a second, simpler
+// code path that only test code could reach, and therefore the path most
+// likely to stay green while the real one broke.
 func (l *Loop) spent() int {
-	if l.cfg.Sink != nil {
-		return l.cfg.Sink.Snapshot().Total()
+	if l.cfg.Sink == nil {
+		return 0
 	}
-	return l.cfg.Budget.SpentTokens
+	return l.cfg.Sink.Snapshot().Total()
 }
 
 // overBudget reports whether the token budget has been crossed. A zero

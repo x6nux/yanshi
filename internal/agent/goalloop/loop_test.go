@@ -189,7 +189,10 @@ func TestLoop_BudgetExceeded(t *testing.T) {
 		Implementer: impl,
 		Evaluators:  []Evaluator{eval},
 		Judge:       judge,
-		Budget:      Budget{MaxIterations: 10, MaxTokens: 100, SpentTokens: 200},
+		Budget:      Budget{MaxIterations: 10, MaxTokens: 100},
+		// Pre-loaded sink: the spend has to arrive the way production delivers
+		// it, not through a field only tests could set.
+		Sink: sinkWith(Usage{TotalTokens: 200}),
 	})
 
 	decision, err := loop.Run(context.Background(), Goal{Text: "x"}, func(Event) {})
@@ -361,4 +364,12 @@ func TestLoop_T4MaxIterationsNoEscalationHint(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, decision.Summary, "escalat")
 	assert.Equal(t, StopReasonMaxIters, decision.StopReason)
+}
+
+// sinkWith returns a UsageSink pre-loaded with u, for tests that need a spend
+// figure already on the books before the loop starts.
+func sinkWith(u Usage) *UsageSink {
+	s := &UsageSink{}
+	s.Add(u)
+	return s
 }
