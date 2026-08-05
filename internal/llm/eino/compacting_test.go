@@ -333,7 +333,6 @@ func TestCompactingModel_CooldownDefersReCompact(t *testing.T) {
 	_ = out
 
 	// Simulate post-compact: lastCompactTokens just under threshold=200.
-	cm.lastCompactTokens = 180
 	cm.lastCompactAt = time.Now()
 	inner.calls = 0
 
@@ -353,7 +352,6 @@ func TestCompactingModel_CooldownDefersReCompact(t *testing.T) {
 	// Instead, set lastCompactTokens back and HardForceFraction=0.95 means we
 	// need 0.95×400=380 tokens. Use many bigMessage(100) → ~100+8=108 each.
 	// 4 × bigMessage(100) = 432 tokens > 380 → hard force.
-	cm.lastCompactTokens = 180
 	cm.lastCompactAt = time.Now()
 	inner.calls = 0
 	msgs3 := []*schema.Message{

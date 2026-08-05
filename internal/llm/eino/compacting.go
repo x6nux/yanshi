@@ -82,7 +82,12 @@ type CompactingModel struct {
 	// fraction of ContextWindow, even when inside a cooldown period. 0 disables
 	// (not recommended — the token budget safety net). Default via config: 0.95.
 	HardForceFraction float64
-	// lastCompactTokens is the TokensAfter (from ctxcompact.Result) of the most
+	// didCompact records whether any compaction has happened yet. A zero
+	// lastCompactTokens used to stand in for "never compacted", but the
+	// pre-compaction size is never legitimately zero, so the sentinel could
+	// only ever be right by accident.
+	didCompact bool
+	// lastCompactTokens is the TokensBefore (from ctxcompact.Result) of the most
 	// recent successful compaction, or 0 if no compaction has occurred yet on
 	// this model instance. Guarded by cmMu.
 	lastCompactTokens int
@@ -140,7 +145,8 @@ func (c *CompactingModel) maybeCompact(ctx context.Context, msgs []*schema.Messa
 	}
 	// Update cooldown state after a successful compaction.
 	c.cmMu.Lock()
-	c.lastCompactTokens = res.TokensAfter
+	c.lastCompactTokens = res.TokensBefore
+	c.didCompact = true
 	c.lastCompactAt = time.Now()
 	c.cmMu.Unlock()
 	return res.Messages, true
@@ -184,12 +190,17 @@ func (c *CompactingModel) inCooldown(tokens int) bool {
 	c.cmMu.Lock()
 	lastT := c.lastCompactTokens
 	lastAt := c.lastCompactAt
+	did := c.didCompact
 	c.cmMu.Unlock()
 
-	if lastT == 0 && lastAt.IsZero() {
+	if !did {
 		return false // no prior compact → no cooldown
 	}
-	tokenCool := c.CooldownTokens > 0 && lastT > 0 && tokens-lastT < c.CooldownTokens
+	// lastT is the size of the history that triggered the last compaction, so
+	// tokens-lastT is genuine growth since then. Comparing against the
+	// post-compaction size (the old behaviour) mixed dimensions and made the
+	// difference large enough to re-fire on an unchanged history.
+	tokenCool := c.CooldownTokens > 0 && tokens-lastT < c.CooldownTokens
 	timeCool := c.CooldownDuration > 0 && !lastAt.IsZero() && time.Since(lastAt) < c.CooldownDuration
 	return tokenCool || timeCool
 }

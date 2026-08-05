@@ -320,6 +320,7 @@ func TestCompactingModel_InCooldown_TimeBased(t *testing.T) {
 		CooldownDuration: time.Hour, // very long
 		CooldownTokens:   0,         // disable token cooldown
 	}
+	cm.didCompact = true // the flag now records "a compaction happened", not a zero sentinel
 	cm.lastCompactAt = time.Now()
 	cm.lastCompactTokens = 100
 
