@@ -53,6 +53,14 @@ func TestDelegatedTurnsGoThroughTheManager(t *testing.T) {
 	if !strings.Contains(body, "Runner:       factory(allowed, instructionOverride),") {
 		t.Error("the managed route no longer builds its Runner from the bound factory")
 	}
+	// Instruction carries the caller's system-prompt override. Drop it and the
+	// sub-agent silently runs on the default instruction instead: the analysis
+	// tool's specialised prompt, for one, simply stops applying, and the turn
+	// still succeeds and still returns text. Measured W3 review round 15.
+	if !strings.Contains(body, "Instruction:  instructionOverride,") {
+		t.Error("the managed route no longer passes the instruction override: " +
+			"sub-agents fall back to the default prompt with nothing reporting it")
+	}
 }
 
 // TestManagedSubAgentRunParksItsCaller pins the other half of the pair: the
