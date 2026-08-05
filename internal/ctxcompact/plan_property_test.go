@@ -350,3 +350,47 @@ func TestProperty_ToolCallPairFixpointRepairsCorruption(t *testing.T) {
 		t.Fatal("no trial injected corruption: the repair path was never exercised")
 	}
 }
+
+// ---------- P5: the short-circuit branch has invariants of its own ----------
+
+// TestProperty_AlreadyCompactedHistoryPinsEverything covers the trials every
+// other property in this file hands back unexamined.
+//
+// About 15% of generated histories end in a summary sentinel, and on those
+// Plan short-circuits (bug⑦: no summary-of-summary). The other properties
+// genuinely do not apply there -- pinning every index including orphans breaks
+// the pairing invariant by construction -- so runGeneratedProperty skips them
+// centrally. Right call for them; wrong outcome for the package, because the
+// branch that fires on every long-running session then has no property at all.
+//
+// It deliberately does NOT go through runGeneratedProperty: that helper calls
+// skipAlreadyCompacted before the body runs, so a property needing exactly
+// those histories skips every trial and still reports PASS. A first attempt
+// did precisely that -- 200 trials, 200 skips, and breaking the short circuit
+// reddened nothing. Hence planPropertyGen plus a floor that counts the trials
+// THIS property needs rather than the ones the others need.
+func TestProperty_AlreadyCompactedHistoryPinsEverything(t *testing.T) {
+	const numTrials = 200
+	compacted := 0
+	planPropertyGen(t, numTrials, 30, nil, func(t *testing.T, msgs []*schema.Message) {
+		if !lastMessageIsSummary(msgs) {
+			return // the mirror image of skipAlreadyCompacted
+		}
+		compacted++
+		res := Plan(msgs, PlanOpts{KeepRecent: 2})
+		if len(res.PinnedIndices) != len(msgs) {
+			t.Fatalf("already-compacted history pinned %d of %d messages: the short "+
+				"circuit must keep all of them", len(res.PinnedIndices), len(msgs))
+		}
+		if len(res.SummarizeIndices) != 0 {
+			t.Fatalf("already-compacted history queued %d messages for summary: "+
+				"the summary would be summarized again", len(res.SummarizeIndices))
+		}
+	})
+	// The sentinel lands with p=0.15, so ~30 of 200; require a third of that
+	// so generator drift is caught long before the property goes vacuous.
+	if compacted < 10 {
+		t.Fatalf("only %d of %d trials were already-compacted histories: this "+
+			"property no longer exercises the short-circuit branch", compacted, numTrials)
+	}
+}
