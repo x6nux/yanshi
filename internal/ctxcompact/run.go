@@ -25,6 +25,13 @@ func Run(ctx context.Context, msgs []*schema.Message, planOpts PlanOpts, runOpts
 
 	toSummarize := make([]*schema.Message, 0, len(plan.SummarizeIndices))
 	for _, i := range plan.SummarizeIndices {
+		// ⚠️ UNPINNED, and measured so rather than assumed. Round 27 replaced
+		// this condition with a constant true and nothing reddened, including
+		// a history deliberately holding a nil message: the summariser path
+		// tolerates one, so the guard's effect is not observable from outside.
+		// It stays as defence in depth against a Plan bug or a hand-assembled
+		// PlanResult, but no test asserts it, and two attempts to write one
+		// were discarded rather than committed as false coverage.
 		if i >= 0 && i < len(msgs) && msgs[i] != nil {
 			toSummarize = append(toSummarize, msgs[i])
 		}
