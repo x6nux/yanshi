@@ -627,3 +627,35 @@ func TestCompactingModel_ZeroCooldownTokensDisablesTheTokenDimension(t *testing.
 	assert.False(t, cm.inCooldown(500),
 		"a shrunken history must not revive a cooldown the operator disabled")
 }
+
+// TestCompactingModel_StreamCompactsToo pins the Stream entry point's call to
+// maybeCompact.
+//
+// Generate and Stream each decide independently whether to compact, and the
+// orchestrator runs with EnableStreaming: true -- so Stream is the production
+// path, and a compaction wired into Generate alone would look correct in tests
+// while never firing in a real session. W4 review round 11 severed Stream's
+// call and the whole package stayed green.
+func TestCompactingModel_StreamCompactsToo(t *testing.T) {
+	inner := &recordingModel{summary: "SUMMARY", reply: "ok", streamOK: true}
+	cm := &CompactingModel{
+		Inner:         inner,
+		Threshold:     0.5,
+		ContextWindow: 1000,
+		KeepRecent:    4,
+	}
+	msgs := make([]*schema.Message, 8)
+	for i := range msgs {
+		msgs[i] = bigMessage(80)
+	}
+
+	_, err := cm.Stream(context.Background(), msgs)
+	assert.NoError(t, err)
+
+	inner.mu.Lock()
+	defer inner.mu.Unlock()
+	// inputs[0] is the summarize turn; the last input is what Stream forwarded.
+	forwarded := inner.inputs[len(inner.inputs)-1]
+	assert.Less(t, len(forwarded), len(msgs),
+		"Stream must forward the compacted history, not the original")
+}
