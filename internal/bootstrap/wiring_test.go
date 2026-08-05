@@ -771,3 +771,31 @@ func TestShellV2TaskJobIsControllableWithTheIDItReturns(t *testing.T) {
 	require.Equalf(t, shell.StateCanceled, app.ShellManager.Snapshot(job.SessionID).State,
 		"the underlying session was not canceled")
 }
+
+// TestProviderWindowsReachTheOrchestrator pins the composition root's half of
+// the per-model compaction window.
+//
+// The orchestrator resolves a turn's window from CompactionConfig.ProviderWindows,
+// and internal/agent/orchestrator has its own tests for that lookup. Neither
+// side notices if bootstrap stops filling the map: windowFor returns 0 for
+// every model, wrapCompaction reads 0 as "use the configured window", and every
+// provider silently shares the global fallback again -- which is exactly the
+// defect W4 removed, restored without a single test going red. Measured: with
+// this assignment set to nil, bootstrap, orchestrator and archtest all stay
+// green.
+//
+// Checked at the source because the map is not reachable from App: it goes
+// into orchestrator.Config, which Build consumes and does not retain. A test
+// that reconstructed the whole Build to observe it would be pinning the
+// assembly harness rather than this line.
+func TestProviderWindowsReachTheOrchestrator(t *testing.T) {
+	src, err := os.ReadFile("bootstrap.go")
+	if err != nil {
+		t.Fatalf("read bootstrap.go: %v", err)
+	}
+	if !strings.Contains(string(src), "ProviderWindows:   providerWindows,") {
+		t.Error("the orchestrator's CompactionConfig no longer receives providerWindows: " +
+			"every model would fall back to the global context window, so a provider " +
+			"with a smaller one gets a compaction threshold it can never reach")
+	}
+}
