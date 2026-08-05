@@ -644,3 +644,60 @@ func TestRecordedRulesCarryAnExpiry(t *testing.T) {
 		}
 	}
 }
+
+// TestScopeMatchIsExactNotPrefix pins that an approval covers the argv it was
+// granted for and nothing adjacent to it.
+//
+// Match compares scopes with reflect.DeepEqual, so `go test ./pkg` approved
+// once does not silently cover `go test ./pkg -tags=e2e_real`. That matters
+// because it is exactly how a granted approval would become a way around
+// execpolicy: the operator approves a benign command, and a longer command
+// sharing its prefix inherits the approval without ever reaching the rules
+// that would deny it.
+//
+// ⚠️ The exactness is DELIBERATE, not a prefix tier waiting to be built. If
+// someone wants prefix matching, this test is the thing that should stop
+// them: before relaxing it they have to show a prefix rule cannot step over
+// an execpolicy deny, which is the question this design avoids by never
+// having a prefix surface at all. Changing it is a security decision and
+// needs its own ADR.
+func TestScopeMatchIsExactNotPrefix(t *testing.T) {
+	base := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	granted := Scope{Tool: "shell_run", Program: "go", Prefix: []string{"test", "./pkg"}}
+
+	m, err := New(nil, "proc", nil)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	if err := m.Record("s1", Rule{
+		ID: "r1", Action: "shell_run", Scope: granted,
+		TTL: TTLSession, Source: SourceUser,
+		CreatedAt: base, ExpiresAt: base.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	cases := []struct {
+		name  string
+		scope Scope
+		want  bool
+	}{
+		{"the exact argv that was approved", granted, true},
+		{"a longer argv sharing the prefix", Scope{Tool: "shell_run", Program: "go",
+			Prefix: []string{"test", "./pkg", "-tags=e2e_real"}}, false},
+		{"a shorter argv the approval contains", Scope{Tool: "shell_run", Program: "go",
+			Prefix: []string{"test"}}, false},
+		{"the same argv under a different tool", Scope{Tool: "task_gate_run", Program: "go",
+			Prefix: []string{"test", "./pkg"}}, false},
+		{"the same argv under a different program", Scope{Tool: "shell_run", Program: "gotest",
+			Prefix: []string{"test", "./pkg"}}, false},
+	}
+	for _, tc := range cases {
+		got, _ := m.Match("s1", tc.scope, base)
+		if got != tc.want {
+			t.Errorf("%s: match=%v, want %v -- scope matching must be exact equality, "+
+				"or an approval for a benign command covers longer ones that execpolicy would deny",
+				tc.name, got, tc.want)
+		}
+	}
+}
