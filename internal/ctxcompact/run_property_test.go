@@ -203,11 +203,18 @@ func TestForceCompactStillRefusesWhatItCannotHelp(t *testing.T) {
 		return msgs
 	}
 
-	t.Run("zero window", func(t *testing.T) {
+	// ⚠️ The contextWindow <= 0 term is UNPINNED and cannot be pinned here.
+	// Measured in round 26: with that term removed, a zero window still
+	// produces did=false and zero summariser calls, because RunSummary refuses
+	// a zero chunk budget on its own. The guard is defence in depth against a
+	// future RunSummary that does not, and its effect is unobservable today.
+	// The subtest that used to sit here asserted that outcome and would have
+	// passed with the term deleted, so it is gone rather than misleading.
+	t.Run("zero window still declines", func(t *testing.T) {
 		rs := &recordingSummarizer{Return: "summary"}
 		msgs := history(12)
 		if _, _, _, did := ForceCompact(context.Background(), msgs, 0, 4, rs, nil); did {
-			t.Fatal("compacted against a zero window: RunSummary's chunk budget would be zero")
+			t.Fatal("a zero window must never yield a compaction, by whichever layer refuses it")
 		}
 		if len(rs.GenerateCalls)+len(rs.StreamCalls) != 0 {
 			t.Fatal("a zero window still cost a summariser call")
