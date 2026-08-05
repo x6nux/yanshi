@@ -605,6 +605,17 @@ func TestCompactingModel_DegenerateConfigNeverCompacts(t *testing.T) {
 		assert.False(t, cm.shouldCompact(msgs),
 			"a zero window puts every threshold at zero and fires on anything")
 	})
+
+	// Round 8 added the two subtests above and left this one out, because
+	// TestCompactingModel_DisabledIsPassthrough appeared to cover it. Round 24
+	// measured that it does not: dropping the Threshold term from the guard
+	// leaves that test -- and the whole package -- green, since its history is
+	// short enough for downstream guards to decline the compaction anyway.
+	t.Run("Threshold zero", func(t *testing.T) {
+		cm := &CompactingModel{Threshold: 0, ContextWindow: 1000, KeepRecent: 4}
+		assert.False(t, cm.shouldCompact(msgs),
+			"threshold 0 means compaction is switched off, not that every history qualifies")
+	})
 }
 
 // TestCompactingModel_ZeroCooldownTokensDisablesTheTokenDimension pins the
