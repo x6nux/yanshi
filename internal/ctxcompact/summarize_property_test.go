@@ -342,10 +342,17 @@ func TestProperty_EachSummaryCallWithinWindow(t *testing.T) {
 // ---------- P4: no empty summary when summarizer returns empty ----------
 
 // TestProperty_NoEmptySummaryMessage is the fourth property: a summarizer that
-// returns an empty string must not produce an empty history or a tail that is
-// not a summary message. Assemble's sentinel prefix is what the pre-turn path
-// uses to recognise an already-compacted history, so losing it turns one
-// degenerate model reply into repeated re-compaction.
+// returns nothing must make Run fail rather than succeed with a hole.
+//
+// It used to assert the opposite -- that Run tolerates an empty summary and
+// still appends a sentinel message -- and W4 Task 4 Step 3 adjudicated that
+// divergence against the implementation. Assemble REPLACES the summarized
+// messages with the summary, so an empty one drops the middle of the
+// conversation and leaves nothing in its place. Worse, the callers'
+// best-effort gate cannot notice: it accepts any result where TokensAfter <
+// TokensBefore, which is precisely what a truncation looks like. Failing here
+// makes MaybeCompact and CompactingModel keep the original history, trading a
+// wasted model call for the content.
 //
 // It used to run against a SINGLE fixed history and `t.Skip` on
 // `len(plan.SummarizeIndices) == 0` — a precondition read straight off the code
@@ -376,17 +383,19 @@ func TestProperty_NoEmptySummaryMessage(t *testing.T) {
 
 		rs := &recordingSummarizer{Return: ""}
 		result, err := Run(context.Background(), msgs, planOpts, opts, rs, nil)
-		if err != nil {
-			t.Fatalf("Run must not error with empty summarizer output: %v", err)
+		if err == nil {
+			t.Fatalf("Run accepted an empty summary over %d messages: those messages "+
+				"are now gone and nothing replaced them", len(plan.SummarizeIndices))
 		}
-		if len(result.Messages) == 0 {
-			t.Fatal("Run must produce at least the summary message")
+		if result != nil {
+			t.Fatal("a failed compaction must not hand back a partial result: " +
+				"callers fall back to the original history on error")
 		}
-		// Even with empty summarizer return, Assemble always appends a
-		// sentinel-prefixed message — the output is never truly empty.
-		last := result.Messages[len(result.Messages)-1]
-		if !IsSummaryMessage(last) {
-			t.Fatal("last message must be a summary message")
+
+		// A whitespace-only reply is the same failure wearing a different mask.
+		rs2 := &recordingSummarizer{Return: "   \n  "}
+		if _, err := Run(context.Background(), msgs, planOpts, opts, rs2, nil); err == nil {
+			t.Fatal("Run accepted a whitespace-only summary")
 		}
 	})
 	requireTrialFloor(t, "had something to summarize", summarizable, trials)

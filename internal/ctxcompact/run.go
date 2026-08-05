@@ -4,6 +4,7 @@ package ctxcompact
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/cloudwego/eino/schema"
 )
@@ -32,6 +33,17 @@ func Run(ctx context.Context, msgs []*schema.Message, planOpts PlanOpts, runOpts
 	summary, err := RunSummary(ctx, toSummarize, runOpts, m, onChunk)
 	if err != nil {
 		return nil, fmt.Errorf("compaction summary: %w", err)
+	}
+	if strings.TrimSpace(summary) == "" {
+		// An empty summary is a failed summarization wearing a success's
+		// clothes. Assemble REPLACES the summarized messages with the summary,
+		// so proceeding drops them and leaves nothing in their
+		// place -- and the callers' best-effort gate cannot catch it, because
+		// TokensAfter < TokensBefore is exactly what a truncation looks like.
+		// Erroring here makes MaybeCompact and CompactingModel keep the
+		// original history, which costs one wasted model call instead of the
+		// middle of the conversation.
+		return nil, fmt.Errorf("compaction summary: summarizer returned nothing for %d messages", len(toSummarize))
 	}
 
 	out := Assemble(msgs, plan, summary)
