@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -106,4 +107,57 @@ func TestTerminalAgentsReleaseTheirSlots(t *testing.T) {
 		AgentType: "subagent", Role: "explore", Prompt: "third", Runner: instant,
 	})
 	require.NoError(t, err, "a third spawn must fit once the first two are terminal")
+}
+
+// TestSendInputInterruptEndsTheTurnNotTheAgent pins the interrupt semantics of
+// SendInput: the in-flight turn is cancelled, the queued text becomes the next
+// assignment, and the agent survives to run it.
+//
+// rt.turnCancel had no production assignment before this — only a white-box
+// test ever wrote the field — so an interrupting SendInput queued its text and
+// then waited out the very turn it was meant to cut short. The agent still
+// finished, which is why nothing looked broken.
+func TestSendInputInterruptEndsTheTurnNotTheAgent(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(NewManagerOpts{
+		RootContext:   context.Background(),
+		Path:          filepath.Join(dir, "s.json"),
+		SessionBootID: "boot",
+		MaxConcurrent: 2,
+	})
+	t.Cleanup(m.Close)
+
+	firstTurn := make(chan struct{})
+	var turns []string
+	var mu sync.Mutex
+	id, err := m.Spawn(context.Background(), SpawnRequest{
+		AgentType: "subagent", Role: "explore", Prompt: "first",
+		Runner: RunnerFunc(func(ctx context.Context, _ string, assignment string) (string, error) {
+			mu.Lock()
+			turns = append(turns, assignment)
+			n := len(turns)
+			mu.Unlock()
+			if n == 1 {
+				close(firstTurn)
+				<-ctx.Done() // held until the interrupt arrives
+				return "", ctx.Err()
+			}
+			return "SUMMARY\nsecond turn ran", nil
+		}),
+	})
+	require.NoError(t, err)
+	<-firstTurn
+
+	require.NoError(t, m.SendInput(id, "second", true))
+
+	rec, err := m.Wait(context.Background(), id, WaitOpts{Timeout: 3 * time.Second})
+	require.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, turns, 2, "the interrupt must start a second turn, not end the agent")
+	assert.Equal(t, "second", turns[1], "the queued text becomes the next assignment")
+	assert.Equal(t, StatusCompleted, rec.Status,
+		"a cancelled TURN must not mark the AGENT failed or cancelled")
+	assert.Contains(t, rec.Result, "second turn ran")
 }

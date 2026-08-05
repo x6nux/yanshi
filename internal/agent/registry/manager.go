@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -687,8 +688,33 @@ func (m *Manager) runAgentLoop(ctx context.Context, agentID string, rt *runtimeA
 	var runErr error
 
 	// Run loop: execute once, then re-execute if mailbox has more input.
+	//
+	// Each pass gets its own cancellable context, published as rt.turnCancel so
+	// SendInput(interrupt: true) can end the current turn without killing the
+	// agent — the loop then picks the new assignment out of the mailbox and
+	// runs again. Without this the field was never assigned in production
+	// (only a white-box test ever wrote it), so an interrupting SendInput
+	// queued its text and then waited for the turn it was supposed to cut
+	// short.
 	for {
-		result, runErr = rt.runner.Run(ctx, agentID, assignment)
+		turnCtx, turnCancel := context.WithCancel(ctx)
+		m.mtx.Lock()
+		rt.turnCancel = turnCancel
+		m.mtx.Unlock()
+
+		result, runErr = rt.runner.Run(turnCtx, agentID, assignment)
+
+		m.mtx.Lock()
+		rt.turnCancel = nil
+		m.mtx.Unlock()
+		turnCancel()
+
+		// A cancelled turn is not a failed agent: the parent asked for this
+		// turn to stop so the next assignment could start. Only a cancellation
+		// of the AGENT's context is terminal, and that is checked below.
+		if runErr != nil && ctx.Err() == nil && errors.Is(runErr, context.Canceled) {
+			runErr = nil
+		}
 		if runErr != nil {
 			break
 		}
