@@ -41,7 +41,11 @@ vcs:
   worktree_dir: "~/.yanshi/worktrees"   # where worktree working dirs live
 compaction:
   threshold: 0.8        # compact when est. tokens >= threshold * context_window
-  keep_recent: 4        # trailing user/assistant pairs kept verbatim
+  keep_recent: 4        # trailing messages kept verbatim mid-turn; PAIRS pre-turn
+                        # ⚠️ the unit differs by path: pre-turn (WS//compact/SSE) reads
+                        # this as PAIRS and pins 2x this many messages, mid-turn reads it
+                        # as MESSAGES and halves it into pairs. 4 pins 8 messages on one
+                        # path and 4 on the other. See docs/compaction.md.
   context_window: 256000 # fallback window when a provider has no context_window
   model: ""             # optional fast summary model; empty = active session model
   chunk_threshold: 0.9  # carry-style chunking when summary input >= chunk_threshold * window

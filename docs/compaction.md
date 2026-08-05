@@ -215,3 +215,21 @@ compaction:
    差值为负，会把一个已被运维关闭的 cooldown 重新武装起来。
 
 `window` 是**本轮模型**的窗口（见上一节），不是全局回退值。
+
+
+## ⚠️ `keep_recent` 的单位在两条路径上不同
+
+`compaction.keep_recent` 被两条路径共用，**但它们对这个数的解释不一样**：
+
+| 路径 | 接收方 | 单位 | `keep_recent: 4` 实际钉住 |
+|---|---|---|---|
+| pre-turn（WS / `/compact` / SSE） | `ctxcompact.PlanOpts.KeepRecent` | **对数** | 8 条消息 |
+| mid-turn（`CompactingModel`） | `CompactingModel.KeepRecent` | **消息数**，内部 `/2` 转对数 | 4 条消息 |
+
+同一个配置值在一条路上保留的量是另一条的两倍。这不是设计意图，是两条路径各自演进的结果：
+`CompactingModel` 以消息数为单位、由 `/2` 桥接到 `Plan`（见 ADR-0006），而 pre-turn 的
+handler 直接把配置值当对数交给 `MaybeCompact`。
+
+**目前只做记录，未统一。** 统一需要选一个单位并改另一条路，那会改变现网行为
+（其中一条路径的保留量会翻倍或减半），应当单独立项并配 ADR，而不是夹在一次测试补全里。
+发现于 W4 review 第 7 轮。
