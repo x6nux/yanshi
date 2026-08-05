@@ -659,3 +659,34 @@ func TestCompactingModel_StreamCompactsToo(t *testing.T) {
 	assert.Less(t, len(forwarded), len(msgs),
 		"Stream must forward the compacted history, not the original")
 }
+
+// TestCompactingModel_MaybeCompactArmsTheTimeCooldown pins the write half of
+// the time-based cooldown.
+//
+// TestCompactingModel_InCooldown_TimeBased covers the read: given a
+// lastCompactAt, inCooldown respects CooldownDuration. It plants that field
+// itself, so it says nothing about whether anything ever sets it. W4 review
+// round 15 deleted the assignment in maybeCompact and the whole package
+// stayed green -- in production lastCompactAt would stay zero forever, the
+// time dimension would never fire, and CooldownDuration would be dead config.
+func TestCompactingModel_MaybeCompactArmsTheTimeCooldown(t *testing.T) {
+	inner := &recordingModel{summary: "SUMMARY", reply: "ok", streamOK: true}
+	cm := &CompactingModel{
+		Inner:         inner,
+		Threshold:     0.5,
+		ContextWindow: 1000,
+		KeepRecent:    4,
+	}
+	msgs := make([]*schema.Message, 8)
+	for i := range msgs {
+		msgs[i] = bigMessage(80)
+	}
+
+	_, did := cm.maybeCompact(context.Background(), msgs)
+	require.True(t, did, "premise: the compaction must happen, or nothing could be armed")
+
+	cm.cmMu.Lock()
+	defer cm.cmMu.Unlock()
+	assert.False(t, cm.lastCompactAt.IsZero(),
+		"a successful compaction must stamp lastCompactAt, or CooldownDuration is dead config")
+}
