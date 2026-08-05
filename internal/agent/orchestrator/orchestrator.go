@@ -77,10 +77,13 @@ type CompactionConfig struct {
 	Threshold     float64
 	ContextWindow int
 	KeepRecent    int
-	// CooldownTokens is the minimum token growth since the last successful
-	// compaction before another one is allowed (per-model instance). 0 means
-	// no token-growth cooldown.
-	CooldownTokens int
+	// CooldownFraction is the minimum token growth, as a fraction of the
+	// turn's RESOLVED context window, before another compaction is allowed.
+	// It is kept as a fraction rather than a pre-multiplied count because
+	// bootstrap does not know which provider a given turn will run against:
+	// multiplying there against the global fallback window sized every gate
+	// for the wrong model. 0 means no token-growth cooldown.
+	CooldownFraction float64
 	// CooldownDuration is the minimum wall-time since last compaction. <=0
 	// means no time-based cooldown.
 	CooldownDuration time.Duration
@@ -196,7 +199,7 @@ func New(cfg Config) (*Orchestrator, error) {
 	rawModel := cfg.Model
 
 	return &Orchestrator{
-		model:           wrapCompaction(cfg.Model, cfg.Compaction),
+		model:           wrapCompaction(cfg.Model, cfg.Compaction, 0),
 		rawModel:        rawModel,
 		profile:         profile,
 		vcsScope:        cfg.VCSScope,
@@ -225,16 +228,25 @@ func New(cfg Config) (*Orchestrator, error) {
 
 // wrapCompaction returns m wrapped in einollm.CompactingModel when compaction
 // is enabled, else m unchanged.
-func wrapCompaction(m model.BaseChatModel, cc CompactionConfig) model.BaseChatModel {
+//
+// window is the context window resolved for the model m will run against;
+// pass 0 to fall back to cc.ContextWindow. Every gate -- threshold, hard
+// force, and the token cooldown -- is sized from that single number, so a
+// provider with a smaller window than the global default cannot end up with
+// a threshold it can never reach.
+func wrapCompaction(m model.BaseChatModel, cc CompactionConfig, window int) model.BaseChatModel {
 	if cc.Threshold <= 0 {
 		return m
+	}
+	if window <= 0 {
+		window = cc.ContextWindow
 	}
 	return &einollm.CompactingModel{
 		Inner:             m,
 		Threshold:         cc.Threshold,
-		ContextWindow:     cc.ContextWindow,
+		ContextWindow:     window,
 		KeepRecent:        cc.KeepRecent,
-		CooldownTokens:    cc.CooldownTokens,
+		CooldownTokens:    int(cc.CooldownFraction * float64(window)),
 		CooldownDuration:  cc.CooldownDuration,
 		HardForceFraction: cc.HardForceFraction,
 	}
@@ -404,7 +416,7 @@ func (o *Orchestrator) runnerFor(chatModel model.BaseChatModel, plan bool) *adk.
 	names := collectToolNames(registered)
 
 	agent, err := adk.NewChatModelAgent(context.Background(), &adk.ChatModelAgentConfig{
-		Model:         wrapCompaction(chatModel, o.compaction),
+		Model:         wrapCompaction(chatModel, o.compaction, 0),
 		Instruction:   o.instruction,
 		MaxIterations: o.maxIters,
 		ToolsConfig: adk.ToolsConfig{

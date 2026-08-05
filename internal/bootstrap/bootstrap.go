@@ -984,7 +984,7 @@ func Build(opts Options) (*App, error) {
 			Threshold:         cfg.Compaction.Threshold,
 			ContextWindow:     cfg.Compaction.ContextWindow,
 			KeepRecent:        cfg.Compaction.KeepRecent,
-			CooldownTokens:    int(cfg.Compaction.CooldownFraction * float64(cfg.Compaction.ContextWindow)),
+			CooldownFraction:  cfg.Compaction.CooldownFraction,
 			CooldownDuration:  parseCooldownDuration(cfg.Compaction.CooldownDuration),
 			HardForceFraction: cfg.Compaction.HardForceFraction,
 		},

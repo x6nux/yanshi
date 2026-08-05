@@ -98,6 +98,11 @@ func TestNewWiresCompactionIntoTheModel(t *testing.T) {
 // never compact while the parent does. W4 review round 14 severed this one
 // and the whole package stayed green.
 //
+// The match deliberately stops before the window argument: Task 2 made it a
+// parameter and Task 3 will start passing the turn's resolved value, so
+// pinning the whole line would make this guard fail on the very change it
+// should survive.
+//
 // Checked at the source, not through the object: runnerFor returns an
 // *adk.Runner and the wrapped model is buried inside adk's agent, with no
 // accessor to assert on. Driving a real delegated turn to observe it would
@@ -108,8 +113,35 @@ func TestRunnerForWiresCompactionToo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read orchestrator.go: %v", err)
 	}
-	if !strings.Contains(string(src), "Model:         wrapCompaction(chatModel, o.compaction),") {
+	if !strings.Contains(string(src), "Model:         wrapCompaction(chatModel, o.compaction, ") {
 		t.Error("runnerFor no longer wraps its model for compaction: sub-agent turns " +
 			"would grow their context unbounded while the parent's is compacted")
 	}
+}
+
+// TestCompactionGatesUseTheResolvedWindow pins that all three gates are
+// computed from the window the turn's provider actually has.
+//
+// bootstrap used to pre-multiply CooldownTokens against the global fallback
+// window, which left the orchestrator with no way to learn the real one. A
+// provider with a 128K window then got a threshold gate sized for 256K --
+// 1.9x its actual capacity, so the gate never fires at all. That is not a
+// rounding problem: compaction simply stops existing for that provider.
+func TestCompactionGatesUseTheResolvedWindow(t *testing.T) {
+	cc := CompactionConfig{
+		Threshold:         0.8,
+		ContextWindow:     256000, // global fallback
+		KeepRecent:        4,
+		CooldownFraction:  0.1,
+		HardForceFraction: 0.9,
+	}
+
+	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 128000)
+	cm, ok := wrapped.(*einollm.CompactingModel)
+	require.True(t, ok, "compaction must be enabled")
+
+	require.Equal(t, 128000, cm.ContextWindow,
+		"the gates must size against the provider's window, not the global fallback")
+	require.Equal(t, 12800, cm.CooldownTokens,
+		"cooldown is a fraction of the resolved window, resolved here rather than pre-multiplied in bootstrap")
 }
