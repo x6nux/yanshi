@@ -266,6 +266,15 @@ func parseCooldownDuration(s string) time.Duration {
 	}
 	d, err := time.ParseDuration(s)
 	if err != nil {
+		// Returning 0 disables the time cooldown, which is indistinguishable
+		// from having left the key empty on purpose. Everywhere else this repo
+		// rejects a malformed config value outright (see
+		// guard.ValidateShellPolicy via Config.validateProfiles), but doing so
+		// here would refuse to start over one optional tuning knob. Warn
+		// instead, matching how bootstrap already reports a subsystem that
+		// degraded rather than failed.
+		fmt.Fprintf(os.Stderr,
+			"yanshi: compaction.cooldown_duration %q is not a duration (%v): time-based cooldown disabled\n", s, err)
 		return 0
 	}
 	return d

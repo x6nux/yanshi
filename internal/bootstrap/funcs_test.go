@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -592,4 +593,43 @@ func TestBuild_WithTUIMode(t *testing.T) {
 		t.Fatalf("Build with TUIMode: %v", err)
 	}
 	app.Shutdown(context.Background())
+}
+
+// TestParseCooldownDurationWarnsOnMalformed pins the warning, not just the
+// fallback value.
+//
+// TestParseCooldownDuration_Invalid asserts the return is 0, which it would be
+// whether or not anything told the operator. That is the whole problem: a
+// typo'd cooldown_duration disables the time cooldown, and a disabled cooldown
+// looks exactly like one deliberately left empty. Everywhere else a malformed
+// config value is rejected at load (guard.ValidateShellPolicy through
+// Config.validateProfiles); refusing to boot over one optional knob is too
+// harsh, so the value degrades and says so. Without this test the "says so"
+// half can be deleted silently.
+func TestParseCooldownDurationWarnsOnMalformed(t *testing.T) {
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = w
+	got := parseCooldownDuration("3 seconds please")
+	w.Close()
+	os.Stderr = old
+
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("parseCooldownDuration(malformed) = %v, want 0", got)
+	}
+	out := string(raw)
+	if !strings.Contains(out, "cooldown_duration") {
+		t.Errorf("a malformed cooldown_duration was swallowed silently; stderr was %q", out)
+	}
+	if !strings.Contains(out, "3 seconds please") {
+		t.Errorf("the warning does not name the offending value, so the operator "+
+			"cannot find it in their config; stderr was %q", out)
+	}
 }
