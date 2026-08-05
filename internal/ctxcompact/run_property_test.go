@@ -155,8 +155,12 @@ func TestMaybeCompactDeclinesBeforeSpendingACall(t *testing.T) {
 			"threshold 0 switches compaction off; it does not mean every history qualifies"},
 		{"window zero", 0.5, 0, 2, 12,
 			"a zero window makes every threshold zero, so nothing can be judged over it"},
-		{"too few messages", 0.0001, 1000, 4, 5,
-			"a history no longer than the pinned tail has nothing to summarise"},
+		// 9 messages with keepRecent 4 is exactly the guard's boundary
+		// (9 <= 4*2+1). Fewer would let Plan pin everything and decline on its
+		// own, which is what an earlier version of this case did -- it passed
+		// with the guard deleted because the guard was never what stopped it.
+		{"at the too-few-messages boundary", 0.0001, 1000, 4, 9,
+			"a history no longer than the pinned tail plus one is not worth a model call"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
