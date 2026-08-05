@@ -690,3 +690,42 @@ func TestCompactingModel_MaybeCompactArmsTheTimeCooldown(t *testing.T) {
 	assert.False(t, cm.lastCompactAt.IsZero(),
 		"a successful compaction must stamp lastCompactAt, or CooldownDuration is dead config")
 }
+
+// TestCompactingModel_ThresholdBoundaries pins both gates at the exact token
+// count where they flip.
+//
+// Low severity on its own -- EstimateTokens rarely lands precisely on a
+// boundary -- but W4 review round 16 measured that both comparisons could be
+// loosened by one (< to <=, >= to >) with the whole package still green, so
+// the boundary was documented only by the source. It matters most when a
+// future change reads the comment rather than the operator: the threshold
+// gate compacts AT the threshold, not merely above it.
+func TestCompactingModel_ThresholdBoundaries(t *testing.T) {
+	// 8 messages so the short-history guard cannot interfere.
+	at := func(tokensEach int) []*schema.Message {
+		msgs := make([]*schema.Message, 8)
+		for i := range msgs {
+			msgs[i] = bigMessage(tokensEach)
+		}
+		return msgs
+	}
+
+	t.Run("threshold gate fires exactly at the threshold", func(t *testing.T) {
+		cm := &CompactingModel{Threshold: 0.5, ContextWindow: 1000, KeepRecent: 4}
+		msgs := at(80)
+		tokens := ctxcompact.EstimateTokens(msgs)
+		cm.Threshold = float64(tokens) / float64(cm.ContextWindow) // threshold == tokens
+		assert.True(t, cm.shouldCompact(msgs),
+			"at the threshold the gate must fire; loosening < to <= would defer it")
+	})
+
+	t.Run("hard force fires exactly at its fraction", func(t *testing.T) {
+		cm := &CompactingModel{Threshold: 0.99, ContextWindow: 1000, KeepRecent: 4}
+		msgs := at(80)
+		tokens := ctxcompact.EstimateTokens(msgs)
+		cm.HardForceFraction = float64(tokens) / float64(cm.ContextWindow)
+		assert.True(t, cm.shouldCompact(msgs),
+			"at the hard-force fraction it must fire even below the threshold; "+
+				"tightening >= to > would let the window overflow by one token")
+	})
+}
