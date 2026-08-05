@@ -443,16 +443,18 @@ func TestClientCancel(t *testing.T) {
 	}
 }
 
-// TestParseUsageReportEvent verifies that a FakeAgent-scripted usage_report
-// notification is parsed into Event.Usage and delivered to the onEvent callback.
-func TestParseUsageReportEvent(t *testing.T) {
+// TestPromptResultUsageIsDelivered verifies that the token usage ACP carries on
+// the session/prompt RESULT reaches the onEvent callback.
+//
+// This is the sole data source of the whole goal-loop token budget: nothing
+// else populates UsageSink, so if this delivery breaks, MaxTokens can be set to
+// any value and the gate still never fires.
+func TestPromptResultUsageIsDelivered(t *testing.T) {
 	fa, clientIn, clientOut := NewFakeAgent()
 	defer fa.Close()
 	fa.Updates = []string{"thinking…"}
-	// Script a usage report notification.
-	fa.UsageReports = []Usage{
-		{InputTokens: 100, OutputTokens: 50, TotalTokens: 150},
-	}
+	// Script the usage where the protocol puts it: on the prompt response.
+	fa.PromptUsage = &Usage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150}
 
 	cl := NewClient(clientIn, clientOut)
 	defer cl.Close()
@@ -471,19 +473,20 @@ func TestParseUsageReportEvent(t *testing.T) {
 	stopReason, err := cl.Prompt(context.Background(), sessionID, "do it", onEvent)
 	require.NoError(t, err)
 	require.Equal(t, "end_turn", stopReason)
-	require.NotNil(t, capturedUsage, "usage_report must be delivered as an Event")
+	require.NotNil(t, capturedUsage, "prompt-result usage must be delivered as an Event")
 	assert.Equal(t, 100, capturedUsage.InputTokens)
 	assert.Equal(t, 50, capturedUsage.OutputTokens)
 	assert.Equal(t, 150, capturedUsage.TotalTokens)
 }
 
-// TestNoUsageReportDoesNotSetUsage verifies that when the FakeAgent sends no
-// usage_report, Event.Usage stays nil for every delivered event.
-func TestNoUsageReportDoesNotSetUsage(t *testing.T) {
+// TestNoPromptUsageDoesNotSetUsage verifies that an agent that omits the
+// optional usage field leaves Event.Usage nil rather than delivering a zero
+// Usage the sink would accumulate as if it were real.
+func TestNoPromptUsageDoesNotSetUsage(t *testing.T) {
 	fa, clientIn, clientOut := NewFakeAgent()
 	defer fa.Close()
 	fa.Updates = []string{"hello"}
-	// No UsageReports → no usage on events.
+	// No PromptUsage → no usage on events.
 
 	cl := NewClient(clientIn, clientOut)
 	defer cl.Close()
@@ -501,13 +504,54 @@ func TestNoUsageReportDoesNotSetUsage(t *testing.T) {
 	}
 	_, err = cl.Prompt(context.Background(), sessionID, "step", onEvent)
 	require.NoError(t, err)
-	assert.False(t, gotUsage, "no usage_report should leave Event.Usage nil")
+	assert.False(t, gotUsage, "an omitted usage field must leave Event.Usage nil")
 }
 
-// TestParseUsageReport_MalformedPayload verifies that a malformed JSON payload
-// does not panic and returns nil.
-func TestParseUsageReport_MalformedPayload(t *testing.T) {
-	malformed := json.RawMessage(`{"update": {"sessionUpdate": "usage_report", "usage": {bad`)
-	u := parseUsageReport(malformed)
-	assert.Nil(t, u, "malformed JSON must return nil, not panic")
+// TestZeroUsageIsNotDelivered pins the rule the deleted parseUsageReport used
+// to carry: an all-zero report is dropped rather than forwarded.
+//
+// A zero Usage is not free. UsageSink accumulates whatever it is handed, so a
+// long run against an agent that reports {0,0,0} every turn would look to the
+// budget exactly like a run that genuinely spent nothing — and "spent nothing"
+// is the one reading that can never trip the gate.
+func TestZeroUsageIsNotDelivered(t *testing.T) {
+	fa, clientIn, clientOut := NewFakeAgent()
+	defer fa.Close()
+	fa.Updates = []string{"nop"}
+	fa.PromptUsage = &Usage{} // reported, but all counters zero
+
+	cl := NewClient(clientIn, clientOut)
+	defer cl.Close()
+	_, err := cl.Initialize(context.Background(), ClientCapabilities{})
+	require.NoError(t, err)
+	sessionID, err := cl.NewSession(context.Background(), t.TempDir(), nil, nil)
+	require.NoError(t, err)
+
+	var gotUsage bool
+	_, err = cl.Prompt(context.Background(), sessionID, "step", func(ev Event) {
+		if ev.Usage != nil {
+			gotUsage = true
+		}
+	})
+	require.NoError(t, err)
+	assert.False(t, gotUsage, "an all-zero usage report must not reach the sink")
+}
+
+// TestMalformedUsageDegradesButKeepsTheTurn pins the safe-degradation clause of
+// F2/LEAK3: a usage field the agent typed wrong costs us that turn's accounting
+// and nothing else.
+//
+// Without the two-pass parse this is a turn-killer rather than a lost metric:
+// json.Unmarshal fails on the whole result, so a wrong-typed optional field
+// would abort work the agent had already completed.
+func TestMalformedUsageDegradesButKeepsTheTurn(t *testing.T) {
+	var pr PromptResult
+	raw := json.RawMessage(`{"stopReason":"end_turn","usage":{"inputTokens":"one hundred"}}`)
+	require.Error(t, json.Unmarshal(raw, &pr),
+		"guard: this fixture must actually break the strict parse, else the test proves nothing")
+
+	stop, usage, err := decodePromptResult(raw)
+	require.NoError(t, err, "a bad usage field must not fail the decode")
+	assert.Equal(t, "end_turn", stop, "the turn's outcome must survive a bad usage field")
+	assert.Nil(t, usage, "a usage that does not parse must be dropped, not zero-filled")
 }

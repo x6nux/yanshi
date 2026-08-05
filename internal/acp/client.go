@@ -19,8 +19,9 @@ type Event struct {
 	Title      string // populated for tool_call
 	Kind_      string // populated for tool_call (the Update.Kind discriminator)
 	Status     string // populated for tool_call
-	// Usage is populated when the update is a "usage_report" discriminator, nil
-	// for other event kinds. Callers must nil-check before reading.
+	// Usage is populated only on the synthetic "usage" event Prompt emits from
+	// the session/prompt result; it is nil on every session/update, because no
+	// session/update carries token accounting. Callers must nil-check.
 	Usage *Usage
 }
 
@@ -40,6 +41,15 @@ type Client struct {
 	// setting/clearing the handler safe relative to its invocation.
 	eventMu        sync.Mutex
 	currentOnEvent func(Event)
+
+	// deliverMu serializes handler invocations. Until token usage moved to the
+	// prompt RESULT, every delivery came from the single ReadLoop goroutine and
+	// was serialized for free; Prompt now delivers the result's usage from the
+	// caller's goroutine, which can overlap a notification the ReadLoop is
+	// still dispatching. Handlers in this repo append to slices without locking
+	// (see the tests, and goalloop's usageForwarder), so the overlap would be a
+	// real race rather than a theoretical one.
+	deliverMu sync.Mutex
 
 	// Policy gates inbound server->client requests (fs/terminal/permission).
 	// May be nil; when nil, inbound requests get a method-not-found error.
@@ -156,14 +166,20 @@ func (c *Client) NewSession(ctx context.Context, cwd string, extraDirs []string,
 
 // Prompt sends a "session/prompt" request and streams session/update events
 // to onEvent until the agent resolves the prompt. Returns the stopReason
-// (e.g. "end_turn", "cancelled"). The usage_report session/update discriminator
-// populates Event.Usage on the events it delivers to onEvent.
+// (e.g. "end_turn", "cancelled").
+//
+// After the turn resolves, Prompt delivers one synthetic Event{Kind: "usage"}
+// carrying the token accounting the agent reported on the prompt RESULT — the
+// only place ACP puts it. Agents that omit the optional field produce no such
+// event, and neither does a report whose every counter is zero.
 //
 // Concurrency model: onNotify runs in the transport's ReadLoop goroutine,
 // while Call blocks on the caller's goroutine waiting for the response.
 // A per-Client mutex guards the currentOnEvent pointer so that the handler
 // is safely installed before Call and cleared after — ensuring every update
-// that arrives before the response is delivered to onEvent.
+// that arrives before the response is delivered to onEvent. The usage event is
+// produced on the caller's goroutine, so deliverMu serializes it against any
+// notification the ReadLoop is still dispatching.
 func (c *Client) Prompt(ctx context.Context, sessionID, text string, onEvent func(Event)) (stopReason string, err error) {
 	// Install the per-call event handler. The transport's onNotify is already
 	// permanently wired to c.handleNotify (set in Initialize); handleNotify
@@ -186,51 +202,52 @@ func (c *Client) Prompt(ctx context.Context, sessionID, text string, onEvent fun
 		return "", err
 	}
 
+	stopReason, usage, err := decodePromptResult(result)
+	if err != nil {
+		return "", err
+	}
+	if usage != nil {
+		c.deliver(Event{Kind: "usage", Usage: usage})
+	}
+	return stopReason, nil
+}
+
+// decodePromptResult reads a session/prompt result into its stop reason and the
+// turn's token usage, returning a nil usage when there is nothing worth
+// accounting for.
+//
+// Two rules live here, both about not letting the optional field damage the
+// required one:
+//
+//   - A usage that does not parse is dropped, and the turn still reports its
+//     stop reason. ACP marks these fields DefaultOnError, so an agent that
+//     types one wrong (a string where a number belongs) costs us that turn's
+//     accounting — not the turn itself, which by then has already run.
+//   - An all-zero usage is dropped too. UsageSink accumulates whatever it is
+//     handed, so agents that report {0,0,0} every turn would be indistinguishable
+//     from a run that genuinely spent nothing — the one reading that can never
+//     trip the budget.
+func decodePromptResult(result json.RawMessage) (stopReason string, usage *Usage, err error) {
 	var pr PromptResult
 	if err := json.Unmarshal(result, &pr); err != nil {
-		return "", fmt.Errorf("acp: unmarshal prompt result: %w", err)
+		var bare struct {
+			StopReason string `json:"stopReason"`
+		}
+		if err2 := json.Unmarshal(result, &bare); err2 != nil {
+			return "", nil, fmt.Errorf("acp: unmarshal prompt result: %w", err)
+		}
+		return bare.StopReason, nil, nil
 	}
-	return pr.StopReason, nil
+	u := pr.Usage
+	if u != nil && u.InputTokens == 0 && u.OutputTokens == 0 && u.TotalTokens == 0 {
+		u = nil
+	}
+	return pr.StopReason, u, nil
 }
 
 // handleNotify is the transport-level onNotify callback. It parses
 // session/update notifications into Events and forwards them to the
 // current per-call handler (if any). Other notifications are ignored.
-// parseUsageReport tolerantly extracts token usage from a session/update
-// usage_report notification. It never panics: on any parse failure it returns
-// nil so the turn continues uninterrupted. The adapter (codex / claudecode)
-// determines the exact JSON shape; we try the common {update:{usage:...}} shape
-// first, then a bare {usage:...} fallback. A zero-only usage returns nil so the
-// sink is not polluted with no-op events.
-func parseUsageReport(raw json.RawMessage) *Usage {
-	defer func() {
-		if r := recover(); r != nil {
-			// Malformed payload must never crash a turn.
-			_ = r
-		}
-	}()
-	var probe struct {
-		Update struct {
-			Usage Usage `json:"usage"`
-		} `json:"update"`
-	}
-	if err := json.Unmarshal(raw, &probe); err != nil {
-		// Also try alternative key: the usage object at the params root.
-		var alt struct {
-			Usage Usage `json:"usage"`
-		}
-		if err2 := json.Unmarshal(raw, &alt); err2 != nil {
-			return nil
-		}
-		probe.Update.Usage = alt.Usage
-	}
-	u := probe.Update.Usage
-	if u.InputTokens == 0 && u.OutputTokens == 0 && u.TotalTokens == 0 {
-		return nil // refuse to emit a zero-only usage that would pollute the sink
-	}
-	return &u
-}
-
 func (c *Client) handleNotify(method string, params json.RawMessage) {
 	if method != "session/update" {
 		return
@@ -247,11 +264,6 @@ func (c *Client) handleNotify(method string, params json.RawMessage) {
 		if len(upd.Update.Content) > 0 {
 			ev.Text = upd.Update.Content[0].Text
 		}
-	case "usage_report":
-		// Parse subprocess token usage from the raw params (the Update struct
-		// has no Usage field — adapters put it under update.usage). Best-effort:
-		// malformed payloads yield nil, never a panic, so the turn continues.
-		ev.Usage = parseUsageReport(params)
 	case "tool_call", "tool_call_update":
 		ev.ToolCallID = upd.Update.ToolCallID
 		ev.Title = upd.Update.Title
@@ -280,12 +292,22 @@ func (c *Client) handleNotify(method string, params json.RawMessage) {
 		ev.Status = upd.Update.Status
 	}
 
+	c.deliver(ev)
+}
+
+// deliver hands ev to the active per-call handler, if any. All deliveries go
+// through here so that they are serialized against each other regardless of
+// which goroutine produced the event.
+func (c *Client) deliver(ev Event) {
 	c.eventMu.Lock()
 	handler := c.currentOnEvent
 	c.eventMu.Unlock()
-	if handler != nil {
-		handler(ev)
+	if handler == nil {
+		return
 	}
+	c.deliverMu.Lock()
+	defer c.deliverMu.Unlock()
+	handler(ev)
 }
 
 // applyDiffContent extracts "diff" content blocks from a tool_call update's

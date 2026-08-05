@@ -247,7 +247,7 @@ func TestACPImplementer_DefaultProfileScopedToWorktree(t *testing.T) {
 }
 
 // TestACPImplementerWorkerAccumulatesSubprocessUsage verifies that the onEvent
-// closure used by the worker forwards ACP usage_report events into the shared
+// closure used by the worker forwards ACP usage events into the shared
 // UsageSink, so subprocess token consumption flows into the goal-loop budget.
 // This is the LEAK3 goalloop integration: onEvent from Prompt forwards usage to
 // the shared sink.

@@ -554,16 +554,28 @@ func TestClientHandleNotifyMalformedJSON(t *testing.T) {
 	cl.handleNotify("session/update", json.RawMessage(`{bad`))
 }
 
-func TestClientHandleNotifyUsageReportAltFormat(t *testing.T) {
+// TestClientHandleNotifyDoesNotMineUsageFromUpdates pins the boundary that the
+// old "usage_report" branch blurred: no session/update carries token usage, so
+// handleNotify must not populate Event.Usage no matter what an update looks
+// like. A notification shaped exactly like the one the dead branch expected is
+// the sharpest case — it is what the fake used to send, and what nothing on the
+// wire ever sends.
+func TestClientHandleNotifyDoesNotMineUsageFromUpdates(t *testing.T) {
 	cl := NewClient(new(bytes.Buffer), new(bytes.Buffer))
 	var events []Event
 	cl.currentOnEvent = func(ev Event) {
 		events = append(events, ev)
 	}
-	// Alternative format where usage sits at root level.
 	cl.handleNotify("session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"usage_report","usage":{"inputTokens":10}}}`))
-	if len(events) != 1 || events[0].Kind != "usage_report" || events[0].Usage == nil || events[0].Usage.InputTokens != 10 {
-		t.Fatalf("got %+v", events)
+	// The real context-window gauge, which is also not token accounting.
+	cl.handleNotify("session/update", json.RawMessage(`{"sessionId":"s","update":{"sessionUpdate":"usage_update","used":53000,"size":200000}}`))
+	if len(events) != 2 {
+		t.Fatalf("expected both updates delivered, got %+v", events)
+	}
+	for i, ev := range events {
+		if ev.Usage != nil {
+			t.Errorf("events[%d] (%s): Usage = %+v; no session/update carries token usage", i, ev.Kind, ev.Usage)
+		}
 	}
 }
 
@@ -1086,55 +1098,6 @@ func TestApplyDiffContentMkdirFailure(t *testing.T) {
 	cl.applyDiffContent("s", raw)
 }
 
-// ---------------------------------------------------------------------------
-// parseUsageReport: zero-only returns nil
-// ---------------------------------------------------------------------------
-
-func TestParseUsageReportZeroOnly(t *testing.T) {
-	raw := json.RawMessage(`{"update":{"sessionUpdate":"usage_report","usage":{"inputTokens":0,"outputTokens":0,"totalTokens":0}}}`)
-	u := parseUsageReport(raw)
-	if u != nil {
-		t.Fatalf("expected nil for zero-only usage, got %+v", u)
-	}
-}
-
-func TestParseUsageReportAltFmtZeroOnly(t *testing.T) {
-	raw := json.RawMessage(`{"usage":{"inputTokens":0}}`)
-	u := parseUsageReport(raw)
-	if u != nil {
-		t.Fatalf("expected nil for zero-only alt usage, got %+v", u)
-	}
-}
-
-func TestParseUsageReportPanic(t *testing.T) {
-	// Create data that would cause a panic during JSON unmarshal
-	// (e.g. via an integer overflow or other malformed data).
-	// The struct has only string slices, so this tests the recover path
-	// with an extremely deeply nested JSON.
-	deep := `{"update":{` + strings.Repeat(`"a":{`, 1000) + `"usage":{"inputTokens":1}}` + strings.Repeat("}", 1000) + `}`
-	u := parseUsageReport(json.RawMessage(deep))
-	if u == nil {
-		// It may or may not panic depending on platform — either way is fine.
-	}
-	_ = u
-}
-
-func TestParseUsageReportAltFormatNonZero(t *testing.T) {
-	// The first unmarshal (looking for "update" key) succeeds but leaves
-	// zero values. The alt format with non-zero values at the root level
-	// returns the parsed usage. However, since the first unmarshal always
-	// succeeds (Go treats missing keys as zero values), the alt format path
-	// only runs when the first struct has a type mismatch. This test validates
-	// that the normal format path works (update.usage at root level).
-	u := parseUsageReport(json.RawMessage(`{"update":{"sessionUpdate":"usage_report","usage":{"inputTokens":5,"outputTokens":3}}}`))
-	if u == nil {
-		t.Fatal("expected non-nil usage for standard format")
-	}
-	if u.InputTokens != 5 || u.OutputTokens != 3 {
-		t.Fatalf("got tokens %+v", u)
-	}
-}
-
 func TestClientHandleNotifyToolCallNilHandler(t *testing.T) {
 	// When currentOnEvent is nil, handleNotify should still parse and process
 	// the event (e.g. applyDiffContent), but not deliver to a callback.
@@ -1412,39 +1375,6 @@ func TestTransportHandleRequestErrNoResponse(t *testing.T) {
 	if !strings.Contains(line, "ok") {
 		t.Fatalf("expected ok in response, got %s", line)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// parseUsageReport: alt format where first probe unmarshal fails
-// ---------------------------------------------------------------------------
-
-// TestParseUsageReportAltFormatFailsFirstUnmarshal verifies that when the first
-// probe struct unmarshal fails (because "update" is not an object), the alt
-// format path runs and returns non-nil usage when values are non-zero.
-func TestParseUsageReportAltFormatFailsFirstUnmarshal(t *testing.T) {
-	// "update" is a string, not an object — first probe unmarshal fails.
-	// Alt format succeeds with non-zero usage at root level.
-	raw := json.RawMessage(`{"update":"not_an_object","usage":{"inputTokens":5,"outputTokens":3}}`)
-	u := parseUsageReport(raw)
-	if u == nil {
-		t.Fatal("expected non-nil usage for alt format with non-zero values")
-	}
-	if u.InputTokens != 5 || u.OutputTokens != 3 {
-		t.Fatalf("got tokens %+v; want InputTokens=5 OutputTokens=3", u)
-	}
-}
-
-// TestParseUsageReportPanicRecover verifies that deeply nested or malicious
-// JSON that triggers a panic during unmarshal is caught by recover() and
-// returns nil rather than panicking.
-func TestParseUsageReportPanicRecover(t *testing.T) {
-	// An extremely deeply nested JSON object can cause a stack overflow
-	// or panic in some JSON implementations. The recover() handler must
-	// catch it and return nil.
-	deep := `{"a":` + strings.Repeat(`{"b":`, 500) + `{}` + strings.Repeat("}", 500) + `}`
-	raw := json.RawMessage(deep)
-	u := parseUsageReport(raw)
-	_ = u // must not panic; nil vs non-nil is platform-dependent
 }
 
 // ---------------------------------------------------------------------------

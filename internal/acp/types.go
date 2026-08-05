@@ -140,8 +140,17 @@ type PromptParams struct {
 }
 
 // PromptResult is the result of the "session/prompt" request.
+//
+// Usage is where ACP carries token accounting. In the v1 schema the only
+// `usage: Option<Usage>` field in the whole protocol hangs off PromptResponse
+// (agent-client-protocol, agent-client-protocol-schema/src/v1/agent.rs), gated
+// behind the `unstable_end_turn_token_usage` feature — so agents that predate
+// it simply omit the field and Usage stays nil. It is NOT a session/update:
+// the "usage_update" discriminator that does exist reports context-window
+// occupancy ({used, size, cost}), not tokens spent.
 type PromptResult struct {
 	StopReason string `json:"stopReason"`
+	Usage      *Usage `json:"usage,omitempty"`
 }
 
 // ContentBlock is a single content block in a prompt or update.
@@ -180,7 +189,7 @@ type Diff struct {
 	NewText string  `json:"newText"`
 }
 
-// Usage carries parsed ACP token consumption from a "usage_report" session/update.
+// Usage carries the ACP token accounting reported on a session/prompt result.
 // Fields are best-effort: adapters vary (codex vs claudecode vs future), so any
 // subset may be populated; callers must tolerate zero values.
 type Usage struct {

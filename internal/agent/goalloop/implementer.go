@@ -165,7 +165,7 @@ type ACPImplementer struct {
 	WorktreeDir string
 
 	// Sink is the shared token accumulator (goalloop.UsageSink). When non-nil,
-	// each ACP subprocess usage_report event is added to this sink so the goal
+	// each ACP subprocess usage event is added to this sink so the goal
 	// loop's budget and cost tracking reflect subprocess token consumption
 	// (LEAK3). nil leaves subprocess usage uncounted (preserves the pre-F2 path
 	// for callers that don't pass a sink).
@@ -250,7 +250,7 @@ type worker struct {
 	vcsDBPath   string
 	worktreeDir string
 
-	// sink receives subprocess token usage from ACP usage_report events (LEAK3).
+	// sink receives subprocess token usage from the ACP prompt result (LEAK3).
 	// nil leaves subprocess usage uncounted (preserves callers without a sink).
 	sink *UsageSink
 }
@@ -379,7 +379,7 @@ func (w *worker) runWithAutoVCS(ctx context.Context, task workerTask) (string, e
 }
 
 // usageForwarder returns a Prompt onEvent callback that forwards ACP
-// usage_report events into the worker's shared UsageSink (LEAK3). Returns nil
+// usage events into the worker's shared UsageSink (LEAK3). Returns nil
 // when no sink is configured, preserving the pre-F2 behavior of not installing
 // an event handler. The mapping is input→prompt, output→completion, total→total.
 func (w *worker) usageForwarder() func(acp.Event) {

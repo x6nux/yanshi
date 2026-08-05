@@ -3,7 +3,6 @@ package acp
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"sync"
 )
@@ -33,9 +32,16 @@ type FakeAgent struct {
 	Updates         []string      // scripted agent_message_chunk texts (default ["hello ","world"])
 	HoldPrompt      bool          // if true, don't auto-resolve the prompt (for cancel tests)
 	InboundRequests []InboundSpec // server->client requests to send during prompt
-	// UsageReports, when non-empty, are emitted as session/update usage_report
-	// notifications right before the prompt resolves (after text chunks).
-	UsageReports []Usage
+	// PromptUsage, when non-nil, is attached to the session/prompt RESULT, which
+	// is where ACP actually carries token accounting: in the v1 schema the only
+	// `usage: Option<Usage>` field hangs off PromptResponse, not off any
+	// session/update notification.
+	//
+	// The predecessor field emitted a "usage_report" session/update instead.
+	// That discriminator does not exist in ACP — the fake and the client agreed
+	// with each other and both disagreed with the protocol, so the whole budget
+	// chain measured zero against every real agent while the tests stayed green.
+	PromptUsage *Usage
 
 	// Recorded responses for inbound requests. Guarded by inboundMu.
 	inboundMu    sync.Mutex
@@ -174,17 +180,6 @@ func (fa *FakeAgent) handleRequest(req inboundRequest) (json.RawMessage, error) 
 			}
 		}
 
-		// Emit scripted usage_report notifications. The Update struct has no
-		// Usage field, so we write raw JSON matching the {update:{usage:...}}
-		// shape that parseUsageReport expects.
-		for _, u := range fa.UsageReports {
-			raw := fmt.Sprintf(`{"sessionId":%q,"update":{"sessionUpdate":"usage_report","usage":{"inputTokens":%d,"outputTokens":%d,"totalTokens":%d}}}`,
-				params.SessionID, u.InputTokens, u.OutputTokens, u.TotalTokens)
-			if err := fa.tr.Notify("session/update", json.RawMessage(raw)); err != nil {
-				return nil, err
-			}
-		}
-
 		// Send any scripted inbound server->client requests and record
 		// the client's responses. This must happen in a separate goroutine
 		// because tr.Call blocks waiting for a response that arrives through
@@ -229,8 +224,9 @@ func (fa *FakeAgent) handleRequest(req inboundRequest) (json.RawMessage, error) 
 				return
 			}
 
-			// Normal mode: resolve the prompt with end_turn.
-			fa.tr.Respond(req.ID, PromptResult{StopReason: "end_turn"}, nil)
+			// Normal mode: resolve the prompt with end_turn, carrying whatever
+			// token usage was scripted for this turn.
+			fa.tr.Respond(req.ID, PromptResult{StopReason: "end_turn", Usage: fa.PromptUsage}, nil)
 		}()
 
 		return nil, errNoResponse
