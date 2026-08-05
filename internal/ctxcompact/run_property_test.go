@@ -82,11 +82,22 @@ func TestProperty_NoDoubleCompaction(t *testing.T) {
 // ledger: E2/PROP1#2 随机输入通过
 func TestProperty_RunReducesTokens(t *testing.T) {
 	const trials = 30
+	// KeepRecent and ModelWindow used to be fixed at 3 and 2000. Both decide
+	// how much of a history is pinned versus summarized, so a single pair
+	// asserts monotonicity only for one shape of that split -- and the shapes
+	// where it is hardest to hold are the extremes: a tail so large almost
+	// nothing is summarized, or a window so tight the summarizer chunks.
+	// Varied per trial rather than as subtests so the trial floor below still
+	// counts a single population.
+	keepRecents := []int{1, 3, 8}
+	windows := []int{800, 2000, 8000}
+	trial := -1
 	summarized := 0
 	runGeneratedProperty(t, trials, 60, func(t *testing.T, msgs []*schema.Message) {
+		trial++
 		rs := &recordingSummarizer{Return: "compacted summary"}
-		result, err := Run(context.Background(), msgs, PlanOpts{KeepRecent: 3}, RunOpts{
-			ModelWindow:      2000,
+		result, err := Run(context.Background(), msgs, PlanOpts{KeepRecent: keepRecents[trial%len(keepRecents)]}, RunOpts{
+			ModelWindow:      windows[trial%len(windows)],
 			ChunkThreshold:   0.9,
 			SummaryWordLimit: 200,
 		}, rs, nil)
