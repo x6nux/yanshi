@@ -108,9 +108,14 @@ func TestDefaultSecureFactoryGivesChildTheHostEnvironment(t *testing.T) {
 			t.Fatalf("child env is missing %s — every PATH-resolved binary fails to spawn; got %v", key, rec.gotEnv)
 		}
 	}
-	// The proxy hardening this factory already had must survive the widening.
-	if v, _ := envValue(rec.gotEnv, "HTTP_PROXY"); v != "http://127.0.0.1:0" {
-		t.Fatalf("HTTP_PROXY = %q, want the managed dead-port proxy", v)
+	// The env sanitising must survive the widening: an inherited proxy
+	// variable is stripped rather than passed through, so a child cannot be
+	// routed around whatever policy is in force. With no managed proxy
+	// configured the result is empty -- previously it was a placeholder
+	// pointing at a dead port, which looked like enforcement and enforced
+	// nothing.
+	if v, _ := envValue(rec.gotEnv, "HTTP_PROXY"); strings.Contains(v, "127.0.0.1:0") {
+		t.Fatalf("HTTP_PROXY = %q: the placeholder proxy is back", v)
 	}
 }
 

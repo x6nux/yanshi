@@ -677,7 +677,7 @@
 > **范围错配确认。** `internal/bootstrap/bootstrap.go::Build` 注释自陈属实：**不启 `netpolicy.Proxy`**；`internal/shell/childlaunch.go` `proxy()` 在 `Policy!=nil && ProxyURL==""` 时返回 `http://127.0.0.1:0` **死端口**，**不 consult 任何 `security.network` 字段**。`internal/shell/procfactory.go::SecureLaunchFactory` 的 `Policy *netpolicy.Policy` 字段**只被用作「是否发死端口」的布尔开关**（`childlaunch.go::childLaunchPosture.proxy`），其 Allow/Deny/Default/AllowPrivate 从不参与子进程决策。生产唯一真实施加点是 `internal/tools/web.go::WebTools.runFetch/WebTools.runSearch` 的**进程内 HTTP**。
 
 **1. 未授权连接失败** — 未兑现（就「子进程」而言）；进程内已兑现
-- 依据：进程内 `web.go::WebTools.runFetch` + `netpolicy.NewTransport` / `PolicyDialer`（`proxy.go::PolicyDialer.DialContext`）为真。子进程侧只有死端口环境变量，且**只覆盖 shell/secproc 两个 factory** —— ACP（`acp/spawn.go`）、MCP（`mcp/manager.go`）、LSP（`lsp/manager.go`）、`cmd/yanshi/pr.go` 的 `gh` 全部走 `os.Environ()`，**无任何管制**。`internal/shell::TestDefaultSecureFactoryDefaultProxyURL` 只断言 env 里出现 `HTTP_PROXY=http://127.0.0.1:0` —— 它断言的是「变量被设置」，不是「连接失败」。
+- 依据：进程内 `web.go::WebTools.runFetch` + `netpolicy.NewTransport` / `PolicyDialer`（`proxy.go::PolicyDialer.DialContext`）为真。子进程侧只有死端口环境变量，且**只覆盖 shell/secproc 两个 factory** —— ACP（`acp/spawn.go`）、MCP（`mcp/manager.go`）、LSP（`lsp/manager.go`）、`cmd/yanshi/pr.go` 的 `gh` 全部走 `os.Environ()`，**无任何管制**。`TestDefaultSecureFactoryDefaultProxyURL`（**已于 2026-08-06 W5 Task 5 改写为 `internal/shell::TestDefaultSecureFactoryPublishesNoPlaceholderProxy`**，故此处刻意不带路径前缀） 只断言 env 里出现 `HTTP_PROXY=http://127.0.0.1:0` —— 它断言的是「变量被设置」，不是「连接失败」。
 - 证据形状：拉起真子进程访问一个未授权 host，断言非零退出 + 拒绝原因可辨识。
 
 **2. host/port 规则生效** — 未兑现（**port 维度在数据结构上就不存在**）

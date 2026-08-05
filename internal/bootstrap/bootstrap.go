@@ -906,6 +906,25 @@ func Build(opts Options) (*App, error) {
 		Deny:         append([]string(nil), cfg.Security.Network.Deny...),
 		AllowPrivate: cfg.Security.Network.AllowPrivate,
 	}
+	// Start the managed proxy so children have something real to be pointed
+	// at. Before this, no proxy existed and the launch posture published
+	// http://127.0.0.1:0 — a placeholder that read as enforcement, broke
+	// proxy-aware clients, let every other client out, and recorded nothing.
+	//
+	// A failure here is not fatal: the proxy is one of several launch-posture
+	// inputs, and refusing to boot over it would be worse than running with
+	// the honest unenforced posture. It is reported like the other degraded
+	// subsystems, and proxyURL stays empty so no placeholder is published.
+	var proxyURL string
+	netProxy, proxyErr := netpolicy.NewProxy(*networkPolicy, nil)
+	if proxyErr != nil {
+		fmt.Fprintf(os.Stderr,
+			"yanshi: network: managed proxy not started (%v): subprocess egress is UNFILTERED\n", proxyErr)
+	} else {
+		// NewProxy already listens and serves in its own goroutine.
+		proxyURL = netProxy.URL().String()
+	}
+
 	// Say it out loud, next to the sandbox phase0 line. Without this the
 	// failure reaches the operator as a bare "connect to 127.0.0.1 port 0
 	// failed" from gh / go mod download / npm, with nothing tying it back to
@@ -972,7 +991,7 @@ func Build(opts Options) (*App, error) {
 	secureFactory := shell.DefaultSecureFactory{
 		OS:       shell.OSProcessFactory{},
 		Policy:   networkPolicy,
-		ProxyURL: "",
+		ProxyURL: proxyURL,
 		Sandbox:  sb,
 	}
 

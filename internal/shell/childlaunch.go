@@ -71,9 +71,14 @@ type childLaunchPosture struct {
 // subprocess-only. Closing it means actually starting netpolicy.Proxy and
 // setting ProxyURL, which is W5's work package; do not paper over it here.
 func (p childLaunchPosture) proxy() string {
-	if p.Policy != nil && p.ProxyURL == "" {
-		return "http://127.0.0.1:0"
-	}
+	// No placeholder. A policy with no proxy behind it used to publish
+	// http://127.0.0.1:0, which looked like enforcement and was a black hole:
+	// it broke proxy-aware clients, let everything else straight out, and
+	// recorded no decision anywhere. Half-enforcement is worse than none,
+	// because it reads as containment.
+	//
+	// Either a real managed proxy is running and children are pointed at it,
+	// or nothing is published and the posture is honestly unenforced.
 	return p.ProxyURL
 }
 

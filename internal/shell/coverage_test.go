@@ -517,18 +517,28 @@ func TestDefaultSecureFactoryStartError(t *testing.T) {
 // TestDefaultSecureFactoryDefaultProxyURL covers the empty-ProxyURL default
 // branch (factory.go:48): when Policy is set but ProxyURL is empty, the managed
 // proxy defaults to http://127.0.0.1:0.
-func TestDefaultSecureFactoryDefaultProxyURL(t *testing.T) {
+// TestDefaultSecureFactoryPublishesNoPlaceholderProxy replaces a test that
+// pinned the opposite: a policy with no proxy behind it used to publish
+// http://127.0.0.1:0.
+//
+// That URL read as enforcement and was a black hole. It broke clients that
+// honour proxy variables, let every other client straight out, and produced
+// no decision an operator could inspect -- so the posture looked contained
+// and was not. Publishing nothing is the honest form of the same state, and
+// the enforced form is a real proxy with a real address.
+func TestDefaultSecureFactoryPublishesNoPlaceholderProxy(t *testing.T) {
 	rec := &recordingFactory{}
 	f := DefaultSecureFactory{
 		OS:     rec,
 		Policy: &netpolicy.Policy{Default: "allow"},
-		// ProxyURL intentionally empty → defaults to http://127.0.0.1:0
+		// ProxyURL empty: no managed proxy is running for this child.
 	}
 	if _, err := f.Start(context.Background(), secproc.SecureProcessSpec{Program: "go"}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if !containsStr(strings.Join(rec.gotEnv, "\n"), "HTTP_PROXY=http://127.0.0.1:0") {
-		t.Fatalf("default proxy URL not applied: %v", rec.gotEnv)
+	env := strings.Join(rec.gotEnv, "\n")
+	if containsStr(env, "127.0.0.1:0") {
+		t.Fatalf("a placeholder proxy URL is being published again: %v", rec.gotEnv)
 	}
 }
 
