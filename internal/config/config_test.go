@@ -879,3 +879,38 @@ func TestLoadBytesWithoutGoalBlockIsUnlimited(t *testing.T) {
 		t.Errorf("Goal = %+v; an absent block must mean unlimited", cfg.Goal)
 	}
 }
+
+// TestLoad_CompactionDefaultsAreDeliberate pins every compaction default that
+// changes behaviour when it moves.
+//
+// Only chunk_threshold had an assertion, and that is the one key nothing reads
+// (all three call sites hardcode 0.9 -- see docs/compaction.md). The defaults
+// that do decide when and how much gets compacted had none: setting
+// cooldown_fraction's default to 0 disables the token cooldown for every
+// deployment that never wrote the key, restoring the repeated-compaction bug
+// W4 fixed, and measured green across config and bootstrap.
+//
+// These are not tautologies. Each number is a judgement -- 0.8 for when to
+// start, 0.95 for when to stop waiting, 0.05 for how much growth is worth a
+// second pass -- and an operator who omits the key is choosing to trust it.
+func TestLoad_CompactionDefaultsAreDeliberate(t *testing.T) {
+	tmp := t.TempDir() + "/c.yaml"
+	// A config that mentions compaction but sets nothing inside it, so every
+	// value below comes from applyDefaults rather than the file.
+	require.NoError(t, os.WriteFile(tmp, []byte("compaction:\n  model: \"\"\n"), 0o644))
+	cfg, err := Load(tmp)
+	require.NoError(t, err)
+
+	assert.Equal(t, 0.8, cfg.Compaction.Threshold,
+		"threshold: when compaction starts")
+	assert.Equal(t, 4, cfg.Compaction.KeepRecent,
+		"keep_recent: how much tail survives verbatim")
+	assert.Equal(t, 256000, cfg.Compaction.ContextWindow,
+		"context_window: the fallback for providers that declare none")
+	assert.Equal(t, 0.9, cfg.Compaction.ChunkThreshold,
+		"chunk_threshold: currently inert, asserted so a future wiring starts from 0.9")
+	assert.Equal(t, 0.05, cfg.Compaction.CooldownFraction,
+		"cooldown_fraction: zero here silently disables the token cooldown")
+	assert.Equal(t, 0.95, cfg.Compaction.HardForceFraction,
+		"hard_force_fraction: zero here means nothing overrides the cooldown near the window edge")
+}
