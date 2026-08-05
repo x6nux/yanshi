@@ -645,6 +645,35 @@ func (o *Orchestrator) runSubAgentTurn(ctx context.Context, prompt string, allow
 		selected = withoutOrchestrationTools(selected)
 	}
 
+	// Route through the Manager when one is bound. This is what puts a
+	// delegated turn under the concurrency cap: run inline and the sub-agent
+	// takes no slot, so the cap describes a population nobody is a member of.
+	//
+	// It is also why Park exists. A parent blocks in Manager.Wait while holding
+	// its own slot, and its child retries Spawn until one frees; at cap N, N
+	// delegating parents would hold every slot waiting for children that can
+	// never start. ManagedSubAgentRun parks the caller across that wait, so the
+	// two changes are a pair — this routing without parking is a livelock.
+	//
+	// Falls through to the inline path when either the Manager or the runner
+	// factory is absent, which is the shape every non-orchestrator caller and
+	// most tests see.
+	if mgr := tools.ManagerFromContext(ctx); mgr != nil {
+		if factory := tools.ManagedRunnerFactoryFromContext(ctx); factory != nil {
+			res, err := tools.ManagedSubAgentRun(ctx, tools.ManagedSubAgentSpec{
+				ParentID:     registry.CurrentAgentID(ctx),
+				Prompt:       prompt,
+				AllowedTools: allowed,
+				Instruction:  instructionOverride,
+				Runner:       factory(allowed, instructionOverride),
+			})
+			if err != nil {
+				return "", err
+			}
+			return res.Text, nil
+		}
+	}
+
 	subInstruction := instructionOverride
 	if subInstruction == "" {
 		// Inherit path: o.baseInstruction already contains memorySuffix, so we
