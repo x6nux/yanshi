@@ -285,3 +285,27 @@ bootstrap 把它传给 `apihttp.CompactionConfig`，handler 经 `compactionModel
 `ProviderWindows` 完全相同。这个改动是安全的 —— 当前所有部署实际都在用 0.9，接线后未设该键
 的仍得 0.9，只有显式设过别的值的人会看到变化，而他们本来就以为自己设过了。
 发现于 W4 review 第 10 轮。
+
+
+## ⚠️ pre-turn 自动压缩：一个窗口参数身兼两职
+
+`ctxcompact.MaybeCompact` 只收一个 `contextWindow`，而它被用在两个**要求相冲突**的地方：
+
+| 用途 | 应当是谁的窗口 | 理由 |
+|---|---|---|
+| 阈值判定 `before < threshold × window` | **会话模型** | 快撑满的是会话模型的上下文 |
+| 分块预算 `RunOpts.ModelWindow` | **摘要模型** | 每次 summary 调用是发给摘要模型的 |
+
+调用方（`chat.go` 的 SSE 路径、`ws_compaction.go` 的自动压缩）传的都是会话模型的窗口。
+配了 `compaction.model` 指向一个小模型时，分块按会话模型的大窗口切，摘要模型收到超出自己
+窗口的单块 —— provider 400，整次压缩失败。
+
+`ForceCompact`（`/compact` 手动路径）不受影响：它没有阈值门，那个参数只当分块预算用，
+调用方已在 W4 review 第 15 轮改为解析摘要模型的窗口。
+
+**未修。** 修法是给 `MaybeCompact` 拆出独立的 summary window 参数（`ForceCompact` 的注释
+把这次解耦称作它与 `MaybeCompact` 的区别，但 `MaybeCompact` 侧一直没做），涉及签名变更与
+两个调用点，应单独立项。发现于 W4 review 第 16 轮。
+
+**触发条件**：只有配置了 `compaction.model` 且其窗口小于会话模型时才会踩到。默认
+（`model: ""`，摘要用会话模型本身）两个要求恰好重合，所以这个缺陷在默认配置下不可见。
