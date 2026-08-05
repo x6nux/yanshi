@@ -235,9 +235,19 @@ compaction:
 `CompactingModel` 以消息数为单位、由 `/2` 桥接到 `Plan`（见 ADR-0006），而 pre-turn 的
 handler 直接把配置值当对数交给 `MaybeCompact`。
 
+单位分歧有**两个可观察后果**，不止一个：
+
+1. **保留量**：pre-turn 钉 `2 × keep_recent` 条，mid-turn 钉 `keep_recent` 条。
+2. **最短历史门**：pre-turn 在 `len(msgs) <= keep_recent*2+1` 时整个跳过压缩，
+   mid-turn 在 `len(msgs) <= keep_recent` 时跳过。`keep_recent: 4` 下，一段 6 条消息的
+   历史 mid-turn 会压、pre-turn 不会 —— 两条路径对「这段历史值不值得压」的判断本身就分岔。
+
+`threshold` 的判据本身两条路**完全一致**（`tokens < int(threshold*window)` 逐字相同），
+所以分岔全部来自 `keep_recent` 这一个键。
+
 **目前只做记录，未统一。** 统一需要选一个单位并改另一条路，那会改变现网行为
 （其中一条路径的保留量会翻倍或减半），应当单独立项并配 ADR，而不是夹在一次测试补全里。
-发现于 W4 review 第 7 轮。
+发现于 W4 review 第 7 轮，第二个后果补记于第 14 轮。
 
 
 ## ⚠️ `compaction.model` 只在 pre-turn 生效
