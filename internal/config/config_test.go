@@ -836,3 +836,46 @@ profiles:
 	require.Error(t, err, "with rules emptied the policy is live and must be rejected")
 	require.Contains(t, err.Error(), "profiles.coding.shell.policy")
 }
+
+// TestLoadBytesReadsGoalBlock pins the YAML keys of the goal: block.
+//
+// Everything else about the budget is tested against a hand-built GoalConfig,
+// which cannot catch a wrong or renamed yaml tag: the struct still compiles,
+// LoadBytes still succeeds, and the block in config.example.yaml silently
+// deserializes to zero — indistinguishable from an operator who set no limit.
+// Measured before this test existed: renaming max_tokens to maxTokens left the
+// entire suite green.
+//
+// The keys asserted here are the ones config.example.yaml documents; changing
+// either is a breaking change to a published config surface, not a rename.
+func TestLoadBytesReadsGoalBlock(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+llm:
+  providers: []
+goal:
+  max_tokens: 50000
+  max_iterations: 9
+`))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if cfg.Goal.MaxTokens != 50000 {
+		t.Errorf("Goal.MaxTokens = %d; want 50000 (is the yaml key still max_tokens?)", cfg.Goal.MaxTokens)
+	}
+	if cfg.Goal.MaxIterations != 9 {
+		t.Errorf("Goal.MaxIterations = %d; want 9 (is the yaml key still max_iterations?)", cfg.Goal.MaxIterations)
+	}
+}
+
+// TestLoadBytesWithoutGoalBlockIsUnlimited pins the compatibility default: a
+// config that predates the block must keep running unbounded rather than
+// picking up a limit nobody asked for.
+func TestLoadBytesWithoutGoalBlockIsUnlimited(t *testing.T) {
+	cfg, err := LoadBytes([]byte("llm:\n  providers: []\n"))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if cfg.Goal.MaxTokens != 0 || cfg.Goal.MaxIterations != 0 {
+		t.Errorf("Goal = %+v; an absent block must mean unlimited", cfg.Goal)
+	}
+}
