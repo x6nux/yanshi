@@ -415,3 +415,37 @@ func TestCompactingModel_KeepRecentBridge(t *testing.T) {
 		t.Fatal("KeepRecent=4 must bridge to at least 2 pinned pairs")
 	}
 }
+
+// TestCompactingModel_MaybeCompact_RejectsAGrowingSummary pins the second half
+// of maybeCompact's best-effort gate.
+//
+// That gate reads `err != nil || res.TokensAfter >= res.TokensBefore`, and its
+// two halves fail differently. TestCompactingModel_MaybeCompact_BestEffort
+// covers the error half by starving ctxcompact.Run of window. Nothing covered
+// the size half: measured W4 review round 2, deleting it left the whole
+// package green. A summary that came back larger than the history it replaced
+// would then be forwarded to the model AND would arm the cooldown, so the next
+// turn declines to compact the now-bigger context.
+func TestCompactingModel_MaybeCompact_RejectsAGrowingSummary(t *testing.T) {
+	inner := &recordingModel{
+		summary:  strings.Repeat("x", 40000), // dwarfs the history below
+		reply:    "ok",
+		streamOK: true,
+	}
+	cm := &CompactingModel{
+		Inner:         inner,
+		Threshold:     0.5,
+		ContextWindow: 1000,
+		KeepRecent:    2,
+	}
+	msgs := []*schema.Message{bigMessage(300), bigMessage(300), bigMessage(300)}
+
+	got, did := cm.maybeCompact(context.Background(), msgs)
+
+	assert.False(t, did, "a summary bigger than the history is not a compaction")
+	assert.Equal(t, msgs, got, "the original history must be forwarded unchanged")
+	cm.cmMu.Lock()
+	defer cm.cmMu.Unlock()
+	assert.False(t, cm.didCompact,
+		"a rejected compaction must not arm the cooldown, or the next turn skips a compaction it needs")
+}
