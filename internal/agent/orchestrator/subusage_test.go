@@ -1,11 +1,41 @@
 package orchestrator
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestUsageIsReportedBeforeTheErrorCheck pins the ordering that keeps a failed
+// delegation's spend on the books.
+//
+// The tokens were spent whether or not the turn produced a usable answer, and
+// a budget that only counts successful work is a budget a failing loop can run
+// past indefinitely — retry, fail, spend, repeat, with the meter reading zero.
+//
+// Measured W3 review round 12: moving the forwarding below the error return
+// reddened nothing, so the ordering was an argued property. Checked at the
+// source because reaching the error path needs an Orchestrator and a model.
+func TestUsageIsReportedBeforeTheErrorCheck(t *testing.T) {
+	src, err := os.ReadFile("orchestrator.go")
+	if err != nil {
+		t.Fatalf("read orchestrator.go: %v", err)
+	}
+	body := string(src)
+	report := strings.Index(body, "if u := subAgentUsageForSink(subUsage); u != nil {")
+	errCheck := strings.Index(body, `if errMsg != "" {
+		return "", fmt.Errorf("sub-agent: %s", errMsg)`)
+	if report < 0 || errCheck < 0 {
+		t.Fatal("the sub-agent usage forwarding or its error check has moved; this guard needs rewriting")
+	}
+	if report > errCheck {
+		t.Error("usage is now forwarded after the error return: a failed delegation's " +
+			"tokens escape the budget entirely")
+	}
+}
 
 // TestSubAgentUsageForSink pins the mapping that carries a delegated turn's
 // spend into the parent's budget.
