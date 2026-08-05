@@ -607,3 +607,23 @@ func TestCompactingModel_DegenerateConfigNeverCompacts(t *testing.T) {
 			"a zero window puts every threshold at zero and fires on anything")
 	})
 }
+
+// TestCompactingModel_ZeroCooldownTokensDisablesTheTokenDimension pins the
+// CooldownTokens > 0 term in inCooldown.
+//
+// Zero means the operator turned the token dimension off. Without that term
+// the comparison still runs, and tokens-lastT is negative whenever the history
+// shrank -- which is exactly what a compaction does -- so a disabled cooldown
+// would switch itself back on right after every compaction. W4 review round 9
+// dropped the term and the whole package stayed green.
+func TestCompactingModel_ZeroCooldownTokensDisablesTheTokenDimension(t *testing.T) {
+	cm := &CompactingModel{
+		CooldownTokens:   0, // disabled
+		CooldownDuration: 0, // and no time dimension either
+	}
+	cm.didCompact = true
+	cm.lastCompactTokens = 1000
+
+	assert.False(t, cm.inCooldown(500),
+		"a shrunken history must not revive a cooldown the operator disabled")
+}
