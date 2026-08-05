@@ -914,3 +914,82 @@ func TestLoad_CompactionDefaultsAreDeliberate(t *testing.T) {
 	assert.Equal(t, 0.95, cfg.Compaction.HardForceFraction,
 		"hard_force_fraction: zero here means nothing overrides the cooldown near the window edge")
 }
+
+// TestExampleConfigExecPolicyRulesParse pins that the commented-out rules
+// block in config.example.yaml is real YAML for the real struct.
+//
+// The block exists because execpolicy was unreachable from the factory
+// config: rules had zero mentions, so an operator had no way to discover the
+// capability. A commented example is only useful if uncommenting it works,
+// and nothing else checks that -- the config loader never sees comments, and
+// gendocs reflects the struct rather than the file.
+//
+// Extracts the block by stripping its comment markers and feeding it to the
+// same loader an operator would, so a renamed field or a changed shape fails
+// here rather than in their terminal.
+func TestExampleConfigExecPolicyRulesParse(t *testing.T) {
+	raw, err := os.ReadFile("../../config.example.yaml")
+	if err != nil {
+		t.Fatalf("read example config: %v", err)
+	}
+
+	var block []string
+	collecting := false
+	for _, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "# rules:") {
+			collecting = true
+		}
+		if !collecting {
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "#") {
+			break
+		}
+		body := strings.TrimPrefix(trimmed, "#")
+		if strings.HasPrefix(strings.TrimSpace(body), "#") {
+			continue // an explanatory comment inside the block
+		}
+		if strings.TrimSpace(body) == "" {
+			break
+		}
+		block = append(block, strings.TrimPrefix(body, " "))
+	}
+	if len(block) == 0 {
+		t.Fatal("config.example.yaml no longer shows a rules: example, so operators " +
+			"have no way to discover execpolicy from the factory config")
+	}
+
+	tmp := t.TempDir() + "/c.yaml"
+	doc := "profiles:\n  demo:\n    shell:\n" + indentBlock(block, "      ")
+	require.NoError(t, os.WriteFile(tmp, []byte(doc), 0o644))
+
+	cfg, err := Load(tmp)
+	require.NoError(t, err, "the example rules block must load as written")
+	rules := cfg.Profiles["demo"].Shell.Rules
+	require.NotEmpty(t, rules, "the example produced no rules")
+
+	var sawDeny, sawAllow bool
+	for _, r := range rules {
+		require.NotEmpty(t, r.ID, "every example rule needs an id")
+		require.NotEmpty(t, r.Justification, "every example rule needs a justification")
+		switch r.Decision {
+		case "deny":
+			sawDeny = true
+			require.NotEmpty(t, r.DenyFlags, "the deny example must show deny_flags, its whole point")
+		case "allow":
+			sawAllow = true
+		}
+	}
+	require.True(t, sawDeny && sawAllow,
+		"the example must show both decisions: a deny alone reads as a blanket ban")
+}
+
+// indentBlock re-indents an extracted YAML block under a parent key.
+func indentBlock(lines []string, prefix string) string {
+	var b strings.Builder
+	for _, l := range lines {
+		b.WriteString(prefix + l + "\n")
+	}
+	return b.String()
+}
