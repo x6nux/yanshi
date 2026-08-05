@@ -77,12 +77,12 @@ func TestFlushRunners_ClearsCache(t *testing.T) {
 	o, err := New(Config{Model: fm})
 	require.NoError(t, err)
 
-	r1 := o.runnerFor(fm, false)
+	r1 := o.runnerFor(fm, false, "")
 	require.NotNil(t, r1)
 
 	o.FlushRunners()
 
-	r2 := o.runnerFor(fm, false)
+	r2 := o.runnerFor(fm, false, "")
 	require.NotNil(t, r2)
 	assert.NotSame(t, r1, r2, "FlushRunners cleared the cache")
 }
@@ -90,7 +90,7 @@ func TestFlushRunners_ClearsCache(t *testing.T) {
 // TestRunnerFor_BuildErrorReturnsNil proves that when adk.NewChatModelAgent fails, runnerFor returns nil.
 func TestRunnerFor_BuildErrorReturnsNil(t *testing.T) {
 	o := &Orchestrator{agentTools: nil, maxIters: 1}
-	got := o.runnerFor(nil, false)
+	got := o.runnerFor(nil, false, "")
 	assert.Nil(t, got)
 }
 

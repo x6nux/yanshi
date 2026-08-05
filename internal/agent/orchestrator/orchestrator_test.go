@@ -825,12 +825,12 @@ func TestEventsWithHistoryOpts_RunnerForIsMemoized(t *testing.T) {
 
 	extra := einollm.NewFakeModel([]string{"from-x"}, nil)
 
-	r1 := o.runnerFor(extra, false)
-	r2 := o.runnerFor(extra, false)
+	r1 := o.runnerFor(extra, false, "")
+	r2 := o.runnerFor(extra, false, "")
 	assert.Same(t, r1, r2, "runnerFor must memoize per model")
 
 	// plan mode runner 与 agent mode runner 不同（缓存 key 含 mode）
-	rp := o.runnerFor(extra, true)
+	rp := o.runnerFor(extra, true, "")
 	assert.NotSame(t, r1, rp, "plan runner must differ from agent runner for same model")
 }
 

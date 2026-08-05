@@ -90,6 +90,21 @@ type CompactionConfig struct {
 	// HardForceFraction forces compaction once estimated tokens reach this
 	// fraction of ContextWindow, even when inside a cooldown period. 0 disables.
 	HardForceFraction float64
+	// ProviderWindows maps a registry model name to that model's context
+	// window, keyed exactly as TurnOpts.ModelID. A turn whose model is absent
+	// falls back to ContextWindow. bootstrap already computes this map for the
+	// HTTP layer; it is passed here rather than resolved locally so the
+	// orchestrator never has to import internal/api/http, which GOV1 forbids.
+	ProviderWindows map[string]int
+}
+
+// windowFor returns the context window to size a turn's compaction gates
+// against, or 0 when the model is unknown and the global fallback applies.
+func (cc CompactionConfig) windowFor(modelID string) int {
+	if modelID == "" || cc.ProviderWindows == nil {
+		return 0
+	}
+	return cc.ProviderWindows[modelID]
 }
 
 // Orchestrator wraps an Eino ChatModelAgent + Runner.
@@ -399,7 +414,7 @@ func (o *Orchestrator) bindSubAgentRunner(ctx context.Context) context.Context {
 //
 // On a build error returns nil (not cached). 调用方拿到 nil 会在 .Run 处 panic，
 // 这比静默用错工具集的 runner 更早暴露问题（约束 14）。
-func (o *Orchestrator) runnerFor(chatModel model.BaseChatModel, plan bool) *adk.Runner {
+func (o *Orchestrator) runnerFor(chatModel model.BaseChatModel, plan bool, modelID string) *adk.Runner {
 	mode := runnerModeAgent
 	if plan {
 		mode = runnerModePlan
@@ -416,7 +431,7 @@ func (o *Orchestrator) runnerFor(chatModel model.BaseChatModel, plan bool) *adk.
 	names := collectToolNames(registered)
 
 	agent, err := adk.NewChatModelAgent(context.Background(), &adk.ChatModelAgentConfig{
-		Model:         wrapCompaction(chatModel, o.compaction, 0),
+		Model:         wrapCompaction(chatModel, o.compaction, o.compaction.windowFor(modelID)),
 		Instruction:   o.instruction,
 		MaxIterations: o.maxIters,
 		ToolsConfig: adk.ToolsConfig{
@@ -464,7 +479,7 @@ func (o *Orchestrator) Query(ctx context.Context, userMessage string) (answer st
 	ctx = o.withTurnContext(ctx, TurnOpts{})
 	ctx, endTurn := otelobs.StartTurn(ctx, "")
 	defer func() { endTurn(retErr) }()
-	runner := o.runnerFor(o.rawModel, false)
+	runner := o.runnerFor(o.rawModel, false, "")
 
 	iter := runner.Query(ctx, userMessage)
 
@@ -496,14 +511,14 @@ func (o *Orchestrator) Query(ctx context.Context, userMessage string) (answer st
 // Events runs a turn and returns the raw ADK event iterator.
 func (o *Orchestrator) Events(ctx context.Context, query string) *adk.AsyncIterator[*adk.AgentEvent] {
 	ctx = o.withTurnContext(ctx, TurnOpts{})
-	runner := o.runnerFor(o.rawModel, false)
+	runner := o.runnerFor(o.rawModel, false, "")
 	return runner.Query(ctx, query)
 }
 
 // EventsWithHistory runs one turn against the full conversation history.
 func (o *Orchestrator) EventsWithHistory(ctx context.Context, messages []*schema.Message) *adk.AsyncIterator[*adk.AgentEvent] {
 	ctx = o.withTurnContext(ctx, TurnOpts{})
-	runner := o.runnerFor(o.rawModel, false)
+	runner := o.runnerFor(o.rawModel, false, "")
 	return runner.Run(ctx, messages)
 }
 
@@ -591,7 +606,7 @@ func (o *Orchestrator) EventsWithHistoryOpts(ctx context.Context, messages []*sc
 	if opts.Model != nil {
 		selectedModel = opts.Model
 	}
-	runner := o.runnerFor(selectedModel, opts.PlanMode)
+	runner := o.runnerFor(selectedModel, opts.PlanMode, opts.ModelID)
 	return runner.Run(ctx, messages, runOpts...)
 }
 

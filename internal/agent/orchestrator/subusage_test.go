@@ -145,3 +145,30 @@ func TestCompactionGatesUseTheResolvedWindow(t *testing.T) {
 	require.Equal(t, 12800, cm.CooldownTokens,
 		"cooldown is a fraction of the resolved window, resolved here rather than pre-multiplied in bootstrap")
 }
+
+// TestRunnerForSizesGatesToTheTurnsModel pins that a turn's own model decides
+// the window its compaction gates are sized against.
+//
+// windowFor is the whole point of Task 3: without it every provider shares the
+// global fallback, and the one with the smallest real window gets a threshold
+// it can never reach. The lookup is keyed by TurnOpts.ModelID, so an unknown
+// or empty model must return 0 and let wrapCompaction fall back rather than
+// silently sizing every gate to zero.
+func TestRunnerForSizesGatesToTheTurnsModel(t *testing.T) {
+	cc := CompactionConfig{
+		Threshold:       0.8,
+		ContextWindow:   256000,
+		ProviderWindows: map[string]int{"small": 128000},
+	}
+
+	assert.Equal(t, 128000, cc.windowFor("small"), "a known model uses its own window")
+	assert.Equal(t, 0, cc.windowFor("unknown"), "an unknown model defers to the fallback")
+	assert.Equal(t, 0, cc.windowFor(""), "an unset ModelID defers to the fallback")
+
+	// And the fallback really is the global one, not zero.
+	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, cc.windowFor("unknown"))
+	cm, ok := wrapped.(*einollm.CompactingModel)
+	require.True(t, ok)
+	require.Equal(t, 256000, cm.ContextWindow,
+		"an unknown model must fall back to the configured window, not to a zero that disables every gate")
+}

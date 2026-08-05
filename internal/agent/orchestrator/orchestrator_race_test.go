@@ -27,7 +27,7 @@ func TestRunners_SameModelReturnsSamePointer(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			runners[idx] = o.runnerFor(fm, false)
+			runners[idx] = o.runnerFor(fm, false, "")
 		}(i)
 	}
 	wg.Wait()
@@ -59,8 +59,8 @@ func TestRunners_DifferentModelKeys(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for _, m := range models {
-				_ = o.runnerFor(m, false)
-				_ = o.runnerFor(m, true)
+				_ = o.runnerFor(m, false, "")
+				_ = o.runnerFor(m, true, "")
 			}
 		}()
 	}
@@ -81,8 +81,8 @@ func TestRunners_FlushDuringAccess(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 20; j++ {
-				_ = o.runnerFor(fm, false)
-				_ = o.runnerFor(fm, true)
+				_ = o.runnerFor(fm, false, "")
+				_ = o.runnerFor(fm, true, "")
 			}
 		}()
 	}

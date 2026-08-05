@@ -987,6 +987,7 @@ func Build(opts Options) (*App, error) {
 			CooldownFraction:  cfg.Compaction.CooldownFraction,
 			CooldownDuration:  parseCooldownDuration(cfg.Compaction.CooldownDuration),
 			HardForceFraction: cfg.Compaction.HardForceFraction,
+			ProviderWindows:   providerWindows,
 		},
 	}
 	// Wire the main scope (Agent="orchestrator") so chat/orchestrator edits
