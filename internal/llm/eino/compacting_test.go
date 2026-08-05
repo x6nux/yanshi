@@ -807,3 +807,44 @@ func TestCompactingModel_DoesNotMutateTheCallersHistory(t *testing.T) {
 			"message %d was rewritten in place, which is the same breakage by another route", i)
 	}
 }
+
+// TestCompactingModel_UnderThresholdWithACompressibleHistory pins the
+// threshold gate itself.
+//
+// TestCompactingModel_PassthroughUnderThreshold shares the name but not the
+// guarantee: its history is short enough that the len(msgs) <= KeepRecent
+// guard and the best-effort size check would refuse the compaction anyway, so
+// it stays green with the threshold comparison removed entirely (measured W4
+// review round 21). It proves passthrough happens, not that the threshold is
+// what caused it.
+//
+// This one hands over a history that is long, compressible and comfortably
+// under the threshold, so the threshold gate is the only thing that can
+// decline it.
+func TestCompactingModel_UnderThresholdWithACompressibleHistory(t *testing.T) {
+	inner := &recordingModel{summary: "SUMMARY", reply: "ok", streamOK: true}
+	cm := &CompactingModel{
+		Inner:         inner,
+		Threshold:     0.9, // fires at 900 tokens
+		ContextWindow: 1000,
+		KeepRecent:    4,
+	}
+	// 8 x 40 = 320 tokens: far under the 900 trigger, but long enough and
+	// large enough that every downstream guard would happily compact it.
+	msgs := make([]*schema.Message, 8)
+	for i := range msgs {
+		msgs[i] = bigMessage(40)
+	}
+	require.Less(t, ctxcompact.EstimateTokens(msgs), int(cm.Threshold*float64(cm.ContextWindow)),
+		"premise: the history must be under the threshold")
+	require.Greater(t, len(msgs), cm.KeepRecent,
+		"premise: the short-history guard must not be what declines this")
+
+	out, did := cm.maybeCompact(context.Background(), msgs)
+	assert.False(t, did, "a history under the threshold must not be compacted")
+	assert.Equal(t, msgs, out, "the original history is forwarded unchanged")
+
+	inner.mu.Lock()
+	defer inner.mu.Unlock()
+	assert.Zero(t, inner.calls, "no summariser call may be spent below the threshold")
+}
