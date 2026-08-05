@@ -76,8 +76,13 @@ type Config struct {
 	// rather than a permissive free-for-all.
 	Security  SecurityConfig  `yaml:"security"`
 	Subagents SubagentsConfig `yaml:"subagents"`
-	LSP       LSPConfig       `yaml:"lsp"`
-	MCP       MCPConfig       `yaml:"mcp"`
+	// Goal configures the self-driven goal loop's budget. Both limits default
+	// to 0 = unlimited, and the default is load-bearing: a non-zero default
+	// would silently start cutting off runs that work today, so the flags and
+	// this block can only ever tighten a limit the operator asked for.
+	Goal GoalConfig `yaml:"goal"`
+	LSP  LSPConfig  `yaml:"lsp"`
+	MCP  MCPConfig  `yaml:"mcp"`
 	// Observability configures structured logging (OBS1) and OpenTelemetry
 	// trace/metric export (OBS2). Zero values are post-processed by
 	// applyDefaults so omitting the block yields safe defaults (info/json,
@@ -278,6 +283,23 @@ type NetworkConfig struct {
 type ShellRuntimeConfig struct {
 	MaxOutputBytes int           `yaml:"max_output_bytes"`
 	IdleTimeout    time.Duration `yaml:"idle_timeout"`
+}
+
+// GoalConfig configures the self-driven goal loop's budget.
+//
+// Both limits are 0 = unlimited by default. That default is a compatibility
+// requirement, not a preference: a non-zero default would start hard-stopping
+// runs that complete today, without the operator having asked for a limit.
+//
+// MaxTokens can only constrain agents that actually report token usage. An
+// agent that reports none is unmetered — goalloop warns when it detects this —
+// and MaxIterations is the limit that still binds it.
+type GoalConfig struct {
+	// MaxTokens caps the whole run's token spend. 0 = unlimited.
+	MaxTokens int `yaml:"max_tokens"`
+	// MaxIterations caps plan-implement-evaluate-judge cycles. 0 = use the
+	// -max-iters flag default.
+	MaxIterations int `yaml:"max_iterations"`
 }
 
 // SubagentsConfig configures the managed sub-agent runtime (Batch B1).

@@ -690,6 +690,16 @@ func runGoal(args []string) int {
 	_ = forced // kept for the (future) "was the tier explicit?" distinction
 	fmt.Printf("[tier: %s] path: %s\n", resolvedTier, resolvedTier.Path())
 
+	// Budget sources: the goal: config block, overridden by any flag actually
+	// typed. Config is read leniently — the fake path is designed to run with
+	// no config at all, so an unreadable file means "no goal block", not a
+	// startup failure.
+	var goalCfg config.GoalConfig
+	if c, err := config.Load(*configPath); err == nil {
+		goalCfg = c.Goal
+	}
+	budget := resolveGoalBudget(fs, *maxTokens, *maxIters, goalCfg)
+
 	wd, err := absWorkdir(*workdir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "yanshi goal: bad workdir: %v\n", err)
@@ -725,7 +735,7 @@ func runGoal(args []string) int {
 			Implementer: impl,
 			Evaluators:  []goalloop.Evaluator{eval},
 			Judge:       goalloop.AggregateJudge{},
-			Budget:      goalloop.Budget{MaxIterations: *maxIters, MaxTokens: *maxTokens},
+			Budget:      budget,
 			Sink:        loopSink,
 			// Tier is load-bearing even on the demo path: EscalationHint reads it
 			// to name the next tier up, so leaving it zero made `-tier t3` end by
@@ -780,7 +790,7 @@ func runGoal(args []string) int {
 			Implementer: impl,
 			Evaluators:  evals,
 			Judge:       goalloop.AggregateJudge{},
-			Budget:      goalloop.Budget{MaxIterations: *maxIters, MaxTokens: *maxTokens},
+			Budget:      budget,
 			Sink:        loopSink,
 			Tier:        resolvedTier,
 		})

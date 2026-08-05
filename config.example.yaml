@@ -250,3 +250,14 @@ tui:
   bindings:
     enter: send
     ctrl+enter: newline
+
+# 自驱动目标循环（yanshi goal）的预算。两项都是 0 = 不限。
+#
+# 显式传入的命令行 flag 永远优先，包括显式传 0 —— `-max-tokens 0` 是「这一次
+# 解除限制」的意思，不会被这里的值悄悄恢复。
+#
+# max_tokens 只能约束真的上报 token 用量的 agent。不上报的 agent 是无法计量的
+# （goalloop 检测到会打 warn），对它生效的是 max_iterations。
+goal:
+  max_tokens: 0
+  max_iterations: 0

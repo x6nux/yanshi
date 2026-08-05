@@ -224,6 +224,13 @@ C15 TUI 偏好：`keymap`（默认 default）、`theme`（默认 default）、`v
 | subagents.limit | int | |
 | subagents.persistence_path | string | |
 
+### goal
+
+| key | type | 说明 |
+|---|---|---|
+| goal.max_tokens | int | |
+| goal.max_iterations | int | |
+
 ### lsp
 
 | key | type | 说明 |
