@@ -172,3 +172,30 @@ func TestRunnerForSizesGatesToTheTurnsModel(t *testing.T) {
 	require.Equal(t, 256000, cm.ContextWindow,
 		"an unknown model must fall back to the configured window, not to a zero that disables every gate")
 }
+
+// TestRunnerForPassesTheModelIDThrough guards the wiring that
+// TestRunnerForSizesGatesToTheTurnsModel does not reach.
+//
+// That test exercises windowFor directly, so it stays green even if runnerFor
+// stops calling it -- measured while writing this: replacing the argument with
+// a literal 0 reddened nothing. windowFor returning the right number is
+// useless if the turn's model never reaches it, which is the same
+// unit-versus-wiring split rounds 11 and 13 of this package's review found.
+//
+// Source-level for the reason given on TestRunnerForWiresCompactionToo: the
+// wrapped model is buried inside adk's agent with no accessor.
+func TestRunnerForPassesTheModelIDThrough(t *testing.T) {
+	src, err := os.ReadFile("orchestrator.go")
+	if err != nil {
+		t.Fatalf("read orchestrator.go: %v", err)
+	}
+	body := string(src)
+	if !strings.Contains(body, "o.compaction.windowFor(modelID)") {
+		t.Error("runnerFor no longer sizes compaction from the turn's model: " +
+			"every provider would share the global fallback window again")
+	}
+	if !strings.Contains(body, "o.runnerFor(selectedModel, opts.PlanMode, opts.ModelID)") {
+		t.Error("the turn no longer hands its ModelID to runnerFor, so windowFor " +
+			"always sees an empty string and always returns the fallback")
+	}
+}
