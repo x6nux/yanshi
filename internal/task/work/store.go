@@ -1,15 +1,15 @@
 // SQLite-backed persistence for the work package.
 //
-// ⚠️ Writes do NOT currently route through the injected WriteTxer. The wt()
-// helper exists and has zero callers: every write either begins its own
-// transaction with s.db.BeginTx or runs a bare s.db.ExecContext, so none of
-// them share the process-wide writeMu from store.Store. Concurrent goroutines
-// can therefore still hit SQLITE_BUSY here.
+// All write paths route through the injected WriteTxer, sharing the
+// process-wide writeMu from store.Store, so concurrent goroutines do not hit
+// SQLITE_BUSY. The invariant is mechanical and checkable: no s.db.Exec,
+// s.db.ExecContext or s.db.BeginTx may appear in this file — writes go through
+// s.wt().WriteTx. TestAllWritesRouteThroughTheWriteTxer enforces it.
 //
-// The predecessor of this comment asserted the opposite — "all write paths
-// route through the injected WriteTxer" — which is the more dangerous kind of
-// wrong: it tells a reader the concurrency problem is solved and stops them
-// looking. Converting the twelve write sites is W3 Task 5 and is not done.
+// This comment claimed exactly that while wt() had zero callers and all twelve
+// write sites were bare. It is the more dangerous kind of wrong: it tells the
+// reader the concurrency problem is solved and stops them looking. Hence the
+// test — the claim is now the sort of thing that can fail.
 //
 // Migration entry point is FromDB, called by bootstrap.Build after store.Open.
 package work
@@ -138,37 +138,36 @@ CREATE INDEX IF NOT EXISTS idx_task_work_timeline_task_seq ON task_work_timeline
 `
 
 func (s *Store) migrate() error {
-	_, err := s.db.Exec(workSchema)
-	return err
+	return s.wt().WriteTx(context.Background(), func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(context.Background(), workSchema)
+		return err
+	})
 }
 
 // Create 在单事务内插入 task 行、checklist 与初始 timeline。
 // 调用方在 Manager.Create 处预置一条 "created" timeline 一起写入。
 func (s *Store) Create(ctx context.Context, w *WorkTask) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `INSERT INTO task_work
+	return s.wt().WriteTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO task_work
 		(id,title,prompt,status,thread_id,turn_id,broker_task_id,created_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?,?)`, w.ID, w.Title, w.Prompt, string(w.Status), w.ThreadID, w.TurnID,
-		w.BrokerTaskID, w.CreatedAt.Unix(), w.UpdatedAt.Unix()); err != nil {
-		return fmt.Errorf("work: insert task: %w", err)
-	}
-	for _, item := range w.Checklist.Items {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO task_work_checklist(task_id,item_id,content,status) VALUES(?,?,?,?)`,
-			w.ID, item.ID, item.Content, string(item.Status)); err != nil {
-			return err
+			w.BrokerTaskID, w.CreatedAt.Unix(), w.UpdatedAt.Unix()); err != nil {
+			return fmt.Errorf("work: insert task: %w", err)
 		}
-	}
-	for _, entry := range w.Timeline {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO task_work_timeline(task_id,at,kind,summary,detail_artifact_id) VALUES(?,?,?,?,?)`,
-			w.ID, entry.At.Unix(), entry.Kind, entry.Summary, entry.DetailArtifactID); err != nil {
-			return err
+		for _, item := range w.Checklist.Items {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO task_work_checklist(task_id,item_id,content,status) VALUES(?,?,?,?)`,
+				w.ID, item.ID, item.Content, string(item.Status)); err != nil {
+				return err
+			}
 		}
-	}
-	return tx.Commit()
+		for _, entry := range w.Timeline {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO task_work_timeline(task_id,at,kind,summary,detail_artifact_id) VALUES(?,?,?,?,?)`,
+				w.ID, entry.At.Unix(), entry.Kind, entry.Summary, entry.DetailArtifactID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // Get 读取单个 task 并装配 checklist/gates/artifacts/timeline。
@@ -319,65 +318,63 @@ func (s *Store) List(ctx context.Context, limit int, threadID string) ([]Summary
 // WHERE id=? AND status=current 的 guarded UPDATE 保证并发转移只能成功一条；
 // 失败者拿到 "work: status changed concurrently"。
 func (s *Store) Transition(ctx context.Context, id string, next Status, kind, summary string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var current string
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM task_work WHERE id=?`, id).Scan(&current); err != nil {
-		return err
-	}
-	if err := Status(current).CanTransitionTo(next); err != nil {
-		return err
-	}
-	now := time.Now().Unix()
-	result, err := tx.ExecContext(ctx, `UPDATE task_work SET status=?,updated_at=? WHERE id=? AND status=?`,
-		string(next), now, id, current)
-	if err != nil {
-		return err
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows != 1 {
-		return errors.New("work: status changed concurrently")
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO task_work_timeline(task_id,at,kind,summary) VALUES(?,?,?,?)`,
-		id, now, kind, summary); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.wt().WriteTx(ctx, func(tx *sql.Tx) error {
+		var current string
+		if err := tx.QueryRowContext(ctx, `SELECT status FROM task_work WHERE id=?`, id).Scan(&current); err != nil {
+			return err
+		}
+		if err := Status(current).CanTransitionTo(next); err != nil {
+			return err
+		}
+		now := time.Now().Unix()
+		result, err := tx.ExecContext(ctx, `UPDATE task_work SET status=?,updated_at=? WHERE id=? AND status=?`,
+			string(next), now, id, current)
+		if err != nil {
+			return err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows != 1 {
+			return errors.New("work: status changed concurrently")
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO task_work_timeline(task_id,at,kind,summary) VALUES(?,?,?,?)`,
+			id, now, kind, summary); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 // AppendTimeline 追加单条 timeline 并 bump updated_at（dispatch_failed 与后续
 // broker-result 回写 hook 都走它）。不与 Create/Transition 共用事务——这两条
 // 都是 Manager 在 Store 调用之后、针对已存在 task 的补记。
 func (s *Store) AppendTimeline(ctx context.Context, taskID string, entry TimelineEntry) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO task_work_timeline(task_id,at,kind,summary,detail_artifact_id) VALUES(?,?,?,?,?)`,
-		taskID, entry.At.Unix(), entry.Kind, entry.Summary, entry.DetailArtifactID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE task_work SET updated_at=? WHERE id=?`,
-		entry.At.Unix(), taskID); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.wt().WriteTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO task_work_timeline(task_id,at,kind,summary,detail_artifact_id) VALUES(?,?,?,?,?)`,
+			taskID, entry.At.Unix(), entry.Kind, entry.Summary, entry.DetailArtifactID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE task_work SET updated_at=? WHERE id=?`,
+			entry.At.Unix(), taskID); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 // AttachBrokerTask 把 broker task id 盖到 durable task 上；guarded 到恰好一行。
 func (s *Store) AttachBrokerTask(ctx context.Context, taskID, brokerTaskID string) error {
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE task_work SET broker_task_id=?,updated_at=? WHERE id=?`,
-		brokerTaskID, time.Now().Unix(), taskID)
-	if err != nil {
+	var res sql.Result
+	if err := s.wt().WriteTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		res, err = tx.ExecContext(ctx,
+			`UPDATE task_work SET broker_task_id=?,updated_at=? WHERE id=?`,
+			brokerTaskID, time.Now().Unix(), taskID)
+		return err
+	}); err != nil {
 		return err
 	}
 	n, err := res.RowsAffected()
@@ -392,46 +389,41 @@ func (s *Store) AttachBrokerTask(ctx context.Context, taskID, brokerTaskID strin
 
 // SetChecklist 在单事务内 DELETE + 批量 INSERT，整组替换清单。
 func (s *Store) SetChecklist(ctx context.Context, taskID string, c Checklist) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM task_work_checklist WHERE task_id=?`, taskID); err != nil {
-		return err
-	}
-	for _, item := range c.Items {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO task_work_checklist(task_id,item_id,content,status) VALUES(?,?,?,?)`,
-			taskID, item.ID, item.Content, string(item.Status)); err != nil {
+	return s.wt().WriteTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM task_work_checklist WHERE task_id=?`, taskID); err != nil {
 			return err
 		}
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE task_work SET updated_at=? WHERE id=?`, time.Now().Unix(), taskID); err != nil {
-		return err
-	}
-	return tx.Commit()
+		for _, item := range c.Items {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO task_work_checklist(task_id,item_id,content,status) VALUES(?,?,?,?)`,
+				taskID, item.ID, item.Content, string(item.Status)); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE task_work SET updated_at=? WHERE id=?`, time.Now().Unix(), taskID); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 // AddChecklistItem 在事务内以 COALESCE(MAX(item_id),0)+1 分配新 id 并插入。
 // 返回新分配的 item_id（从 1 开始）。
 func (s *Store) AddChecklistItem(ctx context.Context, taskID, content string) (int, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
 	var nextID int
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(item_id),0)+1 FROM task_work_checklist WHERE task_id=?`, taskID).Scan(&nextID); err != nil {
-		return 0, err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO task_work_checklist(task_id,item_id,content,status) VALUES(?,?,?,?)`,
-		taskID, nextID, content, string(ChecklistPending)); err != nil {
-		return 0, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE task_work SET updated_at=? WHERE id=?`, time.Now().Unix(), taskID); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
+	err := s.wt().WriteTx(ctx, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(item_id),0)+1 FROM task_work_checklist WHERE task_id=?`, taskID).Scan(&nextID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO task_work_checklist(task_id,item_id,content,status) VALUES(?,?,?,?)`,
+			taskID, nextID, content, string(ChecklistPending)); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE task_work SET updated_at=? WHERE id=?`, time.Now().Unix(), taskID); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
 		return 0, err
 	}
 	return nextID, nil
@@ -441,52 +433,57 @@ func (s *Store) AddChecklistItem(ctx context.Context, taskID, content string) (i
 // 不做 read-modify-write 以避免两 goroutine 互相覆盖。
 func (s *Store) PatchChecklistItem(ctx context.Context, taskID string, itemID int, content string, status ChecklistItemStatus) error {
 	now := time.Now().Unix()
-	result, err := s.db.ExecContext(ctx, `UPDATE task_work_checklist
+	// Both statements share one transaction: they were two independent bare
+	// writes, so a caller could observe a patched item whose parent task still
+	// carried a stale updated_at — or, if the second write failed, keep that
+	// stale timestamp permanently.
+	return s.wt().WriteTx(ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `UPDATE task_work_checklist
 		SET content=CASE WHEN ?='' THEN content ELSE ? END,
 		    status=CASE WHEN ?='' THEN status ELSE ? END
 		WHERE task_id=? AND item_id=?`, content, content, string(status), string(status), taskID, itemID)
-	if err != nil {
+		if err != nil {
+			return err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows != 1 {
+			return errors.New("work: checklist item not found")
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE task_work SET updated_at=? WHERE id=?`, now, taskID)
 		return err
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows != 1 {
-		return errors.New("work: checklist item not found")
-	}
-	_, err = s.db.ExecContext(ctx, `UPDATE task_work SET updated_at=? WHERE id=?`, now, taskID)
-	return err
+	})
 }
 
 // RecordGate 用 INSERT OR REPLACE 替换同 gate 的证据，并追加 timeline。
 // timeline summary 形如 "test: pass"，便于用户在 TUI 上扫读。
 func (s *Store) RecordGate(ctx context.Context, taskID string, evidence Evidence) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `INSERT OR REPLACE INTO task_work_gates
-		(task_id,gate,id,command,cwd,exit_code,duration_ms,classification,summary,log_artifact_id,recorded_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?)`, taskID, evidence.Gate, evidence.ID, evidence.Command, evidence.Cwd,
-		evidence.ExitCode, evidence.DurationMs, evidence.Classification, evidence.Summary,
-		evidence.LogArtifactID, evidence.RecordedAt); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO task_work_timeline(task_id,at,kind,summary) VALUES(?,?,?,?)`,
-		taskID, evidence.RecordedAt, "gate", evidence.Gate+": "+evidence.Classification); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.wt().WriteTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO task_work_gates
+			(task_id,gate,id,command,cwd,exit_code,duration_ms,classification,summary,log_artifact_id,recorded_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?)`, taskID, evidence.Gate, evidence.ID, evidence.Command, evidence.Cwd,
+			evidence.ExitCode, evidence.DurationMs, evidence.Classification, evidence.Summary,
+			evidence.LogArtifactID, evidence.RecordedAt); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO task_work_timeline(task_id,at,kind,summary) VALUES(?,?,?,?)`,
+			taskID, evidence.RecordedAt, "gate", evidence.Gate+": "+evidence.Classification); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 // PutArtifact 写入一个 artifact 的元数据（不含文件内容 —— 文件由 Manager 落盘）。
 // artifact.ID 必须由调用方预先生成；重复 ID 触发主键冲突返回 error。
 func (s *Store) PutArtifact(ctx context.Context, a Artifact) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO task_work_artifacts(id,task_id,label,summary,content_ref,size,created_at)
+	return s.wt().WriteTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO task_work_artifacts(id,task_id,label,summary,content_ref,size,created_at)
 		VALUES(?,?,?,?,?,?,?)`, a.ID, a.TaskID, a.Label, a.Summary, a.ContentRef, a.Size, a.CreatedAt)
-	return err
+		return err
+	})
 }
 
 // GetArtifact 只返回元数据；不存在返回 sql.ErrNoRows。
@@ -540,7 +537,10 @@ func (s *Store) DeleteArtifactsBefore(ctx context.Context, beforeUnix int64) ([]
 	if len(refs) == 0 {
 		return refs, nil
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM task_work_artifacts WHERE created_at<?`, beforeUnix); err != nil {
+	if err := s.wt().WriteTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `DELETE FROM task_work_artifacts WHERE created_at<?`, beforeUnix)
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	return refs, nil
