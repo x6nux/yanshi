@@ -22,7 +22,7 @@ yanshi 有两条压缩触发路径：mid-turn（`CompactingModel` 在 ReAct 迭�
 
 - mid-turn 与 pre-turn 行为一致；没有"哪条路径触发结果不同"的漂移。
 - **不可违反的约束**：携带式分块的**每次单次调用严格不超窗口**——这是防止 provider 400 的硬保证。`RunSummary` 的 cache-aligned 单次 vs 分块阈值由 `chunk_threshold`（默认 0.9）控制。
-- 桥接细节：`KeepRecent` 在 `CompactingModel` 里是消息数、在 `ctxcompact.PlanOpts` 里是对数（pair 数），桥接是 `/2`。上下文窗口按 provider `context_window`，`/model` 切换自动用新窗口。
+- 桥接细节：`KeepRecent` 在 `CompactingModel` 里是消息数、在 `ctxcompact.PlanOpts` 里是对数（pair 数），桥接是 `/2`。上下文窗口按 provider `context_window`，`/model` 切换自动用新窗口 —— 但**两条路径经由不同机制**：pre-turn 由 handler 查 `windows` map，mid-turn 由 `runnerFor` 拿本轮 `TurnOpts.ModelID` 查 `CompactionConfig.ProviderWindows`。W4 之前 mid-turn 这条并不成立（三个门一律用全局回退值），见 ADR-0013 与 `docs/compaction.md`。
 
 ## 关联
 

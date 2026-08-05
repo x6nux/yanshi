@@ -127,7 +127,17 @@ summary 作为 `Role: User` + `SummarySentinel`（`"[yanshi:conversation-summary
 
 ## 按模型窗口配置
 
-上下文窗口是模型属性，不是全局值。`ProviderConfig.ContextWindow`（`config.yaml` 的 `llm.providers[].context_window`）按模型配置。查询走 `BuildProviders` 返回的 `windows` map——键是模型注册表键（`chooseKey`，优先 `p.Model` 如 "gpt-4o"），所以 `cs.model`/`req.Model` 能命中。`compaction.context_window` 是回退（provider 没配时用）。`/model` 切换自动用新窗口——因为 `CompactingModel` 按 model 指针缓存。
+上下文窗口是模型属性，不是全局值。`ProviderConfig.ContextWindow`（`config.yaml` 的 `llm.providers[].context_window`）按模型配置。查询走 `BuildProviders` 返回的 `windows` map——键是模型注册表键（`chooseKey`，优先 `p.Model` 如 "gpt-4o"），所以 `cs.model`/`req.Model` 能命中。`compaction.context_window` 是回退（provider 没配时用）。`/model` 切换自动用新窗口，但**两条路径的机制不同，别把其中一条的解释套到另一条上**：
+
+- **pre-turn / WS / `/compact`**：handler 自己拿 `cs.model`/`req.Model` 去查 `windows` map。
+- **mid-turn**：`runnerFor` 拿本轮 `TurnOpts.ModelID` 查 `CompactionConfig.ProviderWindows`
+  （bootstrap 传入的同一张表），把解析出的窗口交给 `wrapCompaction`，三个门由它算出。
+
+「因为 `CompactingModel` 按 model 指针缓存」曾被写在这里当作 mid-turn 的解释，**那是错的**：
+按指针缓存确实会为新模型建一个新实例，但在 W4 之前 `wrapCompaction` 给新实例填的
+`ContextWindow` 仍是同一个全局回退值 —— **换了实例，没换窗口**。128K 的 provider 会拿到按
+256K 算的 threshold，即自身容量的 1.9 倍，门永不触发，压缩对它等于不存在。修复见 ADR-0013
+所属的 W4 工作包（`internal/agent/orchestrator::CompactionConfig.windowFor`）。
 
 ## 失败行为
 
@@ -181,3 +191,27 @@ compaction:
 | `compact.go` | `MaybeCompact`（pre-turn 入口）+ `ForceCompact`（手动 /compact） |
 
 接入点：`internal/llm/eino/compacting.go`（mid-turn）、`internal/api/http/ws.go` + `chat.go`（pre-turn 调用）、`internal/cli/tui/`（activity line 呈现）。
+
+
+## 三个门与它们的量纲
+
+`config.yaml` 的 `compaction` 一节暴露了三个独立的门，它们对**同一个未压缩历史**求值，
+但回答的是不同问题：
+
+| 门 | 键 | 判据 | 作用 |
+|---|---|---|---|
+| threshold | `threshold` | `tokens >= threshold × window` | 常规触发线。**达到即触发**，不是「严格超过」 |
+| hard force | `hard_force_fraction` | `tokens >= fraction × window` | 逼近窗口边缘时**越过 cooldown** 强制压缩 |
+| cooldown | `cooldown_fraction` / `cooldown_duration` | 增长量 < `fraction × window`，或距上次不足时长 | 阻止「历史没怎么变却反复压缩」 |
+
+三条要点，每一条都曾经出过错：
+
+1. **cooldown 的「增长量」是未压缩量纲的差值** —— 记的是「上次触发压缩时历史有多大」，
+   不是「压缩后剩多大」。理由与不可违反的约束见 [ADR-0013](adr/0013-mid-turn-compaction-token-dimension.md)。
+2. **hard force 必须能越过 cooldown**。否则 cooldown 会在最该压缩的时刻赢：压缩被推迟、
+   历史继续涨、下一次调用拿到一个装不进窗口的历史。
+3. **`cooldown_fraction` 配 0 = 关闭 token 维**，不是「阈值为 0 所以永远满足」。
+   实现里那个 `> 0` 判断是承重的：去掉它，历史一旦缩小（压缩之后正是如此）
+   差值为负，会把一个已被运维关闭的 cooldown 重新武装起来。
+
+`window` 是**本轮模型**的窗口（见上一节），不是全局回退值。
