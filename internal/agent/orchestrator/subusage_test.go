@@ -89,3 +89,27 @@ func TestNewWiresCompactionIntoTheModel(t *testing.T) {
 		"the orchestrator's model must be the compacting wrapper, not the raw one")
 	require.NotNil(t, o.rawModel, "runnerFor still needs the unwrapped model")
 }
+
+// TestRunnerForWiresCompactionToo guards the sub-agent half of the compaction
+// wiring that TestNewWiresCompactionIntoTheModel covers for the main model.
+//
+// Both call sites must wrap, and they fail independently: a delegated turn
+// runs its own ChatModelAgent, so an unwrapped model there means sub-agents
+// never compact while the parent does. W4 review round 14 severed this one
+// and the whole package stayed green.
+//
+// Checked at the source, not through the object: runnerFor returns an
+// *adk.Runner and the wrapped model is buried inside adk's agent, with no
+// accessor to assert on. Driving a real delegated turn to observe it would
+// pin adk's plumbing rather than this line -- the same tradeoff
+// TestUsageIsReportedBeforeTheErrorCheck documents above.
+func TestRunnerForWiresCompactionToo(t *testing.T) {
+	src, err := os.ReadFile("orchestrator.go")
+	if err != nil {
+		t.Fatalf("read orchestrator.go: %v", err)
+	}
+	if !strings.Contains(string(src), "Model:         wrapCompaction(chatModel, o.compaction),") {
+		t.Error("runnerFor no longer wraps its model for compaction: sub-agent turns " +
+			"would grow their context unbounded while the parent's is compacted")
+	}
+}
