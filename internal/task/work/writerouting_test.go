@@ -36,6 +36,19 @@ func TestAllWritesRouteThroughTheWriteTxer(t *testing.T) {
 			offenders = append(offenders, strings.TrimSpace(line)+"  (store.go:"+itoa(i+1)+")")
 		}
 	}
+	// The regex above only rejects writes on s.db. A helper returning an
+	// unlocked WriteTxer satisfies it while defeating the point entirely --
+	// measured W3 review round 16 by swapping s.wt() for exactly that. The
+	// invariant that actually holds is narrower and checkable: store.go
+	// constructs unlockedWriteTxer exactly once, inside wt(), which is the
+	// nil-Wt fallback FromDB installs for tests. A second construction is the
+	// only way to reach an unlocked writer without a single s.db in sight.
+	if n := strings.Count(string(src), "unlockedWriteTxer{"); n != 1 {
+		offenders = append(offenders,
+			"store.go constructs unlockedWriteTxer "+itoa(n)+" times, want exactly 1 (inside wt()); "+
+				"an extra construction bypasses the shared writeMu without touching s.db")
+	}
+
 	if len(offenders) > 0 {
 		t.Errorf("%d write(s) bypass the WriteTxer and so bypass the process-wide "+
 			"writeMu — route them through s.wt().WriteTx:\n  %s",
