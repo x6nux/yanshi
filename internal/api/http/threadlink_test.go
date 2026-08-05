@@ -72,3 +72,32 @@ func TestSSETurnDeliberatelyHasNoThreadID(t *testing.T) {
 			"absence reads as an oversight")
 	}
 }
+
+// TestCompactNowSizesChunksAgainstTheSummaryModel pins which model's window
+// the manual /compact path budgets against.
+//
+// compactNow summarises with compactionModel(...), which is the configured
+// compaction.model when set -- typically a small fast model. Sizing
+// RunSummary's chunk budget against the SESSION model's window instead hands
+// that small model a chunk it cannot accept and the provider rejects the
+// compaction outright. ForceCompact's own doc says the window must be the
+// summary model's; the caller was passing the session's.
+//
+// Source-level: reaching compactNow needs a live ws conn, a session with
+// history and two registered models, and the assertion is about which of two
+// names is looked up -- a harness that heavy would pin the harness.
+func TestCompactNowSizesChunksAgainstTheSummaryModel(t *testing.T) {
+	src, err := os.ReadFile("ws_compaction.go")
+	if err != nil {
+		t.Fatalf("read ws_compaction.go: %v", err)
+	}
+	body := string(src)
+	if !strings.Contains(body, "windowOwner := cs.model") ||
+		!strings.Contains(body, `if s.compaction.Model != "" {`) {
+		t.Error("compactNow no longer prefers the summary model's window: a configured " +
+			"compaction.model gets chunks budgeted for the session model's window")
+	}
+	if !strings.Contains(body, "cw := contextWindowFor(windowOwner, s.compaction)") {
+		t.Error("the resolved window is no longer the one handed to ForceCompact")
+	}
+}

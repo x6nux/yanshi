@@ -365,7 +365,17 @@ func compactNow(ctx context.Context, s *Server,
 	// default config.Config.applyDefaults uses for Compaction.ContextWindow so
 	// the budget math always has room for the instruction plus at least one
 	// chunk, and behavior matches a normally-loaded config when unset.
-	cw := contextWindowFor(cs.model, s.compaction)
+	//
+	// The window must be the SUMMARY model's, not the session's: when
+	// compaction.model names a small fast model, sizing chunks against a
+	// 256K session window hands that model a chunk it cannot accept, and the
+	// provider rejects the whole compaction. Falls back to the session model
+	// when no summary model is configured, which is when they are the same.
+	windowOwner := cs.model
+	if s.compaction.Model != "" {
+		windowOwner = s.compaction.Model
+	}
+	cw := contextWindowFor(windowOwner, s.compaction)
 	if cw <= 0 {
 		cw = 256000
 	}
