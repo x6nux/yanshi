@@ -82,10 +82,15 @@ type CompactingModel struct {
 	// fraction of ContextWindow, even when inside a cooldown period. 0 disables
 	// (not recommended — the token budget safety net). Default via config: 0.95.
 	HardForceFraction float64
-	// didCompact records whether any compaction has happened yet. A zero
-	// lastCompactTokens used to stand in for "never compacted", but the
-	// pre-compaction size is never legitimately zero, so the sentinel could
-	// only ever be right by accident.
+	// didCompact records whether any compaction has happened yet, replacing a
+	// lastCompactTokens == 0 sentinel.
+	//
+	// ⚠️ UNPINNED, and deliberately so: now that lastCompactTokens holds the
+	// pre-compaction size -- never legitimately zero -- the sentinel and this
+	// flag agree in every reachable state, so swapping the flag back for the
+	// sentinel reddens nothing (measured W4 review round 1). The flag is
+	// defence in depth against a future change that stores something which
+	// CAN be zero, not a fix for a live bug. Do not claim otherwise.
 	didCompact bool
 	// lastCompactTokens is the TokensBefore (from ctxcompact.Result) of the most
 	// recent successful compaction, or 0 if no compaction has occurred yet on
