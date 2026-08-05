@@ -663,6 +663,12 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 			// placeholder. Both fields are read here, once per turn, for the same
 			// reason PlanMode is: TurnOpts is the single entry point.
 			opts := orchestrator.TurnOpts{
+				// Correlation IDs. Empty here means WithThreadLink binds two
+				// empty strings, and every log line and tool audit record for
+				// the turn loses its way back to the conversation.
+				// TurnID stays empty on purpose: ensureTurnIDs mints one, and
+				// this path has no id of its own that outlives a single turn.
+				ThreadID:            cs.sessionID,
 				Model:               cs.selectModel(models),
 				ModelID:             cs.displayModel(),
 				ThinkingEffort:      cs.thinking,

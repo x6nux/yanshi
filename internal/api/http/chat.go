@@ -144,6 +144,12 @@ func (s *Server) handleSSEInternal(w http.ResponseWriter, r *http.Request,
 	// the orchestrator is the model we charge.
 	turnModel := einollm.ResolveModelName(models, req.Model)
 	opts := orchestrator.TurnOpts{
+		// No ThreadID: SSE is stateless. The client holds the history and
+		// replays it every request, so the server has no conversation identity
+		// to correlate against — minting one here would produce a fresh id per
+		// request, which is worse than none because it looks like a thread.
+		// ensureTurnIDs still mints a TurnID, so a single turn's logs stay
+		// correlated with each other.
 		ThinkingEffort: req.Thinking,
 		OutputSchema:   req.OutputSchema,
 		ModelID:        turnModel,

@@ -318,6 +318,11 @@ func (s *Service) runTurn(ctx context.Context, st *threadState, ts *turnState, h
 		// model the turn actually runs on — the orchestrator needs that name to
 		// decide between a native image part and a stored text placeholder.
 		opts := orchestrator.TurnOpts{
+			// Correlation IDs. Left empty, WithThreadLink binds two empty
+			// strings and every log line and tool audit record for the turn
+			// carries no way back to the conversation it came from.
+			ThreadID:       st.thread.ID,
+			TurnID:         ts.turn.ID,
 			ThinkingEffort: p.Thinking,
 			OutputSchema:   p.OutputSchema,
 			ModelID:        einollm.ResolveModelName(s.models, p.Model),
