@@ -174,7 +174,11 @@ func (c *CompactingModel) shouldCompact(msgs []*schema.Message) bool {
 		return true
 	}
 
-	// Threshold gate: only compact when over the configured threshold.
+	// Threshold gate: compact once the history reaches the configured
+	// threshold. AT the threshold counts -- the comparison is < on the
+	// skip side, not <=, and TestCompactingModel_ThresholdBoundaries pins
+	// that. The previous wording said "over", which reads as strictly
+	// greater and would send the next reader the wrong way.
 	if tokens < int(c.Threshold*float64(c.ContextWindow)) {
 		return false
 	}
