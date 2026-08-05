@@ -1,6 +1,16 @@
 // SQLite-backed persistence for the work package.
-// All write paths route through the injected WriteTxer (sharing the process-wide
-// writeMu from store.Store) so concurrent goroutines never hit SQLITE_BUSY.
+//
+// ⚠️ Writes do NOT currently route through the injected WriteTxer. The wt()
+// helper exists and has zero callers: every write either begins its own
+// transaction with s.db.BeginTx or runs a bare s.db.ExecContext, so none of
+// them share the process-wide writeMu from store.Store. Concurrent goroutines
+// can therefore still hit SQLITE_BUSY here.
+//
+// The predecessor of this comment asserted the opposite — "all write paths
+// route through the injected WriteTxer" — which is the more dangerous kind of
+// wrong: it tells a reader the concurrency problem is solved and stops them
+// looking. Converting the twelve write sites is W3 Task 5 and is not done.
+//
 // Migration entry point is FromDB, called by bootstrap.Build after store.Open.
 package work
 
