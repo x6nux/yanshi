@@ -393,17 +393,19 @@ func TestCompactingModel_FirstCompactNoCooldown(t *testing.T) {
 	_ = out
 }
 
-// TestCompactingModel_KeepRecentBridge verifies the /2 bridge is documented.
-// The test does NOT assert the bridge itself (it's a legacy semantics decision);
-// it simply asserts existing CompactingModel.KeepRecent behavior works.
-func TestCompactingModel_KeepRecentBridge(t *testing.T) {
-	cm := &CompactingModel{KeepRecent: 4}
-	// KeepRecent on CompactingModel is a MESSAGE count (not pair count).
-	// ctxcompact.PlanOpts.KeepRecent is a PAIR count, bridged via /2.
-	if cm.KeepRecent/2 < 2 { // 4/2 = 2 pairs → 4 messages
-		t.Fatal("KeepRecent=4 must bridge to at least 2 pinned pairs")
-	}
-}
+// TestCompactingModel_KeepRecentBridge was deleted in W4 review round 23. It
+// asserted cm.KeepRecent/2 >= 2 on a struct the test itself had just built
+// with KeepRecent: 4 -- both sides were literals it chose, so it restated
+// 4/2 >= 2 and touched no production code at all.
+//
+// docs/superpowers/acceptance-breakdown.md listed it as the worked example of
+// its 恒真空壳 category, quoting the test's own comment admitting it does not
+// assert the bridge. It survived that diagnosis by roughly thirty review
+// rounds.
+//
+// TestCompactingModel_KeepRecentBridgesMessagesToPairs pins the bridge for
+// real: it sizes a history so that dropping the /2 pins the entire thing and
+// compaction stops happening, and is verified red against exactly that.
 
 // TestCompactingModel_MaybeCompact_RejectsAGrowingSummary pins the second half
 // of maybeCompact's best-effort gate.

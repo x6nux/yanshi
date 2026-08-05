@@ -614,7 +614,7 @@
 - 证据形状：必须让 `inCooldown(tokens)` **真的返回 true**（先跑一次成功压缩，或显式设 `lastCompactAt=now` 且 `CooldownDuration` 未过期 / 令 `tokens-lastCompactTokens < CooldownTokens`），**再**把输入推到 `≥ HardForceFraction×ContextWindow`，断言 `didCompact==true`；并配一个刚好低于该比例的**负向孪生**断言 `didCompact==false`。**骗过去**：任何 `lastCompactTokens==0` 的用例，以及任何 token 数已越过普通 Threshold 的用例。
 
 **3. keepRecent 文档清晰** — 未兑现（台账判定正确）
-- 依据：桥接在 `compacting.go::CompactingModel.maybeCompact`（`ctxcompact.PlanOpts{KeepRecent: c.KeepRecent / 2}`），语义差异在 `::CompactingModel` 的 doc 注释里说明。`internal/llm/eino::TestCompactingModel_KeepRecentBridge` 是**恒真空壳**：函数体是 `cm := &CompactingModel{KeepRecent: 4}; if cm.KeepRecent/2 < 2 { t.Fatal }`，即对字面量做 `4/2 >= 2` 的算术断言，**从不调用 `maybeCompact`、不触碰 `/2` 桥接的任何生产代码**；测试自己的注释写着「The test does NOT assert the bridge itself」。
+- 依据：桥接在 `compacting.go::CompactingModel.maybeCompact`（`ctxcompact.PlanOpts{KeepRecent: c.KeepRecent / 2}`），语义差异在 `::CompactingModel` 的 doc 注释里说明。`TestCompactingModel_KeepRecentBridge`（**已于 2026-08-06 W4 review 第 23 轮删除**，故此处刻意不带路径前缀）曾是**恒真空壳**：函数体是 `cm := &CompactingModel{KeepRecent: 4}; if cm.KeepRecent/2 < 2 { t.Fatal }`，即对字面量做 `4/2 >= 2` 的算术断言，**从不调用 `maybeCompact`、不触碰 `/2` 桥接的任何生产代码**；测试自己的注释写着「The test does NOT assert the bridge itself」。桥接现由 `internal/llm/eino::TestCompactingModel_KeepRecentBridgesMessagesToPairs` 真实覆盖。
 - 证据形状：「文档清晰」是文档质量主张（**N 类**），GOV8 只收测试引用。这条要么改写成行为主张 —— 例如断言 `maybeCompact` 传给 `ctxcompact.Plan` 的 `PlanOpts.KeepRecent` 恰为 `CompactingModel.KeepRecent/2`，从而两处语义漂移可被机器检出 —— 要么它永远撑不起终态。**骗过去**：现状这种字面量算术。
 
 ---

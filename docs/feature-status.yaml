@@ -736,10 +736,14 @@
 # HardForceFraction（默认 0.05 / "" / 0.95）→ internal/bootstrap/bootstrap.go::Build →
 # orchestrator.wrapCompaction → einollm.CompactingModel.inCooldown。
 # 不翻 done 的原因是第 3 条「keepRecent 文档清晰」**没有可执行证据**：
-#   唯一沾边的 internal/llm/eino::TestCompactingModel_KeepRecentBridge 是**恒真的
-#   空壳** —— 它对字面量断言 `KeepRecent(4)/2 >= 2`，且自己的注释就写明「The test
-#   does NOT assert the bridge itself」。拿它顶这条子句正是 ADR-0011 边界里点名的
-#   「空壳测试 + 一行正确 marker」形状，故拒绝。
+#   当时唯一沾边的那条测试（名字见 docs/superpowers/acceptance-breakdown.md 的
+#   恒真空壳条目）是**恒真的空壳** —— 它对字面量断言 `KeepRecent(4)/2 >= 2`，且自己的
+#   注释就写明「The test does NOT assert the bridge itself」。拿它顶这条子句正是
+#   ADR-0011 边界里点名的「空壳测试 + 一行正确 marker」形状，故拒绝。
+#   2026-08-06 W4 review 第 23 轮：该空壳已删除，桥接改由
+#   internal/llm/eino::TestCompactingModel_KeepRecentBridgesMessagesToPairs 覆盖
+#   （变异验证：删掉 /2 后整段历史被钉住、压缩不再发生 → 红）。子句 3 仍是文档性
+#   断言，故本条依旧不翻 done。
 #   而「文档清晰」本身是文档质量主张，不是行为主张，GOV8 只收测试引用 —— 这条要么
 #   改写成可断言的形式（例如断言两处 KeepRecent 语义在代码里不漂移），要么它永远
 #   撑不起终态。移交 W4 决定。
