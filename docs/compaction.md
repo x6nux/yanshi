@@ -195,6 +195,11 @@ compaction:
 
 ## 三个门与它们的量纲
 
+> ⚠️ **这三个门只存在于 mid-turn 路径。** `apihttp.CompactionConfig` 里没有
+> `Cooldown*` / `HardForce*` 任何字段，`ctxcompact.MaybeCompact` 的入参只有
+> threshold / window / keepRecent —— **pre-turn 每次越过阈值就压，没有 cooldown 兜着，
+> 也没有 hard-force 可言（它本就不受 cooldown 阻挡）**。下面这张表描述的是 mid-turn。
+
 `config.yaml` 的 `compaction` 一节暴露了三个独立的门，它们对**同一个未压缩历史**求值，
 但回答的是不同问题：
 
