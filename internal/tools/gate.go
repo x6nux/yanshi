@@ -85,10 +85,17 @@ func (g *GateTools) runGate(ctx context.Context, argsJSON string) (string, error
 	// Authorize：把 shell 命令与 cwd 读路径一起交给 guard。
 	// metachar（|、>、$()、换行...）由 guard 的 shell 规则拒绝，确保 gate 只接受
 	// 单一 argv；force-prompt 工具的检查也在这里发生（task_gate_run 不在名单里）。
+	// Workdir feeds the destructive-deletion dimension. Without it,
+	// isCatastrophicTarget short-circuits and skips its two workdir-relative
+	// rules — "deletes the working directory itself" and "deletes one of its
+	// ancestors" — so a gate command could remove the tree it was invoked in
+	// while shell_run, which does pass its root, would refuse the same string.
+	// Pure tightening: it adds refusals, never permissions.
 	if err := Authorize(ctx, guard.Action{
-		Tool:  "task_gate_run",
-		Shell: args.Command,
-		FS:    guard.FSWant{Op: "read", Paths: []string{cwdResolved}},
+		Tool:    "task_gate_run",
+		Shell:   args.Command,
+		Workdir: cwdResolved,
+		FS:      guard.FSWant{Op: "read", Paths: []string{cwdResolved}},
 	}, argsJSON); err != nil {
 		return "", err
 	}
