@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -1446,4 +1447,42 @@ func TestVcsMcpSuccess(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("vcsMcp did not return on stdin EOF within 10s (stdin likely not EOF)")
 	}
+}
+
+// TestPersistGoalRunKeepsTheBudgetStopReason closes G02/TD1's persistence
+// clause by exercising the seam the existing test skips.
+//
+// Every piece was already covered in isolation: budgetExceededDecision sets
+// StopReason, NewRunRecord copies it, persistGoalRun writes a record. But the
+// only persistence test used a COMPLETED decision, so nothing proved the
+// budget reason survives json.Marshal and the kv round trip — exactly where a
+// wrong struct tag or a dropped field hides, because such a bug leaves the
+// record present and well-formed with the one field that mattered blank.
+func TestPersistGoalRunKeepsTheBudgetStopReason(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "goalbudget.db")
+	st, err := store.Open(dbPath)
+	require.NoError(t, err)
+	defer st.Close()
+
+	persistGoalRun(st, goalloop.TierTeam, goalloop.Decision{
+		Complete:   false,
+		Summary:    "budget exceeded before iteration (1200 tokens > 1000)",
+		StopReason: goalloop.StopReasonTokenBudget,
+		Usage:      goalloop.Usage{PromptTokens: 900, CompletionTokens: 300, TotalTokens: 1200},
+	}, goalloop.Usage{PromptTokens: 900, CompletionTokens: 300, TotalTokens: 1200}, 3)
+
+	var raw string
+	err = st.DB.QueryRow(
+		`SELECT value FROM kv WHERE key LIKE 'goalrun:%' ORDER BY key DESC LIMIT 1`,
+	).Scan(&raw)
+	require.NoError(t, err, "a goalrun record must exist")
+
+	var rec goalloop.RunRecord
+	require.NoError(t, json.Unmarshal([]byte(raw), &rec), "the stored value must decode")
+
+	assert.Equal(t, goalloop.StopReasonTokenBudget, rec.StopReason,
+		"the reason the run stopped must survive the round trip; a blank here is the failure this test exists for")
+	assert.False(t, rec.Complete)
+	assert.Equal(t, 1200, rec.Usage.TotalTokens, "the spend that tripped the budget must be recoverable too")
+	assert.Equal(t, 3, rec.Iterations)
 }
