@@ -101,6 +101,35 @@ profiles:
     fs:    { read: ["**"], write: ["**"] }
     shell: { policy: "allowlist", patterns: ["git *", "go test", "go test *", "cargo test", "cargo test *", "npm test", "npm test *"] }
     net:   { allow: true, hosts: ["*"] }
+    #
+    # shell.rules is the structured alternative to policy/patterns above. When
+    # rules is non-empty it REPLACES them: checkShell evaluates the rules and
+    # returns, so policy and patterns are not consulted at all. Rules match on
+    # program + argument prefix and can deny on a specific flag, which glob
+    # patterns cannot express.
+    #
+    # Left commented out on purpose. A live deny rule refuses commands that
+    # work today, and an operator should choose that deliberately.
+    #
+    # rules:
+    #   # Order matters: the first matching rule wins, so put denials first.
+    #   - id: no-real-e2e
+    #     program: go
+    #     prefix: ["test"]
+    #     deny_flags: ["-tags=e2e_real"]
+    #     decision: deny
+    #     justification: "real E2E spawns external agent CLIs; require explicit approval"
+    #   - id: go-test
+    #     program: go
+    #     prefix: ["test"]
+    #     decision: allow
+    #     justification: "ordinary Go tests are safe"
+    #
+    # deny_flags matches the flag however it is spelled -- `-tags=e2e_real`,
+    # `-tags e2e_real`, `--tags=e2e_real` and `-tags=e2e_real,other` all hit
+    # the rule above. Verified by
+    # internal/execpolicy::TestDenyFlagsSurviveFlagSpelling, which also pins
+    # that the rule does NOT reach an ordinary `go test ./...`.
 
 # Security (A1). Sandbox / network / shell posture. Defaults (applied when the
 # block is absent): sandbox on + read-only tier + network default-deny + shell
