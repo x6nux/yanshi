@@ -143,3 +143,66 @@ func TestEvaluate_DenyFlagWithEqualsForm(t *testing.T) {
 		t.Fatalf("-tags=e2e_real with = form must be denied: %#v", got)
 	}
 }
+
+// TestDenyFlagsSurviveFlagSpelling pins that a deny rule's flag cannot be
+// evaded by respelling it.
+//
+// containsAny matched only the exact token and the flag+"=" form, so three
+// spellings of the same flag walked past the rule and were allowed by the
+// permissive rule behind it. Measured before the fix:
+//
+//	go test -tags=e2e_real ./x   -> hard_deny   (caught)
+//	go test -tags e2e_real ./x   -> allow       (bypass)
+//	go test --tags=e2e_real ./x  -> allow       (bypass)
+//	go test -tags=e2e_real,foo   -> allow       (bypass)
+//
+// That is the no-real-e2e rule this package's own doc comment holds up as its
+// worked example, so the flagship use case was the one being evaded.
+//
+// The second half of the table is not decoration. Widening a flag match is
+// one edit away from turning a targeted deny rule into a blanket ban on the
+// program, which is the regression policy.go's header records; these cases
+// fail if that happens.
+func TestDenyFlagsSurviveFlagSpelling(t *testing.T) {
+	rules := []Rule{
+		{ID: "no-real-e2e", Program: "go", Prefix: []string{"test"}, Decision: "deny",
+			DenyFlags: []string{"-tags=e2e_real"}, Justification: "real E2E is gated"},
+		{ID: "go-test", Program: "go", Prefix: []string{"test"}, Decision: "allow",
+			Justification: "ordinary Go tests are safe"},
+		{ID: "go-build", Program: "go", Prefix: []string{"build"}, Decision: "allow",
+			Justification: "building is safe"},
+	}
+
+	cases := []struct {
+		cmd     string
+		verdict string
+		ruleID  string
+		why     string
+	}{
+		// Tightening: every spelling of the denied flag must be caught.
+		{`go test -tags=e2e_real ./internal/acp`, "hard_deny", "no-real-e2e", "canonical form"},
+		{`go test -tags e2e_real ./internal/acp`, "hard_deny", "no-real-e2e", "space-separated value"},
+		{`go test --tags=e2e_real ./internal/acp`, "hard_deny", "no-real-e2e", "double-dash spelling"},
+		{`go test -tags='e2e_real' ./internal/acp`, "hard_deny", "no-real-e2e", "quoted value, stripped by the lexer"},
+		{`go test -tags=e2e_real,foo ./internal/acp`, "hard_deny", "no-real-e2e", "denied tag among others"},
+
+		// Not over-denying: the rule targets one flag, not the program.
+		{`go test ./...`, "allow", "go-test", "an ordinary test run"},
+		{`go build ./...`, "allow", "go-build", "an ordinary build"},
+		{`go test -run TestFoo ./internal/acp`, "allow", "go-test", "an unrelated flag"},
+		{`go test -tags=integration ./internal/acp`, "allow", "go-test", "a different tag entirely"},
+		{`go test -tags=e2e_realistic ./x`, "allow", "go-test", "a tag that merely starts the same"},
+	}
+
+	for _, tc := range cases {
+		cmd, err := Parse(tc.cmd)
+		if err != nil {
+			t.Fatalf("%s: parse: %v", tc.cmd, err)
+		}
+		got := Evaluate(cmd, rules)
+		if got.Verdict != tc.verdict || got.RuleID != tc.ruleID {
+			t.Errorf("%s (%s):\n  got  verdict=%q rule=%q\n  want verdict=%q rule=%q",
+				tc.cmd, tc.why, got.Verdict, got.RuleID, tc.verdict, tc.ruleID)
+		}
+	}
+}

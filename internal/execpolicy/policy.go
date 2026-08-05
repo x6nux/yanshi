@@ -128,18 +128,49 @@ func hasPrefix(args, prefix []string) bool {
 	return true
 }
 
-// containsAny reports whether any element of args equals flag or starts with
-// flag+"=". The "=" form covers `-tags=e2e_real` when the rule lists
-// `-tags=e2e_real` as the flag (the canonical form). A nil/empty flags list
-// never matches.
+// containsAny reports whether args carry any of flags, in any spelling a
+// shell user would reach for.
+//
+// It used to compare the raw token against flag and flag+"=", which meant a
+// deny rule listing `-tags=e2e_real` caught exactly that string and nothing
+// else. `-tags e2e_real`, `--tags=e2e_real` and `-tags=e2e_real,foo` all
+// walked past it into whatever permissive rule sat behind -- including the
+// no-real-e2e rule this package's header holds up as its worked example.
+//
+// Normalisation is deliberately confined to this function. Widening
+// hasPrefix or normalizeProgram would let rules match commands they were not
+// written for, turning a tightening into a loosening; here every added form
+// can only make a deny rule fire more often.
 func containsAny(args, flags []string) bool {
 	if len(flags) == 0 {
 		return false
 	}
-	for _, arg := range args {
-		for _, flag := range flags {
-			if arg == flag || strings.HasPrefix(arg, flag+"=") {
-				return true
+	for _, flag := range flags {
+		name, want, hasValue := strings.Cut(flag, "=")
+		for i, arg := range args {
+			// `--tags` and `-tags` are the same flag to Go's flag package and
+			// to most CLIs, so a rule written either way must catch both.
+			argName, argVal, argHasValue := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+			if argName != strings.TrimLeft(name, "-") {
+				continue
+			}
+			if !hasValue {
+				return true // the rule denies the flag regardless of its value
+			}
+			if !argHasValue {
+				// `-tags e2e_real`: the value is the next argument.
+				if i+1 < len(args) {
+					argVal = args[i+1]
+				} else {
+					continue
+				}
+			}
+			// A comma list carries the denied value if any element matches;
+			// a plain value is a one-element list, so one path covers both.
+			for _, part := range strings.Split(argVal, ",") {
+				if strings.TrimSpace(part) == want {
+					return true
+				}
 			}
 		}
 	}
