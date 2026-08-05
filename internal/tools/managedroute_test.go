@@ -74,6 +74,14 @@ func TestManagedSubAgentRunParksItsCaller(t *testing.T) {
 	if !(park < wait && wait < unpark) {
 		t.Errorf("park/wait/unpark are out of order (%d/%d/%d): parking must bracket the wait", park, wait, unpark)
 	}
+	// The spawn spec's Emit is what carries the child's events up to the
+	// parent. Drop it and the delegation still succeeds and still returns its
+	// text — the parent just goes blind for the whole run, with no error to
+	// say so. Measured W3 review round 11: nulling it reddened nothing.
+	if !strings.Contains(body, "Emit:            subagentEmitAdapter(ctx),") {
+		t.Error("ManagedSubAgentRun no longer wires the child's event emitter: " +
+			"the parent sees nothing the child does, and nothing reports that")
+	}
 }
 
 // TestManagedRunnerFactoryRoundTrip keeps the context carrier the routing
