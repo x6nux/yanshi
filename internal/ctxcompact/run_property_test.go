@@ -181,3 +181,47 @@ func TestMaybeCompactDeclinesBeforeSpendingACall(t *testing.T) {
 		})
 	}
 }
+
+// TestForceCompactStillRefusesWhatItCannotHelp pins ForceCompact's two
+// preconditions.
+//
+// ForceCompact exists to skip the THRESHOLD gate -- the caller, /compact,
+// has already decided -- but its doc says it keeps the other two, and round
+// 26 measured that neither was pinned: dropping either term left the package
+// green. "The user asked for it" is not a reason to spend a model call on a
+// history that cannot shrink.
+//
+// The message counts sit on the guard's boundary for the reason round 25
+// established: a smaller history is declined by Plan pinning everything,
+// which would let the case pass with the guard deleted.
+func TestForceCompactStillRefusesWhatItCannotHelp(t *testing.T) {
+	history := func(n int) []*schema.Message {
+		msgs := make([]*schema.Message, n)
+		for i := range msgs {
+			msgs[i] = &schema.Message{Role: schema.Assistant, Content: strings.Repeat("x", 400)}
+		}
+		return msgs
+	}
+
+	t.Run("zero window", func(t *testing.T) {
+		rs := &recordingSummarizer{Return: "summary"}
+		msgs := history(12)
+		if _, _, _, did := ForceCompact(context.Background(), msgs, 0, 4, rs, nil); did {
+			t.Fatal("compacted against a zero window: RunSummary's chunk budget would be zero")
+		}
+		if len(rs.GenerateCalls)+len(rs.StreamCalls) != 0 {
+			t.Fatal("a zero window still cost a summariser call")
+		}
+	})
+
+	t.Run("at the too-few-messages boundary", func(t *testing.T) {
+		rs := &recordingSummarizer{Return: "summary"}
+		msgs := history(9) // 9 <= 4*2+1, and one message sits outside the tail
+		if _, _, _, did := ForceCompact(context.Background(), msgs, 1000, 4, rs, nil); did {
+			t.Fatal("compacted a history no longer than the pinned tail plus one")
+		}
+		if len(rs.GenerateCalls)+len(rs.StreamCalls) != 0 {
+			t.Fatal("a history too short to help still cost a summariser call")
+		}
+	})
+}
