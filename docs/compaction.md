@@ -309,3 +309,21 @@ bootstrap 把它传给 `apihttp.CompactionConfig`，handler 经 `compactionModel
 
 **触发条件**：只有配置了 `compaction.model` 且其窗口小于会话模型时才会踩到。默认
 （`model: ""`，摘要用会话模型本身）两个要求恰好重合，所以这个缺陷在默认配置下不可见。
+
+
+## ⚠️ `compaction.model` 写错名字会被静默忽略
+
+`compactionModel` 的回退链是：配置的摘要模型 → 会话模型 → 排序后第一个已注册模型。
+第一跳用的是 `models[cc.Model]`，**取不到就直接往下走，不报错也不告警**。
+
+所以 `compaction.model: gpt4o-mini`（少一个连字符）与根本没配这个键，行为完全一致：
+摘要仍由会话模型完成。操作员以为省下的钱一分没省，而且没有任何迹象。
+
+与 `cooldown_duration` 写错被静默吞掉（W4 review 第 12 轮已修为降级 + 告警）是同一类，
+**但不能照搬那个修法**：加载期校验需要知道模型的注册键，而那个键由 `chooseKey` 算出
+（优先 `p.Model`）。在 config 层重算一遍 `chooseKey` 的规则，本身就是又一条会漂移的接缝 ——
+正是这一轮轮 review 反复抓到的东西。
+
+**正确的修法是在注册表建好之后校验**（bootstrap 里 `models` map 已成型的那一点），
+那时查一次 `cc.Model` 在不在里面即可，无需复制任何键计算规则。属接线变更，单独立项。
+发现于 W4 review 第 17 轮。
