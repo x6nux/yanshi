@@ -93,10 +93,29 @@ type Redactor struct {
 // NewRedactor returns an empty Redactor.
 func NewRedactor() *Redactor { return &Redactor{} }
 
-// Register adds a secret substring to the registry. Empty values are ignored.
-// Re-registration is idempotent.
+// MinSecretLength is the shortest string Register will accept. Values below
+// it are dropped.
+//
+// This trades a theoretical leak for a certain corruption, deliberately.
+// Redact does substring replacement, so registering a 3-character value turns
+// every incidental occurrence of those 3 characters into "[REDACTED]" —
+// across stderr, WS frames, SSE frames, AND SQLite writes. The Store redacts
+// before the SQL write, so that damage is written to disk and is not
+// recoverable by fixing the config afterwards. A misconfigured env:// ref
+// resolving to a one-character value is enough to trigger it.
+//
+// The leak side of the trade is close to nothing: a credential this short has
+// no meaningful entropy, so an attacker who can see the logs did not need
+// them. Callers holding a real credential should still notice the drop —
+// bootstrap warns when a resolved provider key falls below this bar.
+const MinSecretLength = 6
+
+// Register adds a secret substring to the registry. Values shorter than
+// MinSecretLength (including the empty string) are ignored; see that
+// constant for why dropping is the safer direction. Re-registration is
+// idempotent.
 func (r *Redactor) Register(secret string) {
-	if secret == "" {
+	if len(secret) < MinSecretLength {
 		return
 	}
 	r.mu.Lock()
@@ -190,22 +209,36 @@ func (l *SafeLogger) Println(args ...any) {
 	l.Printf("%s", fmt.Sprintln(args...))
 }
 
-// MergeRedactors returns a Redactor whose registry is the union of all
-// inputs. Used by bootstrap to combine provider-level redactors into one
-// process-wide Redactor handed to ws.Conn, Server, and Store.
-func MergeRedactors(rs ...*Redactor) *Redactor {
-	merged := NewRedactor()
-	for _, r := range rs {
-		if r == nil {
+// Absorb registers every secret held by others into r, in place. Nil entries
+// are skipped. Used by bootstrap to fold subsystem-level redactors (the
+// secrets Manager's, device-auth tokens) into the one process-wide registry.
+//
+// In place is the whole point, and it replaced a MergeRedactors free function
+// that returned a fresh union. That shape was an alias trap: SafeOutput pairs
+// a Redactor with a SafeLogger built over THAT pointer, so as soon as
+// bootstrap rebound its local `redactor` to the union, every subsequent
+// Register(resolvedAPIKey) landed on an object the logger had never heard of
+// — SafeLogger emitted provider API keys in plaintext for its entire life,
+// while the doc on SafeOutput claimed the two shared a registry. The union
+// was correct in isolation and wrong at the seam; returning a new object is
+// the bug, so the API no longer offers one.
+//
+// TestSafeOutputRegistryIsAnAliasNotACopy pins this.
+func (r *Redactor) Absorb(others ...*Redactor) {
+	for _, other := range others {
+		if other == nil || other == r {
 			continue
 		}
-		r.mu.RLock()
-		for _, s := range r.secrets {
-			merged.Register(s)
+		other.mu.RLock()
+		snapshot := make([]string, len(other.secrets))
+		copy(snapshot, other.secrets)
+		other.mu.RUnlock()
+		// Register takes r.mu, so it must be called outside other's lock and
+		// outside any lock on r.
+		for _, s := range snapshot {
+			r.Register(s)
 		}
-		r.mu.RUnlock()
 	}
-	return merged
 }
 
 // SafeOutput bundles a Redactor and its SafeLogger so callers (bootstrap,

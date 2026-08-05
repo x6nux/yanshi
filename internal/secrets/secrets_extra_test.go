@@ -98,10 +98,10 @@ func TestRedactor_RegisterEmptyAndIdempotent(t *testing.T) {
 	if r.Redact("nothing-here") != "nothing-here" {
 		t.Fatal("empty registration must not redact anything")
 	}
-	r.Register("sk-1")
-	r.Register("sk-1") // duplicate ignored
-	r.Register("sk-2")
-	got := r.Redact("sk-1 and sk-2")
+	r.Register("sk-key-1")
+	r.Register("sk-key-1") // duplicate ignored
+	r.Register("sk-key-2")
+	got := r.Redact("sk-key-1 and sk-key-2")
 	if got != "[REDACTED] and [REDACTED]" {
 		t.Fatalf("redact = %q", got)
 	}
@@ -160,19 +160,26 @@ func TestSafeLogger_Println(t *testing.T) {
 	}
 }
 
-func TestMergeRedactors(t *testing.T) {
+func TestRedactorAbsorb(t *testing.T) {
 	a := NewRedactor()
-	a.Register("sk-a")
+	a.Register("sk-alpha")
 	b := NewRedactor()
-	b.Register("sk-b")
-	merged := MergeRedactors(a, b, nil) // nil input must be skipped
-	got := merged.Redact("sk-a sk-b")
-	if strings.Contains(got, "sk-a") || strings.Contains(got, "sk-b") {
-		t.Fatalf("MergeRedactors leaked: %q", got)
+	b.Register("sk-bravo")
+	a.Absorb(b, nil) // nil input must be skipped
+	got := a.Redact("sk-alpha sk-bravo")
+	if strings.Contains(got, "sk-alpha") || strings.Contains(got, "sk-bravo") {
+		t.Fatalf("Absorb leaked: %q", got)
 	}
-	// Merging nothing yields an empty redactor.
-	if got := MergeRedactors().Redact("x"); got != "x" {
-		t.Fatalf("empty merge changed input: %q", got)
+	// Absorbing nothing leaves the receiver alone.
+	a.Absorb()
+	if got := a.Redact("plain"); got != "plain" {
+		t.Fatalf("empty absorb changed input: %q", got)
+	}
+	// Self-absorb must not deadlock (Register takes the same mutex).
+	a.Absorb(a)
+	// The source is not mutated by being absorbed.
+	if got := b.Redact("sk-alpha"); got != "sk-alpha" {
+		t.Fatalf("Absorb wrote back into the source: %q", got)
 	}
 }
 

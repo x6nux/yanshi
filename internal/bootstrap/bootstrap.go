@@ -392,12 +392,17 @@ func Build(opts Options) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: secrets manager: %w", err)
 	}
+	// redactor MUST stay aliased to output.Redactor for the whole function:
+	// output.Logger was built over that pointer, so rebinding this variable to
+	// a fresh union would take SafeLogger out of the loop for every
+	// Register(resolved) below. Absorb folds in place precisely so this
+	// assignment never needs to move. See Redactor.Absorb's doc.
 	redactor := output.Redactor
 	if secretMgr != nil {
-		// Merge so any secrets the Manager pre-registers (none today, but
-		// reserved for device-auth tokens in Task 7) join the process-wide
-		// registry that Store + Server receive below.
-		redactor = secrets.MergeRedactors(redactor, secretMgr.Redactor())
+		// Absorb so any secrets the Manager pre-registers (none today, but
+		// reserved for device-auth tokens) join the process-wide registry
+		// that Store + Server + SafeLogger all share.
+		redactor.Absorb(secretMgr.Redactor())
 	}
 
 	// O03: auth.Manager takes over credential resolution from the inline
@@ -469,11 +474,23 @@ func Build(opts Options) (*App, error) {
 				if readErr == nil {
 					oldKey := p.APIKey
 					updated := strings.Replace(string(raw), oldKey, refStr, 1)
+					// The 0644 is inert here: ReadFile already succeeded, so
+					// the file exists, and OpenFile only applies perm on
+					// create. An operator's chmod 600 config.yaml survives.
 					if writeErr := os.WriteFile(cfgPath, []byte(updated), 0644); writeErr != nil {
-						fmt.Fprintf(os.Stderr, "warning: auto-migrate: wrote ref to memory but could not update %s: %v\n", cfgPath, writeErr)
+						// These two warnings fire with the raw API key still
+						// in p.APIKey, so they go through SafeLogger rather
+						// than os.Stderr -- the errors carry only a path and
+						// an errno today, but this is the credential path and
+						// the next %v added here should be caught by default.
+						// This is only worth doing because the redactor is
+						// now aliased to output.Redactor: before that fix,
+						// SafeLogger had an empty registry for its whole life
+						// and routing through it would have been theater.
+						output.Logger.Printf("warning: auto-migrate: wrote ref to memory but could not update %s: %v\n", cfgPath, writeErr)
 					}
 				} else {
-					fmt.Fprintf(os.Stderr, "warning: auto-migrate: stored key but could not read %s for rewrite: %v\n", cfgPath, readErr)
+					output.Logger.Printf("warning: auto-migrate: stored key but could not read %s for rewrite: %v\n", cfgPath, readErr)
 				}
 				p.APIKey = refStr
 				src.APIKeyRef = refStr
@@ -486,6 +503,16 @@ func Build(opts Options) (*App, error) {
 			}
 		}
 		if resolved != "" {
+			// Register silently drops values below secrets.MinSecretLength.
+			// Silence is right inside the Redactor (it cannot tell a junk
+			// value from a real one) but wrong here, where we know this
+			// string is meant to be a credential: a key that short will not
+			// be redacted anywhere, and the operator should hear about it
+			// rather than discover it in a log. The warning names neither the
+			// value nor its length.
+			if len(resolved) < secrets.MinSecretLength {
+				output.Logger.Printf("warning: provider %q: resolved credential is too short to redact safely; it will appear verbatim in logs and stored messages\n", p.Name)
+			}
 			redactor.Register(resolved)
 			p.APIKey = resolved
 		}
