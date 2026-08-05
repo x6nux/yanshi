@@ -49,6 +49,15 @@ type Client struct {
 	// still dispatching. Handlers in this repo append to slices without locking
 	// (see the tests, and goalloop's usageForwarder), so the overlap would be a
 	// real race rather than a theoretical one.
+	//
+	// ⚠️ UNPINNED DESIGN CHOICE. Measured 2026-08-05: deleting this mutex
+	// produces no DATA RACE under `go test -race ./internal/acp`, because no
+	// test arranges a notification still in flight when the prompt response
+	// lands. The reasoning above is therefore argued, not evidenced — exactly
+	// the shape 0-bis in docs/superpowers/review-checklist.md forbids leaving
+	// unlabelled. Closing it needs a test that holds a session/update inside
+	// the handler while the response resolves; until then, do not treat the
+	// absence of a red test as evidence the mutex is unnecessary.
 	deliverMu sync.Mutex
 
 	// Policy gates inbound server->client requests (fs/terminal/permission).
