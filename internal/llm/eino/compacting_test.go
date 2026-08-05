@@ -634,8 +634,15 @@ func TestCompactingModel_ZeroCooldownTokensDisablesTheTokenDimension(t *testing.
 // Generate and Stream each decide independently whether to compact, and the
 // orchestrator runs with EnableStreaming: true -- so Stream is the production
 // path, and a compaction wired into Generate alone would look correct in tests
-// while never firing in a real session. W4 review round 11 severed Stream's
-// call and the whole package stayed green.
+// while never firing in a real session.
+//
+// ⚠️ Round 11 claimed severing Stream's call left the package green. That was
+// a measurement failure, not a finding: the grep counting failures returned
+// empty rather than zero and was read as zero. Re-measured in round 18 with
+// the output captured to a file, TestCompactingModel_StreamCompacts already
+// reddens on that mutation. This test is kept because it asserts a different
+// thing -- what the inner model actually received, rather than the stream
+// count -- but it did not close a gap that was open.
 func TestCompactingModel_StreamCompactsToo(t *testing.T) {
 	inner := &recordingModel{summary: "SUMMARY", reply: "ok", streamOK: true}
 	cm := &CompactingModel{
