@@ -327,6 +327,13 @@ func (s *Store) Transition(ctx context.Context, id string, next Status, kind, su
 			return err
 		}
 		now := time.Now().Unix()
+		// The "AND status=?" clause is defence in depth, not a live guard: the
+		// SELECT above runs inside this same write transaction, so `current`
+		// cannot go stale before the UPDATE — SQLite serialises writers.
+		// Measured W3 review round 13: removing the clause reddens nothing, and
+		// that is correct rather than a missing test. It stays because it costs
+		// nothing and would become load-bearing the moment the read moved out
+		// of the transaction.
 		result, err := tx.ExecContext(ctx, `UPDATE task_work SET status=?,updated_at=? WHERE id=? AND status=?`,
 			string(next), now, id, current)
 		if err != nil {
