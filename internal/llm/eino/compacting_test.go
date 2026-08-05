@@ -744,3 +744,50 @@ func TestCompactingModel_ThresholdBoundaries(t *testing.T) {
 				"tightening >= to > would let the window overflow by one token")
 	})
 }
+
+// TestCompactingModel_DoesNotMutateTheCallersHistory pins the premise
+// ADR-0013's whole rule rests on: compaction is not sticky.
+//
+// The ADR says mid-turn accounting must use the UNCOMPACTED dimension
+// "because the result never goes back into ADK state -- the next iteration
+// hands it the same history it would have seen anyway". That premise is only
+// true while maybeCompact leaves the caller's slice alone. Rewrite it in
+// place and the next iteration receives the compacted form instead, at which
+// point storing TokensBefore is the wrong choice and the cooldown starts
+// measuring against a history that no longer exists.
+//
+// Nothing pinned this before: the ADR's load-bearing sentence was an argued
+// property, which is the exact failure mode this package's review kept
+// finding in the code it reviews.
+func TestCompactingModel_DoesNotMutateTheCallersHistory(t *testing.T) {
+	inner := &recordingModel{summary: "SUMMARY", reply: "ok", streamOK: true}
+	cm := &CompactingModel{
+		Inner:         inner,
+		Threshold:     0.5,
+		ContextWindow: 1000,
+		KeepRecent:    4,
+	}
+	msgs := make([]*schema.Message, 8)
+	for i := range msgs {
+		msgs[i] = bigMessage(80)
+	}
+	// Snapshot identity and content before the call.
+	before := make([]*schema.Message, len(msgs))
+	copy(before, msgs)
+	contents := make([]string, len(msgs))
+	for i, m := range msgs {
+		contents[i] = m.Content
+	}
+
+	out, did := cm.maybeCompact(context.Background(), msgs)
+	require.True(t, did, "premise: the history must actually be compacted")
+	require.Less(t, len(out), len(msgs), "premise: the returned history is shorter")
+
+	require.Len(t, msgs, len(before), "the caller's slice changed length")
+	for i := range msgs {
+		assert.Same(t, before[i], msgs[i],
+			"message %d was replaced: the next ADK iteration would receive a different history", i)
+		assert.Equal(t, contents[i], msgs[i].Content,
+			"message %d was rewritten in place, which is the same breakage by another route", i)
+	}
+}
