@@ -2,6 +2,7 @@ package ctxcompact
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
@@ -118,4 +119,61 @@ func TestProperty_RunReducesTokens(t *testing.T) {
 		}
 	})
 	requireTrialFloor(t, "summarized anything", summarized, trials)
+}
+
+// TestMaybeCompactDeclinesBeforeSpendingACall pins every precondition
+// MaybeCompact checks before it is willing to call the summariser.
+//
+// All three were unpinned inside this package: round 25 replaced the
+// threshold comparison with a constant, then dropped the threshold <= 0 term,
+// and the package stayed green both times. The pre-turn path is the one that
+// runs on every user message, so a gate that stops working there spends a
+// model call per turn on a history that did not need compacting.
+//
+// Each subtest asserts the summariser was never invoked, not merely that the
+// history came back unchanged: MaybeCompact returns the input on failure too,
+// so an unchanged history alone cannot tell a declined compaction from a
+// wasted one.
+func TestMaybeCompactDeclinesBeforeSpendingACall(t *testing.T) {
+	history := func(n int) []*schema.Message {
+		msgs := make([]*schema.Message, n)
+		for i := range msgs {
+			msgs[i] = &schema.Message{Role: schema.Assistant, Content: strings.Repeat("x", 400)}
+		}
+		return msgs
+	}
+
+	cases := []struct {
+		name                     string
+		threshold                float64
+		window, keepRecent, len_ int
+		why                      string
+	}{
+		{"under threshold", 0.9, 100000, 2, 12,
+			"a history far below threshold*window must not be summarised"},
+		{"threshold zero", 0, 1000, 2, 12,
+			"threshold 0 switches compaction off; it does not mean every history qualifies"},
+		{"window zero", 0.5, 0, 2, 12,
+			"a zero window makes every threshold zero, so nothing can be judged over it"},
+		{"too few messages", 0.0001, 1000, 4, 5,
+			"a history no longer than the pinned tail has nothing to summarise"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rs := &recordingSummarizer{Return: "summary"}
+			msgs := history(tc.len_)
+			out, _, _, did := MaybeCompact(context.Background(), msgs,
+				tc.threshold, tc.window, tc.keepRecent, rs, nil)
+
+			if did {
+				t.Fatalf("%s: compaction reported as done", tc.why)
+			}
+			if len(rs.GenerateCalls)+len(rs.StreamCalls) != 0 {
+				t.Fatalf("%s: the summariser was called anyway", tc.why)
+			}
+			if len(out) != len(msgs) {
+				t.Fatalf("%s: the history was altered", tc.why)
+			}
+		})
+	}
 }
