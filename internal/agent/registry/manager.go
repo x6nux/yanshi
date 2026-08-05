@@ -864,12 +864,8 @@ func (m *Manager) finishTerminal(agentID string, status Status, result, errMsg s
 	// runtime entry, so removing the entry first silently drops every
 	// terminal event this function exists to emit.
 	sink := m.sinkLocked(agentID)
-	rt := m.runtime[agentID]
-	delete(m.runtime, agentID)
 	m.mtx.Unlock()
-	if rt != nil && rt.cancel != nil {
-		rt.cancel()
-	}
+	m.detachRuntime(agentID)
 
 	terminalEvent := Event{
 		Type: mapStatusToEvent(status), AgentID: rec.ID, ParentID: rec.ParentID, Role: rec.Role,

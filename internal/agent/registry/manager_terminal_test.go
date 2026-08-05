@@ -236,3 +236,47 @@ func TestParkOnUnknownAgentIsANoOp(t *testing.T) {
 	unpark()
 	unpark() // idempotent
 }
+
+// TestRunnerContextIsClosedAfterTerminal pins that nothing the runner started
+// is left running against a live context once the agent has finished.
+//
+// ⚠️ It does NOT pin detachRuntime's cancel, despite being written for that.
+// The context a runner receives is the TURN context, which its own cleanup
+// cancels when the pass returns — so this stays green with detachRuntime's
+// cancel neutered. Measured, W3 review round 1.
+//
+// The agent-level cancel is therefore an UNPINNED design choice: it is what
+// stops work bound to the agent rather than to a turn, and no test observes
+// it. Reaching it needs a handle on the agent context that outlives the run,
+// which the Manager does not currently expose. Do not read this test's name
+// as evidence for that guarantee, and do not read the absence of a red test
+// as evidence the cancel is unnecessary.
+func TestRunnerContextIsClosedAfterTerminal(t *testing.T) {
+	m := NewManager(NewManagerOpts{
+		RootContext:   context.Background(),
+		Path:          filepath.Join(t.TempDir(), "s.json"),
+		SessionBootID: "boot",
+		MaxConcurrent: 2,
+	})
+	t.Cleanup(m.Close)
+
+	captured := make(chan context.Context, 1)
+	id, err := m.Spawn(context.Background(), SpawnRequest{
+		AgentType: "subagent", Role: "explore", Prompt: "p",
+		Runner: RunnerFunc(func(ctx context.Context, _, _ string) (string, error) {
+			captured <- ctx
+			return "SUMMARY\ndone", nil
+		}),
+	})
+	require.NoError(t, err)
+	_, err = m.Wait(context.Background(), id, WaitOpts{Timeout: 2 * time.Second})
+	require.NoError(t, err)
+
+	turnCtx := <-captured
+	select {
+	case <-turnCtx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("the agent reached a terminal status but the runner's context is " +
+			"still live: anything it started will never be told to stop")
+	}
+}
