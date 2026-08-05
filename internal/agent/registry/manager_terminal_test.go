@@ -161,3 +161,78 @@ func TestSendInputInterruptEndsTheTurnNotTheAgent(t *testing.T) {
 		"a cancelled TURN must not mark the AGENT failed or cancelled")
 	assert.Contains(t, rec.Result, "second turn ran")
 }
+
+// TestParkFreesCapacityAndUnparkReclaimsIt pins the livelock fix.
+//
+// A parent that delegates blocks in Wait while holding its slot; its child
+// retries Spawn until one frees. At cap N, N parents each waiting on a child
+// means every slot is held by something that is only waiting, and the children
+// they wait for can never start. Park exists to break that, so the two things
+// worth pinning are that it actually frees capacity and that unparking takes
+// it back — a Park that never reclaimed would silently uncap the manager.
+func TestParkFreesCapacityAndUnparkReclaimsIt(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(NewManagerOpts{
+		RootContext:   context.Background(),
+		Path:          filepath.Join(dir, "s.json"),
+		SessionBootID: "boot",
+		MaxConcurrent: 1,
+	})
+	t.Cleanup(m.Close)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	holder, err := m.Spawn(context.Background(), SpawnRequest{
+		AgentType: "subagent", Role: "explore", Prompt: "holder",
+		Runner: RunnerFunc(func(context.Context, string, string) (string, error) {
+			close(started)
+			<-release
+			return "held", nil
+		}),
+	})
+	require.NoError(t, err)
+	<-started
+
+	instant := RunnerFunc(func(context.Context, string, string) (string, error) {
+		return "SUMMARY\nok", nil
+	})
+
+	// The single slot is taken, so a second spawn is refused.
+	_, err = m.Spawn(context.Background(), SpawnRequest{
+		AgentType: "subagent", Role: "explore", Prompt: "blocked", Runner: instant,
+	})
+	require.Error(t, err, "the cap must hold while the only agent is doing work")
+
+	// Parking the holder frees its slot: it is waiting, not working.
+	unpark := m.Park(holder)
+	child, err := m.Spawn(context.Background(), SpawnRequest{
+		AgentType: "subagent", Role: "explore", Prompt: "child", Runner: instant,
+	})
+	require.NoError(t, err, "a parked agent must not consume capacity")
+	_, err = m.Wait(context.Background(), child, WaitOpts{Timeout: 2 * time.Second})
+	require.NoError(t, err)
+
+	// Unparking takes the capacity back.
+	unpark()
+	_, err = m.Spawn(context.Background(), SpawnRequest{
+		AgentType: "subagent", Role: "explore", Prompt: "after", Runner: instant,
+	})
+	require.Error(t, err, "unpark must reclaim the slot, or Park silently uncaps the manager")
+}
+
+// TestParkOnUnknownAgentIsANoOp keeps callers from having to special-case an
+// agent that reached a terminal status between lookup and park.
+func TestParkOnUnknownAgentIsANoOp(t *testing.T) {
+	m := NewManager(NewManagerOpts{
+		RootContext:   context.Background(),
+		Path:          filepath.Join(t.TempDir(), "s.json"),
+		SessionBootID: "boot",
+		MaxConcurrent: 1,
+	})
+	t.Cleanup(m.Close)
+	unpark := m.Park("ag-does-not-exist")
+	require.NotNil(t, unpark)
+	unpark()
+	unpark() // idempotent
+}

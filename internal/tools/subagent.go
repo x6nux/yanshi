@@ -300,7 +300,15 @@ func ManagedSubAgentRun(ctx context.Context, spec ManagedSubAgentSpec) (ManagedS
 	if err != nil {
 		return ManagedSubAgentResult{}, err
 	}
+	// Park the CALLER while it waits on its child. Without this a parent holds
+	// its slot for the whole of the child's run, so at cap N a fleet of N
+	// delegating parents occupies every slot waiting for children that can
+	// never be spawned — a livelock, measured during the W3 prototype at the
+	// default cap of 10. Parking is a no-op at depth 0, where the caller is an
+	// orchestrator turn holding no slot at all.
+	unpark := mgr.Park(registry.CurrentAgentID(ctx))
 	final, werr := mgr.Wait(ctx, id, registry.WaitOpts{})
+	unpark()
 	res := ManagedSubAgentResult{
 		Text: final.Result, AgentID: final.ID, Usage: final.Usage, Terminal: final.Status,
 	}

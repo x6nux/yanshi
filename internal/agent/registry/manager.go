@@ -54,7 +54,11 @@ type runtimeAgent struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	turnCancel context.CancelFunc // cancels the current turn (not the agent)
-	accepting  bool               // true when mailbox open for SendInput
+	// parked marks an agent that is blocked waiting on a CHILD agent rather
+	// than doing work of its own. Parked agents do not count toward the
+	// concurrency cap — see Manager.Park.
+	parked     bool
+	accepting  bool // true when mailbox open for SendInput
 	assignment string
 	mailbox    chan string
 	emit       EventSink
@@ -249,6 +253,14 @@ func (m *Manager) Result(agentID string) (Record, bool) {
 // List returns all records. When includeArchived is false only agents from
 // the current session boot are returned. Running count and limit are always
 // computed from live state.
+//
+// Running can briefly EXCEED Limit. It counts records in StatusRunning, while
+// the cap counts unparked runtime entries, and a parent blocked on a child is
+// parked (see Park) — running as far as its record is concerned, not consuming
+// capacity. This is the documented price of the livelock fix: without it a
+// fleet of delegating parents holds every slot waiting for children that can
+// never be spawned. Treat Running as "agents that have not finished", not as
+// "slots in use".
 func (m *Manager) List(includeArchived bool) ListResult {
 	m.mtx.RLock()
 	defer m.mtx.RUnlock()
@@ -584,11 +596,54 @@ func (m *Manager) nextID() string {
 func (m *Manager) runningLocked() int {
 	n := 0
 	for _, rt := range m.runtime {
-		if rt != nil {
+		if rt != nil && !rt.parked {
 			n++
 		}
 	}
 	return n
+}
+
+// Park marks the agent as blocked on a child and returns a function that
+// unparks it. Parked agents do not count toward the concurrency cap.
+//
+// This exists to break a livelock, not to game the accounting. A parent that
+// delegates blocks in Manager.Wait while holding its own slot; its child
+// retries Spawn until a slot frees. At cap N, N parents each waiting on a
+// child means every slot is held by something that is waiting, and the
+// children they wait for can never start. Measured during the W3 prototype at
+// the default cap of 10; depth-0 is immune because an orchestrator turn takes
+// no slot of its own.
+//
+// The parent still occupies a runtime entry — it can be listed, cancelled and
+// resumed. It just stops being counted as consuming capacity while it is doing
+// nothing but wait.
+//
+// CONSEQUENCE, and it must stay documented: List().Running counts records, not
+// runtime entries, so it can briefly exceed the cap. That is the price of the
+// fix and is preferable to a livelock.
+//
+// Returns a no-op when the id is unknown, so callers need not special-case an
+// agent that finished between lookup and park.
+func (m *Manager) Park(agentID string) (unpark func()) {
+	m.mtx.Lock()
+	rt := m.runtime[agentID]
+	if rt == nil || rt.parked {
+		m.mtx.Unlock()
+		return func() {}
+	}
+	rt.parked = true
+	m.mtx.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.mtx.Lock()
+			if cur := m.runtime[agentID]; cur != nil {
+				cur.parked = false
+			}
+			m.mtx.Unlock()
+		})
+	}
 }
 
 // detachRuntime removes an agent's runtime entry, releasing its concurrency
