@@ -3,6 +3,8 @@ package approval
 import (
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -578,5 +580,67 @@ func TestSessionIsolation(t *testing.T) {
 	rules2 := m.List("s2", time.Now())
 	if len(rules2) != 1 || rules2[0].ID != "r2" {
 		t.Fatalf("s2 should only see its own rules, got %#v", rules2)
+	}
+}
+
+// TestRuleTTLGovernsExpiry pins that a rule's TTL class actually bounds its
+// lifetime.
+//
+// expireLocked drops rules whose ExpiresAt has passed and has been correct
+// since it was written, but neither production Record call site set the
+// field, so it never met a non-zero value: every recorded rule lived until
+// the process did. A "session" approval that outlives the session is the
+// same object as a persistent one, which is not what the user was asked.
+//
+// Uses the now parameter Match already takes rather than sleeping, so the
+// boundary is exact instead of approximate.
+func TestRuleTTLGovernsExpiry(t *testing.T) {
+	base := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	scope := Scope{Tool: "shell_run", Program: "go", Prefix: []string{"test", "./pkg"}}
+
+	m, err := New(nil, "proc", nil)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	if err := m.Record("s1", Rule{
+		ID: "r1", Action: "shell_run", Scope: scope,
+		TTL: TTLSession, Source: SourceUser,
+		CreatedAt: base, ExpiresAt: base.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	if hit, _ := m.Match("s1", scope, base.Add(59*time.Minute)); !hit {
+		t.Error("a rule inside its TTL must still match, or expiry has become a blanket refusal")
+	}
+	if hit, _ := m.Match("s1", scope, base.Add(time.Hour)); hit {
+		t.Error("a rule must stop matching at its expiry instant, not after it")
+	}
+	if hit, _ := m.Match("s1", scope, base.Add(2*time.Hour)); hit {
+		t.Error("an expired rule must stay expired")
+	}
+}
+
+// TestRecordedRulesCarryAnExpiry pins the production side of the same
+// guarantee: the rules permctx records must arrive with an ExpiresAt.
+//
+// The manager can only expire what it is told to. Checked at the source
+// because reaching those call sites needs a live guard decision, an approval
+// context and an interactive callback, and the claim is about which field the
+// literal sets.
+func TestRecordedRulesCarryAnExpiry(t *testing.T) {
+	src, err := os.ReadFile("../tools/permctx.go")
+	if err != nil {
+		t.Fatalf("read permctx.go: %v", err)
+	}
+	body := string(src)
+	for _, want := range []string{
+		"TTL: approval.TTLSession, Source: approval.SourceUser, ExpiresAt:",
+		"TTL: approval.TTLPersistent, Source: approval.SourceUser, ExpiresAt:",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("a recorded rule no longer carries an expiry (%q): the manager's "+
+				"expiry logic has nothing to act on and approvals live until the process dies", want)
+		}
 	}
 }

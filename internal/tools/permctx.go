@@ -382,7 +382,7 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 		return nil
 	case PermissionAlwaysAllow, PermissionAllowSession:
 		if ac, ok := approvalFromContext(ctx); ok {
-			rule := approval.Rule{ID: newApprovalID(), Action: action.Tool, Scope: scope, TTL: approval.TTLSession, Source: approval.SourceUser}
+			rule := approval.Rule{ID: newApprovalID(), Action: action.Tool, Scope: scope, TTL: approval.TTLSession, Source: approval.SourceUser, ExpiresAt: approvalExpiry(approval.TTLSession, time.Now())}
 			if err := ac.Manager.Record(ac.SessionID, rule); err != nil {
 				auditPermission(ctx, action.Tool, "deny", "approval_record", "record_error")
 				return &DenyErr{Reason: err.Error()}
@@ -394,7 +394,7 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 		return &DenyErr{Reason: "approval manager unavailable"}
 	case PermissionAllowPersistent:
 		if ac, ok := approvalFromContext(ctx); ok {
-			rule := approval.Rule{ID: newApprovalID(), Action: action.Tool, Scope: scope, TTL: approval.TTLPersistent, Source: approval.SourceUser}
+			rule := approval.Rule{ID: newApprovalID(), Action: action.Tool, Scope: scope, TTL: approval.TTLPersistent, Source: approval.SourceUser, ExpiresAt: approvalExpiry(approval.TTLPersistent, time.Now())}
 			if err := ac.Manager.Record(ac.SessionID, rule); err != nil {
 				auditPermission(ctx, action.Tool, "deny", "approval_record", "record_error")
 				return &DenyErr{Reason: err.Error()}
@@ -567,5 +567,30 @@ func RequireApproval(ctx context.Context, req PermissionRequest) error {
 		return nil
 	default:
 		return &DenyErr{Reason: req.Reason}
+	}
+}
+
+// approvalExpiry turns a rule's TTL class into a concrete deadline.
+//
+// The manager expires rules by comparing ExpiresAt, and can only act on what
+// it is given: before this existed, neither recording site set the field, so
+// every approval -- including the ones the user was asked to grant "for this
+// session" -- outlived the session and every session after it.
+//
+// A zero return means no deadline, which is what TTLOnce wants: it is
+// consumed at the prompt and never recorded, so a rule carrying it is a bug
+// elsewhere and a deadline would only hide it.
+func approvalExpiry(ttl approval.TTL, now time.Time) time.Time {
+	switch ttl {
+	case approval.TTLSession:
+		// Long enough not to interrupt a working session, short enough that a
+		// forgotten terminal does not keep granting a decision made yesterday.
+		return now.Add(8 * time.Hour)
+	case approval.TTLPersistent:
+		// "Persistent" is a convenience, not a permanent grant: the operator
+		// is re-asked eventually, and a stolen or stale rule stops working.
+		return now.Add(30 * 24 * time.Hour)
+	default:
+		return time.Time{}
 	}
 }
