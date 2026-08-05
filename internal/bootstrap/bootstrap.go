@@ -689,6 +689,17 @@ func Build(opts Options) (*App, error) {
 		availableModels[name] = true
 	}
 
+	// A compaction.model naming something unregistered is silently ignored at
+	// use time: compactionModel falls through to the session model, so the
+	// operator keeps paying full price for summaries and nothing says why.
+	// Checked here rather than during config validation because the registry
+	// key comes from chooseKey; recomputing that rule inside config would be
+	// one more place for it to drift.
+	if name := cfg.Compaction.Model; name != "" && !availableModels[name] {
+		fmt.Fprintf(os.Stderr,
+			"yanshi: compaction.model %q is not a configured provider: summaries will use the session model\n", name)
+	}
+
 	// MEM1: resolve user + project memory paths and compose the memory suffix
 	// (independent of Instruction). Disabled yields "" so orchestrator's
 	// MemorySuffix is a no-op, AND bootstrap gates remember-tool registration

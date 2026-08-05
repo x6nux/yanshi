@@ -799,3 +799,32 @@ func TestProviderWindowsReachTheOrchestrator(t *testing.T) {
 			"with a smaller one gets a compaction threshold it can never reach")
 	}
 }
+
+// TestUnregisteredCompactionModelIsReported pins the warning for a
+// compaction.model that names nothing.
+//
+// compactionModel's first hop is a plain map lookup; a miss falls through to
+// the session model in silence, so a typo costs the operator every summary
+// they thought they were routing to a cheap model. The check lives in
+// bootstrap rather than config validation because the registry key comes from
+// chooseKey, and recomputing that rule inside config would be one more seam
+// that can drift out of step -- which is the defect class this whole review
+// kept finding.
+//
+// Source-level: reaching the check needs a full Build with providers wired,
+// and what matters is that the miss is reported at all.
+func TestUnregisteredCompactionModelIsReported(t *testing.T) {
+	src, err := os.ReadFile("bootstrap.go")
+	if err != nil {
+		t.Fatalf("read bootstrap.go: %v", err)
+	}
+	body := string(src)
+	if !strings.Contains(body, `if name := cfg.Compaction.Model; name != "" && !availableModels[name] {`) {
+		t.Error("an unregistered compaction.model is no longer reported: a typo in that " +
+			"key silently keeps summaries on the session model")
+	}
+	if !strings.Contains(body, "compaction.model %q is not a configured provider") {
+		t.Error("the warning no longer names the offending value, so the operator cannot " +
+			"find it in their config")
+	}
+}
