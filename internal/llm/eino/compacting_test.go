@@ -465,6 +465,14 @@ func TestCompactingModel_MaybeCompact_RejectsAGrowingSummary(t *testing.T) {
 // ChunkThreshold so ctxcompact.Run takes its single-call path: the chunked
 // path does not preserve Plan's tail, and a first attempt at this test sized
 // into it and stayed green under the mutation (W4 review round 3).
+//
+// â ï¸ Round 3 also claimed no existing test caught the missing /2. Round 19
+// disproved that: TestCompactingModel_CompactsWhenOverThreshold reddens on the
+// same mutation. The round-3 reading came from `grep '^--- FAIL'`, a pattern
+// that silently matches nothing in this environment even when the very first
+// line of output starts with it -- so an entire failing run read as clean.
+// This test is kept for its explicit sizing rationale, but it did not close an
+// open gap.
 func TestCompactingModel_KeepRecentBridgesMessagesToPairs(t *testing.T) {
 	inner := &recordingModel{summary: "SUMMARY", reply: "ok", streamOK: true}
 	cm := &CompactingModel{
