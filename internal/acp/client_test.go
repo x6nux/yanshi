@@ -446,6 +446,8 @@ func TestClientCancel(t *testing.T) {
 // TestPromptResultUsageIsDelivered verifies that the token usage ACP carries on
 // the session/prompt RESULT reaches the onEvent callback.
 //
+// ledger: F2/LEAK3#1 ACP turn usage 进 sink
+//
 // This is the sole data source of the whole goal-loop token budget: nothing
 // else populates UsageSink, so if this delivery breaks, MaxTokens can be set to
 // any value and the gate still never fires.
@@ -540,6 +542,8 @@ func TestZeroUsageIsNotDelivered(t *testing.T) {
 // TestMalformedUsageDegradesButKeepsTheTurn pins the safe-degradation clause of
 // F2/LEAK3: a usage field the agent typed wrong costs us that turn's accounting
 // and nothing else.
+//
+// ledger: F2/LEAK3#3 解析失败安全降级
 //
 // Without the two-pass parse this is a turn-killer rather than a lost metric:
 // json.Unmarshal fails on the whole result, so a wrong-typed optional field

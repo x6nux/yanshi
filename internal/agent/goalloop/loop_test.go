@@ -262,6 +262,12 @@ func TestLoop_NoVacuousCompletion(t *testing.T) {
 // Sink-driven token budget (G02) + escalation hint (G03)
 // ---------------------------------------------------------------------------
 
+// TestLoop_BudgetStopsOnAccumulatedUsage proves the budget stops the loop on
+// spend that arrived through the shared sink — the same sink ACP subprocess
+// usage is forwarded into, which is what makes subprocess tokens count against
+// the operator's limit rather than escaping it.
+//
+// ledger: F2/LEAK3#2 budget 含子进程
 func TestLoop_BudgetStopsOnAccumulatedUsage(t *testing.T) {
 	t.Parallel()
 	// Simulate two evaluators each adding usage to a shared sink, then verify

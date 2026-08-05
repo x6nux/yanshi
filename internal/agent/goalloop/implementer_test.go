@@ -280,6 +280,9 @@ func TestACPImplementerWorkerAccumulatesSubprocessUsage(t *testing.T) {
 // TestUsageWatchDistinguishesUnmeteredFromFree pins the predicate behind the
 // zero-usage warning.
 //
+// ledger: F2/LEAK3#1 ACP turn usage 进 sink
+// ledger: F2/LEAK3#2 budget 含子进程
+//
 // The distinction is the entire point: an agent that reports nothing and an
 // agent that genuinely spent nothing produce the same sink total, and the
 // budget cannot tell them apart. Only this flag can.

@@ -740,12 +740,24 @@
   acceptance: "并发上限生效；满则拒绝；计数准确；与深度上限交互文档化"
   evidence: ""
 
+# 2026-08-05 W2：partial → done。三条子句此前都虚，根因是同一个：客户端监听的
+# "usage_report" 在 ACP 协议里不存在（本地克隆 zed-industries/agent-client-protocol
+# 逐条核对：v1 全协议唯一的 usage: Option<Usage> 挂在 PromptResponse 上；确实存在的
+# "usage_update" 载的是 {used,size,cost} 上下文窗口占用，不是 token 账）。进 sink 的
+# 因此恒为 0，而 fake 发的正是同一个不存在的事件 —— 双方互相印证、双双与协议不符，
+# 这就是它一直绿着的原因。
+# 子句 2 特意同时挂 acp 侧与 loop 侧：TestUsageWatch* 证明子进程用量真的进了 sink，
+# TestLoop_BudgetStopsOnAccumulatedUsage 证明进了 sink 的数真的能让闸门停机。只测
+# 前者会重演本仓反复出现的「层层有测、接缝没接」。
 - id: "F2/LEAK3"
   package: "W2"
-  verdict: partial
+  verdict: done
   title: "ACPImplementer usage 回流"
   acceptance: "ACP turn usage 进 sink；budget 含子进程；解析失败安全降级"
-  evidence: ""
+  evidence:
+    "1": "internal/acp::TestPromptResultUsageIsDelivered; internal/agent/goalloop::TestUsageWatchDistinguishesUnmeteredFromFree"
+    "2": "internal/agent/goalloop::TestUsageWatchDistinguishesUnmeteredFromFree; internal/agent/goalloop::TestLoop_BudgetStopsOnAccumulatedUsage"
+    "3": "internal/acp::TestMalformedUsageDegradesButKeepsTheTurn"
 
 # W1/Task 12：ApplyImages 此前零生产调用点 —— multimodal.go 写完也测过，但三条 turn
 # 路径谁都没调它。图像扇出收敛进 TurnOpts，在 EventsWithHistoryOpts 内统一施加。
