@@ -750,7 +750,23 @@
   verdict: partial
   title: "mid-turn 压缩 cooldown"
   acceptance: "同 turn 不重复压缩；逼近上限仍触发；keepRecent 文档清晰"
-  evidence: "internal/llm/eino::TestCompactingModel_CooldownDefersReCompact; internal/llm/eino::TestCompactingModel_HardForceOverridesCooldown"
+  evidence: "internal/llm/eino::TestCompactingModel_CooldownDefersReCompact; internal/llm/eino::TestCompactingModel_HardForceBeatsCooldown"
+
+# 2026-08-05 W4：子句 1「同 turn 不重复压缩」此前由一条断言人造状态的测试守着 ——
+# 测试自己把 cm.lastCompactTokens 塞成 180 再断言它，等于断言自己种下的值。删掉那两行
+# 遮羞布后测试立刻变红，暴露出真 bug：lastCompactTokens 存的是压缩**后**的大小，
+# 却与当前**未压缩**历史相减当作增长量，量纲不符导致历史一字未改也能再压一次。
+# 已修（存 TokensBefore）并立 ADR-0013 固化量纲约束。
+#
+# 子句 2「逼近上限仍触发」的原证据 TestCompactingModel_HardForceOverridesCooldown
+# **不咬人**：把 hard-force 分支整个换成 false，它照绿。已改引 HardForceBeatsCooldown
+# （变异验证红，且先断言 cooldown 确实处于激活态再断言它被越过，防止以错误理由变绿）。
+# 名字在、测试在、就是不咬 —— 比幻影引用更隐蔽的一类台账失真。
+#
+# 仍判 partial：子句 3「keepRecent 文档清晰」不是行为断言，GOV8 的子句级握手无从落笔
+# （同 B0/TD1、F2/LEAK2）。docs/compaction.md 已补上 cooldown 一节（W4 Task 6 前该文档
+# grep -i cooldown 零命中，而 config.example.yaml 早已暴露三个键给用户），要终结此条
+# 须先改写 acceptance 为可断言形态并显式改写 acceptancePins。
 
 # 2026-08-05 W3 复核：代码侧四条子句已全部成立 —— 上限生效（66c3067 之前有槽位泄漏，
 # 跑完的 agent 永不还槽，List 报 Running=0 却拒绝新 spawn）、满则拒绝（batch 的 cap 耗尽

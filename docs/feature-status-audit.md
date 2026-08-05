@@ -242,6 +242,10 @@ WS 的 `runUserTurn`（`ws.go:461`）与 v1 的 `runTurn`（`api/v1/service.go:2
 
 **叠加问题**：`bootstrap.go:794` 的 `CooldownTokens` 基于 `cfg.Compaction.ContextWindow` 这个全局回退值（默认 256000），而非 per-provider 的 `context_window`。对 128K 窗口的模型，cooldown 阈值翻倍、hard-force 触发点推迟到实际窗口的 1.9 倍（等于永不触发）。
 
+
+> **W4 已结（2026-08-05）**：该行号早已漂移，且这处乘法现在整行不存在 —— `bootstrap` 改传 `CooldownFraction` 比例，窗口由 `runnerFor` 拿本轮 `TurnOpts.ModelID` 查 `CompactionConfig.ProviderWindows` 解析，threshold / hard-force / cooldown 三个门自此同源。量纲约束见 ADR-0013。**这段描述保留原样作为档案，不要照它去改代码。**
+
+
 这也意味着 `CLAUDE.md` 里「上下文窗口按模型配置，`/model` 切换自动用新窗口」的承诺**只在 pre-turn 路径成立**，mid-turn（`CompactingModel`）路径不成立。
 
 ---
@@ -407,6 +411,10 @@ t.chatModelOptions = opts   // 第二次调用覆盖第一次
 - **优先级** P2 ｜ **路线图原状态** 缺失 ｜ **接进运行时** 是 ｜ **有针对性测试** 是
 - **验收标准**：同 turn 不重复压缩；逼近上限仍触发；keepRecent 文档清晰
 - **实测缺口**：两条缺口： (1) **CooldownTokens 用了全局回退 window 而非 per-model window**。bootstrap.go:794 写的是 `int(cfg.Compaction.CooldownFraction * float64(cfg.Compaction.ContextWindow))`，而 cfg.Compaction.ContextWindow 是 applyDefaults 的 256000 回退值（config.go:517-518）。plan Step 5b 原文写的是 `int(cfg.Compaction.CooldownFraction * float64(contextWindow))`（局部变量 contextWindow = per-provider 窗口）。同一处 orchestrator.CompactionConfig.ContextWindow 也传的是全局回退值。结果：给 128K 窗口模型配的 cooldown 阈值是 12800（0.05×256000）而不是 6400，且 hard-force 判定按 256000 算 → 对小窗口模型 cooldown 偏严、hard-force 偏晚。注意这是 F2 之前就有的既存偏差（CompactionConfig.ContextWindow 一直传全局值，per-model 窗口只在 api/http 的 contextWindowFor 里做），CCL1 只是把 cooldown 挂在了同一个偏差上。 (2) **keepRecent 双语义文档化只做了一半**。规划验收要求"`keepRecent` 文档清晰"，代码承重注释（compacting.go:66-68）和 CLA…
+
+
+> **W4 已结（2026-08-05）**：该行号早已漂移，且这处乘法现在整行不存在 —— `bootstrap` 改传 `CooldownFraction` 比例，窗口由 `runnerFor` 拿本轮 `TurnOpts.ModelID` 查 `CompactionConfig.ProviderWindows` 解析，threshold / hard-force / cooldown 三个门自此同源。量纲约束见 ADR-0013。**这段描述保留原样作为档案，不要照它去改代码。**
+
 - **二审改判理由**：推翻一审「部分实现」，降级为「未实现」。代码确实存在且接进运行时（一审行号基本准确），但核心验收标准「同 turn 不重复压缩」在出厂默认配置下完全失效——这不是一审所说的两条边缘缺口，而是主功能不生效。 根因：token 会计口径错配（compacting.go:143 vs :158/:192）。maybeCompact 成功分支存的是 c.lastCompactTokens = res.TokensAfter（:143），即压缩「后」token 数；而 inCooldown 比较的 tokens := ctxcompact.EstimateTokens(msgs)（:158）是下一次进来的完整未压缩历史。二者不同量纲，:192 直接相减。 为什么下一轮拿到的仍是完整历史：压缩结果从未写回 ADK state。CompactingModel.Generate/Stream（compacting.go:104-118）只把压缩后切片传给 c.Inner，返回值不含消息列表；ADK 侧 typedStateModelWrapper.Generate（eino@v0.9.12/adk/wrappers.go:1257）以 state.Messages 调内层模型，随后 state.Messages = append(state.Messages, result)（:1273）并回写（:1294-1299）——压缩后的切片没有任何路径进入 st.Messages。react.go:369/455 的 st.Messages 也只做 append。我 grep 全仓 `state.Messages =`（排除 _test.go）零命中；completion.go:99-108 的 messageRec…
 - **证据**：/Users/ll/code/yanshi/internal/llm/eino/compacting.go:71-96 — CompactingModel 新增 CooldownTokens / CooldownDuration / HardForceFraction / lastCompactTokens / lastCompactAt / cmMu sync.Mutex ； /Users/ll/code/yanshi/internal/llm/eino/compacting.go:149-178 shouldCompact：HardForceFraction 优先短路 → threshol…
 
