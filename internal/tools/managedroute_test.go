@@ -61,6 +61,19 @@ func TestDelegatedTurnsGoThroughTheManager(t *testing.T) {
 		t.Error("the managed route no longer passes the instruction override: " +
 			"sub-agents fall back to the default prompt with nothing reporting it")
 	}
+	// The remaining two fields, checked together because losing either is
+	// unrecoverable rather than merely degraded: without Prompt the sub-agent
+	// is spawned with no task at all, and without AllowedTools it inherits an
+	// unrestricted tool set — a permission widening that no guard downstream
+	// would flag, because the spec is what declares the restriction.
+	if !strings.Contains(body, "Prompt:       prompt,") {
+		t.Error("the managed route no longer passes the prompt: the sub-agent is " +
+			"spawned with no task")
+	}
+	if !strings.Contains(body, "AllowedTools: allowed,") {
+		t.Error("the managed route no longer passes AllowedTools: the sub-agent's " +
+			"tool set stops being restricted, and nothing downstream re-imposes it")
+	}
 }
 
 // TestManagedSubAgentRunParksItsCaller pins the other half of the pair: the
