@@ -71,6 +71,10 @@
   acceptance: "长进程返回 session id；可续读/stdin；yield/timeout/输出上限/显式关闭；进程树取消干净；session 关闭按策略回收"
   evidence: "internal/bootstrap::TestShellV2EndToEndSpawnsRealProcess"
 
+# 2026-08-05 W3 复核：子句 3「thread/turn 关联准确」的接线已补（eb6cc6a：v1 填
+# st.thread.ID + ts.turn.ID，WS 填 cs.sessionID；SSE 无状态故有意不填）。
+# 子句 4「重启后持久恢复」仍未验证 —— work.Manager.Start/Finish 至今零生产调用点
+# （W1 第 27 轮实测），broker 不回写 task_work，生产中 durable task 永远停在 pending。
 - id: "A2/DT1"
   package: "W3"
   verdict: partial
@@ -78,6 +82,13 @@
   acceptance: "可创建/列出/读取/取消；状态机正确；thread/turn 关联准确；重启后持久恢复"
   evidence: ""
 
+# 2026-08-05 W3 复核：偏离已由 ADR-0012 正式接受（gate 直接跑 argv 不经 shell session），
+# 且 53f6719 给 gate 的 guard.Action 补上了 Workdir —— 破坏性删除维度的 workdir 相关规则
+# 现在对 gate 与 shell_run 一视同仁。
+# 仍不翻 done：第 4 条子句「退出码/duration 准确」里 duration 至今零断言
+# （grep DurationMs 的 assert/require 全仓为 0，W1 第 26 轮已实测记录），
+# 把 gate.go 的 DurationMs 改成 0 不会让任何测试变红。verdict 由 divergent 改判需要
+# 先补这条证据。
 - id: "A2/DT2"
   package: "W3"
   verdict: divergent
@@ -741,6 +752,13 @@
   acceptance: "同 turn 不重复压缩；逼近上限仍触发；keepRecent 文档清晰"
   evidence: "internal/llm/eino::TestCompactingModel_CooldownDefersReCompact; internal/llm/eino::TestCompactingModel_HardForceOverridesCooldown"
 
+# 2026-08-05 W3 复核：代码侧四条子句已全部成立 —— 上限生效（66c3067 之前有槽位泄漏，
+# 跑完的 agent 永不还槽，List 报 Running=0 却拒绝新 spawn）、满则拒绝（batch 的 cap 耗尽
+# 测试原先靠泄漏复现，现在停一个真在跑的 agent 占槽）、计数准确（runtime map 成为唯一
+# 权威，records 交叉核对已移除）、深度交互（Park 的 doc 写明父等子时不计容量，及
+# List().Running 可短暂超 cap 的代价）。
+# 仍判 partial：第 4 条子句是「与深度上限交互**文档化**」，不是行为断言，GOV8 的
+# 子句级握手无从落笔（同 B0/TD1）。要终结须先改写 acceptance 并显式改写 acceptancePins。
 - id: "F2/LEAK2"
   package: "W3"
   verdict: partial
