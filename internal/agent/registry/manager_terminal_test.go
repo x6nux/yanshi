@@ -280,3 +280,46 @@ func TestRunnerContextIsClosedAfterTerminal(t *testing.T) {
 			"still live: anything it started will never be told to stop")
 	}
 }
+
+// TestSendInputRefusesAgentsWithNoRuntime pins the existence half of
+// SendInput's precondition: an unknown agent, and one that has finished, are
+// both refused rather than having their follow-up queued into a mailbox no
+// runner will read again. Silently accepting would tell the caller their input
+// landed when nothing will act on it.
+//
+// ⚠️ It pins the existence check ONLY. SendInput also requires
+// rec.Status == StatusRunning and rt.accepting, and neither is covered:
+// measured W3 review round 14, reducing the guard to `!ok || !recOK` reddens
+// nothing in the whole package, including this test. The finished-agent case
+// cannot reach those conditions because finishTerminal detaches the runtime
+// entry first, so !ok fires before them.
+//
+// Those two remain UNPINNED. Constructing a live runtime entry whose record is
+// not Running, or whose mailbox is closed, needs white-box access the Manager
+// does not offer. Do not read this test as evidence for them.
+func TestSendInputRefusesAgentsWithNoRuntime(t *testing.T) {
+	m := NewManager(NewManagerOpts{
+		RootContext:   context.Background(),
+		Path:          filepath.Join(t.TempDir(), "s.json"),
+		SessionBootID: "boot",
+		MaxConcurrent: 2,
+	})
+	t.Cleanup(m.Close)
+
+	require.ErrorIs(t, m.SendInput("ag-never-existed", "hi", false), ErrNotRunning,
+		"an unknown agent cannot take input")
+
+	id, err := m.Spawn(context.Background(), SpawnRequest{
+		AgentType: "subagent", Role: "explore", Prompt: "p",
+		Runner: RunnerFunc(func(context.Context, string, string) (string, error) {
+			return "SUMMARY\ndone", nil
+		}),
+	})
+	require.NoError(t, err)
+	_, err = m.Wait(context.Background(), id, WaitOpts{Timeout: 2 * time.Second})
+	require.NoError(t, err)
+
+	require.ErrorIs(t, m.SendInput(id, "too late", false), ErrNotRunning,
+		"a finished agent must refuse input rather than queue it for a runner that is gone")
+	// Reached via the existence check, not the status check — see the note above.
+}
