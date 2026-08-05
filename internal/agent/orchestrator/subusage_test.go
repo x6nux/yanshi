@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 )
 
 // TestUsageIsReportedBeforeTheErrorCheck pins the ordering that keeps a failed
@@ -67,4 +69,23 @@ func TestSubAgentUsageForSink(t *testing.T) {
 		require.NotNil(t, completionOnly, "a completion-only turn still spent tokens")
 		assert.Equal(t, int64(7), completionOnly.TotalTokens)
 	})
+}
+
+// TestNewWiresCompactionIntoTheModel pins that New actually installs the
+// compaction wrapper on the model the orchestrator runs with.
+//
+// TestWrapCompaction_WithThreshold covers the wrapper function itself, but a
+// function that returns the right thing is worthless if its result is not
+// stored. W4 review round 13 replaced the wrapCompaction call in New with
+// cfg.Model and the whole package stayed green -- the main turn path would
+// then never compact, in production, with every test still passing.
+func TestNewWiresCompactionIntoTheModel(t *testing.T) {
+	o, err := New(Config{
+		Model:      einollm.NewFakeModel(nil, nil),
+		Compaction: CompactionConfig{Threshold: 0.8, ContextWindow: 1000, KeepRecent: 4},
+	})
+	require.NoError(t, err)
+	require.IsType(t, &einollm.CompactingModel{}, o.model,
+		"the orchestrator's model must be the compacting wrapper, not the raw one")
+	require.NotNil(t, o.rawModel, "runnerFor still needs the unwrapped model")
 }
