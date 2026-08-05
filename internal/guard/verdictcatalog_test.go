@@ -648,3 +648,83 @@ func TestRegisterElidedResultLitsHandlesNesting(t *testing.T) {
 		})
 	}
 }
+
+// structuralFloor enumerates the HardDeny classes that must carry
+// Overridable=false — the verdicts no permission mode, not even YOLO, may
+// override. CLAUDE.md documents this floor as five classes; the two that
+// checkShell can be driven to produce from a profile alone are pinned here,
+// and catastrophic deletion is pinned by TestCheck_CatastrophicBeatsPermissiveProfile.
+var structuralFloor = []struct {
+	name    string
+	profile PermissionProfile
+	action  Action
+	reason  string // substring the decision must explain itself with
+}{
+	{
+		name: "shell metacharacter",
+		profile: PermissionProfile{
+			Tools: ToolsPerm{Allow: []string{"shell_run"}},
+			Shell: ShellPerm{Policy: "allowlist", Patterns: []string{"*"}},
+		},
+		action: Action{Tool: "shell_run", Shell: "ls && echo hi"},
+		reason: "metacharacter",
+	},
+	{
+		name: "unknown shell policy",
+		profile: PermissionProfile{
+			Tools: ToolsPerm{Allow: []string{"shell_run"}},
+			Shell: ShellPerm{Policy: "bogus"},
+		},
+		action: Action{Tool: "shell_run", Shell: "ls"},
+		reason: "unknown shell policy",
+	},
+}
+
+// TestStructuralHardDenyIsNotOverridable pins the Overridable=false half of the
+// two-tier HardDeny, which nothing else in the repository asserted.
+//
+// The distinction is the whole of the YOLO safety story: Decision.Overridable
+// is what tools.Authorize consults to decide whether a permission callback may
+// answer "allow" at all. Flip these to true and a YOLO session can chain shell
+// commands past the injection defence.
+//
+// It has to be tested at this level. The end-to-end test in internal/tools
+// (TestAuthorize_StructuralHardDeny_NotOverridableByCallback) cannot isolate
+// it: every metacharacter command is ALSO refused by the approval-scope check
+// downstream, so that test stays green with the structural branch deleted
+// outright — measured, not assumed. Defence in depth is why the property still
+// held; it is also why the property had no evidence.
+func TestStructuralHardDenyIsNotOverridable(t *testing.T) {
+	g := New()
+	for _, tc := range structuralFloor {
+		t.Run(tc.name, func(t *testing.T) {
+			d := g.Check(tc.profile, tc.action)
+			if d.Verdict != HardDeny {
+				t.Fatalf("verdict = %v, want HardDeny (reason: %s)", d.Verdict, d.Reason)
+			}
+			if d.Overridable {
+				t.Errorf("Overridable = true; this HardDeny is structural and YOLO must not be able to override it (reason: %s)", d.Reason)
+			}
+			if !strings.Contains(d.Reason, tc.reason) {
+				t.Errorf("Reason = %q; want it to mention %q so the denial is attributable", d.Reason, tc.reason)
+			}
+		})
+	}
+}
+
+// TestOverridableHardDenyIsMarkedOverridable is the discriminating half: a
+// profile-policy refusal must NOT be marked structural, or YOLO/auto would lose
+// the ability to override anything and the two tiers would collapse into one.
+func TestOverridableHardDenyIsMarkedOverridable(t *testing.T) {
+	g := New()
+	d := g.Check(PermissionProfile{
+		Tools: ToolsPerm{Allow: []string{"shell_run"}},
+		Shell: ShellPerm{Policy: "deny"},
+	}, Action{Tool: "shell_run", Shell: "ls"})
+	if d.Verdict != HardDeny {
+		t.Fatalf("verdict = %v, want HardDeny", d.Verdict)
+	}
+	if !d.Overridable {
+		t.Errorf("Overridable = false; `shell.policy: deny` is a profile policy, which YOLO is documented to bypass (reason: %s)", d.Reason)
+	}
+}

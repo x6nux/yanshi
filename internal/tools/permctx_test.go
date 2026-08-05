@@ -282,10 +282,22 @@ func TestAuthorize_OverridableHardDeny_CallbackDeny(t *testing.T) {
 	assert.True(t, IsDenyErr(err))
 }
 
-// TestAuthorize_StructuralHardDeny_NotOverridableByCallback proves the floor:
-// a structural HardDeny (metachar) is denied even when a callback would allow,
-// so YOLO can never authorize a chained command. Contrast with
+// TestAuthorize_StructuralHardDeny_NotOverridableByCallback proves the OUTCOME:
+// a chained command is refused even when the callback would allow it, so YOLO
+// can never authorize one. Contrast with
 // TestAuthorize_OverridableHardDeny_CallbackAllow above.
+//
+// It does NOT prove which defence did the refusing, and it cannot. Measured:
+// delete the `if !dec.Overridable` branch from Authorize and this test still
+// passes, because a chained command is also refused downstream by the
+// approval-scope check ("shell scope requires one executable segment") — and
+// this fixture's `rm -rf /` is refused a third time, by the destructive gate
+// that runs before the profile is even consulted.
+//
+// The structural tier itself is pinned one layer down, by
+// guard.TestStructuralHardDenyIsNotOverridable, which asserts Overridable=false
+// on the Decision rather than inferring it from an error that three separate
+// defences can produce.
 func TestAuthorize_StructuralHardDeny_NotOverridableByCallback(t *testing.T) {
 	prof := guard.PermissionProfile{
 		Tools: guard.ToolsPerm{Allow: []string{"shell_run"}},
