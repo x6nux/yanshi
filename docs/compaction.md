@@ -255,3 +255,23 @@ bootstrap 把它传给 `apihttp.CompactionConfig`，handler 经 `compactionModel
 **目前只做记录，未修。** 让 mid-turn 也支持它需要把摘要模型解析后经 `CompactionConfig`
 传进 `wrapCompaction`（与 W4 处理 `ProviderWindows` 的路子相同），属功能变更，应单独立项。
 发现于 W4 review 第 8 轮。
+
+
+## ⚠️ `chunk_threshold` 目前是死配置
+
+`compaction.chunk_threshold` 有 yaml 标签、有默认值（`applyDefaults` 填 0.9）、有一条断言
+默认值的测试 —— 但**没有任何生产代码读它**。三个消费点全部硬编码：
+
+- `internal/llm/eino/compacting.go` 的 `maybeCompact`：`RunOpts{… ChunkThreshold: 0.9}`
+- `internal/ctxcompact/compact.go` 的 `MaybeCompact` 与 `ForceCompact`：同样写死 0.9
+
+配 `chunk_threshold: 0.5` 得到的仍是 0.9。那条测试断言的是**默认值**，所以有没有人读它
+都会绿 —— 它反而让这个死键看起来是活的。
+
+[ADR-0006](adr/0006-compaction-two-paths.md) 里「由 `chunk_threshold`（默认 0.9）控制」
+这句因此不成立。
+
+**修法是接线而非删键**：把它经两个 `CompactionConfig` 传到三个调用点，路子与 W4 处理
+`ProviderWindows` 完全相同。这个改动是安全的 —— 当前所有部署实际都在用 0.9，接线后未设该键
+的仍得 0.9，只有显式设过别的值的人会看到变化，而他们本来就以为自己设过了。
+发现于 W4 review 第 10 轮。

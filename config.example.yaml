@@ -53,6 +53,9 @@ compaction:
                         # so setting this does not reduce mid-turn cost. See
                         # docs/compaction.md.
   chunk_threshold: 0.9  # carry-style chunking when summary input >= chunk_threshold * window
+                        # ⚠️ CURRENTLY INERT: all three call sites hardcode 0.9
+                        # (internal/llm/eino/compacting.go, internal/ctxcompact/compact.go x2).
+                        # Setting another value changes nothing. See docs/compaction.md.
   cooldown_fraction: 0.05    # token-growth cooldown: 5% of window (MID-TURN ONLY)
   cooldown_duration: ""      # time-based cooldown (optional, e.g. "3s"); "" disables (MID-TURN ONLY)
   hard_force_fraction: 0.95  # force-compact near window edge even inside cooldown (MID-TURN ONLY)
