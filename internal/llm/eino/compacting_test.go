@@ -777,6 +777,13 @@ func TestCompactingModel_DoesNotMutateTheCallersHistory(t *testing.T) {
 	for i := range msgs {
 		msgs[i] = bigMessage(80)
 	}
+	// One message must carry a tool call, or the ToolCalls half of the
+	// comparison below is asserted only against nil and a mutation clearing
+	// the field is a no-op on the fixture -- which is how round 4's first
+	// attempt at this measured green.
+	msgs[1].ToolCalls = []schema.ToolCall{{ID: "c1", Function: schema.FunctionCall{Name: "f"}}}
+	msgs[2] = &schema.Message{Role: schema.Tool, ToolCallID: "c1", Content: strings.Repeat("r", 320)}
+
 	// Snapshot identity and the whole struct value before the call. Content
 	// alone is not enough: clearing ToolCalls in place leaves the pointer and
 	// the text untouched and still breaks the premise, and an earlier version
