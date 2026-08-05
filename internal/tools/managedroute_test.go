@@ -41,6 +41,18 @@ func TestDelegatedTurnsGoThroughTheManager(t *testing.T) {
 	if !strings.Contains(body, "if mgr := tools.ManagerFromContext(ctx); mgr != nil {") {
 		t.Error("the managed route is no longer guarded by a Manager check")
 	}
+	// The spec's fields matter as much as the branch. ParentID is what makes
+	// the delegated agent a child rather than a sibling; drop it and the whole
+	// thread tree flattens, silently — every agent looks top-level and the
+	// depth accounting the cap relies on stops describing anything.
+	// Measured W3 review round 8: blanking it reddened nothing.
+	if !strings.Contains(body, "ParentID:     registry.CurrentAgentID(ctx),") {
+		t.Error("the managed route no longer passes ParentID: delegated agents " +
+			"become top-level and the thread tree flattens")
+	}
+	if !strings.Contains(body, "Runner:       factory(allowed, instructionOverride),") {
+		t.Error("the managed route no longer builds its Runner from the bound factory")
+	}
 }
 
 // TestManagedSubAgentRunParksItsCaller pins the other half of the pair: the
