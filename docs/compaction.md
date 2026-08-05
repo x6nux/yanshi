@@ -233,3 +233,20 @@ handler 直接把配置值当对数交给 `MaybeCompact`。
 **目前只做记录，未统一。** 统一需要选一个单位并改另一条路，那会改变现网行为
 （其中一条路径的保留量会翻倍或减半），应当单独立项并配 ADR，而不是夹在一次测试补全里。
 发现于 W4 review 第 7 轮。
+
+
+## ⚠️ `compaction.model` 只在 pre-turn 生效
+
+`compaction.model` 让操作员指定一个便宜的快速模型专做摘要。它**只被 pre-turn 路径消费**：
+bootstrap 把它传给 `apihttp.CompactionConfig`，handler 经 `compactionModel(...)` 解析。
+
+**mid-turn 拿不到它。** `orchestrator.CompactionConfig` 里没有这个字段，
+`CompactingModel.maybeCompact` 把 `c.Inner`（当前会话模型）直接当摘要器用。所以配了这个键
+之后，pre-turn 的摘要走廉价模型，mid-turn 的摘要仍然烧主模型 —— 没有任何提示。
+
+与 `keep_recent` 的单位分歧是同一类问题：**一个配置键被两条路径共用，而只有一条真的读它**。
+两条路径各自的测试都看不见这种缺陷，它只存在于「同一个键」这个连接点上。
+
+**目前只做记录，未修。** 让 mid-turn 也支持它需要把摘要模型解析后经 `CompactionConfig`
+传进 `wrapCompaction`（与 W4 处理 `ProviderWindows` 的路子相同），属功能变更，应单独立项。
+发现于 W4 review 第 8 轮。

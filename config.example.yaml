@@ -48,6 +48,10 @@ compaction:
                         # path and 4 on the other. See docs/compaction.md.
   context_window: 256000 # fallback window when a provider has no context_window
   model: ""             # optional fast summary model; empty = active session model
+                        # ⚠️ honoured PRE-TURN ONLY (WS//compact/SSE). Mid-turn
+                        # compaction always summarises with the active session model,
+                        # so setting this does not reduce mid-turn cost. See
+                        # docs/compaction.md.
   chunk_threshold: 0.9  # carry-style chunking when summary input >= chunk_threshold * window
   cooldown_fraction: 0.05    # token-growth cooldown: 5% of window
   cooldown_duration: ""      # time-based cooldown (optional, e.g. "3s"); "" disables
