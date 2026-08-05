@@ -773,12 +773,8 @@ func (o *Orchestrator) runSubAgentTurn(ctx context.Context, prompt string, allow
 	// and a budget that only counts successful work is a budget a failing loop
 	// can run past.
 	if sink := tools.UsageSinkFrom(ctx); sink != nil {
-		if subUsage.PromptTokens != 0 || subUsage.CompletionTokens != 0 {
-			sink(registry.Usage{
-				PromptTokens:     int64(subUsage.PromptTokens),
-				CompletionTokens: int64(subUsage.CompletionTokens),
-				TotalTokens:      int64(subUsage.PromptTokens + subUsage.CompletionTokens),
-			})
+		if u := subAgentUsageForSink(subUsage); u != nil {
+			sink(*u)
 		}
 	}
 
@@ -786,6 +782,29 @@ func (o *Orchestrator) runSubAgentTurn(ctx context.Context, prompt string, allow
 		return "", fmt.Errorf("sub-agent: %s", errMsg)
 	}
 	return content.String(), nil
+}
+
+// subAgentUsageForSink converts a sub-agent turn's spend into the shape the
+// parent's sink accepts, or nil when there is nothing to report.
+//
+// Split out because the mapping is where this silently goes wrong: drop one
+// field and the parent under-counts by exactly that much forever, with no
+// error and no missing event — the budget simply runs longer than it should.
+// Nothing observed the mapping until W3 review round 5 zeroed
+// CompletionTokens and watched the suite stay green.
+//
+// TotalTokens is derived rather than copied: TurnUsage has no total, and a
+// sink entry whose total disagrees with its parts would make every downstream
+// sum depend on which field the reader trusted.
+func subAgentUsageForSink(u TurnUsage) *registry.Usage {
+	if u.PromptTokens == 0 && u.CompletionTokens == 0 {
+		return nil
+	}
+	return &registry.Usage{
+		PromptTokens:     int64(u.PromptTokens),
+		CompletionTokens: int64(u.CompletionTokens),
+		TotalTokens:      int64(u.PromptTokens + u.CompletionTokens),
+	}
 }
 
 // managedTurnRunner is a concrete registry.Runner. It re-binds the turn context

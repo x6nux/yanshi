@@ -624,6 +624,14 @@ func (m *Manager) runningLocked() int {
 //
 // Returns a no-op when the id is unknown, so callers need not special-case an
 // agent that finished between lookup and park.
+//
+// ⚠️ The mutex here is an UNPINNED design choice. Measured W3 review round 5:
+// removing it produces no DATA RACE under -race, because no test parks
+// concurrently with anything. It is still correct to hold — parked is read by
+// runningLocked under the same lock, and an unsynchronised write to it is a
+// race by construction — but do not read the absence of a red test as evidence
+// the lock is unnecessary. Closing this needs a test that parks from one
+// goroutine while another spawns.
 func (m *Manager) Park(agentID string) (unpark func()) {
 	m.mtx.Lock()
 	rt := m.runtime[agentID]
