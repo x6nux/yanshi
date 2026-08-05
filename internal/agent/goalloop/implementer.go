@@ -425,6 +425,17 @@ func (w *worker) usageWatch() (forward func(acp.Event), sawUsage func() bool) {
 	}, seen.Load
 }
 
+// shouldWarnUnmetered reports whether a completed turn should be flagged as
+// unmetered: a sink is collecting, and nothing arrived for it.
+//
+// A nil sink is NOT a warning. Nobody asked to meter that run, so reporting it
+// as unmetered would train the reader to ignore the message — and the message
+// is the only signal distinguishing "this agent spends nothing" from "this
+// agent's spend is invisible to the budget".
+func shouldWarnUnmetered(sink *UsageSink, sawUsage bool) bool {
+	return sink != nil && !sawUsage
+}
+
 // promptWithUsageWatch runs one ACP turn and warns when the agent finished work
 // without reporting any token usage, so an unmetered run is visible rather than
 // looking like a free one. Returns the stop reason.
@@ -434,7 +445,7 @@ func (w *worker) promptWithUsageWatch(ctx context.Context, spawned *acp.Spawned,
 	if err != nil {
 		return "", fmt.Errorf("worker %d: prompt: %w", task.Index, err)
 	}
-	if w.sink != nil && !sawUsage() {
+	if shouldWarnUnmetered(w.sink, sawUsage()) {
 		slog.Warn("acp agent reported no token usage for a completed turn; "+
 			"the token budget cannot see this agent's spend — constrain it with -max-iters instead",
 			"agent", w.agent, "step", task.Index, "stop_reason", stopReason)

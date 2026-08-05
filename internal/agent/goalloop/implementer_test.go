@@ -311,3 +311,18 @@ func TestUsageWatchWithoutSinkInstallsNoForwarder(t *testing.T) {
 	assert.Nil(t, forward)
 	assert.False(t, sawUsage(), "nothing was watched, so nothing was seen")
 }
+
+// TestShouldWarnUnmetered pins the condition behind the unmetered-turn warning.
+//
+// Measured during W2 review round 3: replacing the condition with a constant
+// false left the suite green, so the warning fired on nobody's authority. The
+// nil-sink row is the load-bearing one — warning on a run nobody asked to meter
+// would train readers to skip the message, and the message is the only thing
+// separating "this agent spends nothing" from "this agent's spend is invisible".
+func TestShouldWarnUnmetered(t *testing.T) {
+	sink := &UsageSink{}
+	assert.True(t, shouldWarnUnmetered(sink, false), "metering on, nothing arrived: warn")
+	assert.False(t, shouldWarnUnmetered(sink, true), "metering on, usage arrived: quiet")
+	assert.False(t, shouldWarnUnmetered(nil, false), "no sink: nobody asked to meter, so nothing to report")
+	assert.False(t, shouldWarnUnmetered(nil, true), "no sink: quiet regardless")
+}
