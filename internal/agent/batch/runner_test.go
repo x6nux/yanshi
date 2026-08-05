@@ -252,11 +252,31 @@ func TestRunnerDefaultsApplied(t *testing.T) {
 }
 
 func TestRunnerSpawnCapExhausted(t *testing.T) {
-	// MaxConcurrent=1 + 2 rows: first spawn succeeds, second hits cap and
-	// exhausts retries. Tests spawnWithRetry cap retry loop and the spawn
-	// error path in the wait goroutine.
+	// MaxConcurrent=1 with the single slot held by an agent that never
+	// finishes: every batch row hits the cap and exhausts retries. Tests
+	// spawnWithRetry's cap retry loop and the spawn error path in the wait
+	// goroutine.
+	//
+	// The predecessor held no slot and relied on a completed agent keeping
+	// one — which was the slot leak, not the cap. With slots released at
+	// terminal, a sequential batch at cap=1 simply succeeds, so reproducing
+	// exhaustion now requires an occupant that is genuinely still running.
 	rec := &recordingSpawn{failOn: -1}
 	mgr := newRegistryManager(t, 1)
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	holderStarted := make(chan struct{})
+	_, err := mgr.Spawn(context.Background(), registry.SpawnRequest{
+		AgentType: "subagent", Role: "explore", Prompt: "holder",
+		Runner: registry.RunnerFunc(func(context.Context, string, string) (string, error) {
+			close(holderStarted)
+			<-release
+			return "held", nil
+		}),
+	})
+	require.NoError(t, err)
+	<-holderStarted
 	runner := batch.Runner{
 		Spawn:         rec.Spawn,
 		Manager:       mgr,
@@ -271,12 +291,12 @@ func TestRunnerSpawnCapExhausted(t *testing.T) {
 	report, err := runner.Run(context.Background(), batch.Input{Prompt: "do", Rows: rows})
 	require.NoError(t, err)
 	require.Len(t, report.Results, 2)
-	assert.Equal(t, 0, report.Results[0].Index)
-	assert.Contains(t, report.Results[0].Output, "ok-")
-	// Row 1 should have a spawn error (cap exhausted).
-	assert.NotEmpty(t, report.Results[1].Error)
-	assert.Equal(t, 1, report.Success)
-	assert.Equal(t, 1, report.Failed)
+	// The only slot is occupied for the whole run, so both rows exhaust
+	// their cap retries and report a spawn error.
+	assert.NotEmpty(t, report.Results[0].Error, "row 0 must fail: the cap is fully occupied")
+	assert.NotEmpty(t, report.Results[1].Error, "row 1 must fail: the cap is fully occupied")
+	assert.Equal(t, 0, report.Success)
+	assert.Equal(t, 2, report.Failed)
 }
 
 func TestRunnerSpawnNonCapError(t *testing.T) {

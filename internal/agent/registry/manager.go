@@ -565,11 +565,21 @@ func (m *Manager) nextID() string {
 	return fmt.Sprintf("ag-%d-%d", time.Now().UnixMilli(), n)
 }
 
-// runningLocked returns the max of runtime map entries and StatusRunning
-// records. The two can diverge transiently under heavy concurrency; taking
-// the max is conservative (prefer spawning fewer than budgeted over more).
-// If RAC1 reports a measurable race here, resolution: use the runtime map
-// as the sole authoritative count (the records count is only advisory).
+// runningLocked counts live runtime entries, which are the sole authority on
+// how many agents hold a concurrency slot.
+//
+// The predecessor took max(runtime entries, StatusRunning records). Since
+// runtime entries were never removed — finishTerminal did not detach them —
+// that max only ever grew, and the count never returned to zero within a
+// process. Measured: spawn two agents at MaxConcurrent=2, wait for both to
+// reach a terminal status, and List reports Running=0 while a third Spawn is
+// still rejected for being at the cap.
+//
+// Records cannot be the authority either: a record reaches StatusRunning
+// slightly after the slot is taken and leaves it slightly before the runner
+// unwinds, so counting records lets a caller slip into a slot that is still
+// occupied. The runtime entry brackets exactly the interval during which the
+// agent is consuming one.
 func (m *Manager) runningLocked() int {
 	n := 0
 	for _, rt := range m.runtime {
@@ -577,17 +587,34 @@ func (m *Manager) runningLocked() int {
 			n++
 		}
 	}
-	// Cross-check with records: only count StatusRunning records.
-	count := 0
-	for _, rec := range m.records {
-		if rec.Status == StatusRunning {
-			count++
-		}
+	return n
+}
+
+// detachRuntime removes an agent's runtime entry, releasing its concurrency
+// slot and cancelling any work still bound to it.
+//
+// Called once the agent has reached a terminal status. Two things depend on
+// it, and both were broken while it did not exist:
+//
+//   - The slot. runningLocked counts runtime entries, so an entry that is
+//     never removed permanently consumes one.
+//   - Resume. Resume refuses an agent that already has a runtime entry, on
+//     the grounds that it is still active. An entry that outlives the run
+//     therefore makes every agent that reached a terminal status IN THIS
+//     PROCESS un-resumable, permanently. The existing resume tests passed
+//     because they resume records loaded from disk, which never had a runtime
+//     entry here to begin with.
+//
+// Cancelling on the way out is deliberate: the agent is finished, so anything
+// still holding its context is work nobody will read.
+func (m *Manager) detachRuntime(agentID string) {
+	m.mtx.Lock()
+	rt := m.runtime[agentID]
+	delete(m.runtime, agentID)
+	m.mtx.Unlock()
+	if rt != nil && rt.cancel != nil {
+		rt.cancel()
 	}
-	if n > count {
-		return n
-	}
-	return count
 }
 
 func (m *Manager) snapshotLocked() ([]byte, error) {
@@ -748,9 +775,20 @@ func (m *Manager) finishTerminal(agentID string, status Status, result, errMsg s
 	rec.Error = errMsg
 	rec.EndedAt = time.Now().UTC()
 	m.records[agentID] = cloneRecord(rec)
+	// Release the slot in the same critical section that marks the record
+	// terminal, so no window exists where the agent is finished on paper and
+	// still counted as running.
 	snapshot, snapErr := m.snapshotLocked()
+	// Read the sink BEFORE detaching: sinkLocked resolves it through the
+	// runtime entry, so removing the entry first silently drops every
+	// terminal event this function exists to emit.
 	sink := m.sinkLocked(agentID)
+	rt := m.runtime[agentID]
+	delete(m.runtime, agentID)
 	m.mtx.Unlock()
+	if rt != nil && rt.cancel != nil {
+		rt.cancel()
+	}
 
 	terminalEvent := Event{
 		Type: mapStatusToEvent(status), AgentID: rec.ID, ParentID: rec.ParentID, Role: rec.Role,

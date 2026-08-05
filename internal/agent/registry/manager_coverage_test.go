@@ -1226,15 +1226,78 @@ func TestResumeRejectsRuntimeStillActive(t *testing.T) {
 	<-done
 	_, _ = m.Wait(context.Background(), "ag-old", WaitOpts{Timeout: 2 * time.Second})
 
-	// Agent is now terminal (Completed) but still in runtime map.
-	// Resume again — should hit "runtime already active".
+	// The agent is terminal, so its runtime entry is gone and it can be
+	// resumed again. The predecessor asserted the opposite — that the second
+	// Resume fails with "runtime already active" — which recorded a defect as
+	// the contract: runtime entries were never detached, so ANY agent that
+	// reached a terminal status in this process became permanently
+	// un-resumable. The resume tests that stayed green did so by resuming
+	// records loaded from disk, which never had a runtime entry here.
+	second := make(chan struct{})
 	_, err = m.Resume(context.Background(), "ag-old", ResumeRequest{
+		Runner: RunnerFunc(func(context.Context, string, string) (string, error) {
+			close(second)
+			return "third pass", nil
+		}),
+	})
+	require.NoError(t, err, "a terminal agent must be resumable")
+	<-second
+	_, _ = m.Wait(context.Background(), "ag-old", WaitOpts{Timeout: 2 * time.Second})
+}
+
+// TestResumeRejectsRuntimeStillRunning keeps the guard the renamed test used to
+// stand in for: an agent whose runner has NOT finished still holds a runtime
+// entry, and resuming it would run two runners against one record.
+func TestResumeRejectsRuntimeStillRunning(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.json")
+	rec := Record{
+		ID: "ag-live", SessionBootID: "boot", Status: StatusCompleted,
+		Prompt: "done", StartedAt: time.Now().UTC(),
+	}
+	raw, err := json.Marshal(persistedState{
+		SchemaVersion: persistenceSchemaVersion,
+		SessionBootID: "boot",
+		Agents:        []Record{rec},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, raw, 0o600))
+
+	m := NewManager(NewManagerOpts{
+		RootContext: context.Background(), Path: path,
+		SessionBootID: "boot2", MaxConcurrent: 2,
+	})
+	t.Cleanup(m.Close)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	_, err = m.Resume(context.Background(), "ag-live", ResumeRequest{
+		Runner: RunnerFunc(func(context.Context, string, string) (string, error) {
+			close(started)
+			<-release
+			return "held", nil
+		}),
+	})
+	require.NoError(t, err)
+	<-started // the runner is in flight, so the runtime entry is live
+
+	_, err = m.Resume(context.Background(), "ag-live", ResumeRequest{
 		Runner: RunnerFunc(func(context.Context, string, string) (string, error) {
 			return "", nil
 		}),
 	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "runtime already active")
+	require.Error(t, err, "an agent whose runner is still in flight must not be resumed")
+	// The message comes from the status guard, not the runtime guard: by the
+	// time the runner is in flight the record is already StatusRunning, and
+	// Resume checks status first. Worth recording — with runtime entries now
+	// detached at terminal, the "runtime already active" branch is reached
+	// only in the narrow window between taking a slot and marking the record
+	// running, so this test pins the guarantee (no double resume) rather than
+	// which guard delivers it.
+	assert.Contains(t, err.Error(), "already running")
+
+	close(release)
+	_, _ = m.Wait(context.Background(), "ag-live", WaitOpts{Timeout: 2 * time.Second})
 }
 
 // ---------------------------------------------------------------------------

@@ -70,3 +70,40 @@ func TestFinishTerminalEmitsPersistenceFailedThenTerminal(t *testing.T) {
 	// Restore for cleanup.
 	_ = os.Rename(dir+".gone", dir)
 }
+
+// TestTerminalAgentsReleaseTheirSlots pins the leak that made the concurrency
+// cap permanently tighten within a process.
+//
+// Measured before detachRuntime existed: spawn two agents at MaxConcurrent=2,
+// wait for both to reach a terminal status, and List reports Running=0 while a
+// third Spawn is still rejected for being at the cap. runningLocked took
+// max(runtime entries, StatusRunning records) and nothing ever removed a
+// runtime entry, so the count only ever grew.
+func TestTerminalAgentsReleaseTheirSlots(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(NewManagerOpts{
+		RootContext:   context.Background(),
+		Path:          filepath.Join(dir, "s.json"),
+		SessionBootID: "boot",
+		MaxConcurrent: 2,
+	})
+	t.Cleanup(m.Close)
+
+	instant := RunnerFunc(func(context.Context, string, string) (string, error) {
+		return "SUMMARY\ndone", nil
+	})
+	for i := range 2 {
+		id, err := m.Spawn(context.Background(), SpawnRequest{
+			AgentType: "subagent", Role: "explore", Prompt: "p", Runner: instant,
+		})
+		require.NoError(t, err, "spawn %d", i)
+		_, err = m.Wait(context.Background(), id, WaitOpts{Timeout: 2 * time.Second})
+		require.NoError(t, err, "wait %d", i)
+	}
+
+	// Both are finished, so both slots are free.
+	_, err := m.Spawn(context.Background(), SpawnRequest{
+		AgentType: "subagent", Role: "explore", Prompt: "third", Runner: instant,
+	})
+	require.NoError(t, err, "a third spawn must fit once the first two are terminal")
+}
