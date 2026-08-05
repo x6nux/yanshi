@@ -540,3 +540,39 @@ func TestCompactingModel_ShortHistoryIsNotCompacted(t *testing.T) {
 	assert.False(t, cm.shouldCompact(msgs),
 		"a history shorter than the pinned tail has nothing to summarize")
 }
+
+// TestCompactingModel_ConcurrentMaybeCompactIsRaceFree pins cmMu.
+//
+// One CompactingModel is shared by every turn of a session, and mid-turn
+// compaction can be entered from more than one in-flight turn at a time.
+// The cooldown fields it mutates are plain ints and a time.Time, so without
+// the mutex this is a genuine data race, not a theoretical one -- W4 review
+// round 7 removed the Lock/Unlock pairs and the -race suite still passed,
+// because nothing had ever called maybeCompact concurrently.
+func TestCompactingModel_ConcurrentMaybeCompactIsRaceFree(t *testing.T) {
+	inner := &recordingModel{summary: "SUMMARY", reply: "ok", streamOK: true}
+	cm := &CompactingModel{
+		Inner:         inner,
+		Threshold:     0.5,
+		ContextWindow: 1000,
+		KeepRecent:    4,
+	}
+	msgs := make([]*schema.Message, 8)
+	for i := range msgs {
+		msgs[i] = bigMessage(80)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cm.maybeCompact(context.Background(), msgs)
+		}()
+	}
+	wg.Wait()
+
+	cm.cmMu.Lock()
+	defer cm.cmMu.Unlock()
+	assert.True(t, cm.didCompact, "at least one of the racing calls must have compacted")
+}
