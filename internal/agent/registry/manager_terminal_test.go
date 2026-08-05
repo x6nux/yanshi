@@ -323,3 +323,48 @@ func TestSendInputRefusesAgentsWithNoRuntime(t *testing.T) {
 		"a finished agent must refuse input rather than queue it for a runner that is gone")
 	// Reached via the existence check, not the status check — see the note above.
 }
+
+// TestCancellingTheAgentReportsCancelledNotCompleted pins that Cancel during
+// an in-flight turn lands the record on StatusCancelled with the cause kept,
+// rather than on the StatusCompleted the loop starts from.
+//
+// ⚠️ It does NOT pin the ctx.Err() == nil term in the run loop's guard
+// (manager.go, the "a cancelled turn is not a failed agent" branch), despite
+// being written for exactly that. Measured W3 review round 17: dropping that
+// term leaves this test -- and every other test in the package -- green,
+// because the terminal-status block below the loop overrides status and errMsg
+// from ctx.Err() unconditionally, subsuming whatever the guard decided about
+// runErr. The term's one remaining effect is narrower than its comment claims:
+// it stops a cancelled agent from breaking out of the loop, so a still-queued
+// mailbox assignment would be picked up and run against a dead context. That
+// path is UNPINNED.
+func TestCancellingTheAgentReportsCancelledNotCompleted(t *testing.T) {
+	m := NewManager(NewManagerOpts{
+		RootContext:   context.Background(),
+		Path:          filepath.Join(t.TempDir(), "s.json"),
+		SessionBootID: "boot",
+		MaxConcurrent: 1,
+	})
+	t.Cleanup(m.Close)
+
+	running := make(chan struct{})
+	blocked := RunnerFunc(func(ctx context.Context, _, _ string) (string, error) {
+		close(running)
+		<-ctx.Done()
+		return "", ctx.Err()
+	})
+
+	id, err := m.Spawn(context.Background(), SpawnRequest{
+		AgentType: "subagent", Role: "explore", Prompt: "work", Runner: blocked,
+	})
+	require.NoError(t, err)
+	<-running
+
+	require.NoError(t, m.Cancel(id))
+
+	rec, err := m.Wait(context.Background(), id, WaitOpts{Timeout: 5 * time.Second})
+	require.NoError(t, err)
+	require.Equal(t, StatusCancelled, rec.Status,
+		"cancelling the agent must stay terminal, not be swallowed as success")
+	require.NotEmpty(t, rec.Error, "the cancellation must survive into the record")
+}
