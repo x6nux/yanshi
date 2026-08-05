@@ -759,6 +759,12 @@ func TestCompactingModel_ThresholdBoundaries(t *testing.T) {
 // Nothing pinned this before: the ADR's load-bearing sentence was an argued
 // property, which is the exact failure mode this package's review kept
 // finding in the code it reviews.
+//
+// Scope: the snapshot is a struct value copy, so it catches replacing a
+// message, rewriting its text, or clearing a field. It does NOT catch
+// mutation THROUGH a shared slice header -- msgs[i].ToolCalls[0].ID = "x"
+// shares its backing array with the snapshot. That route is UNPINNED; a deep
+// copy would cover it, at the cost of hand-maintaining one per schema change.
 func TestCompactingModel_DoesNotMutateTheCallersHistory(t *testing.T) {
 	inner := &recordingModel{summary: "SUMMARY", reply: "ok", streamOK: true}
 	cm := &CompactingModel{
@@ -771,12 +777,15 @@ func TestCompactingModel_DoesNotMutateTheCallersHistory(t *testing.T) {
 	for i := range msgs {
 		msgs[i] = bigMessage(80)
 	}
-	// Snapshot identity and content before the call.
+	// Snapshot identity and the whole struct value before the call. Content
+	// alone is not enough: clearing ToolCalls in place leaves the pointer and
+	// the text untouched and still breaks the premise, and an earlier version
+	// of this test missed exactly that (measured W4 review round 4).
 	before := make([]*schema.Message, len(msgs))
 	copy(before, msgs)
-	contents := make([]string, len(msgs))
+	values := make([]schema.Message, len(msgs))
 	for i, m := range msgs {
-		contents[i] = m.Content
+		values[i] = *m
 	}
 
 	out, did := cm.maybeCompact(context.Background(), msgs)
@@ -787,7 +796,7 @@ func TestCompactingModel_DoesNotMutateTheCallersHistory(t *testing.T) {
 	for i := range msgs {
 		assert.Same(t, before[i], msgs[i],
 			"message %d was replaced: the next ADK iteration would receive a different history", i)
-		assert.Equal(t, contents[i], msgs[i].Content,
+		assert.Equal(t, values[i], *msgs[i],
 			"message %d was rewritten in place, which is the same breakage by another route", i)
 	}
 }
