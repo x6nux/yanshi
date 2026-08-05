@@ -576,3 +576,34 @@ func TestCompactingModel_ConcurrentMaybeCompactIsRaceFree(t *testing.T) {
 	defer cm.cmMu.Unlock()
 	assert.True(t, cm.didCompact, "at least one of the racing calls must have compacted")
 }
+
+// TestCompactingModel_DegenerateConfigNeverCompacts pins the two terms of
+// shouldCompact's config guard that its Threshold term hides.
+//
+// W4 review round 8 reduced the guard to its Threshold term alone and the
+// whole package stayed green, so only the easiest of the three was covered.
+// The other two are not decoration:
+//
+//   - KeepRecent == 0 makes ctxcompact pin no tail at all, so the summarizer
+//     is handed the current turn's own messages and the model loses the thing
+//     it was about to answer.
+//   - ContextWindow == 0 puts every threshold at zero, so the gate fires on
+//     any history at all and hands ctxcompact a zero window to plan against.
+func TestCompactingModel_DegenerateConfigNeverCompacts(t *testing.T) {
+	msgs := make([]*schema.Message, 8)
+	for i := range msgs {
+		msgs[i] = bigMessage(200)
+	}
+
+	t.Run("KeepRecent zero", func(t *testing.T) {
+		cm := &CompactingModel{Threshold: 0.5, ContextWindow: 1000, KeepRecent: 0}
+		assert.False(t, cm.shouldCompact(msgs),
+			"a zero tail would let the summarizer eat the current turn")
+	})
+
+	t.Run("ContextWindow zero", func(t *testing.T) {
+		cm := &CompactingModel{Threshold: 0.5, ContextWindow: 0, KeepRecent: 4}
+		assert.False(t, cm.shouldCompact(msgs),
+			"a zero window puts every threshold at zero and fires on anything")
+	})
+}
