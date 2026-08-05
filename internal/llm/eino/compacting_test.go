@@ -515,3 +515,28 @@ func TestCompactingModel_HardForceBeatsCooldown(t *testing.T) {
 	assert.True(t, cm.shouldCompact(msgs),
 		"a history at 95% of the window must compact despite the cooldown")
 }
+
+// TestCompactingModel_ShortHistoryIsNotCompacted pins the early return for a
+// history no longer than the tail that would be pinned anyway.
+//
+// Such a history has nothing outside the tail to summarize, so compacting it
+// can only spend an inner model call to produce something no smaller. The
+// threshold gate does not catch this on its own: a handful of very large
+// messages clears Threshold*ContextWindow while still being too few to have a
+// summarizable middle. W4 review round 6 replaced the guard with a constant
+// false and the whole package stayed green.
+func TestCompactingModel_ShortHistoryIsNotCompacted(t *testing.T) {
+	cm := &CompactingModel{
+		Threshold:     0.5,
+		ContextWindow: 1000,
+		KeepRecent:    4,
+	}
+	// 3 messages, 900 tokens: far over the 500 threshold, but fewer messages
+	// than KeepRecent, so the tail alone is the whole history.
+	msgs := []*schema.Message{bigMessage(300), bigMessage(300), bigMessage(300)}
+
+	assert.Greater(t, ctxcompact.EstimateTokens(msgs), int(cm.Threshold*float64(cm.ContextWindow)),
+		"premise: the threshold gate must be cleared, or this test proves nothing")
+	assert.False(t, cm.shouldCompact(msgs),
+		"a history shorter than the pinned tail has nothing to summarize")
+}
