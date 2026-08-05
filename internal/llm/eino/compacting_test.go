@@ -484,3 +484,34 @@ func TestCompactingModel_KeepRecentBridgesMessagesToPairs(t *testing.T) {
 	assert.True(t, did, "4 of 8 messages sit outside the tail and must be summarized")
 	assert.Less(t, len(got), len(msgs), "the compacted history must be shorter")
 }
+
+// TestCompactingModel_HardForceBeatsCooldown pins the branch that lets a
+// near-full window compact even inside a cooldown period.
+//
+// Cooldown exists so an unchanged history is not compacted twice in a row.
+// But it must not win when the context is about to overflow: without the
+// hard-force branch the cooldown defers the compaction, the deferred history
+// keeps growing, and the next inner call is handed a history that no longer
+// fits the window. W4 review round 5 measured the gap -- replacing the branch
+// with a constant false left the whole package green.
+func TestCompactingModel_HardForceBeatsCooldown(t *testing.T) {
+	cm := &CompactingModel{
+		Threshold:         0.5,
+		ContextWindow:     1000,
+		KeepRecent:        2,
+		HardForceFraction: 0.9,
+		CooldownTokens:    100000, // so large the token cooldown can never lapse
+	}
+	// Arm the cooldown as a just-completed compaction would.
+	cm.didCompact = true
+	cm.lastCompactTokens = 900
+	cm.lastCompactAt = time.Now()
+
+	// 950 tokens: inside the cooldown, but at 95% of the window.
+	msgs := []*schema.Message{bigMessage(320), bigMessage(320), bigMessage(310)}
+
+	assert.True(t, cm.inCooldown(ctxcompact.EstimateTokens(msgs)),
+		"premise: the cooldown must be active, or this test proves nothing")
+	assert.True(t, cm.shouldCompact(msgs),
+		"a history at 95% of the window must compact despite the cooldown")
+}
