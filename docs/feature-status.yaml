@@ -758,7 +758,7 @@
 # 却与当前**未压缩**历史相减当作增长量，量纲不符导致历史一字未改也能再压一次。
 # 已修（存 TokensBefore）并立 ADR-0013 固化量纲约束。
 #
-# 子句 2「逼近上限仍触发」的原证据 TestCompactingModel_HardForceOverridesCooldown
+# 子句 2「逼近上限仍触发」的原证据 TestCompactingModel_HardForceOverridesCooldown（W4 review 第 22 轮已删除该测试）
 # **不咬人**：把 hard-force 分支整个换成 false，它照绿。已改引 HardForceBeatsCooldown
 # （变异验证红，且先断言 cooldown 确实处于激活态再断言它被越过，防止以错误理由变绿）。
 # 名字在、测试在、就是不咬 —— 比幻影引用更隐蔽的一类台账失真。

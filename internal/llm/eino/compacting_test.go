@@ -361,27 +361,16 @@ func TestCompactingModel_CooldownDefersReCompact(t *testing.T) {
 	require.True(t, didCompact3, "must compact at hard-force fraction regardless of cooldown")
 }
 
-// TestCompactingModel_HardForceOverridesCooldown verifies that when estimated
-// tokens reach 0.95×ContextWindow, shouldCompact returns true even when inside
-// the cooldown period.
-func TestCompactingModel_HardForceOverridesCooldown(t *testing.T) {
-	inner := &recordingModel{summary: "s", reply: "ok"}
-	cm := &CompactingModel{
-		Inner:             inner,
-		Threshold:         0.8,
-		ContextWindow:     1000,
-		KeepRecent:        1,
-		CooldownTokens:    99999, // extremely large — should still be overridden
-		HardForceFraction: 0.95,
-	}
-	msgs := []*schema.Message{
-		schema.UserMessage("go"),
-		bigMessage(500), bigMessage(500), // 2×(500+8)+9 ≈ 1025 tokens, > 950
-	}
-	out, didCompact := cm.maybeCompact(context.Background(), msgs)
-	require.True(t, didCompact, "must compact at 0.95 fraction regardless of cooldown")
-	_ = out
-}
+// TestCompactingModel_HardForceOverridesCooldown was deleted in W4 review
+// round 22. It never armed a cooldown -- didCompact was false and
+// lastCompactAt zero, so inCooldown returned immediately -- which meant the
+// compaction it observed happened because nothing was holding it back, not
+// because hard force overrode anything. Deleting the hard-force branch
+// entirely left it green (measured rounds 5 and 19).
+//
+// TestCompactingModel_HardForceBeatsCooldown covers the guarantee its name
+// claimed, and asserts the cooldown is genuinely active first so it cannot
+// pass for that same wrong reason.
 
 // TestCompactingModel_FirstCompactNoCooldown tests that before any prior compact,
 // the cooldown is a no-op (lastCompactTokens=0 → no cooldown).
