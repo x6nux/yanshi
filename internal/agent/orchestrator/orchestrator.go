@@ -734,6 +734,25 @@ func (o *Orchestrator) runSubAgentTurn(ctx context.Context, prompt string, allow
 		}
 	})
 
+	// Forward what the sub-agent spent to whoever is metering this turn.
+	// subUsage was accumulated and then dropped: tools.UsageSinkFrom had zero
+	// production callers, so every token a sub-agent burned was invisible to
+	// the parent's budget. A delegating agent could therefore spend without
+	// limit by the simple expedient of delegating.
+	//
+	// Reported even when the turn errored — the tokens were spent either way,
+	// and a budget that only counts successful work is a budget a failing loop
+	// can run past.
+	if sink := tools.UsageSinkFrom(ctx); sink != nil {
+		if subUsage.PromptTokens != 0 || subUsage.CompletionTokens != 0 {
+			sink(registry.Usage{
+				PromptTokens:     int64(subUsage.PromptTokens),
+				CompletionTokens: int64(subUsage.CompletionTokens),
+				TotalTokens:      int64(subUsage.PromptTokens + subUsage.CompletionTokens),
+			})
+		}
+	}
+
 	if errMsg != "" {
 		return "", fmt.Errorf("sub-agent: %s", errMsg)
 	}
