@@ -300,6 +300,16 @@ func ManagedSubAgentRun(ctx context.Context, spec ManagedSubAgentSpec) (ManagedS
 	if err != nil {
 		return ManagedSubAgentResult{}, err
 	}
+	// ⚠️ ManagedSubAgentRun has ZERO production callers. runSubAgent still
+	// spawns directly, so this function — and the parking below — is reached
+	// only from tests. Routing the legacy entry point here is the unfinished
+	// half of W3 Task 3, and it is the half that carries the livelock risk:
+	// parking exists precisely because that routing would otherwise deadlock
+	// a fleet of delegating parents. The mechanism is ready and tested
+	// (registry.TestParkFreesCapacityAndUnparkReclaimsIt); the road to it is
+	// not built. Measured W3 review round 2: deleting the Park call below
+	// reddens nothing, because nothing production-side runs it.
+	//
 	// Park the CALLER while it waits on its child. Without this a parent holds
 	// its slot for the whole of the child's run, so at cap N a fleet of N
 	// delegating parents occupies every slot waiting for children that can
