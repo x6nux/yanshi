@@ -33,12 +33,22 @@ import (
 // whose turn runner is synchronous.
 type permTracker struct {
 	mu      sync.Mutex
-	pending map[string]chan tools.PermissionDecision
+	pending map[string]pendingPerm
 	nextID  uint64
 }
 
+// pendingPerm is one in-flight permission_request. It carries the two facts
+// deliver needs to re-check the client's answer: whether the static profile
+// had already denied this action, and which interactive mode we were in when
+// we asked. See deliver for why the mode at ask-time is the load-bearing one.
+type pendingPerm struct {
+	ch              chan tools.PermissionDecision
+	profileHardDeny bool
+	modeAtSend      guard.PermissionMode
+}
+
 func newPermTracker() *permTracker {
-	return &permTracker{pending: make(map[string]chan tools.PermissionDecision)}
+	return &permTracker{pending: make(map[string]pendingPerm)}
 }
 
 // newID returns a unique per-connection permission-request id.
@@ -49,33 +59,62 @@ func (p *permTracker) newID() string {
 	return strconv.FormatUint(p.nextID, 10)
 }
 
-// register records ch as the recipient for id's response.
-func (p *permTracker) register(id string, ch chan tools.PermissionDecision) {
+// register records ch as the recipient for id's response, along with the
+// request facts and the mode in effect at ask-time that deliver re-checks.
+func (p *permTracker) register(id string, ch chan tools.PermissionDecision,
+	req tools.PermissionRequest, mode guard.PermissionMode) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.pending[id] = ch
+	p.pending[id] = pendingPerm{
+		ch:              ch,
+		profileHardDeny: req.ProfileHardDeny,
+		modeAtSend:      mode,
+	}
 }
 
 // take pops (and removes) the channel for id, or returns nil if absent / already
 // taken. Removal is unconditional so a late/second response cannot deliver to a
 // channel whose ask has already returned.
-func (p *permTracker) take(id string) chan tools.PermissionDecision {
+func (p *permTracker) take(id string) (pendingPerm, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	ch := p.pending[id]
+	pp, ok := p.pending[id]
 	delete(p.pending, id)
-	return ch
+	return pp, ok
 }
 
 // deliver attempts to send decision to the pending channel for id. It is
 // non-blocking (the channel is buffered size 1): if the ask already returned
 // (timeout/cancel) the entry is gone and the send is a no-op.
-func (p *permTracker) deliver(id string, decision tools.PermissionDecision) {
-	if ch := p.take(id); ch != nil {
-		select {
-		case ch <- decision:
-		default:
-		}
+//
+// curMode is the interactive mode NOW. An `allow` for a request the static
+// profile had already denied is honoured only if the mode has not changed
+// since we asked, or if the new mode is one whose own gate would have allowed
+// it anyway (yolo). The reason is that ProfileHardDeny never reaches the wire:
+// under ModeAuto an unrateable request goes out as an ordinary
+// permission_request, and the TUI's autoResolvePendingByMode will answer
+// `allow` for any IsEditTool the moment the user switches to allow-edits --
+// while resolvePermissionMode, given that same request under allow-edits,
+// returns deny. Without this check a client-side mode switch silently
+// overrides a server-side profile policy.
+//
+// Only tightening is possible here: a deny is never turned into an allow, and
+// a request that was never profile-denied is passed through untouched. In
+// particular this does not re-check force-prompt or approval-required
+// requests -- those reach the client precisely because a human must answer
+// them, and their answer is the point.
+func (p *permTracker) deliver(id string, decision tools.PermissionDecision, curMode guard.PermissionMode) {
+	pp, ok := p.take(id)
+	if !ok {
+		return
+	}
+	if decision == tools.PermissionAllow && pp.profileHardDeny &&
+		curMode != pp.modeAtSend && curMode != guard.ModeYOLO {
+		decision = tools.PermissionDeny
+	}
+	select {
+	case pp.ch <- decision:
+	default:
 	}
 }
 

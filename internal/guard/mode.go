@@ -122,12 +122,41 @@ func CycleMode(cur PermissionMode) PermissionMode {
 //
 // GOV7 (internal/bootstrap/wiring_test.go) asserts every name here is a
 // registered tool: this set carries authorization semantics, so a name that
-// matches no tool silently occupies a no-prompt slot. apply_patch is a real
-// write tool and is deliberately NOT in this set — adding it would widen the
-// no-prompt auto-approval surface, which is an authorization change.
+// matches no tool silently occupies a no-prompt slot.
+//
+// # Why apply_patch is in the set
+//
+// It was deliberately excluded until W5, on the grounds that a multi-file
+// patch is a wider surface than a single write. Two things decided it the
+// other way:
+//
+//   - It meets the stated criterion identically. runPatch calls the same
+//     trackEdit hook as fs_write/fs_edit after committing, so autoVCS
+//     reversibility is not weaker for a patch than for a write.
+//   - Excluding it does not make allow-edits safer, it makes it useless for
+//     multi-file refactoring — the workflow allow-edits exists to serve — and
+//     the escape hatch users reach for is yolo, which bypasses EVERY profile
+//     policy including the fail-closed MCP opt-in. Widening this set by one
+//     autoVCS-tracked tool is strictly cheaper than moving traffic to yolo.
+//
+// apply_patch does carry one power fs_write and fs_edit do not: it deletes
+// and moves files. That stays bounded by the fs path allowlist — ModeAllowEdits
+// skips the PROMPT, it does not override a ProfileHardDeny, which is denied
+// silently in every mode — and a delete is recorded via trackDelete, so the
+// prior content is still in the preceding commit.
+//
+// # The criterion's unstated precondition
+//
+// "autoVCS tracks every edit" is conditional, not a law. trackEdit/trackDelete
+// no-op when no VCS scope is bound, and bootstrap continues with tracking
+// disabled when InitRepo fails (App.VCSRepoID stays empty). In that state
+// nothing in this set is recoverable and the whole justification is void —
+// for fs_write just as much as for apply_patch. Making the set VCS-conditional
+// is a real option, deliberately not taken here; see W5's handover notes.
 var editTools = map[string]bool{
-	"fs_write": true,
-	"fs_edit":  true,
+	"fs_write":    true,
+	"fs_edit":     true,
+	"apply_patch": true,
 }
 
 // IsEditTool reports whether name is a file-edit tool (the set

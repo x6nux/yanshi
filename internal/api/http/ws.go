@@ -414,7 +414,12 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 				// main loop) so it can be delivered while the turn runner is
 				// blocked inside the ask callback waiting for this very reply.
 				if cf.Type == "permission_response" {
-					pt.deliver(cf.ID, tools.PermissionDecision(cf.Decision))
+					// The live mode is read here, not captured at ask-time:
+					// deliver compares the two to spot an `allow` produced by
+					// a mode switch rather than by the user answering the
+					// question we actually asked.
+					curMode, _ := cs.perm.get()
+					pt.deliver(cf.ID, tools.PermissionDecision(cf.Decision), curMode)
 					continue
 				}
 				// set_mode is applied to the LIVE permission state here — not
@@ -554,7 +559,8 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 				}
 				id := pt.newID()
 				ch := make(chan tools.PermissionDecision, 1)
-				pt.register(id, ch)
+				askMode, _ := cs.perm.get()
+				pt.register(id, ch, req, askMode)
 				defer pt.take(id) // remove the entry on every return path
 				// req.ForcePrompt (forcePromptTools) and req.Force
 				// (RequireApproval) both mean "no auto-approval, ever".

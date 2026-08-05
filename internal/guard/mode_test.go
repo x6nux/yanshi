@@ -119,18 +119,44 @@ func TestModeLabel_Plan(t *testing.T) {
 }
 
 func TestIsEditTool(t *testing.T) {
-	edits := []string{"fs_write", "fs_edit"}
+	// apply_patch joined the set in W5; see editTools' doc for the reasoning
+	// and for the delete/move asymmetry it brings with it.
+	edits := []string{"fs_write", "fs_edit", "apply_patch"}
 	for _, n := range edits {
 		if !IsEditTool(n) {
 			t.Errorf("IsEditTool(%q) = false, want true", n)
 		}
 	}
-	// apply_patch is a real write tool but deliberately NOT auto-approved:
-	// widening the allow-edits no-prompt set is an authorization change.
-	notEdits := []string{"fs_read", "shell_run", "web_fetch", "vcs_commit", "apply_patch", "fs_mkdir"}
+	notEdits := []string{"fs_read", "shell_run", "web_fetch", "vcs_commit", "fs_mkdir"}
 	for _, n := range notEdits {
 		if IsEditTool(n) {
 			t.Errorf("IsEditTool(%q) = true, want false", n)
+		}
+	}
+}
+
+// TestEditToolSetIsExact pins the no-prompt auto-approval set by exact
+// equality, not by membership.
+//
+// A membership test (TestIsEditTool above) cannot see a name being ADDED, and
+// this set decides which tools run in ModeAllowEdits without asking the user.
+// Requiring an explicit edit to this list is the same device acceptancePins
+// uses on the ledger: the widening still happens, but it cannot happen as a
+// side effect of some other change, and it shows up in review as a diff on a
+// list whose name says what it authorizes.
+//
+// GOV7 checks the other direction (every name here is a registered tool). It
+// cannot check this one: a phantom name is a wasted slot, a real name is a
+// granted one, and only the second needs a human to agree.
+func TestEditToolSetIsExact(t *testing.T) {
+	want := []string{"apply_patch", "fs_edit", "fs_write"} // sorted
+	got := EditToolNames()
+	if len(got) != len(want) {
+		t.Fatalf("edit-tool set changed size: got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("edit-tool set changed: got %v, want %v", got, want)
 		}
 	}
 }

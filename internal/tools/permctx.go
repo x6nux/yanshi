@@ -50,12 +50,24 @@ type PermissionRequest struct {
 	// means "ask when unsure"), but the flag itself stays server-side, so the
 	// client cannot tell such a prompt apart from a plain one — switching to
 	// allow-edits then auto-approves an edit tool that the server's own
-	// allow-edits gate would have denied. Narrowing that divergence is an
-	// authorization change, so it is deferred — to S0/W5 (安全底座) Task 7
-	// 移交项 C, filed in docs/superpowers/plans/2026-08-03-s0-w5-security.md
-	// with the three candidate fixes. W5 owns it because it is the same
-	// allow-edits auto-approval surface as that task's other two handovers,
-	// not because the code lives here.
+	// allow-edits gate would have denied.
+	//
+	// RESOLVED in W5: the flag still does not go on the wire, and the client
+	// is still free to answer however it likes. The server stopped taking its
+	// word for it instead. permTracker.register stores this flag plus the mode
+	// in effect when the prompt was sent, and permTracker.deliver downgrades
+	// an `allow` to a deny when the flag is set AND the mode has changed since
+	// (yolo excepted, because yolo's own gate allows profile denies anyway).
+	//
+	// Why the mode comparison rather than a wire flag: the wire cannot
+	// distinguish a human clicking allow from the TUI auto-resolving on the
+	// user's behalf, but the mode can. Answering in the mode we asked in is a
+	// human answering the question; an allow arriving under a mode we never
+	// asked in was produced by a client-side RULE, and profile policy is the
+	// server's rule to apply. Putting the flag on the wire would also have
+	// left the server trusting a client to honour it.
+	//
+	// Pinned by internal/api/http::TestDeliverRejectsModeSwitchAllowOnProfileDeny.
 	ProfileHardDeny bool
 	// Shell carries the shell command for shell_run (empty otherwise) so the
 	// interactive mode layer can apply its destructive-deletion gate

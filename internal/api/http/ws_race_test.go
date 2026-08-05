@@ -11,6 +11,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 
+	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/tools"
 )
@@ -64,7 +65,7 @@ func TestPermTracker_RegisterTakeDeliverConcurrent(t *testing.T) {
 	ch := make(chan tools.PermissionDecision, 1)
 
 	id := pt.newID()
-	pt.register(id, ch)
+	pt.register(id, ch, tools.PermissionRequest{}, guard.ModeDefault)
 
 	const n = 20
 	var wg sync.WaitGroup
@@ -79,14 +80,14 @@ func TestPermTracker_RegisterTakeDeliverConcurrent(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		pt.deliver(id, tools.PermissionAllow)
+		pt.deliver(id, tools.PermissionAllow, guard.ModeDefault)
 	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if taken := pt.take(id); taken != nil {
+		if taken, ok := pt.take(id); ok {
 			select {
-			case <-taken:
+			case <-taken.ch:
 			default:
 			}
 		}
@@ -104,8 +105,8 @@ func TestPermTracker_RegisterTakeDeliverConcurrent(t *testing.T) {
 		seen[x] = true
 	}
 
-	_ = pt.take("nonexistent")
-	pt.deliver("nonexistent", tools.PermissionAllow)
+	_, _ = pt.take("nonexistent")
+	pt.deliver("nonexistent", tools.PermissionAllow, guard.ModeDefault)
 }
 
 func TestConnSession_ConcurrentFrameInterleaving(t *testing.T) {
