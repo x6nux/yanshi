@@ -126,6 +126,14 @@
   acceptance: "stdio/HTTP server 可配可连；tools/resources 可用；启动超时/重连/权限检查有测试；命名冲突可诊断"
   evidence: ""
 
+# 2026-08-05 W2 复核：代码侧缺口已清 —— Budget.SpentTokens（原缺口本身）已删除，
+# spent() 只剩 Sink 一条路径，四个预算测试改由 Sink 驱动且变异全红。
+# 仍判 partial，挡住它的是**验收文本**而非代码：这条 acceptance 引用了一整张实测表，
+# 切出的 5 条子句里第 1 条（「路线图未给 B0 独立验收标准」）与第 4 条（「某测试存在」）
+# 都不是行为断言，无法用测试证伪，GOV8 的子句级握手对它们无从落笔。
+# 要终结这条得先改写 acceptance 成可验收的行为描述，并显式改写 acceptancePins 里
+# 的 B0/TD1 行（Clauses:5 + digest）—— 那是一次有意的判据变更，该单独走，不该
+# 混在实现提交里顺手做掉。
 - id: "B0/TD1"
   package: "W2"
   verdict: partial
