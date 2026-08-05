@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -137,13 +138,13 @@ func (p *Proxy) URL() *url.URL {
 // Close shuts the proxy server down. Safe to call multiple times.
 func (p *Proxy) Close() error { return p.server.Close() }
 
-// ServeHTTP implements http.Handler. CONNECT is rejected (Phase 0 scope);
-// every other method is forwarded to the upstream after a CheckHost gate.
+// ServeHTTP implements http.Handler. Every method is gated on CheckHost;
+// CONNECT additionally becomes a blind tunnel once its target passes.
 // Per-hop authorization on redirects falls out of CheckRedirect above: each
 // new upstream request re-enters ServeHTTP and re-runs the policy check.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodConnect {
-		http.Error(w, "CONNECT not enabled in Phase 0", http.StatusNotImplemented)
+		p.serveConnect(w, r)
 		return
 	}
 	if d := p.policy.CheckHost(r.URL.Hostname()); !d.Allowed {
@@ -236,3 +237,80 @@ var managedProxyKeys = []string{
 // starts from os.Environ() and applies PrepareEnv in one call so the
 // SecureProcessFactory (Task 14) has a single helper to call.
 func ManagedEnv(proxyURL string) []string { return PrepareEnv(os.Environ(), proxyURL) }
+
+// serveConnect gates a CONNECT on its target host and, when allowed, splices
+// the two connections together without looking inside.
+//
+// Blind on purpose. Terminating TLS here would put every secret a child sends
+// -- API keys, tokens, the contents of its prompts -- in this process's
+// memory and its logs, trading a network boundary for a much larger secret
+// exposure. Host-level policy is what this layer can enforce honestly.
+//
+// Refusing CONNECT outright, as this did before, is not the safe default it
+// looks like: it means the managed proxy cannot be switched on at all without
+// breaking every HTTPS-speaking child, which is why the proxy was never
+// started and children got a placeholder URL instead.
+func (p *Proxy) serveConnect(w http.ResponseWriter, r *http.Request) {
+	// A CONNECT request line carries "host:port", not a URL, so r.Host is the
+	// authority and r.URL is whatever url.Parse made of it. Reading r.URL
+	// first looks equivalent and is not: a client that sends an absolute-form
+	// target makes Hostname() return the scheme, and the policy then judges
+	// the string "http" instead of the host being reached. Found by the audit
+	// test, which printed host=http for a request aimed at denied.example.
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if host == "" {
+		host = r.URL.Hostname()
+	}
+	if d := p.policy.CheckHost(host); !d.Allowed {
+		p.audit("connect", host, d)
+		http.Error(w, d.Reason, http.StatusForbidden)
+		return
+	}
+	p.audit("connect", host, Decision{Allowed: true})
+
+	target := r.Host
+	if _, _, err := net.SplitHostPort(target); err != nil {
+		target = net.JoinHostPort(target, "443")
+	}
+	upstream, err := p.dialer.DialContext(r.Context(), "tcp", target)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer upstream.Close()
+
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "proxy: connection cannot be hijacked", http.StatusInternalServerError)
+		return
+	}
+	client, _, err := hj.Hijack()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer client.Close()
+
+	if _, err := client.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
+		return
+	}
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(upstream, client); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(client, upstream); done <- struct{}{} }()
+	<-done // one direction closing ends the tunnel; the defers close the other
+}
+
+// audit records a proxy decision. netpolicy had no logging at all, so a
+// refused connection left nothing behind for an operator to find -- the
+// acceptance criteria ask for decisions to reach the audit trail, and a
+// policy nobody can observe is indistinguishable from no policy.
+func (p *Proxy) audit(op, host string, d Decision) {
+	verdict := "allow"
+	if !d.Allowed {
+		verdict = "deny"
+	}
+	slog.Info("netpolicy decision", "op", op, "host", host, "decision", verdict, "reason", d.Reason)
+}

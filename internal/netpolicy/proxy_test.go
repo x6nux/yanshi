@@ -1,9 +1,11 @@
 package netpolicy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -124,18 +126,32 @@ func TestManagedEnv_ReturnsEnvList(t *testing.T) {
 	}
 }
 
-func TestServeHTTP_CONNECTRejected(t *testing.T) {
-	p, err := NewProxy(Policy{Default: "allow", AllowPrivate: true}, nil)
+// TestServeHTTP_CONNECTIsPolicedNotRefused replaces a test that pinned the
+// opposite: CONNECT used to return 501 unconditionally.
+//
+// That refusal was not a safe default. It meant the managed proxy could never
+// be switched on -- every HTTPS-speaking child would break -- which is why it
+// was never started and children were handed a placeholder URL that filtered
+// nothing. CONNECT is now gated on CheckHost like every other method.
+//
+// Asserts only that a denied host does not get a tunnel. An allowed host
+// needs a real upstream to connect to, which belongs in an integration test
+// rather than here.
+func TestServeHTTP_CONNECTIsPolicedNotRefused(t *testing.T) {
+	p, err := NewProxy(Policy{Default: "deny"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer p.Close()
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodConnect, "http://example.com:443", nil)
+	req := httptest.NewRequest(http.MethodConnect, "denied.example:443", nil)
 	p.ServeHTTP(w, req)
-	if w.Code != http.StatusNotImplemented {
-		t.Fatalf("CONNECT must return 501, got %d", w.Code)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("a denied CONNECT target must be refused with 403, got %d", w.Code)
+	}
+	if w.Code == http.StatusNotImplemented {
+		t.Fatal("CONNECT is refused outright again: the managed proxy cannot be enabled")
 	}
 }
 
@@ -221,5 +237,111 @@ func TestServeHTTP_DeniedHostReturns403(t *testing.T) {
 	p.ServeHTTP(w, req)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("denied host must return 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestProxyBoundariesBeforeGoingLive pins the three properties that must hold
+// before the managed proxy is actually started for child processes.
+//
+// Starting it is the one change in this work package that loosens the
+// observable posture: today children get http://127.0.0.1:0, a placeholder
+// that looks like enforcement and is really a black hole -- it blocks
+// proxy-aware clients and produces no decision, no audit, no policy. Moving
+// to a real proxy is a move from accidental strictness to designed
+// strictness, and these are the net under that jump.
+func TestProxyBoundariesBeforeGoingLive(t *testing.T) {
+	t.Run("default deny survives the proxy being real", func(t *testing.T) {
+		// Policy{} means Default:"" -- nothing is allowed. A live proxy must
+		// not turn an empty policy into an open one.
+		p, err := NewProxy(Policy{}, net.DefaultResolver)
+		if err != nil {
+			t.Fatalf("new proxy: %v", err)
+		}
+		defer p.Close()
+
+		req, _ := http.NewRequest(http.MethodGet, "http://example.com/x", nil)
+		rec := httptest.NewRecorder()
+		p.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("empty policy returned %d for a plain request, want 403: fail-closed "+
+				"must not depend on the proxy never having been started", rec.Code)
+		}
+	})
+
+	t.Run("CONNECT runs the host through CheckHost", func(t *testing.T) {
+		p, err := NewProxy(Policy{Default: "deny", Allow: []string{"allowed.example"}}, net.DefaultResolver)
+		if err != nil {
+			t.Fatalf("new proxy: %v", err)
+		}
+		defer p.Close()
+
+		req, _ := http.NewRequest(http.MethodConnect, "denied.example:443", nil)
+		req.Host = "denied.example:443"
+		rec := httptest.NewRecorder()
+		p.ServeHTTP(rec, req)
+		if rec.Code == http.StatusOK {
+			t.Error("a denied host got a tunnel: CONNECT must be policed, not blanket-allowed")
+		}
+		if rec.Code == http.StatusNotImplemented {
+			t.Error("CONNECT is still refused outright, so every HTTPS-speaking child " +
+				"breaks the moment the proxy goes live")
+		}
+	})
+
+	t.Run("PrepareEnv strips inherited proxy variables", func(t *testing.T) {
+		// A real URL is the case that matters: an inherited https_proxy would
+		// shadow the managed one and route the child around the policy.
+		got := PrepareEnv([]string{
+			"PATH=/usr/bin",
+			"https_proxy=http://attacker.example:8080",
+			"HTTPS_PROXY=http://attacker.example:8080",
+			"NO_PROXY=*",
+		}, "http://127.0.0.1:54321")
+
+		for _, kv := range got {
+			lower := strings.ToLower(kv)
+			if strings.HasPrefix(lower, "https_proxy=") && !strings.Contains(kv, "127.0.0.1:54321") {
+				t.Errorf("an inherited proxy variable survived: %q shadows the managed proxy", kv)
+			}
+			if strings.HasPrefix(lower, "no_proxy=*") {
+				t.Errorf("an inherited NO_PROXY=* survived: %q exempts every host from the proxy", kv)
+			}
+		}
+	})
+}
+
+// TestDeniedConnectReachesTheAuditTrail pins that a refused connection leaves
+// a record.
+//
+// This package had no logging of any kind: a child process whose connection
+// was refused saw a 403 and the operator saw nothing at all. A policy nobody
+// can observe is indistinguishable from no policy, and the acceptance
+// criteria ask specifically for decisions to reach the audit trail.
+func TestDeniedConnectReachesTheAuditTrail(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(old)
+
+	p, err := NewProxy(Policy{Default: "deny"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodConnect, "denied.example:443", nil)
+	p.ServeHTTP(w, req)
+
+	out := buf.String()
+	if !strings.Contains(out, "netpolicy decision") {
+		t.Errorf("a refused connection produced no audit record; log was %q", out)
+	}
+	if !strings.Contains(out, "denied.example") {
+		t.Errorf("the audit record does not name the host, so an operator cannot tell "+
+			"which connection was refused; log was %q", out)
+	}
+	if !strings.Contains(out, "decision=deny") {
+		t.Errorf("the audit record does not carry the verdict; log was %q", out)
 	}
 }
