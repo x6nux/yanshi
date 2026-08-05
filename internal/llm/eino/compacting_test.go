@@ -449,3 +449,38 @@ func TestCompactingModel_MaybeCompact_RejectsAGrowingSummary(t *testing.T) {
 	assert.False(t, cm.didCompact,
 		"a rejected compaction must not arm the cooldown, or the next turn skips a compaction it needs")
 }
+
+// TestCompactingModel_KeepRecentBridgesMessagesToPairs pins the /2 that
+// converts this type's KeepRecent into ctxcompact's.
+//
+// The two fields share a name and count different things: CompactingModel
+// counts MESSAGES, ctxcompact.PlanOpts counts PAIRS, and ctxcompact.Plan pins
+// the last 2*KeepRecent messages. Dropping the /2 pins twice the intended
+// tail, which here is the entire history, leaving nothing to summarize -- so
+// compaction silently stops happening and the caller keeps growing a context
+// it believes was compacted.
+//
+// The sizing is load-bearing, not arbitrary. The history must clear
+// Threshold*ContextWindow so compaction triggers, and stay under the 0.9
+// ChunkThreshold so ctxcompact.Run takes its single-call path: the chunked
+// path does not preserve Plan's tail, and a first attempt at this test sized
+// into it and stayed green under the mutation (W4 review round 3).
+func TestCompactingModel_KeepRecentBridgesMessagesToPairs(t *testing.T) {
+	inner := &recordingModel{summary: "SUMMARY", reply: "ok", streamOK: true}
+	cm := &CompactingModel{
+		Inner:         inner,
+		Threshold:     0.5, // triggers above 500 tokens
+		ContextWindow: 1000,
+		KeepRecent:    4, // messages, so 2 pairs
+	}
+	// 8 x 80 = 640 tokens: over the 500 trigger, under the 900 chunk threshold.
+	msgs := make([]*schema.Message, 8)
+	for i := range msgs {
+		msgs[i] = bigMessage(80)
+	}
+
+	got, did := cm.maybeCompact(context.Background(), msgs)
+
+	assert.True(t, did, "4 of 8 messages sit outside the tail and must be summarized")
+	assert.Less(t, len(got), len(msgs), "the compacted history must be shorter")
+}
