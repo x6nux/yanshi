@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"os"
 	"strings"
@@ -88,4 +91,54 @@ func captureStdout(t *testing.T, fn func()) string {
 	_ = w.Close()
 	os.Stdout = prev
 	return <-done
+}
+
+// TestDirectGHPathStaysReadOnly enforces the boundary realGHExec's doc states.
+//
+// That path spawns gh directly, bypassing guard and secproc, and the
+// justification is narrow: the user typed the subcommand themselves, so the
+// authorization gesture already happened. It holds only while every call
+// reached from here is read-only. A mutating gh call added to this path would
+// execute with no prompt, no approval, and no audit entry -- and would look
+// exactly like the existing lines.
+//
+// The github_* tools are where mutations belong: NewApprovalGuardedTool makes
+// each one an explicit per-call approval.
+func TestDirectGHPathStaysReadOnly(t *testing.T) {
+	readOnly := map[string]bool{"view": true, "diff": true, "list": true, "status": true}
+
+	fset := token.NewFileSet()
+	af, err := parser.ParseFile(fset, "pr.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	ast.Inspect(af, func(n ast.Node) bool {
+		ce, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		id, ok := ce.Fun.(*ast.Ident)
+		if !ok || id.Name != "ghExec" || len(ce.Args) < 3 {
+			return true
+		}
+		// args[0] is ctx; args[1] is the gh noun, args[2] the verb.
+		verb, ok := ce.Args[2].(*ast.BasicLit)
+		if !ok {
+			t.Errorf("%s: ghExec's subcommand must be a literal so it can be checked here",
+				fset.Position(ce.Pos()))
+			return true
+		}
+		calls++
+		v := strings.Trim(verb.Value, `"`)
+		if !readOnly[v] {
+			t.Errorf("%s: ghExec(%q) is not read-only. This path bypasses guard; "+
+				"mutations belong in the github_* approval-guarded tools",
+				fset.Position(ce.Pos()), v)
+		}
+		return true
+	})
+	if calls == 0 {
+		t.Fatal("no ghExec call sites found: the check is not looking at anything")
+	}
 }

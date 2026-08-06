@@ -87,6 +87,22 @@ func runPR(ctx context.Context, prInput string) int {
 // the default, which shells out to the real gh binary.
 var ghExec = realGHExec
 
+// realGHExec spawns `gh` DIRECTLY, bypassing guard and secproc. This is a
+// second, independent gh path alongside the github_* tools, and the asymmetry
+// is deliberate rather than an oversight.
+//
+// guard constrains what the MODEL may do: it exists because a tool call is
+// something the model decided to make, and the user may not have seen it.
+// `yanshi pr 123` is not that. The user typed the subcommand and the PR number
+// themselves, in their own shell, with their own gh credentials -- the
+// authorization gesture already happened, and routing it through a permission
+// prompt would ask them to approve the command they just ran.
+//
+// The boundary this must NOT cross: everything reached from here is read-only
+// gh (`pr view`, `pr diff`). If a mutating gh call is ever added to this path
+// it belongs in the github_* tools instead, where NewApprovalGuardedTool makes
+// every invocation an explicit approval -- see docs/user-guide/guard.md's
+// mandatory-approval section.
 func realGHExec(ctx context.Context, args ...string) (stdout, stderr string, err error) {
 	var out, errb bytes.Buffer
 	cmd := osexec.CommandContext(ctx, "gh", args...)
