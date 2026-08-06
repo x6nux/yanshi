@@ -22,7 +22,9 @@ async def main() -> None:
 
     # 2. Run a turn, consuming the item stream.
     async for item in client.run(thread_id, RunTurnParams(input="hello")):
-        print("item:", item.type, item.text or item.toolName or "")
+        # tool_name, not toolName: toolName is the pydantic wire ALIAS, and
+        # attribute access on an alias raises AttributeError.
+        print("item:", item.type, item.text or item.tool_name or "")
 
     # 3. Cancel if still running (idempotent), then close.
     await client.cancel(thread_id)

@@ -47,9 +47,6 @@ func renderBlocks(schema []byte) map[string]string {
 	for name, table := range renderDefsTables(schema) {
 		blocks["api-defs:"+name] = table
 	}
-	for _, d := range paramResponseDefs() {
-		blocks["api-defs:"+d.Name] = renderDefTable(d)
-	}
 	return blocks
 }
 
@@ -211,74 +208,15 @@ func renderDefTable(d defTable) string {
 	return strings.TrimSuffix(sb.String(), "\n")
 }
 
-// paramResponseDefs is the hand-maintained field map for the request/response
-// shapes that live in internal/api/v1/types.go but are NOT (yet) declared in
-// the schema's $defs. It mirrors the hand-written TS interfaces in main.go
-// and must be updated alongside them when the wire contract changes. The
-// `images` field on TurnStartParams reflects Tier G (multimodal).
-func paramResponseDefs() []defTable {
-	stringType := func(name string, req bool) defField {
-		return defField{Name: name, Type: "string", Required: req}
-	}
-	return []defTable{
-		{
-			Name: "ThreadStartParams",
-			Fields: []defField{
-				stringType("version", false), stringType("title", false),
-				stringType("model", false), stringType("thinking", false),
-			},
-		},
-		{
-			Name: "ThreadResumeParams",
-			Fields: []defField{
-				stringType("version", false), stringType("threadId", true),
-			},
-		},
-		{
-			Name: "ThreadInterruptParams",
-			Fields: []defField{
-				stringType("version", false), stringType("threadId", true),
-				stringType("turnId", false),
-			},
-		},
-		{
-			Name: "TurnStartParams",
-			Fields: []defField{
-				stringType("version", false), stringType("threadId", true),
-				stringType("input", true), stringType("model", false),
-				stringType("thinking", false),
-				{Name: "outputSchema", Type: "object", Required: false},
-				{Name: "images", Type: "array", Required: false},
-			},
-		},
-		{
-			Name: "ThreadStartResponse",
-			Fields: []defField{
-				stringType("version", true), {Name: "thread", Type: "Thread", Required: true},
-			},
-		},
-		{
-			Name: "ThreadResumeResponse",
-			Fields: []defField{
-				stringType("version", true), {Name: "thread", Type: "Thread", Required: true},
-				{Name: "items", Type: "Item[]", Required: false},
-			},
-		},
-		{
-			Name: "TurnStartResponse",
-			Fields: []defField{
-				stringType("version", true), {Name: "turn", Type: "Turn", Required: true},
-			},
-		},
-		{
-			Name: "InterruptResponse",
-			Fields: []defField{
-				stringType("version", true), {Name: "ok", Type: "boolean", Required: true},
-				stringType("threadId", true), stringType("turnId", false),
-			},
-		},
-	}
-}
+// The request/response shapes used to come from a SECOND, hand-maintained
+// table here, layered over the schema-derived ones — and because it was
+// written last, it WON. That is how docs/api/resources.md came to advertise
+// TurnStartParams.images while neither the TypeScript nor the Python client
+// declared it, and how it kept printing ThreadResumeResponse.items after that
+// field was removed from all four statements of the contract: a hand table
+// vouching for fields nothing else had. The schema now declares every one of
+// those types, so the table was pure redundancy with a tie-break in favour of
+// the copy nobody validates.
 
 // sortedKeys returns the keys of m in sorted order for deterministic table rows.
 func sortedKeys(m map[string]map[string]any) []string {

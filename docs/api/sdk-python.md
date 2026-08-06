@@ -17,7 +17,9 @@ async def main() -> None:
 
     # 2. 起 turn，消费 item 流
     async for item in client.run(thread_id, RunTurnParams(input="hello")):
-        print(item.type, item.text or item.toolName or "")
+        # 属性名是 tool_name；toolName 只是 pydantic 的 wire alias，
+        # 直接属性访问会抛 AttributeError
+        print(item.type, item.text or item.tool_name or "")
 
     # 3. 需要时取消
     await client.cancel(thread_id)

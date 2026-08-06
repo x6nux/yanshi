@@ -67,10 +67,10 @@ v1 Agent API 的三类核心资源与请求/响应形状。字段表由 `go run 
 <!-- BEGIN GENERATED: api-defs:ThreadStartParams -->
 | 字段 | 类型 | required | 说明 |
 |---|---|---|---|
-| version | string |  | |
-| title | string |  | |
 | model | string |  | |
 | thinking | string |  | |
+| title | string |  | |
+| version | Version |  | |
 <!-- END GENERATED: api-defs:ThreadStartParams -->
 
 ### ThreadResumeParams
@@ -80,8 +80,8 @@ v1 Agent API 的三类核心资源与请求/响应形状。字段表由 `go run 
 <!-- BEGIN GENERATED: api-defs:ThreadResumeParams -->
 | 字段 | 类型 | required | 说明 |
 |---|---|---|---|
-| version | string |  | |
 | threadId | string | yes | |
+| version | Version |  | |
 <!-- END GENERATED: api-defs:ThreadResumeParams -->
 
 ### ThreadInterruptParams
@@ -91,9 +91,9 @@ v1 Agent API 的三类核心资源与请求/响应形状。字段表由 `go run 
 <!-- BEGIN GENERATED: api-defs:ThreadInterruptParams -->
 | 字段 | 类型 | required | 说明 |
 |---|---|---|---|
-| version | string |  | |
 | threadId | string | yes | |
 | turnId | string |  | |
+| version | Version |  | |
 <!-- END GENERATED: api-defs:ThreadInterruptParams -->
 
 ### TurnStartParams
@@ -103,13 +103,14 @@ v1 Agent API 的三类核心资源与请求/响应形状。字段表由 `go run 
 <!-- BEGIN GENERATED: api-defs:TurnStartParams -->
 | 字段 | 类型 | required | 说明 |
 |---|---|---|---|
-| version | string |  | |
-| threadId | string | yes | |
+| context | array |  | |
+| images | array |  | |
 | input | string | yes | |
 | model | string |  | |
+| outputSchema | any |  | |
 | thinking | string |  | |
-| outputSchema | object |  | |
-| images | array |  | |
+| threadId | string | yes | |
+| version | Version |  | |
 <!-- END GENERATED: api-defs:TurnStartParams -->
 
 ## 响应
@@ -121,8 +122,8 @@ v1 Agent API 的三类核心资源与请求/响应形状。字段表由 `go run 
 <!-- BEGIN GENERATED: api-defs:ThreadStartResponse -->
 | 字段 | 类型 | required | 说明 |
 |---|---|---|---|
-| version | string | yes | |
 | thread | Thread | yes | |
+| version | Version | yes | |
 <!-- END GENERATED: api-defs:ThreadStartResponse -->
 
 ### ThreadResumeResponse
@@ -132,9 +133,8 @@ v1 Agent API 的三类核心资源与请求/响应形状。字段表由 `go run 
 <!-- BEGIN GENERATED: api-defs:ThreadResumeResponse -->
 | 字段 | 类型 | required | 说明 |
 |---|---|---|---|
-| version | string | yes | |
 | thread | Thread | yes | |
-| items | Item[] |  | |
+| version | Version | yes | |
 <!-- END GENERATED: api-defs:ThreadResumeResponse -->
 
 ### TurnStartResponse
@@ -144,8 +144,8 @@ v1 Agent API 的三类核心资源与请求/响应形状。字段表由 `go run 
 <!-- BEGIN GENERATED: api-defs:TurnStartResponse -->
 | 字段 | 类型 | required | 说明 |
 |---|---|---|---|
-| version | string | yes | |
 | turn | Turn | yes | |
+| version | Version | yes | |
 <!-- END GENERATED: api-defs:TurnStartResponse -->
 
 ### InterruptResponse
@@ -155,8 +155,8 @@ v1 Agent API 的三类核心资源与请求/响应形状。字段表由 `go run 
 <!-- BEGIN GENERATED: api-defs:InterruptResponse -->
 | 字段 | 类型 | required | 说明 |
 |---|---|---|---|
-| version | string | yes | |
 | ok | boolean | yes | |
 | threadId | string | yes | |
 | turnId | string |  | |
+| version | Version | yes | |
 <!-- END GENERATED: api-defs:InterruptResponse -->
