@@ -95,6 +95,21 @@ type App struct {
 	// profile allowing nine shell tools that were never registered.
 	ToolNames []string
 
+	// ToolTimeouts maps each registered tool's name to the default execution
+	// timeout it was constructed with. Taken from the assembled registry
+	// rather than from the source, for the same reason ToolNames is: a
+	// registration that never reaches the orchestrator cannot be checked by
+	// reading the call site.
+	//
+	// Its purpose is a wiring assertion. A tool registered with timeout 0 gets
+	// an already-expired context and fails on its first line every turn,
+	// returning "context deadline exceeded" as a tool RESULT — so the model
+	// retries in a loop and nothing ever crashes or logs. Eight agent_* tools
+	// shipped that way. NewGuardedTool now panics on 0, and this snapshot is
+	// the second line: it also catches a tool that reaches the registry
+	// through some path that skips the constructor.
+	ToolTimeouts map[string]time.Duration
+
 	// AgentAPI is the versioned thread/turn/item service shared by HTTP and
 	// JSON-RPC app-server transports. Non-nil after a successful Build; the
 	// `yanshi app` subcommand consumes it directly.
@@ -872,12 +887,19 @@ func Build(opts Options) (*App, error) {
 	// in scope. Info() is pure metadata on every tool implementation, so the
 	// background context here can never block.
 	toolNames := make([]string, 0, len(allTools))
+	toolTimeouts := make(map[string]time.Duration, len(allTools))
 	for _, tl := range allTools {
 		info, err := tl.Info(context.Background())
 		if err != nil {
 			return nil, fmt.Errorf("tool registry: Info failed: %w", err)
 		}
 		toolNames = append(toolNames, info.Name)
+		// Only GuardedTool carries a timeout; anything else in the registry
+		// (adapters, MCP proxies) is skipped rather than defaulted, so the
+		// snapshot never claims a bound that does not exist.
+		if gt, ok := tl.(interface{ DefaultTimeout() time.Duration }); ok {
+			toolTimeouts[info.Name] = gt.DefaultTimeout()
+		}
 	}
 
 	// Authorize the conditionally-registered tools that this boot actually
@@ -971,13 +993,24 @@ func Build(opts Options) (*App, error) {
 	//     (internal/mcp), LSP servers (internal/lsp) and `gh`/`git` spawned
 	//     directly build their env from os.Environ() and are NOT covered —
 	//     they also inherit the operator's real proxy.
-	//  3. It consults none of the security.network fields, so `allow` does not
-	//     widen it and `default: allow` does not disable it.
-	fmt.Fprintf(os.Stderr, "yanshi: network phase0: factory-launched subprocesses get "+
-		"http(s)_proxy=http://127.0.0.1:0, which stops only proxy-aware clients "+
-		"(curl/gh/go/npm) and is not a containment boundary — raw sockets, SSH and "+
-		"ACP/MCP/LSP subprocesses are unaffected; security.network is applied only to "+
-		"in-process web_fetch/web_search\n")
+	//  3. Point 3 of this list used to read "it consults none of the
+	//     security.network fields, so `allow` does not widen it". That stopped
+	//     being true when W5 started a real proxy: the address published below
+	//     belongs to a listener that evaluates security.network per host. The
+	//     message is emitted AFTER the proxy starts, so it must branch on
+	//     whether it did — an operator reading "dead port" while a live proxy
+	//     enforces their allowlist would debug the wrong thing entirely.
+	if proxyURL != "" {
+		fmt.Fprintf(os.Stderr, "yanshi: network: factory-launched subprocesses route through "+
+			"the managed proxy at %s, which applies security.network per host. It stops only "+
+			"proxy-aware clients (curl/gh/go/npm) and is NOT a containment boundary — raw "+
+			"sockets, SSH and ACP/MCP/LSP subprocesses bypass it entirely (see "+
+			"docs/adr/0014-managed-proxy-is-the-only-governed-egress-channel.md)\n", proxyURL)
+	} else {
+		fmt.Fprintf(os.Stderr, "yanshi: network: the managed proxy is NOT running, so "+
+			"factory-launched subprocesses get no proxy variables and their egress is "+
+			"UNFILTERED; security.network still applies to in-process web_fetch/web_search\n")
+	}
 
 	// Approval manager + audit bus: one process-wide manager mirrors persistent
 	// (allow_persistent) rules to the store; one bus fans the manager's emit
@@ -1179,6 +1212,7 @@ func Build(opts Options) (*App, error) {
 		AgentAPI:        agentAPI,
 		Skills:          registry,
 		ToolNames:       toolNames,
+		ToolTimeouts:    toolTimeouts,
 		VCS:             vcsInstance,
 		VCSRepoID:       vcsRepoID,
 		VCSDBPath:       cfg.Storage.SQLitePath,

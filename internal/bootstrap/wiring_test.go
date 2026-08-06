@@ -828,3 +828,36 @@ func TestUnregisteredCompactionModelIsReported(t *testing.T) {
 			"find it in their config")
 	}
 }
+
+// TestNoRegisteredToolHasAZeroTimeout is the assembled-registry half of the
+// timeout contract.
+//
+// tools.NewGuardedTool panics on 0, which catches every registration written
+// through it. This catches the rest: a tool that reaches the orchestrator by
+// some other path, or a constructor that grows a way to bypass the check.
+// Reading the call sites cannot answer this question -- the audit's recurring
+// finding is that a component can be written correctly and never be wired, and
+// the inverse holds too.
+//
+// Why 0 specifically: context.WithTimeout(ctx, 0) is already expired, so the
+// tool fails on its first line every single turn. GuardedTool returns that as
+// a tool RESULT rather than an error, so the ReAct loop hands "context
+// deadline exceeded" back to the model, which retries and fails again. No
+// crash, no log, no failing test -- just a turn burning tokens. Eight agent_*
+// tools shipped in exactly that state.
+func TestNoRegisteredToolHasAZeroTimeout(t *testing.T) {
+	app := buildAppWithProviders(t, "")
+	if len(app.ToolTimeouts) == 0 {
+		t.Fatal("no tool timeouts captured: the snapshot is not being populated")
+	}
+	for name, d := range app.ToolTimeouts {
+		if d == 0 {
+			t.Errorf("tool %q registered with timeout 0: it will fail on its first line "+
+				"every turn and report it as a tool result, not an error", name)
+		}
+		if d < 0 && d != tools.NoTimeout {
+			t.Errorf("tool %q has negative timeout %v that is not tools.NoTimeout: "+
+				"WithTimeout treats every non-positive duration as already expired", name, d)
+		}
+	}
+}

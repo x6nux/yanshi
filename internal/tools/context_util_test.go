@@ -29,9 +29,9 @@ func TestFSTools_Tools(t *testing.T) {
 
 func TestMemoryTools_Tools(t *testing.T) {
 	mt := &MemoryTools{
-		Search: NewGuardedTool("memory_search", "x", "x", 0, nil, nil),
-		Recall: NewGuardedTool("memory_recall", "x", "x", 0, nil, nil),
-		Write:  NewGuardedTool("memory_write", "x", "x", 0, nil, nil),
+		Search: NewGuardedTool("memory_search", "x", "x", time.Second, nil, nil),
+		Recall: NewGuardedTool("memory_recall", "x", "x", time.Second, nil, nil),
+		Write:  NewGuardedTool("memory_write", "x", "x", time.Second, nil, nil),
 	}
 	got := mt.Tools()
 	assert.Len(t, got, 3)

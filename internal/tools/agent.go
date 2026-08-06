@@ -38,6 +38,14 @@ type AgentTools struct {
 	chatModel model.BaseChatModel
 }
 
+// agentRegistryTimeout bounds the seven agent_* tools that only touch the
+// in-memory subagent registry. They do no I/O, so any generous bound works;
+// what matters is that it is not 0, which would expire the context before the
+// tool body ran. agent_wait is the exception and uses NoTimeout -- it is
+// SUPPOSED to block until the subagent finishes, and a deadline wrapped around
+// that would cut off exactly the wait the caller asked for.
+const agentRegistryTimeout = 30 * time.Second
+
 // NewAgentTools builds agent management tools.
 // chatModel is used to run sub-agent queries. When nil, the tools return an error
 // prompting the user to configure a model first.
@@ -125,7 +133,7 @@ func NewAgentTools(chatModel model.BaseChatModel) *AgentTools {
 		t.streamSummarize,
 	)
 	// Managed sub-agent lifecycle tools (B1).
-	t.AgentSpawn = NewGuardedTool("agent_spawn", "Agent", "Spawn a managed subagent and return its id immediately.", 0,
+	t.AgentSpawn = NewGuardedTool("agent_spawn", "Agent", "Spawn a managed subagent and return its id immediately.", agentRegistryTimeout,
 		params(map[string]*schema.ParameterInfo{
 			"prompt": {Type: schema.String, Required: true},
 			// Roles are validated (unknown names are rejected), so the legal set
@@ -137,42 +145,42 @@ func NewAgentTools(chatModel model.BaseChatModel) *AgentTools {
 			"reasoning": {Type: schema.String},
 		}), t.streamAgentSpawn)
 
-	t.AgentWait = NewGuardedTool("agent_wait", "Agent", "Wait for a managed subagent to reach a terminal state.", 0,
+	t.AgentWait = NewGuardedTool("agent_wait", "Agent", "Wait for a managed subagent to reach a terminal state.", NoTimeout,
 		params(map[string]*schema.ParameterInfo{
 			"agent_id": {Type: schema.String, Required: true},
 			"timeout":  {Type: schema.Integer},
 		}), t.streamAgentWait)
 
-	t.AgentResult = NewGuardedTool("agent_result", "Agent", "Return a snapshot of a managed subagent.", 0,
+	t.AgentResult = NewGuardedTool("agent_result", "Agent", "Return a snapshot of a managed subagent.", agentRegistryTimeout,
 		params(map[string]*schema.ParameterInfo{
 			"agent_id": {Type: schema.String, Required: true},
 		}), t.streamAgentResult)
 
-	t.AgentSendInput = NewGuardedTool("agent_send_input", "Agent", "Queue follow-up input for a managed subagent.", 0,
+	t.AgentSendInput = NewGuardedTool("agent_send_input", "Agent", "Queue follow-up input for a managed subagent.", agentRegistryTimeout,
 		params(map[string]*schema.ParameterInfo{
 			"agent_id":  {Type: schema.String, Required: true},
 			"text":      {Type: schema.String, Required: true},
 			"interrupt": {Type: schema.Boolean},
 		}), t.streamAgentSendInput)
 
-	t.AgentResume = NewGuardedTool("agent_resume", "Agent", "Resume an interrupted or completed subagent.", 0,
+	t.AgentResume = NewGuardedTool("agent_resume", "Agent", "Resume an interrupted or completed subagent.", agentRegistryTimeout,
 		params(map[string]*schema.ParameterInfo{
 			"agent_id": {Type: schema.String, Required: true},
 			"prompt":   {Type: schema.String},
 		}), t.streamAgentResume)
 
-	t.AgentAssign = NewGuardedTool("agent_assign", "Agent", "Assign a goal to a managed subagent.", 0,
+	t.AgentAssign = NewGuardedTool("agent_assign", "Agent", "Assign a goal to a managed subagent.", agentRegistryTimeout,
 		params(map[string]*schema.ParameterInfo{
 			"agent_id":   {Type: schema.String, Required: true},
 			"assignment": {Type: schema.String, Required: true},
 		}), t.streamAgentAssign)
 
-	t.AgentCancel = NewGuardedTool("agent_cancel", "Agent", "Cancel a managed subagent.", 0,
+	t.AgentCancel = NewGuardedTool("agent_cancel", "Agent", "Cancel a managed subagent.", agentRegistryTimeout,
 		params(map[string]*schema.ParameterInfo{
 			"agent_id": {Type: schema.String, Required: true},
 		}), t.streamAgentCancel)
 
-	t.AgentList = NewGuardedTool("agent_list", "Agent", "List managed subagents.", 0,
+	t.AgentList = NewGuardedTool("agent_list", "Agent", "List managed subagents.", agentRegistryTimeout,
 		params(map[string]*schema.ParameterInfo{
 			"include_archived": {Type: schema.Boolean},
 		}), t.streamAgentList)

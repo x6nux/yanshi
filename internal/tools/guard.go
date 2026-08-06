@@ -158,11 +158,49 @@ type GuardedTool struct {
 	approvalRequired bool
 }
 
-// NewGuardedTool builds a GuardedTool. display 是 TUI 块标题（如 "Bash"）；timeout 是
-// 默认执行超时（Stream 内部据此给 ctx 加 deadline）；stream 是执行体。
+// NoTimeout marks a tool whose execution is bounded by the turn context
+// alone. Stream branches on it explicitly and uses context.WithCancel instead
+// of WithTimeout.
+//
+// The explicit branch is not optional and swapping the constant for another
+// value does not replace it: context.WithTimeout treats ANY non-positive
+// duration as already expired, so a negative sentinel handed to WithTimeout
+// fails exactly as instantly as 0 did. The value is a marker; the branch is
+// the mechanism.
+//
+// "Bounded by the turn" is a real bound, not a euphemism for unbounded -- the
+// turn context is cancelled on user interrupt, disconnect, and turn end. Only
+// agent_wait uses this: Manager.Wait already blocks until the subagent reaches
+// a terminal state, and wrapping a second deadline around that would cut off
+// the very wait the caller asked for.
+const NoTimeout = time.Duration(-1)
+
+// NewGuardedTool builds a GuardedTool.
+//
+// A timeout of 0 panics. context.WithTimeout(ctx, 0) yields an
+// already-expired context, so such a tool fails on its first line every time
+// -- and because GuardedTool returns that failure as a tool RESULT rather
+// than an error, the ReAct loop feeds "context deadline exceeded" back to the
+// model, which retries and fails again. Nothing crashes and nothing logs; the
+// turn just burns tokens. Eight agent_* tools shipped in that state.
+//
+// 0 is the natural way to write "no timeout set", which is exactly why it
+// cannot be allowed to mean "expire immediately". Callers that want no
+// deadline must say NoTimeout.
 func NewGuardedTool(name, display, desc string, timeout time.Duration,
 	params *schema.ParamsOneOf, stream StreamFunc) *GuardedTool {
+	mustHaveTimeout(name, timeout)
 	return &GuardedTool{name: name, display: display, desc: desc, timeout: timeout, params: params, stream: stream}
+}
+
+// mustHaveTimeout rejects the one duration that silently disables a tool.
+// Shared by both constructors so an approval-guarded tool cannot slip through
+// the door the ordinary one closed.
+func mustHaveTimeout(name string, timeout time.Duration) {
+	if timeout == 0 {
+		panic("tools: " + name + ": timeout 0 means an already-expired context, " +
+			"which disables the tool silently; pass a duration or tools.NoTimeout")
+	}
 }
 
 // NewApprovalGuardedTool builds a GuardedTool that ALWAYS requires explicit
@@ -173,6 +211,7 @@ func NewGuardedTool(name, display, desc string, timeout time.Duration,
 // cannot bypass the prompt.
 func NewApprovalGuardedTool(name, display, desc string, timeout time.Duration,
 	params *schema.ParamsOneOf, stream StreamFunc) *GuardedTool {
+	mustHaveTimeout(name, timeout)
 	return &GuardedTool{name: name, display: display, desc: desc, timeout: timeout, params: params, stream: stream, approvalRequired: true}
 }
 
@@ -224,7 +263,15 @@ func (g *GuardedTool) Stream(ctx context.Context, argsJSON string) <-chan ToolCh
 		close(ch)
 		return ch
 	}
-	runCtx, cancel := context.WithTimeout(ctx, g.timeout)
+	// NoTimeout must take a different call, not a different number: WithTimeout
+	// treats every non-positive duration as already expired.
+	var runCtx context.Context
+	var cancel context.CancelFunc
+	if g.timeout == NoTimeout {
+		runCtx, cancel = context.WithCancel(ctx)
+	} else {
+		runCtx, cancel = context.WithTimeout(ctx, g.timeout)
+	}
 	out := g.stream(runCtx, argsJSON)
 	wrapped := make(chan ToolChunk, 16)
 	tuiCB := ToolChunkCallbackFromContext(ctx)
