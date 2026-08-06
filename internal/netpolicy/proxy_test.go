@@ -225,6 +225,9 @@ func TestDialContext_BadAddressReturnsError(t *testing.T) {
 	}
 }
 
+// TestServeHTTP_DeniedHostReturns403 —— 见台账。
+//
+// ledger: A1/S09#1 经受管代理通道的未授权连接失败
 func TestServeHTTP_DeniedHostReturns403(t *testing.T) {
 	p, err := NewProxy(Policy{Default: "deny", AllowPrivate: true}, nil)
 	if err != nil {
@@ -317,6 +320,8 @@ func TestProxyBoundariesBeforeGoingLive(t *testing.T) {
 // was refused saw a 403 and the operator saw nothing at all. A policy nobody
 // can observe is indistinguishable from no policy, and the acceptance
 // criteria ask specifically for decisions to reach the audit trail.
+//
+// ledger: A1/S09#4 决策入审计
 func TestDeniedConnectReachesTheAuditTrail(t *testing.T) {
 	var buf bytes.Buffer
 	old := slog.Default()

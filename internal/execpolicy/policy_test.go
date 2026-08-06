@@ -28,6 +28,9 @@ func TestEvaluateDenyFlagReturnsRuleID(t *testing.T) {
 	}
 }
 
+// TestParsePipelineAndRedirects —— 见台账。
+//
+// ledger: A1/S06#1 execpolicy 解析器能识别程序/参数/管道/重定向
 func TestParsePipelineAndRedirects(t *testing.T) {
 	cmd, err := Parse(`printf ok | cat >> out 2>&1`)
 	if err != nil {
@@ -163,6 +166,8 @@ func TestEvaluate_DenyFlagWithEqualsForm(t *testing.T) {
 // one edit away from turning a targeted deny rule into a blanket ban on the
 // program, which is the regression policy.go's header records; these cases
 // fail if that happens.
+//
+// ledger: A1/S06#3 已知绕过样例（IFS、$()、glob 注入）有回归测试
 func TestDenyFlagsSurviveFlagSpelling(t *testing.T) {
 	rules := []Rule{
 		{ID: "no-real-e2e", Program: "go", Prefix: []string{"test"}, Decision: "deny",

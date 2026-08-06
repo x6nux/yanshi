@@ -27,6 +27,8 @@ import (
 // Both synthetic names resolve through fakeResolver to loopback, and the URLs
 // carry the test server's port, so the proxy's own dial reaches the upstream
 // without the test having to install a custom dialer.
+//
+// ledger: A1/S09#3 DNS/重定向不能绕过
 func TestRedirectToDeniedHostIsRecheckedNotFollowed(t *testing.T) {
 	var port string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

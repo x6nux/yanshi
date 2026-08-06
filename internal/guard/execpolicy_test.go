@@ -30,6 +30,8 @@ func TestGuardExecPolicyMapsRuleIDAndHardDeny(t *testing.T) {
 // TestGuardExecPolicyParserFailureIsHardDeny: when execpolicy.Parse rejects a
 // command (e.g. forbidden expansion), the guard must HardDeny with RuleID
 // "parse-error" so an interactive callback cannot override it.
+//
+// ledger: A1/S06#3 已知绕过样例（IFS、$()、glob 注入）有回归测试
 func TestGuardExecPolicyParserFailureIsHardDeny(t *testing.T) {
 	p := PermissionProfile{
 		Tools: ToolsPerm{Allow: []string{"shell_run"}},

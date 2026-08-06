@@ -37,24 +37,51 @@
 
 - id: "A1/S06"
   package: "W5"
-  verdict: partial
+  verdict: done
   title: "结构化 Shell 策略 (execpolicy)"
-  acceptance: "能识别程序/参数/管道/重定向；规则结果可解释；已知绕过样例（IFS、$()、glob 注入）有回归测试"
-  evidence: ""
+  # 子句 1 在 W5 加了「execpolicy 解析器」这个主语限定。原文「能识别程序/参数/管道/
+  # 重定向」读起来像在说生产路径，而 docs/superpowers/acceptance-breakdown.md 判它
+  # 「层级错位」：含 `|` `>` `<` 的命令在 internal/guard/guard.go::Guard.checkShell
+  # 的元字符结构性 HardDeny 就短路了，永远到不了 execpolicy —— 拆解表要求的
+  # 「经 guard.Check 驱动管道」证据形状因此**不可能存在**，且这不是缺陷：命令两条
+  # 路都被拒，元字符层只是拒得更早。限定主语后子句说的是解析器能力，那是真的、
+  # 也是可测的。同 A1/S09 的作用域限定，理由记在 ADR-0004（元字符防线）。
+  acceptance: "execpolicy 解析器能识别程序/参数/管道/重定向；规则结果可解释；已知绕过样例（IFS、$()、glob 注入）有回归测试"
+  evidence:
+    "1": "internal/execpolicy::TestParsePipelineAndRedirects"
+    "2": "internal/tools::TestExecPolicyJustificationReachesTheUser"
+    "3": "internal/execpolicy::TestLexRejectsExpansionAndGlobBypasses; internal/guard::TestGuardExecPolicyParserFailureIsHardDeny; internal/execpolicy::TestDenyFlagsSurviveFlagSpelling"
 
 - id: "A1/S07"
   package: "W5"
-  verdict: partial
+  verdict: done
   title: "持久审批规则"
+  # W5 补的是子句 1 的「过期」（此前 Record 从不填 ExpiresAt，持久规则永不失效）
+  # 与子句 2 的命中侧审计（审计总线与 miss 路径有测试，两条 hit 路径都传 nil sink，
+  # 于是「成功授权是否被记录」零断言 —— 那恰是操作员事后最需要的那条记录）。
   acceptance: "规则含来源/scope/过期；每次命中可审计；用户可查看撤销；前缀规则有绕过回归测试"
-  evidence: ""
+  evidence:
+    "1": "internal/approval::TestRecordedRulesCarryAnExpiry; internal/approval::TestRuleTTLGovernsExpiry"
+    "2": "internal/approval::TestEveryMatchOutcomeIsAudited"
+    "3": "internal/cli/tui::TestCmdPermissions_ListRevokeUsage"
+    "4": "internal/approval::TestScopeMatchIsExactNotPrefix"
 
 - id: "A1/S09"
   package: "W5"
-  verdict: partial
+  verdict: done
   title: "子进程网络隔离"
-  acceptance: "未授权连接失败；host/port 规则生效；DNS/重定向不能绕过；决策入审计"
-  evidence: ""
+  # 子句 1 带作用域限定「经受管代理通道的」，这是 W5 的 Option B 在验收标准上的
+  # 投影而非措辞润色：无视 HTTP_PROXY、直接 connect() 或开裸 socket 的子进程不受
+  # 约束，挡住它需要 seccomp / Seatbelt / AppContainer，归 S1。去掉限定词验收标准
+  # 就开始撒谎。残留风险与不可违反的边界写在 docs/adr/0014-managed-proxy-is-the-only-governed-egress-channel.md。
+  # ⚠️ 在 CapabilityReport.Effective 脱离 DegradedHostGuard 之前，任何文档 / UI
+  # 都不得声称「未授权连接失败」是全覆盖的。
+  acceptance: "经受管代理通道的未授权连接失败；host/port 规则生效；DNS/重定向不能绕过；决策入审计"
+  evidence:
+    "1": "internal/netpolicy::TestServeHTTP_DeniedHostReturns403"
+    "2": "internal/netpolicy::TestCheckHost_StripsPort; internal/netpolicy::TestSubdomainPatternDoesNotMatchApex"
+    "3": "internal/netpolicy::TestResolvedIPsRejectPrivateLoopbackLinkLocal; internal/netpolicy::TestRedirectToDeniedHostIsRecheckedNotFollowed"
+    "4": "internal/netpolicy::TestDeniedConnectReachesTheAuditTrail"
 
 # W1/Task 7：九个 shell v2 工具此前编译进二进制但从未注册，且 shell.Config.Factory
 # 为 nil（任何 Start 都返回 "no process factory configured"）—— 装配断裂已修复，
@@ -621,10 +648,18 @@
 
 - id: "D3/S10"
   package: "W5"
-  verdict: partial
+  verdict: done
   title: "secrets / keyring（OS keyring + 统一脱敏）"
+  # 子句 2、3 本来就已达标（keyring 往返与无 keyring 降级都有测试，双标签实跑均绿）。
+  # W5 修的是子句 1：MergeRedactors 返回的是并集**拷贝**，bootstrap 一 rebind，
+  # 之后每次 Register(resolvedAPIKey) 都落在 SafeLogger 从没听说过的对象上 ——
+  # 日志侧整个生命周期在打明文 key，而 SafeOutput 的 doc 却自称两者共享注册表。
+  # DB 侧一直是好的（st.SetRedactor 拿的就是那份拷贝），所以只有日志这条瞎了。
   acceptance: "secret 不入日志/DB 明文；keyring 读写删；无 keyring 安全降级"
-  evidence: ""
+  evidence:
+    "1": "internal/secrets::TestSafeOutputRegistryIsAnAliasNotACopy; internal/store::TestStore_RedactsAllWritePaths"
+    "2": "internal/secrets::TestKeyring_RoundTripWhenAvailable"
+    "3": "internal/secrets::TestKeyring_FailsGracefullyWhenUnavailable"
 
 # 2026-08-04 复核：保持 partial，但原因**不是**「没做到」，而是「做到了却没法按
 # GOV8 的形状记账」—— 这两条要单独说明，否则下一轮评审会重复怀疑它是低报。

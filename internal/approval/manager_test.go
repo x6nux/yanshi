@@ -594,6 +594,8 @@ func TestSessionIsolation(t *testing.T) {
 //
 // Uses the now parameter Match already takes rather than sleeping, so the
 // boundary is exact instead of approximate.
+//
+// ledger: A1/S07#1 规则含来源/scope/过期
 func TestRuleTTLGovernsExpiry(t *testing.T) {
 	base := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
 	scope := Scope{Tool: "shell_run", Program: "go", Prefix: []string{"test", "./pkg"}}
@@ -628,6 +630,8 @@ func TestRuleTTLGovernsExpiry(t *testing.T) {
 // because reaching those call sites needs a live guard decision, an approval
 // context and an interactive callback, and the claim is about which field the
 // literal sets.
+//
+// ledger: A1/S07#1 规则含来源/scope/过期
 func TestRecordedRulesCarryAnExpiry(t *testing.T) {
 	src, err := os.ReadFile("../tools/permctx.go")
 	if err != nil {
@@ -661,6 +665,8 @@ func TestRecordedRulesCarryAnExpiry(t *testing.T) {
 // an execpolicy deny, which is the question this design avoids by never
 // having a prefix surface at all. Changing it is a security decision and
 // needs its own ADR.
+//
+// ledger: A1/S07#4 前缀规则有绕过回归测试
 func TestScopeMatchIsExactNotPrefix(t *testing.T) {
 	base := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
 	granted := Scope{Tool: "shell_run", Program: "go", Prefix: []string{"test", "./pkg"}}

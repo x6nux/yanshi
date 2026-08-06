@@ -133,6 +133,9 @@ func TestCmdMode_PickerValidInvalidAndAuto(t *testing.T) {
 
 // ---- cmdPermissions ----
 
+// TestCmdPermissions_ListRevokeUsage —— 见台账。
+//
+// ledger: A1/S07#3 用户可查看撤销
 func TestCmdPermissions_ListRevokeUsage(t *testing.T) {
 	rec := &recordingSession{}
 	m := wsModel(rec)

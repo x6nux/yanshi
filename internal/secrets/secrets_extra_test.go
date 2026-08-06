@@ -804,6 +804,9 @@ func requireKeyringWritable(t *testing.T, s Store, svc, acct string) {
 	}
 }
 
+// TestKeyring_RoundTripWhenAvailable —— 见台账。
+//
+// ledger: D3/S10#2 keyring 读写删
 func TestKeyring_RoundTripWhenAvailable(t *testing.T) {
 	s := NewOSKeyringStore()
 	const svc = "__yanshi_test_cov__"

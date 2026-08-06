@@ -20,6 +20,8 @@ import (
 //
 // This is a probe test in the sense of docs/superpowers/review-checklist.md:
 // it asserts what the documentation claims, not what the code happens to do.
+//
+// ledger: D3/S10#1 secret 不入日志/DB 明文
 func TestSafeOutputRegistryIsAnAliasNotACopy(t *testing.T) {
 	var buf bytes.Buffer
 	out := NewSafeOutput(&buf, nil)

@@ -252,8 +252,7 @@ func auditPermission(ctx context.Context, tool, decision, source, reasonCode str
 // the useful half and it is optional, so it is appended in parentheses only
 // when present.
 //
-// A1/S06#2 「规则结果可解释」的证据就是这里，但 ledger: 标记要与台账
-// 引用同一次编辑落地（GOV8 双向握手），翻牌时再补。
+// A1/S06#2「规则结果可解释」的实现在这里；台账引的是驱动它的那条测试。
 func explainDecision(dec guard.Decision) string {
 	if dec.Justification == "" {
 		return dec.Reason

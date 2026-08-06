@@ -21,8 +21,7 @@ import (
 // building. Assert on DenyErr -- the thing a denied tool call surfaces -- so a
 // future refactor that drops the explanation again fails here.
 //
-// A1/S06#2 「规则结果可解释」的证据就是这里，但 ledger: 标记要与台账
-// 引用同一次编辑落地（GOV8 双向握手），翻牌时再补。
+// ledger: A1/S06#2 规则结果可解释
 func TestExecPolicyJustificationReachesTheUser(t *testing.T) {
 	const justification = "real-CLI e2e tests cost money and need credentials"
 

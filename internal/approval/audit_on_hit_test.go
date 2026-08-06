@@ -17,6 +17,8 @@ import (
 // The table walks every outcome Match can produce, because "每次" is the load
 // bearing word. A test that only covered the persistent hit would still pass
 // if the session branch stopped auditing.
+//
+// ledger: A1/S07#2 每次命中可审计
 func TestEveryMatchOutcomeIsAudited(t *testing.T) {
 	cases := []struct {
 		name     string

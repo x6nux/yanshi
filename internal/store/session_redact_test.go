@@ -7,6 +7,9 @@ import (
 	"github.com/x6nux/yanshi/internal/secrets"
 )
 
+// TestStore_RedactsAllWritePaths —— 见台账。
+//
+// ledger: D3/S10#1 secret 不入日志/DB 明文
 func TestStore_RedactsAllWritePaths(t *testing.T) {
 	st, err := Open(":memory:")
 	if err != nil {

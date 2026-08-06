@@ -11,6 +11,8 @@ import (
 // ErrKeyringUnavailable (not a panic, not a generic error, and NOT
 // ErrSecretNotFound — a missing entry is a different condition that the
 // Manager must be able to distinguish from a missing backend).
+//
+// ledger: D3/S10#3 无 keyring 安全降级
 func TestKeyring_FailsGracefullyWhenUnavailable(t *testing.T) {
 	s := NewOSKeyringStore()
 	// Available() probe: distinguishes "no backend" from "missing entry".

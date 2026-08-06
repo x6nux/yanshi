@@ -80,9 +80,9 @@ func acceptanceDigest(acceptance string) string {
 // shrink over time — it is a mirror of the ledger, so it has exactly one row
 // per entry, and both a missing row and an extra row are errors.
 var acceptancePins = map[string]acceptancePin{
-	"A1/S06":     {Clauses: 3, Digest: "88cbb3dc5b591ae8"},
+	"A1/S06":     {Clauses: 3, Digest: "20209dc39f3c257d"},
 	"A1/S07":     {Clauses: 4, Digest: "fd6da443a4756fa4"},
-	"A1/S09":     {Clauses: 4, Digest: "251aa30f8fa18956"},
+	"A1/S09":     {Clauses: 4, Digest: "37f0d8c17a8168ba"},
 	"A1/T07/T08": {Clauses: 5, Digest: "763522e7105826af"},
 	"A2/DT1":     {Clauses: 4, Digest: "5d7202e3605abaa8"},
 	"A2/DT2":     {Clauses: 4, Digest: "2778fd2f7c5598f0"},

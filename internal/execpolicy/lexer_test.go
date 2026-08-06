@@ -24,6 +24,9 @@ func TestLexConsumesMultiByteOperatorsExactlyOnce(t *testing.T) {
 	}
 }
 
+// TestLexRejectsExpansionAndGlobBypasses —— 见台账。
+//
+// ledger: A1/S06#3 已知绕过样例（IFS、$()、glob 注入）有回归测试
 func TestLexRejectsExpansionAndGlobBypasses(t *testing.T) {
 	for _, raw := range []string{
 		`printf $IFS`, `printf ${IFS}`, `printf $VAR`, `printf $(id)`,
