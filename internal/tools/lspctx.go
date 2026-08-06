@@ -51,6 +51,43 @@ func diagFor(ctx context.Context, absPath, content string) string {
 		return ""
 	}
 	mgr.DidChange(absPath, content)
-	diags := mgr.Diagnostics(absPath, 0) // 0 → Manager 用 cfg.Timeout
+	diags := diagnosticsWithin(mgr, absPath, LSPDiagBudget)
 	return lsp.FormatDiags(filepath.Base(absPath), diags)
+}
+
+// LSPDiagBudget is the wall-clock ceiling on post-edit diagnostics for one
+// tool call. Shared by the single-file edit path (diagFor) and the multi-file
+// patch path, which divides it across the files it touches.
+const LSPDiagBudget = 2 * time.Second
+
+// diagnosticsWithin calls mgr.Diagnostics on its own goroutine and abandons the
+// result after budget.
+//
+// Passing the budget as the timeout argument — which is all both call sites used
+// to do, and diagFor did not even do that, passing 0 to mean "use the manager's
+// own default" — delegates the guarantee to the implementation. LSPManager is an
+// INTERFACE: the orchestrator takes whatever is wired into Config.LSP, and
+// Diagnostics is a synchronous call with no context parameter, so an
+// implementation that ignores its timeout argument holds the turn for as long as
+// it likes. "A timeout does not block the turn" then depends on a promise the
+// type system does not carry. Enforcing it here makes it the caller's property.
+//
+// The channel is buffered so an implementation that returns late still finishes
+// and exits rather than blocking forever on a send nobody will receive. One that
+// never returns leaks its goroutine — the deliberate trade: a leaked goroutine
+// is bounded harm, a held turn is a hung session.
+func diagnosticsWithin(mgr LSPManager, path string, budget time.Duration) []lsp.Diagnostic {
+	if budget <= 0 {
+		return nil
+	}
+	done := make(chan []lsp.Diagnostic, 1)
+	go func() { done <- mgr.Diagnostics(path, budget) }()
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case d := <-done:
+		return d
+	case <-timer.C:
+		return nil
+	}
 }

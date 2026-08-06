@@ -246,13 +246,35 @@
   # （internal/lsp::TestEveryDetectedLanguageHasAServer 两个方向都钉）。
   # 同时加了工作区标志文件闸门（::TestMarkerFilesGateSpawning）：此前无 go.mod 的
   # 目录也会拉起 gopls，而 gopls 在那种目录里对每个请求都报错。
-  # ⚠️ 仍需为「编辑后模型收到诊断」一句找端到端证据。
+  # 2026-08-07：partial → done。四条子句全部补齐，并修掉子句 3 的真实缺陷。
+  #   1 既有断言停在「编辑工具的返回值里带诊断」，离子句差一跳：返回值与模型
+  #     读到的消息之间还隔着 ADK 的 tool_result 封装、ReAct 的历史组装、以及
+  #     长 turn 上的压缩，任何一层丢掉这个字段都不会让谁变红。改成跑完整 turn，
+  #     用 FakeModel.RecordMessages 读第二次调用的输入。
+  #   3 **真缺陷**：diagFor 给 Diagnostics 传 0（= 用实现自己的默认），
+  #     diagForStaged 传的是剩余预算 —— 两条路径都只是**传参**，而 LSPManager
+  #     是接口、Diagnostics 是无 ctx 的同步调用，所以「不阻塞 turn」这条保证
+  #     完全依赖被注入实现守约，类型系统不承载它。用一个卡住的 stub 实测：
+  #     一个 turn 被挂住整整 60 秒。抽 diagnosticsWithin（goroutine + select）
+  #     让边界归调用方，两条路径共用，patchDiagBudget 并入 LSPDiagBudget。
+  #     代价具名写在那个函数的注释里：永不返回的实现会泄漏一个 goroutine ——
+  #     泄漏一个 goroutine 是有界伤害，挂住一个 turn 是会话卡死。
+  #   4 全仓此前**没有任何测试拉起过真实 language server**（含那个 net.Pipe
+  #     fixture —— 它对话的是本仓自己写的东西）。新测试起真 gopls，断言的是
+  #     **行号**而不是「有诊断」：LSP 0-based 与编辑器 1-based 的差一错会把模型
+  #     支去读没问题的代码，摘掉 client.go 的 +1 当场变红。
+  #     ⚠️ 它在缺 gopls 时 skip，而永远 skip 读起来就是 pass —— 所以 CI 加了
+  #     lsp-e2e job 装 gopls，且那一步用 grep 把 SKIP 也判成失败。
 - id: "B2/LSP1"
   package: "W6"
-  verdict: partial
+  verdict: done
   title: "LSP 诊断回喂"
   acceptance: "编辑后模型收到诊断；server 缺失安全降级；超时不阻塞 turn；Go/Python/TS 至少一种端到端可用"
-  evidence: ""
+  evidence:
+    "1": "internal/agent/orchestrator::TestE2E_LSPDiagnosticsReachTheModel"
+    "2": "internal/agent/orchestrator::TestE2E_NoLSPStillCompletesTheEdit; internal/tools::TestDiagnosticsLSPUnavailableIsLocalDegradation"
+    "3": "internal/agent/orchestrator::TestE2E_LSPTimeoutDoesNotBlockTheTurn"
+    "4": "internal/lsp::TestRealGoplsReportsTheBrokenLine"
 
 # 2026-08-04 复核：missing → partial。「missing」是台账**低报**：工具存在
 # （internal/tools/testrun.go）、被装配（internal/bootstrap/bootstrap.go::Build 里的 tools.NewTestRunTool()）、在出厂 profile 里。

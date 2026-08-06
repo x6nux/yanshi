@@ -379,7 +379,7 @@ func prefixLines(prefix string, b []byte) string {
 
 // patchDiagBudget 是 patch 多文件诊断查询的共享总预算(评审 #12)。每文件均分,
 // 串行调用(诊断查询是等 channel,无 CPU 开销,errgroup 无收益且引复杂度)。
-const patchDiagBudget = 2 * time.Second
+const patchDiagBudget = LSPDiagBudget
 
 // diagForStaged 对 staged 中所有写盘项(final != nil)各查一次诊断,拼接渲染。
 // 无 Manager / 全无诊断 → 空串(调用方据此省略 JSON 字段)。每文件的超时取自
@@ -414,7 +414,7 @@ func diagForStaged(ctx context.Context, staged []stagedChange) string {
 		}
 		perFile := remaining / time.Duration(len(todo)-i)
 		mgr.DidChange(p.abs, p.content)
-		diags := mgr.Diagnostics(p.abs, perFile)
+		diags := diagnosticsWithin(mgr, p.abs, perFile)
 		if text := lsp.FormatDiags(filepath.Base(p.abs), diags); text != "" {
 			b.WriteString(text)
 			b.WriteString("\n")

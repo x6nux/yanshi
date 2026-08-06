@@ -151,6 +151,30 @@ jobs:
           cache: true
       - run: go test -run '^$' -bench=. -benchtime=10x ./internal/vcs ./internal/tools ./internal/agent/orchestrator
 
+  lsp-e2e:
+    name: lsp-e2e (real gopls)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # TestRealGoplsReportsTheBrokenLine skips when gopls is absent, and a test
+      # that always skips reads as a pass. This step is what makes B2/LSP1's
+      # end-to-end clause an executed assertion rather than a permanent skip.
+      - name: install gopls
+        run: go install golang.org/x/tools/gopls@latest
+      - name: run the real-server test
+        run: |
+          set -e
+          # -run pins the one test; -v so the log distinguishes PASS from SKIP,
+          # and the grep turns a skip into a job failure — otherwise a broken
+          # install step would leave this job green for the wrong reason.
+          out=$(go test ./internal/lsp -run TestRealGoplsReportsTheBrokenLine -v -timeout 120s)
+          echo "$out"
+          echo "$out" | grep -q -- '--- PASS: TestRealGoplsReportsTheBrokenLine'
+
   governance:
     name: governance (all archtest gates except GOV5/GOV7 + ledger)
     runs-on: ubuntu-latest

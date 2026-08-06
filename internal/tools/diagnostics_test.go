@@ -122,6 +122,8 @@ func TestDiagnosticsAggregatesIndependentProbes(t *testing.T) {
 // in its own row instead of failing the call.
 //
 // ledger: B3/DT5#2 各子项可独立失败不拖垮
+//
+// ledger: B2/LSP1#2 server 缺失安全降级
 func TestDiagnosticsLSPUnavailableIsLocalDegradation(t *testing.T) {
 	diagLSPSourceOverride = stubLSPManager{enabled: false}
 	t.Cleanup(func() { diagLSPSourceOverride = nil })
