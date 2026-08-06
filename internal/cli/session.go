@@ -265,6 +265,32 @@ func (s *Session) Send(text string) <-chan StreamEvent {
 	return ch
 }
 
+// SendTurn delivers one user turn as a full frame, so it can carry @path
+// attachments or images.
+//
+// It is NOT SendFrame. On the WS backend SendFrame sets controlMode, which
+// closes the stream on the first control reply rather than on done — an image
+// turn sent that way ends before the model has answered. That is what the
+// image path was doing.
+func (s *Session) SendTurn(f proto.ClientFrame) <-chan StreamEvent {
+	s.mu.Lock()
+	b := s.backend
+	s.mu.Unlock()
+	if b == nil {
+		ch := make(chan StreamEvent)
+		close(ch)
+		return ch
+	}
+	ch, err := b.SendTurn(context.Background(), f)
+	if err != nil {
+		out := make(chan StreamEvent, 1)
+		out <- StreamEvent{Kind: "error", Err: err}
+		close(out)
+		return out
+	}
+	return ch
+}
+
 // SendFrame writes a Phase-10 control frame (set_model / list_models / clear /
 // get_status / compact / list_mcp / permission_response) and returns the reply
 // stream. For request frames the channel receives the server's single-frame

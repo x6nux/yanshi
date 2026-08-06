@@ -240,6 +240,7 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 	// control-frame actions (job_write/job_cancel) against the same permission
 	// profile the in-flight turns use (Task 22).
 	s.controlProfile = o.Profile()
+	s.workRoot = o.WorkRoot()
 	s.HandleFunc("GET /api/v1/chat/ws", func(w http.ResponseWriter, r *http.Request) {
 		raw, err := wsUpgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -476,6 +477,14 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 				conn.write(proto.NewError(errMsg))
 				conn.write(proto.NewDone())
 				return
+			}
+			// UX3: @path attachments. Resolved here — after the skill prefix is
+			// expanded, before the message enters history — so what the model
+			// sees and what gets persisted are the same text. The refusal block
+			// is part of it: a user whose file was rejected must not read the
+			// answer as though it had arrived.
+			if pre := attachmentPreamble(resolveAttachments(s.workRoot, s.controlProfile, cf.Attachments)); pre != "" {
+				query = pre + query
 			}
 			cs.history = append(cs.history, &schema.Message{Role: schema.User, Content: query})
 

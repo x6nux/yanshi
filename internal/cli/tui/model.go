@@ -25,6 +25,10 @@ import (
 // fakeSession / scriptedSession / recordingSession.
 type tuiSession interface {
 	Send(text string) <-chan cli.StreamEvent
+	// SendTurn delivers a turn that carries attachments or images. Distinct
+	// from SendFrame: that one is for CONTROL frames, and on the WS backend it
+	// closes the stream on the first control reply instead of on done.
+	SendTurn(f proto.ClientFrame) <-chan cli.StreamEvent
 	// SendFrame writes a Phase-10 control frame and returns the reply stream
 	// (nil for permission_response, which carries no direct ack). Used by the
 	// slash-command handlers (T32–T35).

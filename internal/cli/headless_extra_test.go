@@ -92,6 +92,14 @@ type frameBackend struct {
 	permReturn bool // SendFrame returns nil for permission_response
 }
 
+// SendTurn delegates to Send: these fakes exercise the text path only.
+// It is on the interface rather than an optional capability so a backend
+// that forgets it fails to compile — an optional one would silently drop
+// every attachment.
+func (b *frameBackend) SendTurn(ctx context.Context, fr proto.ClientFrame) (<-chan StreamEvent, error) {
+	return b.Send(ctx, fr.Text)
+}
+
 func (b *frameBackend) Send(_ context.Context, _ string) (<-chan StreamEvent, error) {
 	if b.sendErr != nil {
 		return nil, b.sendErr
@@ -170,6 +178,14 @@ func TestRunHeadlessWithFrames_EventErrShortCircuits(t *testing.T) {
 
 // errFrameBackend is a frameBackend whose Send emits one error event.
 type errFrameBackend struct{ frameBackend }
+
+// SendTurn delegates to Send: these fakes exercise the text path only.
+// It is on the interface rather than an optional capability so a backend
+// that forgets it fails to compile — an optional one would silently drop
+// every attachment.
+func (b *errFrameBackend) SendTurn(ctx context.Context, fr proto.ClientFrame) (<-chan StreamEvent, error) {
+	return b.Send(ctx, fr.Text)
+}
 
 func (b *errFrameBackend) Send(_ context.Context, _ string) (<-chan StreamEvent, error) {
 	ch := make(chan StreamEvent, 1)

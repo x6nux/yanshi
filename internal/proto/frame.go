@@ -76,6 +76,25 @@ type ClientFrame struct {
 	// pre-G on the wire (omitempty drops it). ADDITIVE: existing clients/frames
 	// are unchanged.
 	Images []ImageAttach `json:"images,omitempty"` // user_message
+
+	// Attachments are @path file references for this turn (UX3). The client
+	// sends PATHS ONLY: the server reads the bytes, inside the work root and
+	// through the same guard profile a tool call would face.
+	//
+	// Sending content instead was the rejected design. A client-supplied blob
+	// is unauthenticated input that has already escaped every filesystem
+	// boundary by the time the server sees it — the server could not tell an
+	// attachment the user picked from one an injected prompt fabricated. A
+	// path can be checked; bytes cannot.
+	//
+	// Empty/absent = a turn with no attachments, byte-identical on the wire.
+	Attachments []AttachRef `json:"attachments,omitempty"` // user_message
+}
+
+// AttachRef is one @path reference. It carries a path and nothing else, by
+// design — see ClientFrame.Attachments.
+type AttachRef struct {
+	Path string `json:"path"`
 }
 
 // FeaturesSetPayload is the body of a features_set frame. See ClientFrame.
@@ -117,6 +136,13 @@ func NewUserMessageWithSchema(text string, schemaDoc json.RawMessage) ClientFram
 // ADDITIVE: the wire form of an images-less user_message is unchanged.
 func NewUserMessageWithImages(text string, images []ImageAttach) ClientFrame {
 	return ClientFrame{Type: "user_message", Text: text, Images: images}
+}
+
+// NewUserMessageWithAttachments builds a user_message carrying @path
+// references. Mirrors NewUserMessageWithImages; empty refs produce a frame
+// indistinguishable from a plain text turn.
+func NewUserMessageWithAttachments(text string, refs []AttachRef) ClientFrame {
+	return ClientFrame{Type: "user_message", Text: text, Attachments: refs}
 }
 
 // NewCancel builds a cancel frame.

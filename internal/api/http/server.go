@@ -140,6 +140,10 @@ type Server struct {
 	// CloneStub so handler-level WS tests are deterministic and offline.
 	skillsCloner   skills.CloneImpl
 	controlProfile guard.PermissionProfile
+	// workRoot is the orchestrator's project root, captured alongside
+	// controlProfile. @path attachments are resolved against it before the
+	// turn starts, so no tools context exists yet to carry it.
+	workRoot string
 	// priceTab / featuresReg carry the COST1 pricing table and OBS3 feature
 	// registry. They are only read by the WS handler (turn-end billing + the
 	// /features_* control frames); nil means "render N/A" / "no registry".

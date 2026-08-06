@@ -4,12 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/x6nux/yanshi/internal/proto"
 	"strings"
 	"testing"
 )
 
 // errSendBackend is a ChatBackend whose Send always returns an error.
 type errSendBackend struct{ fakeExecBackend }
+
+// SendTurn delegates to Send: these fakes exercise the text path only.
+// It is on the interface rather than an optional capability so a backend
+// that forgets it fails to compile — an optional one would silently drop
+// every attachment.
+func (e *errSendBackend) SendTurn(ctx context.Context, fr proto.ClientFrame) (<-chan StreamEvent, error) {
+	return e.Send(ctx, fr.Text)
+}
 
 func (e *errSendBackend) Send(_ context.Context, _ string) (<-chan StreamEvent, error) {
 	return nil, fmt.Errorf("send boom")

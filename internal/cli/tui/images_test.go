@@ -20,7 +20,7 @@ func TestAttachPathDetectsImageExtension(t *testing.T) {
 }
 
 func TestBuildUserMessageFrameIncludesImages(t *testing.T) {
-	fr := buildSendFrame("look", []proto.ImageAttach{{ID: "img-1", Fmt: "png", DataB64: "AA"}})
+	fr := buildSendFrame("look", []proto.ImageAttach{{ID: "img-1", Fmt: "png", DataB64: "AA"}}, nil)
 	if len(fr.Images) != 1 || fr.Images[0].ID != "img-1" {
 		t.Fatalf("frame images = %#v", fr.Images)
 	}
@@ -30,7 +30,7 @@ func TestBuildUserMessageFrameIncludesImages(t *testing.T) {
 }
 
 func TestBuildUserMessageFrameOmitsImagesWhenNone(t *testing.T) {
-	fr := buildSendFrame("text only", nil)
+	fr := buildSendFrame("text only", nil, nil)
 	if len(fr.Images) != 0 {
 		t.Fatalf("text-only frame must not carry images: %#v", fr)
 	}

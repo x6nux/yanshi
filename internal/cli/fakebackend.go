@@ -19,7 +19,18 @@ type fakeBackend struct {
 
 func newFakeBackend(chunks []string) *fakeBackend { return &fakeBackend{chunks: chunks} }
 
-func (b *fakeBackend) Send(_ context.Context, _ string) (<-chan StreamEvent, error) {
+func (b *fakeBackend) Send(ctx context.Context, text string) (<-chan StreamEvent, error) {
+	return b.SendTurn(ctx, proto.NewUserMessage(text))
+}
+
+// SendTurn records the frame before replaying the scripted chunks, so a test
+// can assert what the TUI actually put on the wire — attachments included.
+// Send used to discard its argument entirely, which made "did the turn carry
+// the attachment?" unanswerable from the fake.
+func (b *fakeBackend) SendTurn(_ context.Context, f proto.ClientFrame) (<-chan StreamEvent, error) {
+	b.mu.Lock()
+	b.frames = append(b.frames, f)
+	b.mu.Unlock()
 	ch := make(chan StreamEvent, len(b.chunks)+1)
 	go func() {
 		defer close(ch)

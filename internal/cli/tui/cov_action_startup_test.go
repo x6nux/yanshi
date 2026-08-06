@@ -20,6 +20,14 @@ type replySession struct {
 	ch chan cli.StreamEvent
 }
 
+// SendTurn routes an attachment-carrying turn through the same path Send
+// uses. Required on the interface rather than optional so a session that
+// forgets it fails to compile — an optional one would silently drop every
+// attachment on that path.
+func (r *replySession) SendTurn(fr proto.ClientFrame) <-chan cli.StreamEvent {
+	return r.Send(fr.Text)
+}
+
 func (r *replySession) Send(_ string) <-chan cli.StreamEvent                 { return nil }
 func (r *replySession) SendFrame(_ proto.ClientFrame) <-chan cli.StreamEvent { return r.ch }
 func (r *replySession) CancelCurrent() error                                 { return nil }

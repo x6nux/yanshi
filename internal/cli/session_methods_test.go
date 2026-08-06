@@ -47,6 +47,14 @@ type ctlBackend struct {
 	closed   bool
 }
 
+// SendTurn delegates to Send: these fakes exercise the text path only.
+// It is on the interface rather than an optional capability so a backend
+// that forgets it fails to compile — an optional one would silently drop
+// every attachment.
+func (b *ctlBackend) SendTurn(ctx context.Context, fr proto.ClientFrame) (<-chan StreamEvent, error) {
+	return b.Send(ctx, fr.Text)
+}
+
 func (b *ctlBackend) Send(_ context.Context, _ string) (<-chan StreamEvent, error) {
 	if b.sendErr != nil {
 		return nil, b.sendErr

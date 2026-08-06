@@ -27,6 +27,14 @@ type fakeExecBackend struct {
 	frames []string // recorded "<type>:<payload>" for each Send/SendFrame
 }
 
+// SendTurn delegates to Send: these fakes exercise the text path only.
+// It is on the interface rather than an optional capability so a backend
+// that forgets it fails to compile — an optional one would silently drop
+// every attachment.
+func (f *fakeExecBackend) SendTurn(ctx context.Context, fr proto.ClientFrame) (<-chan StreamEvent, error) {
+	return f.Send(ctx, fr.Text)
+}
+
 func (f *fakeExecBackend) Send(_ context.Context, text string) (<-chan StreamEvent, error) {
 	f.mu.Lock()
 	f.frames = append(f.frames, "user_message:"+text)
@@ -145,6 +153,14 @@ func TestExec_ServerErrorFrameReturnsError(t *testing.T) {
 // errExecBackend is a fakeExecBackend whose Send emits a single error frame.
 type errExecBackend struct{ fakeExecBackend }
 
+// SendTurn delegates to Send: these fakes exercise the text path only.
+// It is on the interface rather than an optional capability so a backend
+// that forgets it fails to compile — an optional one would silently drop
+// every attachment.
+func (e *errExecBackend) SendTurn(ctx context.Context, fr proto.ClientFrame) (<-chan StreamEvent, error) {
+	return e.Send(ctx, fr.Text)
+}
+
 func (e *errExecBackend) Send(_ context.Context, _ string) (<-chan StreamEvent, error) {
 	e.mu.Lock()
 	e.frames = append(e.frames, "user_message:err")
@@ -160,6 +176,14 @@ func (e *errExecBackend) Send(_ context.Context, _ string) (<-chan StreamEvent, 
 // blockExecBackend blocks its Send channel until ctx.Done, mirroring wsBackend's
 // ctx wiring (which closes the channel on cancel).
 type blockExecBackend struct{ fakeExecBackend }
+
+// SendTurn delegates to Send: these fakes exercise the text path only.
+// It is on the interface rather than an optional capability so a backend
+// that forgets it fails to compile — an optional one would silently drop
+// every attachment.
+func (b *blockExecBackend) SendTurn(ctx context.Context, fr proto.ClientFrame) (<-chan StreamEvent, error) {
+	return b.Send(ctx, fr.Text)
+}
 
 func (b *blockExecBackend) Send(ctx context.Context, text string) (<-chan StreamEvent, error) {
 	b.mu.Lock()
@@ -209,6 +233,14 @@ type recordingBackend struct {
 	prompts  []string
 	restores int
 	mu       sync.Mutex
+}
+
+// SendTurn delegates to Send: these fakes exercise the text path only.
+// It is on the interface rather than an optional capability so a backend
+// that forgets it fails to compile — an optional one would silently drop
+// every attachment.
+func (r *recordingBackend) SendTurn(ctx context.Context, fr proto.ClientFrame) (<-chan StreamEvent, error) {
+	return r.Send(ctx, fr.Text)
 }
 
 func (r *recordingBackend) Send(_ context.Context, text string) (<-chan StreamEvent, error) {

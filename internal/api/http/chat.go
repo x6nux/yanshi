@@ -26,6 +26,10 @@ import (
 // (CB5: the extracted core is callable directly from tests without
 // re-registering the mux).
 func (s *Server) Chat(o *orchestrator.Orchestrator, models map[string]model.BaseChatModel, reg *skills.Registry) {
+	// Captured for the same reason ChatWS captures them: @path attachments are
+	// resolved before the turn starts, outside every tools context.
+	s.controlProfile = o.Profile()
+	s.workRoot = o.WorkRoot()
 	s.HandleFunc("POST /api/v1/chat", func(w http.ResponseWriter, r *http.Request) {
 		s.handleSSEInternal(w, r, o, models, reg)
 	})
@@ -63,6 +67,12 @@ func (s *Server) handleSSEInternal(w http.ResponseWriter, r *http.Request,
 		// which is exactly how attachments POSTed to SSE used to disappear
 		// without even a parse error.
 		Images []proto.ImageAttach `json:"images,omitempty"`
+		// Attachments carries @path references, matching ClientFrame.Attachments.
+		// Declared here explicitly for the same reason Images is: SSE keeps its
+		// own request struct and never unmarshals proto.ClientFrame, so a field
+		// added only there reaches this transport as silence — json.Decode
+		// ignores unknown keys without an error.
+		Attachments []proto.AttachRef `json:"attachments,omitempty"`
 	}
 	if err := json.NewDecoder(limitBody(w, r)).Decode(&req); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
@@ -86,6 +96,12 @@ func (s *Server) handleSSEInternal(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		last.Content = q
+		// UX3: same resolver as WS, same fail-closed rules. SSE has no
+		// permission callback at all, which is the case the resolver's
+		// "Prompt counts as refusal" rule was written for.
+		if pre := attachmentPreamble(resolveAttachments(s.workRoot, s.controlProfile, req.Attachments)); pre != "" {
+			last.Content = pre + last.Content
+		}
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")

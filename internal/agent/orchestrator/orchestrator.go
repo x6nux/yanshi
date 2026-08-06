@@ -292,6 +292,12 @@ func unknownToolHandler(names []string) func(ctx context.Context, name, input st
 // Profile returns the permission profile.
 func (o *Orchestrator) Profile() guard.PermissionProfile { return o.profile }
 
+// WorkRoot is the project root every filesystem boundary is measured against.
+// The HTTP layer needs it to resolve @path attachments, which happen before a
+// turn starts and therefore outside every tools context that would otherwise
+// carry it.
+func (o *Orchestrator) WorkRoot() string { return o.workRoot }
+
 // ProfileForTest exposes the resolved profile for tests.
 func (o *Orchestrator) ProfileForTest() guard.PermissionProfile { return o.profile }
 

@@ -58,6 +58,17 @@ func (b *sseBackend) Mode() string { return "sse" }
 // history, and streams structured SSE events. On turn completion the
 // accumulated assistant text is appended to the history (multi-turn memory).
 func (b *sseBackend) Send(ctx context.Context, text string) (<-chan StreamEvent, error) {
+	return b.SendTurn(ctx, proto.NewUserMessage(text))
+}
+
+// SendTurn is the attachment-capable form. SSE keeps its own request struct
+// (the shared frame vocabulary is ServerFrame only), so every field the wire
+// carries has to be declared twice — once on ClientFrame and once here.
+// json.Decode ignores unknown keys silently, so a field added on one side and
+// forgotten on the other simply disappears, which is how image attachments
+// POSTed to SSE used to vanish without an error.
+func (b *sseBackend) SendTurn(ctx context.Context, frame proto.ClientFrame) (<-chan StreamEvent, error) {
+	text := frame.Text
 	b.histMu.Lock()
 	b.history = append(b.history, schema.Message{Role: schema.User, Content: text})
 	snapshot := make([]schema.Message, len(b.history))
@@ -66,13 +77,17 @@ func (b *sseBackend) Send(ctx context.Context, text string) (<-chan StreamEvent,
 
 	b.turns++
 	body, _ := json.Marshal(struct {
-		Messages []schema.Message `json:"messages"`
-		ThreadID string           `json:"thread_id,omitempty"`
-		TurnID   string           `json:"turn_id,omitempty"`
+		Messages    []schema.Message    `json:"messages"`
+		ThreadID    string              `json:"thread_id,omitempty"`
+		TurnID      string              `json:"turn_id,omitempty"`
+		Images      []proto.ImageAttach `json:"images,omitempty"`
+		Attachments []proto.AttachRef   `json:"attachments,omitempty"`
 	}{
-		Messages: snapshot,
-		ThreadID: b.threadID,
-		TurnID:   b.threadID + ":" + fmt.Sprintf("%d", b.turns),
+		Messages:    snapshot,
+		ThreadID:    b.threadID,
+		TurnID:      b.threadID + ":" + fmt.Sprintf("%d", b.turns),
+		Images:      frame.Images,
+		Attachments: frame.Attachments,
 	})
 
 	// Create the cancellable child ctx BEFORE building the request so the

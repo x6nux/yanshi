@@ -32,6 +32,14 @@ func TestModel_TypesIntoInput(t *testing.T) {
 // fakeSession implements just enough of cli.Session for the TUI tests.
 type fakeSession struct{}
 
+// SendTurn routes an attachment-carrying turn through the same path Send
+// uses. Required on the interface rather than optional so a session that
+// forgets it fails to compile — an optional one would silently drop every
+// attachment on that path.
+func (f *fakeSession) SendTurn(fr proto.ClientFrame) <-chan cli.StreamEvent {
+	return f.Send(fr.Text)
+}
+
 func (f *fakeSession) Send(_ string) <-chan cli.StreamEvent                 { return nil }
 func (f *fakeSession) SendFrame(_ proto.ClientFrame) <-chan cli.StreamEvent { return nil }
 func (f *fakeSession) CancelCurrent() error                                 { return nil }
@@ -47,6 +55,14 @@ type scriptedSession struct {
 }
 
 func newScriptedSession(evs []cli.StreamEvent) *scriptedSession { return &scriptedSession{events: evs} }
+
+// SendTurn routes an attachment-carrying turn through the same path Send
+// uses. Required on the interface rather than optional so a session that
+// forgets it fails to compile — an optional one would silently drop every
+// attachment on that path.
+func (s *scriptedSession) SendTurn(fr proto.ClientFrame) <-chan cli.StreamEvent {
+	return s.Send(fr.Text)
+}
 
 func (s *scriptedSession) Send(_ string) <-chan cli.StreamEvent                 { return nil }
 func (s *scriptedSession) SendFrame(_ proto.ClientFrame) <-chan cli.StreamEvent { return nil }
@@ -71,6 +87,17 @@ type recordingSession struct {
 	canceled int
 }
 
+// SendTurn records the WHOLE frame, not just its text: the attachments and
+// images a turn carries are the thing tests need to assert on, and recording
+// only fr.Text would make "did the turn carry the file?" unanswerable.
+func (r *recordingSession) SendTurn(fr proto.ClientFrame) <-chan cli.StreamEvent {
+	// frames only, NOT sentText: tests tell the frame path from the plain-text
+	// path by which of the two recorded, and recording both would erase that
+	// distinction.
+	r.frames = append(r.frames, fr)
+	return nil
+}
+
 func (r *recordingSession) Send(text string) <-chan cli.StreamEvent {
 	r.sentText = append(r.sentText, text)
 	return nil
@@ -88,6 +115,14 @@ func (r *recordingSession) Root() string         { return "/proj" }
 // status-line path end-to-end through submit().
 type channelSession struct {
 	ch chan cli.StreamEvent
+}
+
+// SendTurn routes an attachment-carrying turn through the same path Send
+// uses. Required on the interface rather than optional so a session that
+// forgets it fails to compile — an optional one would silently drop every
+// attachment on that path.
+func (c *channelSession) SendTurn(fr proto.ClientFrame) <-chan cli.StreamEvent {
+	return c.Send(fr.Text)
 }
 
 func (c *channelSession) Send(_ string) <-chan cli.StreamEvent                 { return c.ch }

@@ -42,8 +42,18 @@ func (m model) dispatchSend(text string, pasted bool) (model, tea.Cmd) {
 	// Send. Draining here — the single point where a turn actually leaves the
 	// TUI — means every send path (manual submit and queue drain alike) both
 	// carries the images once and clears them once.
-	if imgs := m.takePendingImages(); len(imgs) > 0 {
-		m.streamCh = m.sess.SendFrame(buildSendFrame(text, imgs))
+	// UX3: @path references are extracted from the text the user typed. The
+	// text keeps the @token — the model should see what was asked, and the
+	// server prepends the file contents ahead of it.
+	imgs := m.takePendingImages()
+	refs := extractAttachRefs(text, m.rootPath)
+	if len(imgs) > 0 || len(refs) > 0 {
+		// SendTurn, not SendFrame. SendFrame is for CONTROL frames: on the WS
+		// backend it sets controlMode, which closes the stream on the first
+		// control reply instead of on done, so a turn sent that way ends
+		// before the model has answered. The image path was doing exactly
+		// that.
+		m.streamCh = m.sess.SendTurn(buildSendFrame(text, imgs, refs))
 	} else {
 		m.streamCh = m.sess.Send(text)
 	}

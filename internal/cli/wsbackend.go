@@ -63,9 +63,14 @@ func newWSBackend(ctx context.Context, url string) (*wsBackend, error) {
 
 func (b *wsBackend) Mode() string { return "ws" }
 
-// Send writes a user_message frame and returns a channel receiving the turn's
-// events (closed on done/error). Only one turn at a time (sendMu).
+// Send writes a text-only user_message. See SendTurn.
 func (b *wsBackend) Send(ctx context.Context, text string) (<-chan StreamEvent, error) {
+	return b.SendTurn(ctx, proto.NewUserMessage(text))
+}
+
+// SendTurn writes a user_message frame and returns a channel receiving the
+// turn's events (closed on done/error). Only one turn at a time (sendMu).
+func (b *wsBackend) SendTurn(ctx context.Context, frame proto.ClientFrame) (<-chan StreamEvent, error) {
 	b.sendMu.Lock()
 	defer b.sendMu.Unlock()
 
@@ -83,7 +88,7 @@ func (b *wsBackend) Send(ctx context.Context, text string) (<-chan StreamEvent, 
 	b.cancelCurrent = cancel
 	b.cancelMu.Unlock()
 
-	data, err := json.Marshal(proto.NewUserMessage(text))
+	data, err := json.Marshal(frame)
 	if err != nil {
 		cancel()
 		return nil, err

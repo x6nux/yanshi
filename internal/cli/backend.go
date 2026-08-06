@@ -119,7 +119,15 @@ type MessageStub struct {
 // permission_response (a mid-turn reply with no direct ack) it returns nil.
 // Cancel aborts the in-flight turn. Mode reports the transport ("ws"/"sse"/"fake").
 type ChatBackend interface {
+	// Send is the text-only turn. It is a thin wrapper over SendTurn kept
+	// because most callers have nothing to attach.
 	Send(ctx context.Context, text string) (<-chan StreamEvent, error)
+	// SendTurn writes a user_message frame that may carry attachments or
+	// images. It exists because SendFrame cannot be used for a turn: on the WS
+	// backend SendFrame sets controlMode, which closes the channel on the
+	// first control reply instead of on done — so a turn sent that way would
+	// terminate before the model had finished.
+	SendTurn(ctx context.Context, f proto.ClientFrame) (<-chan StreamEvent, error)
 	SendFrame(ctx context.Context, f proto.ClientFrame) (<-chan StreamEvent, error)
 	Cancel() error
 	Close() error
