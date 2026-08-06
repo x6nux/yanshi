@@ -190,6 +190,7 @@ const NoTimeout = time.Duration(-1)
 func NewGuardedTool(name, display, desc string, timeout time.Duration,
 	params *schema.ParamsOneOf, stream StreamFunc) *GuardedTool {
 	mustHaveTimeout(name, timeout)
+	mustHaveDisplayName(name, display)
 	return &GuardedTool{name: name, display: display, desc: desc, timeout: timeout, params: params, stream: stream}
 }
 
@@ -203,6 +204,23 @@ func mustHaveTimeout(name string, timeout time.Duration) {
 	}
 }
 
+// mustHaveDisplayName rejects an empty TUI block title at construction, for the
+// same reason mustHaveTimeout rejects a zero duration: the failure is silent
+// and downstream. DisplayName is what labels the tool's block in the TUI and
+// what ToolChunkCallback carries as its first argument, so an empty one gives
+// the operator an unlabelled block and gives every consumer keyed by display
+// name a shared "" bucket. Nothing errors; the output is just anonymous.
+//
+// Checking here rather than counting non-empty names over the registry makes it
+// unrepresentable instead of merely absent — a tool constructed anywhere,
+// including in a test or a plugin, cannot reach the registry without one.
+func mustHaveDisplayName(name, display string) {
+	if display == "" {
+		panic("tools: " + name + ": empty DisplayName leaves the TUI block unlabelled " +
+			"and collapses every display-keyed consumer into one bucket")
+	}
+}
+
 // NewApprovalGuardedTool builds a GuardedTool that ALWAYS requires explicit
 // per-call user approval, regardless of the PermissionProfile or permission
 // mode. Used for mutation tools that must not be auto-approved (e.g. GitHub
@@ -212,6 +230,7 @@ func mustHaveTimeout(name string, timeout time.Duration) {
 func NewApprovalGuardedTool(name, display, desc string, timeout time.Duration,
 	params *schema.ParamsOneOf, stream StreamFunc) *GuardedTool {
 	mustHaveTimeout(name, timeout)
+	mustHaveDisplayName(name, display)
 	return &GuardedTool{name: name, display: display, desc: desc, timeout: timeout, params: params, stream: stream, approvalRequired: true}
 }
 

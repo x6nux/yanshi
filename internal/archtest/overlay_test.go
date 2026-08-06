@@ -57,6 +57,7 @@ var overlayImmuneGateFiles = []string{
 	"slashcmd_test.go",
 	"status_evidence_test.go",
 	"status_test.go",
+	"toolcontract_test.go",
 }
 
 // runtimeDiskReads are the standard-library calls that read bytes off the

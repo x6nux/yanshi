@@ -863,6 +863,42 @@ func TestNoRegisteredToolHasAZeroTimeout(t *testing.T) {
 	}
 }
 
+// TestEveryRegisteredToolImplementsTheToolContract closes the gap the registry's
+// static type leaves open.
+//
+// allTools is []orchestrator.BaseTool, an alias for Eino's InvokableTool, which
+// asks for Info + InvokableRun and nothing else. yanshi's own contract —
+// tools.Tool — additionally requires DisplayName (the TUI block title),
+// DefaultTimeout (the bound TestNoRegisteredToolHasAZeroTimeout then checks)
+// and Stream (the single execution entry point both the model path and the TUI
+// path consume). Nothing in the compiler stops a member that satisfies only the
+// Eino half from being appended, and the snapshot loop deliberately skips such
+// a member rather than defaulting it — so without this assertion, one would
+// register cleanly, render with no title, run with no bound, and be invisible
+// to the timeout gate because it never entered that map.
+//
+// The two sets are built from the same iteration, so equality here means every
+// registered tool passed the tools.Tool assertion.
+//
+// ledger: M1/SPEC-TOOLIF#1 所有工具统一到 Tool 接口（DisplayName+DefaultTimeout+Stream）
+func TestEveryRegisteredToolImplementsTheToolContract(t *testing.T) {
+	app := buildAppWithProviders(t, "")
+	if len(app.ToolNames) == 0 {
+		t.Fatal("no tools registered: this test cannot fail")
+	}
+	var missing []string
+	for _, name := range app.ToolNames {
+		if _, ok := app.ToolTimeouts[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		t.Errorf("%d of %d registered tools do not implement tools.Tool: %v\n"+
+			"  they render with no DisplayName, run with no DefaultTimeout, and are "+
+			"skipped by TestNoRegisteredToolHasAZeroTimeout", len(missing), len(app.ToolNames), missing)
+	}
+}
+
 // TestMCPHealthLoopIsStarted pins a wiring that GOV4 structurally cannot see.
 //
 // internal/mcp/health.go shipped complete, tested, and with zero non-test

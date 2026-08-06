@@ -1253,11 +1253,33 @@
   # 无界必须显式写 NoTimeout（Stream 里单独分支，因为 WithTimeout 对任何非正数都
   # 当场过期，换个常量值解决不了问题）。装配侧由 App.ToolTimeouts +
   # internal/bootstrap::TestNoRegisteredToolHasAZeroTimeout 二次把关。
-  # ⚠️ 仍需逐句核对"废弃 JSON 包装与 ToolProgressCallback"等几句。
+  # 2026-08-07：partial → done。五条子句逐条补齐，每条的变异探针都验过。
+  #   1 注册表的静态类型是 []orchestrator.BaseTool（Eino 的 InvokableTool 别名），
+  #     只要 Info+InvokableRun —— 编译期从不要求成员满足 yanshi 自己的 Tool 契约。
+  #     快照循环原先用结构化断言 interface{ DefaultTimeout() ... } 探一个方法，
+  #     换成具名的 tools.Tool（三方法一起），ToolTimeouts 于是成为「谁完整履约」的
+  #     记录。DisplayName 那半改在构造期 panic 而不是事后清点 —— 让它不可表达，
+  #     而不只是今天恰好为空的没有。
+  #   2 SyncStream 把 Text 与 Result 设成同一个字符串，所以一个也拼接 Text 的
+  #     InvokableRun 不会让树里任何测试变红。探针给每个字段不同的值。
+  #   4 第一版自己推 chunk，证的是 GuardedTool 转发字段（那是子句 2）。改成驱动
+  #     真实的 agent_start：runner 扮演 orchestrator 发 SubAgentEvent，被测的是
+  #     agent.go 的 bindSubAgentProgress。
+  #   3 是「废弃」类要求，功能测试对它无效，只能靠禁止性门禁。扫的是 AST 标识符
+  #     而不是文本 —— shell.go 有一行注释提到 lineProgressWriter 解释旧设计，
+  #     grep 型门禁会在「误伤那句注释」与「被删掉」之间二选一（本仓已在这个岔路上
+  #     栽过三次）。
+  #   5 既有渲染测试全用 Contains，缩进、⎿ 前缀、块间空行怎么改都绿。改成逐字
+  #     golden，再加一条「同类的两个工具输出只差名字替换」防止第二套模板长出来。
 - id: "M1/SPEC-TOOLIF"
   package: "W6"
-  verdict: partial
+  verdict: done
   title: "工具接口标准（Tool 接口 + ToolChunk 流）"
   acceptance: "所有工具统一到 Tool 接口（DisplayName+DefaultTimeout+Stream）；输出走固定字段 ToolChunk；废弃 JSON 包装与 ToolProgressCallback/lineProgressWriter；subagent 进度喂 Status+Text；TUI 固定模板渲染"
-  evidence: ""
+  evidence:
+    "1": "internal/bootstrap::TestEveryRegisteredToolImplementsTheToolContract; internal/tools::TestEmptyDisplayNamePanicsAtConstruction"
+    "2": "internal/tools::TestModelSeesOnlyResultAndTUISeesEveryField"
+    "3": "internal/archtest::TestRetiredToolSymbolsDoNotReturn"
+    "4": "internal/tools::TestSubAgentProgressArrivesAsStatusNotResult"
+    "5": "internal/cli/tui::TestToolBlockRendersFromAFixedTemplate; internal/cli/tui::TestToolBlockTemplateVariesOnlyByName"
 

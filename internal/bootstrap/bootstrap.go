@@ -918,11 +918,20 @@ func Build(opts Options) (*App, error) {
 			return nil, fmt.Errorf("tool registry: Info failed: %w", err)
 		}
 		toolNames = append(toolNames, info.Name)
-		// Only GuardedTool carries a timeout; anything else in the registry
-		// (adapters, MCP proxies) is skipped rather than defaulted, so the
-		// snapshot never claims a bound that does not exist.
-		if gt, ok := tl.(interface{ DefaultTimeout() time.Duration }); ok {
-			toolTimeouts[info.Name] = gt.DefaultTimeout()
+		// The assertion names tools.Tool rather than an inline
+		// interface{ DefaultTimeout() time.Duration } on purpose. allTools is
+		// typed []orchestrator.BaseTool — an alias for Eino's InvokableTool —
+		// so nothing in the type system requires a registry member to satisfy
+		// yanshi's own tool contract (DisplayName + DefaultTimeout + Stream).
+		// A structural probe for one method would accept a type that carries
+		// that method and none of the others; naming the contract makes this
+		// map a record of which members honour it in full, which is what
+		// TestEveryRegisteredToolImplementsTheToolContract reads.
+		//
+		// A member that does not satisfy it is skipped rather than defaulted,
+		// so the snapshot never claims a bound that does not exist.
+		if ct, ok := tl.(tools.Tool); ok {
+			toolTimeouts[info.Name] = ct.DefaultTimeout()
 		}
 	}
 
