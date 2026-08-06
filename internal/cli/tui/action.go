@@ -36,6 +36,7 @@ type actionState struct {
 //   - mode: guard.Modes() 的每一项(防漂移)
 //   - model: m.models(由 applyEvent case "models" 填充;首次 Ctrl+K 前为空)
 //   - theme: themeList 的每一项
+//   - file: m.atCandidates("")(frecency 排序,项目内过滤;UX4)
 //   - session: m.sessionsCache(由 applyEvent case "sessions" 填充;
 //     openActionPopup 每次打开都重新请求,理由同 models —— 另一个窗口里新建的
 //     会话否则永远不出现)
@@ -113,6 +114,24 @@ func (m model) collectActions() []actionItem {
 			Hint:     "color theme",
 			Action: func(mm model) (tea.Model, tea.Cmd) {
 				return cmdTheme(mm, []string{thName})
+			},
+		})
+	}
+	// file source(UX4)——TopN 的第二个消费者。选中即把 @path 填进输入框
+	// 而不是直接发送:附件是给下一句话用的,不是一次动作。这也是与其余四源
+	// 语义不同的唯一一项,所以 Hint 明说它做什么。
+	for _, rel := range m.atCandidates("") {
+		p := rel
+		items = append(items, actionItem{
+			Label:    p,
+			Source:   "file",
+			Category: "file",
+			Hint:     "attach to the next message",
+			Action: func(mm model) (tea.Model, tea.Cmd) {
+				mm.input.SetValue(strings.TrimRight(mm.input.Value(), " ") + " @" + p + " ")
+				mm.input.CursorEnd()
+				mm.growInput()
+				return mm, nil
 			},
 		})
 	}

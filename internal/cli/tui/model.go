@@ -394,7 +394,13 @@ func newModelWithPrefs(sess tuiSession, root string, project Preferences) model 
 	m.entries = append(m.entries, m.startupBanner)
 	// C2 — frecency + saveQueue (single-worker serialised JSONL persistence
 	// for Frecency/Stash/History; see frecency.go).
-	m.frecency, _ = LoadFrecency(frecencyPath(root))
+	// tui.frecency: false leaves m.frecency nil, and every consumer treats a
+	// nil store as "no ranking" — which also stops the recording, because a
+	// user who switched the feature off did not ask for a quieter version of
+	// the same file-usage profile.
+	if eff.Frecency {
+		m.frecency, _ = LoadFrecency(frecencyPath())
+	}
 	m.stash, _ = LoadStash(stashPath())
 	m.history, _ = LoadHistory(historyPath(), defaultHistoryCap)
 	m.saveQueue = make(chan saveCmd, 16)

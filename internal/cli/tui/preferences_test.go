@@ -36,7 +36,9 @@ func TestPreferences_FourLevelMerge(t *testing.T) {
 	got := mergeTUIPrefs(flags, env, user, project)
 	want := EffectivePreferences{
 		UILocale: "en", ThemeName: "flag-theme", KeymapName: "flag-map",
-		HighContrast: false, Vim: false,
+		// Frecency defaults ON and no layer here sets it; stated explicitly so a
+		// future default flip fails this test instead of passing silently.
+		HighContrast: false, Vim: false, Frecency: true,
 	}
 	if got != want {
 		t.Fatalf("flag precedence: got %#v want %#v", got, want)
@@ -47,6 +49,7 @@ func TestPreferences_FourLevelMerge(t *testing.T) {
 	want = EffectivePreferences{
 		UILocale: "zh-Hans", ThemeName: "env-theme", KeymapName: "env-map",
 		HighContrast: true, Vim: true,
+		Frecency: true,
 	}
 	if got != want {
 		t.Fatalf("env precedence: got %#v want %#v", got, want)
@@ -57,6 +60,7 @@ func TestPreferences_FourLevelMerge(t *testing.T) {
 	want = EffectivePreferences{
 		UILocale: "en", ThemeName: "user-theme", KeymapName: "user-map",
 		HighContrast: false, Vim: false,
+		Frecency: true,
 	}
 	if got != want {
 		t.Fatalf("user precedence: got %#v want %#v", got, want)
@@ -67,6 +71,7 @@ func TestPreferences_FourLevelMerge(t *testing.T) {
 	want = EffectivePreferences{
 		UILocale: "auto", ThemeName: "default", KeymapName: "default",
 		HighContrast: false, Vim: false,
+		Frecency: true,
 	}
 	if got != want {
 		t.Fatalf("defaults: got %#v want %#v", got, want)

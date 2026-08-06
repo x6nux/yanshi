@@ -187,6 +187,12 @@ type TUIConfig struct {
 	Bindings     map[string]string `yaml:"bindings"`
 	Theme        string            `yaml:"theme"`
 	HighContrast *bool             `yaml:"high_contrast"`
+	// Frecency gates the file-usage ranking behind @path completion (UX4).
+	// Default ON. *bool so an explicit false is distinguishable from unset:
+	// switching it off stops the RECORDING too, not just the ordering, because
+	// a user who declined the feature did not ask for a quieter version of the
+	// same usage profile.
+	Frecency *bool `yaml:"frecency"`
 }
 
 // ObservabilityConfig groups process logging and OpenTelemetry settings.

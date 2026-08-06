@@ -23,6 +23,7 @@ const (
 	cmdSlash    commandKind = iota // 普通 / 命令
 	cmdMCPTool                     // MCP 工具条目（name=qualified 运行时名）
 	cmdMCPGroup                    // 分组标题（不可选）
+	cmdAtPath                      // UX4：@path 文件补全条目（name=相对路径）
 )
 
 // command describes one slash command or palette entry. kind distinguishes
@@ -136,6 +137,13 @@ func (m model) runCommand(text string) (tea.Model, tea.Cmd) {
 func (m *model) updatePalette() {
 	v := m.input.Value()
 	if !strings.HasPrefix(v, "/") {
+		// UX4: the @path completion shares this popup. The two are mutually
+		// exclusive — the input either starts with "/" or it does not — so one
+		// popup, one selection index and one Tab handler serve both, instead
+		// of a second set that would drift out of step with this one.
+		if m.updateAtPalette() {
+			return
+		}
 		m.paletteItems = nil
 		m.paletteSel = 0
 		return
@@ -179,6 +187,8 @@ func (m model) paletteBlock() string {
 				desc = "MCP tool"
 			}
 			line = fmt.Sprintf("    %-7s  %s", c.name, toolMeta.Render(desc))
+		case cmdAtPath:
+			line = fmt.Sprintf("  @%-30s %s", c.name, toolMeta.Render(c.help))
 		default:
 			line = fmt.Sprintf("  /%-7s  %s", c.name, toolMeta.Render(c.help))
 		}
@@ -213,6 +223,9 @@ func (m *model) paletteComplete() {
 	}
 	sel := m.paletteItems[m.paletteSel]
 	switch sel.kind {
+	case cmdAtPath:
+		m.completeAtPath(sel)
+		return
 	case cmdMCPTool:
 		// MCP tools insert the qualified name directly (no "/" prefix).
 		m.input.SetValue(sel.name)

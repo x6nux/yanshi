@@ -315,4 +315,5 @@ C15 TUI 偏好：`keymap`（默认 default）、`theme`（默认 default）、`v
 | tui.bindings | map[string]string | |
 | tui.theme | string | |
 | tui.high_contrast | *bool | |
+| tui.frecency | *bool | |
 <!-- END GENERATED: config-skeleton -->

@@ -326,6 +326,11 @@ tui:
   theme: default
   vim: false
   high_contrast: false
+  # UX4：@path 补全的「最近用过的文件排前面」排序。默认 true。
+  # 设为 false **同时**停掉排序与记录 —— 关掉这个功能的人要的不是一份安静
+  # 一点的文件使用画像。存储位置与 prefs.json 同目录（全局单文件），项目隔离
+  # 是读取时按 work root 过滤，不是每项目一个文件。
+  frecency: true
   bindings:
     enter: send
     ctrl+enter: newline

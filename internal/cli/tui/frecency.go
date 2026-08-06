@@ -75,7 +75,43 @@ func (f *Frecency) Record(path string) error {
 	return nil
 }
 
-// TopN 返回得分前 n 的路径,按得分降序。
+// TopNUnder 返回 root 之下、得分前 n 的路径,按得分降序。
+//
+// The store is one global file shared by every project, so an unfiltered read
+// offers project A the paths of project B — wrong as a suggestion and a small
+// leak between unrelated workspaces. Filtering happens here rather than at
+// write time because a path's project is a property of the QUERY, not of the
+// record: the same file can be inside two roots (a worktree under the repo),
+// and deciding at write time would pick one arbitrarily.
+//
+// A nil receiver returns nil, so a caller with frecency disabled needs no
+// separate branch.
+func (f *Frecency) TopNUnder(root string, n int) []string {
+	if f == nil || root == "" {
+		return nil
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	// TopN over the whole store, then filter: scores are global and taking the
+	// top n BEFORE filtering would return fewer than n in-project results
+	// whenever another project has been busier.
+	for _, p := range f.TopN(0) {
+		rel, err := filepath.Rel(rootAbs, p)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		out = append(out, p)
+		if n > 0 && len(out) >= n {
+			break
+		}
+	}
+	return out
+}
+
+// TopN 返回得分前 n 的路径,按得分降序。n <= 0 返回全部。
 func (f *Frecency) TopN(n int) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -107,7 +143,9 @@ func (f *Frecency) TopN(n int) []string {
 		}
 		return scoredList[i].firstSeen.Before(scoredList[j].firstSeen)
 	})
-	if n > len(scoredList) {
+	// n <= 0 means "all": TopNUnder needs the full ranking so it can filter
+	// and still return n in-project results when another project has been busier.
+	if n <= 0 || n > len(scoredList) {
 		n = len(scoredList)
 	}
 	out := make([]string, n)
@@ -163,7 +201,14 @@ func (e frecencyEntry) score(now time.Time) float64 {
 }
 
 // frecencyPath 返回 frecency 持久化文件路径,与 permModeFile 同一目录。
-func frecencyPath(root string) string {
+//
+// It takes no root, and used to. The parameter was declared, never read, and
+// newModel passed one in earnestly — so the store looked per-project and was
+// global, with nothing in the signature or the tests to say otherwise. The
+// file stays global on purpose (one file next to prefs.json and permMode,
+// which is where every other TUI state lives); per-project scoping is a
+// FILTER at read time, not a second file. See Frecency.TopNUnder.
+func frecencyPath() string {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return ""

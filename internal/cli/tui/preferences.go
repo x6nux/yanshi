@@ -21,6 +21,11 @@ type Preferences struct {
 	KeymapName   string `json:"keymap,omitempty"`
 	HighContrast *bool  `json:"high_contrast,omitempty"`
 	Vim          *bool  `json:"vim,omitempty"`
+	// Frecency gates the file-usage ranking behind @path completion (UX4).
+	// A *bool because "unset" has to stay distinguishable from an explicit
+	// false: the default is ON, so a nil here means "use the default" and a
+	// false means "the user turned it off".
+	Frecency *bool `json:"frecency,omitempty"`
 	// KeymapReset is a sparse user-level tombstone for project tui.bindings:
 	// a stored true would let defaults survive the next startup, nil means
 	// project bindings may still apply. Nothing writes it outside tests —
@@ -38,6 +43,7 @@ type EffectivePreferences struct {
 	KeymapName   string
 	HighContrast bool
 	Vim          bool
+	Frecency     bool
 	KeymapReset  bool
 }
 
@@ -115,6 +121,11 @@ func mergeTUIPrefs(flags, env, user, project Preferences) EffectivePreferences {
 		UILocale:   "auto",
 		ThemeName:  "default",
 		KeymapName: "default",
+		// Frecency defaults ON: it is the ranking behind @path completion, and
+		// an unranked completion list is the pre-UX4 behaviour nobody asked to
+		// keep. The switch exists for users who do not want a usage profile
+		// stored at all.
+		Frecency: true,
 	}
 	apply := func(layer Preferences) {
 		if layer.UILocale != "" {
@@ -131,6 +142,9 @@ func mergeTUIPrefs(flags, env, user, project Preferences) EffectivePreferences {
 		}
 		if layer.Vim != nil {
 			out.Vim = *layer.Vim
+		}
+		if layer.Frecency != nil {
+			out.Frecency = *layer.Frecency
 		}
 		if layer.KeymapReset != nil {
 			out.KeymapReset = *layer.KeymapReset

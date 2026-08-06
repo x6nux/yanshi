@@ -96,7 +96,7 @@ func TestCov_FrecencyPath_NoConfigDir(t *testing.T) {
 	t.Setenv("APPDATA", "")
 	t.Setenv("LOCALAPPDATA", "")
 	// On Windows UserConfigDir reads APPDATA/LOCALAPPDATA; unsetting may yield "".
-	if got := frecencyPath("root"); got != "" {
+	if got := frecencyPath(); got != "" {
 		t.Skipf("UserConfigDir did not error on this platform (got %q)", got)
 	}
 }
