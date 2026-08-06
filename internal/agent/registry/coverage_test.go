@@ -77,13 +77,6 @@ func TestSendInput_Closed(t *testing.T) {
 	require.ErrorIs(t, err, ErrClosed)
 }
 
-func TestSendInput_NotRunning(t *testing.T) {
-	m := newTestManager(t, 2)
-	t.Cleanup(m.Close)
-	err := m.SendInput("nonexistent", "hello", false)
-	require.ErrorIs(t, err, ErrNotRunning)
-}
-
 func TestSendInput_NotAccepting(t *testing.T) {
 	m := newTestManager(t, 2)
 	t.Cleanup(m.Close)

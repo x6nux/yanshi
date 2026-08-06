@@ -306,7 +306,15 @@ func TestSendInputRefusesAgentsWithNoRuntime(t *testing.T) {
 	})
 	t.Cleanup(m.Close)
 
-	require.ErrorIs(t, m.SendInput("ag-never-existed", "hi", false), ErrNotRunning,
+	// ErrNotFound, not ErrNotRunning: the two used to be folded together, and
+	// "not running" reads as "it exists and is idle" — a model that invented an
+	// agent id got that answer and went on to ask for the agent's result.
+	//
+	// TestSendInput_NotRunning (coverage_test.go) and
+	// TestSendInputRejectsNotRunning (manager_mailbox_test.go) were two more
+	// copies of this one line and were deleted rather than re-pinned; this test
+	// covers the same ground plus the terminal-agent case below.
+	require.ErrorIs(t, m.SendInput("ag-never-existed", "hi", false), ErrNotFound,
 		"an unknown agent cannot take input")
 
 	id, err := m.Spawn(context.Background(), SpawnRequest{

@@ -295,10 +295,14 @@
 
 - id: "B1/M04"
   package: "W3"
-  verdict: partial
+  verdict: done
   title: "完整生命周期 (wait/result/send_input/resume/assign/list)"
   acceptance: "全部生命周期操作可用；线程树/深度/并发/usage 可查；取消不泄漏；resume 跨重启可尝试"
-  evidence: ""
+  evidence:
+    "1": "internal/tools::TestLifecycleToolsHaveObservableEffects; internal/tools::TestLifecycleToolsRejectUnknownAgents; internal/bootstrap::TestManagedAgentToolsAreAllowedOutOfTheBox"
+    "2": "internal/tools::TestManagedSubAgentUsageReachesTheRegistry; internal/tools::TestAcceptance_DepthAndUsageQueryable; internal/tools::TestAcceptance_WorkflowUsesSharedLimitAndList"
+    "3": "internal/tools::TestCancelledAgentsLeaveNothingBehind; internal/agent/registry::TestTerminalAgentReleasesItsConcurrencySlot"
+    "4": "internal/tools::TestAgentResumeSuccess; internal/tools::TestAgentResumeModelMismatch"
 
 # W1/Task 10 只完成四条验收里的「父可消费 EVIDENCE」（ParentWorkingSetHint 此前零生产
 # 调用点，现接在 agent_start 与 analysis 两个终端调用点上，
@@ -328,6 +332,11 @@
 #    而 DefaultOrchestratorProfile 的 allow 列表里只有 agent_start。实测
 #    guard.Check(DefaultOrchestratorProfile(), Action{Tool:"agent_spawn"}) → not permitted。
 #    把受管 agent 工具加进出厂 allow 列表是授权面变更，与 apply_patch 同类，移交 W5。
+#    ⚠️ 2026-08-07 撤回这条移交（见 B1/M04）：W5 已结项而这条没做，「移交」就成了
+#    永久省略。且定性也不对 —— agent_start 本来就在 allow 列表里、本来就能起子代理，
+#    能力面早就在；缺的是**看见**与**停止**它（list/result/wait 只读，cancel 只收权）。
+#    八个受管 agent 工具已加入 DefaultOrchestratorProfile，理由写在 profile.go 那段
+#    注释里，深度与并发两道上限对经它们发起的每次 spawn 一样生效。
   # 2026-08-07：partial → done。上面那条阻塞（「7 角色可选」在出厂 profile 下不可达）
   # 复核仍然成立 —— 实测 agent_spawn / agent_list / agent_result 全部 "not permitted"。
   # 解法**不是**扩大授权面（那才需要走 W5），而是把 role 参数加到 agent_start：

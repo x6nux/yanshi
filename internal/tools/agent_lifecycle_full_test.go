@@ -6,14 +6,28 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/x6nux/yanshi/internal/agent/registry"
 	"github.com/x6nux/yanshi/internal/agent/rlm"
 	"github.com/x6nux/yanshi/internal/guard"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 )
+
+// The five spy tests that stood here — TestAgentWaitWithManager,
+// TestAgentResultWithManager, TestAgentSendInputWithManager,
+// TestAgentAssignWithManager, TestAgentCancelWithManager — were deleted rather
+// than repaired in place. Each drove one lifecycle tool against a non-existent
+// agent and then either discarded the result (`_ = result`), reported failure
+// with t.Logf (which never fails), or drained the channel with an empty
+// `for range ch {}`. None could tell a working tool from an empty function
+// body. agent_lifecycle_effects_test.go covers the same five tools twice over:
+// once on their observable effects, once on the unknown-id path with the
+// assertion these were missing.
 
 func TestAgentSpawnWithManagerAndFactory(t *testing.T) {
 	mgr, _ := newTestManager(t)
@@ -46,81 +60,6 @@ func TestAgentSpawnWithManagerAndFactory(t *testing.T) {
 	}
 	if !strings.Contains(result, "agent_id") {
 		t.Fatalf("expected spawn result with agent_id, got: %q", result)
-	}
-}
-
-func TestAgentWaitWithManager(t *testing.T) {
-	mgr, _ := newTestManager(t)
-	defer mgr.Close()
-
-	ctx := WithManager(context.Background(), mgr)
-	tools := NewAgentTools(nil)
-
-	// Wait for a non-existent agent should fail gracefully.
-	ch := tools.streamAgentWait(ctx, `{"agent_id":"nonexistent"}`)
-	var result string
-	for c := range ch {
-		if c.Result != "" {
-			result += c.Result
-		}
-	}
-	// Should either have an error or an empty result.
-	_ = result
-}
-
-func TestAgentResultWithManager(t *testing.T) {
-	mgr, _ := newTestManager(t)
-	defer mgr.Close()
-
-	ctx := WithManager(context.Background(), mgr)
-	tools := NewAgentTools(nil)
-
-	// Getting result for a non-existent agent.
-	ch := tools.streamAgentResult(ctx, `{"agent_id":"nonexistent"}`)
-	var result string
-	for c := range ch {
-		if c.Result != "" {
-			result += c.Result
-		}
-	}
-	if !strings.Contains(result, "not found") {
-		t.Logf("got result: %q", result)
-	}
-}
-
-func TestAgentSendInputWithManager(t *testing.T) {
-	mgr, _ := newTestManager(t)
-	defer mgr.Close()
-
-	ctx := WithManager(context.Background(), mgr)
-	tools := NewAgentTools(nil)
-
-	ch := tools.streamAgentSendInput(ctx, `{"agent_id":"nonexistent","text":"hello"}`)
-	for range ch {
-	}
-}
-
-func TestAgentAssignWithManager(t *testing.T) {
-	mgr, _ := newTestManager(t)
-	defer mgr.Close()
-
-	ctx := WithManager(context.Background(), mgr)
-	tools := NewAgentTools(nil)
-
-	ch := tools.streamAgentAssign(ctx, `{"agent_id":"nonexistent","assignment":"do something"}`)
-	for range ch {
-	}
-}
-
-func TestAgentCancelWithManager(t *testing.T) {
-	mgr, _ := newTestManager(t)
-	defer mgr.Close()
-
-	ctx := WithManager(context.Background(), mgr)
-	tools := NewAgentTools(nil)
-
-	ch := tools.streamAgentCancel(ctx, `{"agent_id":"nonexistent"}`)
-	for range ch {
 	}
 }
 
@@ -208,6 +147,8 @@ func TestAgentLifecycleSuccessPaths(t *testing.T) {
 // persistence path so the agent's record exists WITHOUT a runtime entry — this
 // is the only configuration Resume accepts (a spawned agent keeps its runtime
 // until the process restarts).
+//
+// ledger: B1/M04#4 resume 跨重启可尝试
 func TestAgentResumeSuccess(t *testing.T) {
 	// Phase 1: spawn + complete an agent so its record is persisted to disk.
 	path := filepath.Join(t.TempDir(), "s.json")
@@ -263,26 +204,58 @@ func TestAgentResumeSuccess(t *testing.T) {
 	})
 	defer mgr2.Close()
 
+	// A second factory whose runner signals when it is entered: "the record
+	// came back" and "the agent ran again" are different claims.
+	resumedRan := make(chan struct{})
+	var once sync.Once
+	resumeFactory := ManagedRunnerFactory(func([]string, string) registry.Runner {
+		return registry.RunnerFunc(func(context.Context, string, string) (string, error) {
+			once.Do(func() { close(resumedRan) })
+			return "resumed", nil
+		})
+	})
+
 	ctx2 := context.Background()
 	ctx2 = WithManager(ctx2, mgr2)
 	ctx2 = WithProfile(ctx2, profile)
-	ctx2 = WithManagedRunnerFactory(ctx2, factory)
+	ctx2 = WithManagedRunnerFactory(ctx2, resumeFactory)
 	ctx2 = WithAvailableModels(ctx2, map[string]bool{})
 
 	// Resume success path — the record exists without a runtime.
+	//
+	// This used to end at `_ = gotResult`: the two-phase restart above was set
+	// up correctly and then nothing was asserted, so a resume that failed on
+	// every input read identically to one that worked. Only the negative branch
+	// (TestAgentResumeModelMismatch) ever proved a record survived the restart.
 	resumeCh := tools.streamAgentResume(ctx2, fmt.Sprintf(`{"agent_id":%q}`, agentID))
-	var gotResult bool
+	var out strings.Builder
 	for c := range resumeCh {
-		if c.Result != "" {
-			gotResult = true
-		}
+		out.WriteString(c.Result)
 	}
-	_ = gotResult
+	got := out.String()
+	require.NotEmpty(t, got, "agent_resume said nothing at all")
+	require.NotContains(t, got, "not found",
+		"the agent did not survive the restart: the second Manager cannot see it")
+	require.NotContains(t, got, "not available", got)
+
+	// The runner must actually have been re-entered — a resume that only
+	// flipped a status column would satisfy everything above.
+	select {
+	case <-resumedRan:
+	case <-time.After(5 * time.Second):
+		t.Fatal("agent_resume returned but the runner was never called")
+	}
+
+	rec, ok := mgr2.Result(agentID)
+	require.True(t, ok, "the resumed agent is not in the second Manager")
+	require.Equal(t, agentID, rec.ID)
 }
 
 // TestAgentResumeModelMismatch covers EnsureOverrideForResume's error branch at
 // agent_lifecycle.go:186-188. Spawn with a model that IS available, then resume
 // against an EMPTY available map so the persisted ModelOverride is rejected.
+//
+// ledger: B1/M04#4 resume 跨重启可尝试
 func TestAgentResumeModelMismatch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.json")
 	mgr1 := registry.NewManager(registry.NewManagerOpts{

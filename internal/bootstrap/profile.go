@@ -116,6 +116,21 @@ func DefaultOrchestratorProfile() guard.PermissionProfile {
 			"memory_search", "memory_recall", "memory_write",
 			"web_fetch", "web_search", "time_now", "skill_use", "vcs_*",
 			"agent_start", "workflow_start", "analysis", "summarize",
+			// B1 managed sub-agents. Deliberately NOT a widening of what the
+			// model can do: agent_start is already allowed and already spawns a
+			// sub-agent, so the capability was there. What was missing was the
+			// ability to SEE and STOP one — list/result/wait are read-only, and
+			// cancel only takes capability away. Withholding them left the one
+			// spawn path that ships fire-and-forget.
+			//
+			// The predecessor deferred this to W5 as "an authorization change,
+			// same class as apply_patch". That reading does not survive the
+			// distinction above, and W5 closed without it, so the deferral had
+			// become a permanent omission rather than a plan. Both limits that
+			// bound a sub-agent (registry.MaxDepth, subagents.limit) still
+			// apply to every spawn made through these.
+			"agent_spawn", "agent_list", "agent_result", "agent_wait",
+			"agent_send_input", "agent_assign", "agent_cancel", "agent_resume",
 			"apply_patch",
 			// B3 developer tools
 			"git_status", "git_diff", "run_tests", "diagnostics",

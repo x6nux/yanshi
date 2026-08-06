@@ -312,7 +312,15 @@ func (m *Manager) SendInput(agentID, text string, interrupt bool) error {
 	m.mtx.Lock()
 	rt, ok := m.runtime[agentID]
 	rec, recOK := m.records[agentID]
-	if !ok || !recOK || rec.Status != StatusRunning || !rt.accepting {
+	// An unknown id and a known-but-idle agent are different answers. Folding
+	// them into ErrNotRunning told the caller "it is not running", which reads
+	// as "it exists and is idle" — a model that gets that for a hallucinated
+	// agent id goes on to ask for its result.
+	if !recOK {
+		m.mtx.Unlock()
+		return ErrNotFound
+	}
+	if !ok || rec.Status != StatusRunning || !rt.accepting {
 		m.mtx.Unlock()
 		return ErrNotRunning
 	}

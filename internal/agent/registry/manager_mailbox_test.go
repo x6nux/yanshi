@@ -42,15 +42,6 @@ func TestSendInputQueuesAndAssignPersists(t *testing.T) {
 	require.Equal(t, "second done", final.Result)
 }
 
-func TestSendInputRejectsNotRunning(t *testing.T) {
-	m := NewManager(NewManagerOpts{
-		RootContext: context.Background(), Path: filepath.Join(t.TempDir(), "s.json"),
-		SessionBootID: "boot", MaxConcurrent: 1,
-	})
-	t.Cleanup(m.Close)
-	require.ErrorIs(t, m.SendInput("ghost", "x", false), ErrNotRunning)
-}
-
 func TestAssignPersistsBeforeEnqueueAndRollsBackOnFailure(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "subagents.v1.json")

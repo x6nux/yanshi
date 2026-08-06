@@ -1058,3 +1058,29 @@ func TestDurableTaskToolsAreAllowedOutOfTheBox(t *testing.T) {
 				"on SSE and take a permission dialog per call on WS", name, d.Reason)
 	}
 }
+
+// TestManagedAgentToolsAreAllowedOutOfTheBox is the reachability half of the
+// lifecycle clause.
+//
+// All eight were registered and none was allowed, so "全部生命周期操作可用" held
+// for the tool code and not for the shipped configuration: a sub-agent started
+// through the one permitted path (agent_start) could not be listed, waited on,
+// or cancelled. Fire-and-forget was the only mode.
+//
+// GOV5 cannot see this — it checks that allowed names are registered, never the
+// reverse — which is why the assertion is spelled out here.
+//
+// ledger: B1/M04#1 全部生命周期操作可用
+func TestManagedAgentToolsAreAllowedOutOfTheBox(t *testing.T) {
+	p := bootstrap.DefaultOrchestratorProfile()
+	g := guard.New()
+	for _, name := range []string{
+		"agent_spawn", "agent_list", "agent_result", "agent_wait",
+		"agent_send_input", "agent_assign", "agent_cancel", "agent_resume",
+	} {
+		d := g.Check(p, guard.Action{Tool: name})
+		require.Equalf(t, guard.Allow, d.Verdict,
+			"%s is not allowed by the factory profile (%s): a sub-agent started with "+
+				"agent_start cannot be observed or stopped", name, d.Reason)
+	}
+}

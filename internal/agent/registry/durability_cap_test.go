@@ -115,6 +115,8 @@ func TestASecondManagerOverTheSameFileSeesAndResumesWhatTheFirstWrote(t *testing
 // ledger: B1/M04b#2 并发上限生效
 //
 // ledger: F2/LEAK2#1 并发上限生效
+//
+// ledger: B1/M04#3 取消不泄漏
 func TestTerminalAgentReleasesItsConcurrencySlot(t *testing.T) {
 	m := NewManager(NewManagerOpts{
 		RootContext: context.Background(), Path: filepath.Join(t.TempDir(), "s.json"),

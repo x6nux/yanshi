@@ -44,6 +44,7 @@ func waitTerminal(t *testing.T, mgr *registry.Manager, id string, timeout time.D
 	return rec
 }
 
+// ledger: B1/M04#2 线程树/深度/并发/usage 可查
 func TestAcceptance_WorkflowUsesSharedLimitAndList(t *testing.T) {
 	mgr := registry.NewManager(registry.NewManagerOpts{
 		RootContext: context.Background(), Path: filepath.Join(t.TempDir(), "s.json"),
@@ -98,6 +99,7 @@ func TestAcceptance_ParentCancelCascadesToChild(t *testing.T) {
 	require.Equal(t, registry.StatusCancelled, recC.Status)
 }
 
+// ledger: B1/M04#2 线程树/深度/并发/usage 可查
 func TestAcceptance_DepthAndUsageQueryable(t *testing.T) {
 	mgr := registry.NewManager(registry.NewManagerOpts{
 		RootContext: context.Background(), Path: filepath.Join(t.TempDir(), "s.json"),
