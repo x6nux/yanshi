@@ -20,6 +20,8 @@ import (
 // Selecting the entry has to actually restore, not merely type the command:
 // an action item that fills the prompt and waits is indistinguishable from
 // tab-completion, and the palette's other three sources all execute.
+//
+// ledger: C2/UX1#3 覆盖命令/模式/模型/会话
 func TestActionPaletteOffersSessions(t *testing.T) {
 	rec := &recordingSession{}
 	m := newModel(rec, "/proj")

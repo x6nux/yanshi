@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// TestFrecency_RecordAndTopN.
+//
+// ledger: C2/UX4#2 衰减合理
 func TestFrecency_RecordAndTopN(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "frec.json")

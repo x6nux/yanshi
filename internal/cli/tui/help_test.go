@@ -21,6 +21,9 @@ func helpText(m model) string {
 	return out
 }
 
+// TestHelp_ModesFromRegistry.
+//
+// ledger: C2/UX2#3 内容自动生成不漂移
 func TestHelp_ModesFromRegistry(t *testing.T) {
 	m := newTestModel(t)
 	help := helpText(m)
@@ -31,6 +34,9 @@ func TestHelp_ModesFromRegistry(t *testing.T) {
 	}
 }
 
+// TestHelp_CommandsFromTable.
+//
+// ledger: C2/UX2#3 内容自动生成不漂移
 func TestHelp_CommandsFromTable(t *testing.T) {
 	m := newTestModel(t)
 	help := helpText(m)
@@ -53,6 +59,9 @@ func TestHelp_ThemesFromList(t *testing.T) {
 	}
 }
 
+// TestHelp_FuzzyFilter.
+//
+// ledger: C2/UX2#2 可搜索
 func TestHelp_FuzzyFilter(t *testing.T) {
 	m := newTestModel(t)
 	m.helpVisible = true
@@ -86,6 +95,9 @@ func TestHelp_KeybindingsCoreEntries(t *testing.T) {
 	}
 }
 
+// TestHelp_PopupVisibilityAndQuery.
+//
+// ledger: C2/UX2#1 F1 打开
 func TestHelp_PopupVisibilityAndQuery(t *testing.T) {
 	m := newTestModel(t)
 	if got := m.helpPopup(); got != "" {

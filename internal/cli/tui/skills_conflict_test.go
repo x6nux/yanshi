@@ -10,6 +10,8 @@ import (
 // TestSkillsEntryShowsShadowedCopies is the user-visible end of E03's conflict
 // diagnostics. A conflict recorded in the registry and never rendered is the
 // same silence the feature exists to break.
+//
+// ledger: C3/E03#3 重名可诊断
 func TestSkillsEntryShowsShadowedCopies(t *testing.T) {
 	e := skillsEntry{skills: []proto.SkillInfo{
 		{Name: "review", Source: "project", Enabled: true, Trusted: true,
@@ -35,6 +37,8 @@ func TestSkillsEntryShowsShadowedCopies(t *testing.T) {
 // re-validation needs. cmdSkill's switch had six verbs and a default that
 // reported "unknown /skill subcommand", so the install-time checks — which
 // live only inside Install — could never be re-run.
+//
+// ledger: C3/E03#1 可安装/列出/启停/校验
 func TestSkillValidateIsRoutedToTheServer(t *testing.T) {
 	rec := &recordingSession{}
 	m := newModel(rec, "/proj")

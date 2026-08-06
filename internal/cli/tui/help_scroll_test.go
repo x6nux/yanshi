@@ -20,6 +20,8 @@ import (
 // Both halves are asserted because either alone is satisfiable by a broken
 // implementation: clipping without a cursor loses the tail forever, and a
 // cursor without clipping keeps the original bug.
+//
+// ledger: C2/UX2#3 内容自动生成不漂移
 func TestHelpPopupFitsTheTerminalAndScrolls(t *testing.T) {
 	m := newModel(&recordingSession{}, "/proj")
 	m.height = 40

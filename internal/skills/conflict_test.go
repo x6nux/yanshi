@@ -28,6 +28,8 @@ func writeConflictSkill(t *testing.T, dir, name, desc string) {
 //
 // First-seen-wins is kept — changing the resolution order would silently swap
 // which skill runs. What changes is that the loss is now RECORDED.
+//
+// ledger: C3/E03#3 重名可诊断
 func TestLoadReportsShadowedSkills(t *testing.T) {
 	winner := t.TempDir()
 	loser := t.TempDir()
@@ -72,6 +74,8 @@ func TestLoadReportsShadowedSkills(t *testing.T) {
 // frontmatter and containment checks existed only INLINE in Install, so once a
 // skill was on disk nothing could re-run them. A skill edited by hand after
 // installation was unverifiable.
+//
+// ledger: C3/E03#2 恶意路径安全
 func TestValidateSkillRechecksAnInstalledSkill(t *testing.T) {
 	root := t.TempDir()
 	writeConflictSkill(t, root, "good", "a valid description")

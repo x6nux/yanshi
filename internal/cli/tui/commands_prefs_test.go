@@ -34,6 +34,8 @@ func withTempPrefs(t *testing.T) string {
 // failure message (internal/cli::checkKeymapConfig) tells the operator verbatim
 // to run "/keymap diagnostics", so until this existed the single piece of
 // advice the product gave was itself a dead end.
+//
+// ledger: D3/C15#3 高对比主题
 func TestPreferenceCommandsAreRegistered(t *testing.T) {
 	for _, name := range []string{"keymap", "vim", "contrast", "locale"} {
 		if _, ok := lookupCommand(name); !ok {
@@ -46,6 +48,8 @@ func TestPreferenceCommandsAreRegistered(t *testing.T) {
 // TestKeymapDiagnosticsRendersTheConflictReport drives the subcommand doctor
 // promises. Map.Diagnostics reports four kinds; an empty override set has none,
 // and a conflicting one must be named rather than silently dropped.
+//
+// ledger: D3/C15#4 冲突可诊断
 func TestKeymapDiagnosticsRendersTheConflictReport(t *testing.T) {
 	withTempPrefs(t)
 	rec := &recordingSession{}
@@ -69,6 +73,8 @@ func TestKeymapDiagnosticsRendersTheConflictReport(t *testing.T) {
 // TestPreferencesRoundTripAcrossModels is the persistence half: a preference
 // set through a command must survive into a freshly constructed model, which
 // is the only thing that makes /vim and /contrast worth having.
+//
+// ledger: D3/C15#2 Vim 开关
 func TestPreferencesRoundTripAcrossModels(t *testing.T) {
 	path := withTempPrefs(t)
 	rec := &recordingSession{}
@@ -101,6 +107,8 @@ func TestPreferencesRoundTripAcrossModels(t *testing.T) {
 //
 // The two sources are checked separately because they enter at different layers
 // (project config vs env) and the env layer must win.
+//
+// ledger: D3/I18N1#3 自动检测
 func TestUILocaleReachesTheTUIFromConfigAndEnv(t *testing.T) {
 	withTempPrefs(t)
 
@@ -127,6 +135,8 @@ func TestUILocaleReachesTheTUIFromConfigAndEnv(t *testing.T) {
 // Effective() instead of Persistent() would freeze whatever the machine
 // happened to resolve to on the day the command ran, turning a follow-the-system
 // setting into a hardcoded one, with no sign anything happened.
+//
+// ledger: D3/I18N1#2 UI 与输出语言独立
 func TestLocalePersistsTheDeclaredValueNotTheResolvedOne(t *testing.T) {
 	path := withTempPrefs(t)
 	m := newModel(&recordingSession{}, "/proj")

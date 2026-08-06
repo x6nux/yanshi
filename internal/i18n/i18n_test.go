@@ -88,6 +88,8 @@ func TestBundle_FallbackOnMissingLocale(t *testing.T) {
 // TestBundle_CatalogKeyManifest compares each catalog independently with the
 // canonical required-key manifest. Pairwise en/zh equality alone is insufficient:
 // deleting the same key from both files must still fail this test.
+//
+// ledger: D3/I18N1#1 至少 en/zh-Hans 切换
 func TestBundle_CatalogKeyManifest(t *testing.T) {
 	want := append([]string(nil), requiredCatalogKeys...)
 	sort.Strings(want)

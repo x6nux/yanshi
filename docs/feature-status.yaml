@@ -506,17 +506,24 @@
 
 - id: "C2/UX1"
   package: "W8"
-  verdict: partial
+  verdict: done
   title: "全局命令面板 Ctrl+K"
   acceptance: "Ctrl+K 打开全局面板;fuzzy 过滤;覆盖命令/模式/模型/会话;Esc 关闭"
-  evidence: ""
+  evidence:
+    "1": "internal/cli/tui::TestAction_OpenUsesCacheButStillRefreshes"
+    "2": "internal/cli/tui::TestAction_FuzzyRank"
+    "3": "internal/cli/tui::TestCollectActions_AllSources; internal/cli/tui::TestActionPaletteOffersSessions"
+    "4": "internal/cli/tui::TestActionMoveAndConfirm"
 
 - id: "C2/UX2"
   package: "W8"
-  verdict: partial
+  verdict: done
   title: "F1 可搜索帮助"
   acceptance: "F1 打开;可搜索;内容自动生成不漂移"
-  evidence: ""
+  evidence:
+    "1": "internal/cli/tui::TestHelp_PopupVisibilityAndQuery"
+    "2": "internal/cli/tui::TestHelp_FuzzyFilter"
+    "3": "internal/cli/tui::TestHelp_CommandsFromTable; internal/cli/tui::TestHelp_ModesFromRegistry; internal/cli/tui::TestHelpPopupFitsTheTerminalAndScrolls"
 
 # 2026-08-04 复核：保持 missing。存在一个**同名不同物**的东西，别把它读成低报：
 # internal/tools/pathref.go 的 ResolveImagePathRefs 是服务端的、**只处理图片**的
@@ -528,17 +535,33 @@
 # 工具名，不是给用户看的提示）。故不升 partial。
 - id: "C2/UX3"
   package: "W8"
-  verdict: missing
+  verdict: done
   title: "@path 文件附加上下文"
   acceptance: "`@` 触发补全;附加有界;越权拒绝;超大提示 fs_read"
-  evidence: ""
+  evidence:
+    "1": "internal/cli/tui::TestTypingAtOpensTheCompletionPopup; internal/cli/tui::TestAtPathBecomesAnAttachmentOnTheWire"
+    "2": "internal/api/http::TestWSTurnPrependsAttachmentContent"
+    "3": "internal/api/http::TestResolveAttachmentsIsFailClosed"
+    "4": "internal/cli/tui::TestExtractAttachRefsIgnoresNonFiles"
 
+# 2026-08-06 W8：存储形态与原规划有意偏离，理由记在这里而不是留成隐性缺口。
+#   规划写 `~/.yanshi/file-frecency.jsonl`，实际是 `os.UserConfigDir()/yanshi/frecency.json`。
+#   - 路径：converge 到 `~/.yanshi/` 在 Windows 上是实质回退（`os.UserConfigDir()`
+#     解析为 %AppData%），且当前位置与同目录的 prefs.json / permMode 一致。
+#   - 格式：JSONL 的价值是增量追加，而 Save() 本来就是全量重写 + 原子 rename；
+#     换成 JSONL 只多一条解析路径和一种损坏形态。
+#   迁移成本落在用户身上而收益为零，故改判验收而非改实现。
+#   项目隔离是**读取时按 work root 过滤**（`internal/cli/tui::Frecency.TopNUnder`），
+#   不是每项目一个文件 —— 同一个文件可以同时位于两个 root 之下（仓库里的 worktree）。
 - id: "C2/UX4"
   package: "W8"
-  verdict: partial
+  verdict: done
   title: "文件 frecency"
-  acceptance: "近期选择靠前;衰减合理;可禁用"
-  evidence: ""
+  acceptance: "@path 补全候选按 frecency 排序;衰减合理;tui.frecency 可禁用"
+  evidence:
+    "1": "internal/cli/tui::TestAtCompletionIsOrderedByFrecency; internal/cli/tui::TestAtCompletionStaysInsideTheProject"
+    "2": "internal/cli/tui::TestFrecency_RecordAndTopN"
+    "3": "internal/cli/tui::TestFrecencyCanBeDisabled"
 
 # 2026-08-04 复核：partial → done。这是台账**低报**：四条子句各有具名测试，且整条
 # 生产链路完整（不是「层层有测、接缝没接」那种形状）——
@@ -563,10 +586,18 @@
 
 - id: "C3/E03"
   package: "W8"
-  verdict: partial
+  verdict: done
   title: "skill 从 GitHub 安装 + 管理"
   acceptance: "可安装/列出/启停/校验；恶意路径安全；重名可诊断；模型可 load 匹配技能"
-  evidence: ""
+  # 裁定 4（W8）：`/skill update` **明确不做**，不是「未做」。MVP 用 uninstall +
+  # install 组合，两者都已存在且都走同一套校验；再造一个 update 会新增一条
+  # 「就地替换」的失败模式（半更新的技能目录），而它买到的只是少敲一条命令。
+  # 这一条对下一轮审计是「已决定的范围」而不是「缺口」，两者的信号完全不同。
+  evidence:
+    "1": "internal/cli/tui::TestCmdSkill_AllSubcommands; internal/cli/tui::TestSkillValidateIsRoutedToTheServer"
+    "2": "internal/skills::TestValidateSkillRechecksAnInstalledSkill"
+    "3": "internal/skills::TestLoadReportsShadowedSkills; internal/api/http::TestSkillsListCarriesShadowedCopies; internal/cli/tui::TestSkillsEntryShowsShadowedCopies"
+    "4": "internal/cli/tui::TestCommand_Skills_SendsListSkills"
 
 - id: "C4/COST1"
   package: "W7"
@@ -715,17 +746,24 @@
 
 - id: "D3/C15"
   package: "W8"
-  verdict: partial
+  verdict: done
   title: "keymap 配置（重映射 / Vim 开关 / 高对比 / 冲突诊断）"
   acceptance: "核心按键可重映射；Vim 开关；高对比主题；冲突可诊断"
-  evidence: ""
+  evidence:
+    "1": "internal/keymap::TestBuild_DefaultLookupUsesRealKeyMessages"
+    "2": "internal/cli/tui::TestPreferencesRoundTripAcrossModels"
+    "3": "internal/cli/tui::TestPreferenceCommandsAreRegistered"
+    "4": "internal/cli/tui::TestKeymapDiagnosticsRendersTheConflictReport"
 
 - id: "D3/I18N1"
   package: "W8"
-  verdict: partial
+  verdict: done
   title: "locale / i18n（en / zh-Hans）"
   acceptance: "至少 en/zh-Hans 切换；UI 与输出语言独立；自动检测"
-  evidence: ""
+  evidence:
+    "1": "internal/i18n::TestBundle_CatalogKeyManifest"
+    "2": "internal/cli/tui::TestLocalePersistsTheDeclaredValueNotTheResolvedOne"
+    "3": "internal/cli/tui::TestUILocaleReachesTheTUIFromConfigAndEnv"
 
 - id: "D3/S10"
   package: "W5"
@@ -955,8 +993,12 @@
 #   所以「费用纳入 /cost」是**构造上成立**的，不需要额外接线。
 #   但全仓没有一条测试把「带图像的一轮」跑到成本上，因此按 ADR-0011 的尺子它没有可执行证据；
 #   把「构造上应该成立」写进 evidence 正是台账要防的那种虚报。
-# 其余两条子句（五入口各自可产生图像附件、TUI 的 @path 触发面）本就归 W8，
-# 整条一并移交 W8：补一条图像轮 → status.cost_usd > 0 的端到端测试，与 W8 的入口面一起翻牌。
+# 2026-08-06 W8 复核（承接上条）：入口面这一半现在成立了 —— UX3 的 @path 触发面
+#   已落地（`internal/cli/tui::extractAttachRefs` → `buildSendFrame` → `SendTurn`），
+#   顺带修好了图片轮：它此前走 `SendFrame`，而那条路径在 WS 上会置 controlMode、
+#   按 control-reply 关闭流，于是带图片的一轮在模型答完之前就结束了。
+#   仍然保持 partial，只剩一条：没有测试把「带图像的一轮」跑到 status.cost_usd。
+#   移交 W10 收尾（它做发布就绪的端到端验收，正好是这条的自然落点）。
 - id: "G/VISION-TOOL"
   package: "W1"
   verdict: partial

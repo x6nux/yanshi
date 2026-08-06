@@ -107,7 +107,7 @@ var acceptancePins = map[string]acceptancePin{
 	"C2/UX1":     {Clauses: 4, Digest: "fe6b29cc5e34b4c1"},
 	"C2/UX2":     {Clauses: 3, Digest: "25ec809d65d4bf97"},
 	"C2/UX3":     {Clauses: 4, Digest: "ba99c3606aae158c"},
-	"C2/UX4":     {Clauses: 3, Digest: "b619391373f3a949"},
+	"C2/UX4":     {Clauses: 3, Digest: "fec8dcb2b2e3615c"},
 	"C2/UX8":     {Clauses: 4, Digest: "6b1ba09b02d510bc"},
 	"C3/E03":     {Clauses: 4, Digest: "fa545434149aae66"},
 	"C4/COST1":   {Clauses: 4, Digest: "f3256177dd8b58b6"},

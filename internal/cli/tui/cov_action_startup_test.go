@@ -60,6 +60,9 @@ func closedReplyCh() chan cli.StreamEvent {
 
 // ---- action palette ----
 
+// TestCollectActions_AllSources.
+//
+// ledger: C2/UX1#3 覆盖命令/模式/模型/会话
 func TestCollectActions_AllSources(t *testing.T) {
 	m := wsModel(&recordingSession{})
 	m.models = []string{"gpt-4o", "claude-opus-4"}
@@ -96,6 +99,9 @@ func TestRankedActions_QueryFilters(t *testing.T) {
 	}
 }
 
+// TestActionMoveAndConfirm.
+//
+// ledger: C2/UX1#4 Esc 关闭
 func TestActionMoveAndConfirm(t *testing.T) {
 	m := wsModel(&recordingSession{})
 	// No action open -> no-op.
@@ -375,6 +381,9 @@ func TestSyncSavedMode_NilAndDrain(t *testing.T) {
 
 // ---- /skill ----
 
+// TestCmdSkill_AllSubcommands.
+//
+// ledger: C3/E03#1 可安装/列出/启停/校验
 func TestCmdSkill_AllSubcommands(t *testing.T) {
 	// No args -> usage error.
 	m := wsModel(&recordingSession{})

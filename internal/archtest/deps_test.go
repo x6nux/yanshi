@@ -40,7 +40,14 @@ var portAllowlists = map[string]map[string]bool{
 	ip("internal/guard"): {ip("internal/execpolicy"): true},
 	ip("internal/store"): {},
 	ip("internal/proto"): {
-		ip("internal/pathjail"):  true,
+		// internal/pathjail was listed here and internal/proto has never
+		// imported it. GOV1's allowlist has no dead-entry detection — unlike
+		// GOV2/3/4/5/6, whose exemption tables all fail when an entry stops
+		// being needed — so this sat as a permanent pre-authorisation: the day
+		// proto DID reach for pathjail, the gate would have waved it through.
+		// W8's AttachRef deliberately carries a path and no resolution logic,
+		// which is why it still does not need it. Handed to governance:
+		// portAllowlists should get the same dead-entry check.
 		ip("internal/task/work"): true,
 	},
 	ip("internal/config"): {},

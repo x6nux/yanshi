@@ -63,6 +63,9 @@ func TestCollectActions_ThemesFromRegistry(t *testing.T) {
 	}
 }
 
+// TestAction_FuzzyRank.
+//
+// ledger: C2/UX1#2 fuzzy 过滤
 func TestAction_FuzzyRank(t *testing.T) {
 	m := newTestModel(t)
 	m.action = &actionState{query: "mod"}
@@ -142,6 +145,9 @@ func TestAction_ModelsReplyPopulatesCacheAndRefreshesPopup(t *testing.T) {
 	}
 }
 
+// TestAction_OpenUsesCacheButStillRefreshes.
+//
+// ledger: C2/UX1#1 Ctrl+K 打开全局面板
 func TestAction_OpenUsesCacheButStillRefreshes(t *testing.T) {
 	m := newTestModel(t)
 	m.models = []string{"cached-model"}

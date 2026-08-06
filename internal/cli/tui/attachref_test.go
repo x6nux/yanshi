@@ -12,6 +12,8 @@ import (
 // TestAtPathBecomesAnAttachmentOnTheWire is the TUI half of UX3: typing @file
 // has to put a reference on the turn, or the server-side resolver has no
 // caller and the feature exists only in tests.
+//
+// ledger: C2/UX3#1 `@` 触发补全
 func TestAtPathBecomesAnAttachmentOnTheWire(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "notes.md"), []byte("x"), 0o644); err != nil {
@@ -45,6 +47,9 @@ func TestAtPathBecomesAnAttachmentOnTheWire(t *testing.T) {
 	}
 }
 
+// TestExtractAttachRefsIgnoresNonFiles.
+//
+// ledger: C2/UX3#4 超大提示 fs_read
 func TestExtractAttachRefsIgnoresNonFiles(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "real.txt"), []byte("x"), 0o644); err != nil {

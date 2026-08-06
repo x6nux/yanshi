@@ -67,6 +67,9 @@ func TestNormalizeKey_PasteAndMultiRuneAreNotShortcuts(t *testing.T) {
 	}
 }
 
+// TestBuild_DefaultLookupUsesRealKeyMessages.
+//
+// ledger: D3/C15#1 核心按键可重映射
 func TestBuild_DefaultLookupUsesRealKeyMessages(t *testing.T) {
 	m, err := NewDefaultBuilder(nil).Build()
 	if err != nil {

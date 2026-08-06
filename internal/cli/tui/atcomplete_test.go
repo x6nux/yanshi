@@ -14,6 +14,8 @@ import (
 // acceptance criterion says recently-used files sort first, and until the
 // @path completion existed there was no surface on which that could be true or
 // false — which is why this task had to follow UX3 rather than ship beside it.
+//
+// ledger: C2/UX4#1 @path 补全候选按 frecency 排序
 func TestAtCompletionIsOrderedByFrecency(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"alpha.go", "zeta.go"} {
@@ -44,6 +46,8 @@ func TestAtCompletionIsOrderedByFrecency(t *testing.T) {
 // Two projects share one file, and without a filter project A offers project
 // B's paths, which is both wrong and a small information leak between
 // unrelated workspaces.
+//
+// ledger: C2/UX4#1 @path 补全候选按 frecency 排序
 func TestAtCompletionStaysInsideTheProject(t *testing.T) {
 	projA := t.TempDir()
 	projB := t.TempDir()
@@ -80,6 +84,8 @@ func TestAtCompletionStaysInsideTheProject(t *testing.T) {
 // TestFrecencyCanBeDisabled covers the config switch. Off must stop BOTH the
 // recording and the ordering: leaving recording on would keep building a
 // profile of the user's files that they asked not to have.
+//
+// ledger: C2/UX4#3 tui.frecency 可禁用
 func TestFrecencyCanBeDisabled(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("x"), 0o644); err != nil {
@@ -101,6 +107,8 @@ func TestFrecencyCanBeDisabled(t *testing.T) {
 
 // TestTypingAtOpensTheCompletionPopup is the wiring half: atCandidates being
 // correct proves nothing if no keystroke reaches it.
+//
+// ledger: C2/UX3#1 `@` 触发补全
 func TestTypingAtOpensTheCompletionPopup(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "notes.md"), []byte("x"), 0o644); err != nil {

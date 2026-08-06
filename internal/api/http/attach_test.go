@@ -21,6 +21,8 @@ import (
 // arbitrary file reading triggered by user TEXT and executed outside any tool
 // context — there is no permission callback to escalate to, so every doubt has
 // to resolve to "no".
+//
+// ledger: C2/UX3#3 越权拒绝
 func TestResolveAttachmentsIsFailClosed(t *testing.T) {
 	root := t.TempDir()
 	inside := filepath.Join(root, "notes.md")
@@ -165,6 +167,8 @@ func TestResolveAttachmentsIsFailClosed(t *testing.T) {
 // prove anything calls it. This drives a real WS turn with an attachment and
 // reads back what the model was handed — which is the only place the feature
 // is either present or absent.
+//
+// ledger: C2/UX3#2 附加有界
 func TestWSTurnPrependsAttachmentContent(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "notes.md"), []byte("MARKER-IN-FILE"), 0o644); err != nil {
@@ -222,6 +226,8 @@ func writeTestSkill(t *testing.T, dir, name, desc string) {
 // TestSkillsListCarriesShadowedCopies is the wiring half of E03's conflict
 // diagnostics: the registry records conflicts and the renderer displays them,
 // and neither proves the two are connected.
+//
+// ledger: C3/E03#3 重名可诊断
 func TestSkillsListCarriesShadowedCopies(t *testing.T) {
 	winner, loser := t.TempDir(), t.TempDir()
 	writeTestSkill(t, winner, "review", "the winner")
