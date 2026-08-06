@@ -10,15 +10,5 @@
     "model": "fake",
     "thinking": "low"
   },
-  "items": [
-    {
-      "version": "v1",
-      "id": "item-1",
-      "sequence": 1,
-      "threadId": "thread-001",
-      "turnId": "thread-001-turn-1",
-      "type": "turn.started"
-    }
-  ],
   "serverAddedField": "must be ignored by v1 clients"
 }

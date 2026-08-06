@@ -87,7 +87,6 @@ export interface ThreadStartResponse {
 export interface ThreadResumeResponse {
   version: AgentApiVersion;
   thread: Thread;
-  items?: Item[];
 }
 
 export interface TurnStartResponse {

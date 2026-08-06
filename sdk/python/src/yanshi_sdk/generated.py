@@ -165,7 +165,6 @@ class ThreadStartResponse(ModelBase):
 class ThreadResumeResponse(ModelBase):
     version: str = Field(pattern=VersionPattern)
     thread: Thread
-    items: Optional[list[Item]] = None
 
 
 class TurnStartResponse(ModelBase):

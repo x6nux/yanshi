@@ -167,8 +167,7 @@
       "required": ["version", "thread"],
       "properties": {
         "version": { "$ref": "#/$defs/Version" },
-        "thread": { "$ref": "#/$defs/Thread" },
-        "items": { "type": "array", "items": { "$ref": "#/$defs/Item" } }
+        "thread": { "$ref": "#/$defs/Thread" }
       }
     },
     "ThreadInterruptParams": {

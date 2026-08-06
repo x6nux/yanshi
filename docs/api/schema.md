@@ -367,12 +367,6 @@
     "ThreadResumeResponse": {
       "additionalProperties": true,
       "properties": {
-        "items": {
-          "items": {
-            "$ref": "#/$defs/Item"
-          },
-          "type": "array"
-        },
         "thread": {
           "$ref": "#/$defs/Thread"
         },

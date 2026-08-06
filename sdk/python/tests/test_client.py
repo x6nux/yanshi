@@ -55,7 +55,6 @@ async def test_lifecycle_uses_d1_flat_routes_and_camel_case_bodies() -> None:
                         "version": "v1", "id": "thread-001", "status": "active",
                         "createdAt": 1, "updatedAt": 2,
                     },
-                    "items": [],
                 }),
             )
         if request.url.path == "/api/v1/thread/interrupt":

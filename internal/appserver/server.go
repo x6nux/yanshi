@@ -138,7 +138,7 @@ func (s *Server) dispatch(ctx context.Context, req RPCRequest) (any, <-chan v1.I
 		if err != nil {
 			return nil, nil, &RPCError{Code: codeInternalError, Message: err.Error()}
 		}
-		return v1.ThreadResumeResponse{Version: v1.Version, Thread: snapshot.Thread, Items: snapshot.Items}, nil, nil
+		return v1.ThreadResumeResponse{Version: v1.Version, Thread: snapshot.Thread}, nil, nil
 	case "thread/interrupt", "turn/interrupt":
 		var p v1.ThreadInterruptParams
 		if err := decodeParams(req.Params, &p); err != nil {

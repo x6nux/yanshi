@@ -30,7 +30,7 @@ describe("AgentClient v1 lifecycle", () => {
       const path = new URL(String(input)).pathname;
       calls.push({ path, method: init?.method ?? "GET", body: String(init?.body ?? "") });
       if (path === "/api/v1/thread/start") return jsonResponse({ version: "v1", thread: { version: "v1", id: "thread-001", status: "active", createdAt: 1, updatedAt: 1 } });
-      if (path === "/api/v1/thread/resume") return jsonResponse({ version: "v1", thread: { version: "v1", id: "thread-001", status: "active", createdAt: 1, updatedAt: 2 }, items: [] });
+      if (path === "/api/v1/thread/resume") return jsonResponse({ version: "v1", thread: { version: "v1", id: "thread-001", status: "active", createdAt: 1, updatedAt: 2 } });
       if (path === "/api/v1/thread/interrupt") return jsonResponse({ version: "v1", ok: true, threadId: "thread-001", turnId: "thread-001-turn-1" });
       throw new Error(`unexpected path ${path}`);
     };

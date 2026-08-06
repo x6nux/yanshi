@@ -54,7 +54,7 @@ func (s *Server) AgentV1(agent *v1.Service) {
 			return
 		}
 		writeAgentJSON(w, http.StatusOK, v1.ThreadResumeResponse{
-			Version: v1.Version, Thread: snapshot.Thread, Items: snapshot.Items,
+			Version: v1.Version, Thread: snapshot.Thread,
 		})
 	})
 

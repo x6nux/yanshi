@@ -9,7 +9,7 @@
 | `initialize` | 握手；返回版本与能力 |
 | `capabilities` | 返回 `Capabilities`（methods / itemTypes / unknownFields / stream） |
 | `thread/start` | 创建 thread（params：[ThreadStartParams](resources.md#threadstartparams)） |
-| `thread/resume` | 按 id 加载 thread + 历史 items |
+| `thread/resume` | 按 id 加载 thread（不含历史 item —— v1 不承诺跨进程事件回放，item 只经流式通道到达） |
 | `thread/interrupt` / `turn/interrupt` | 取消一个 thread 的活动 turn（幂等） |
 | `turn/start` | 启动 turn（params：[TurnStartParams](resources.md#turnstartparams)）；items 经通知流式到达 |
 | `config/read` | 读运行时配置 |

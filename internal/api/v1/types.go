@@ -92,13 +92,18 @@ type Item struct {
 	StructuredResult json.RawMessage `json:"structuredResult,omitempty"`
 }
 
-// ThreadSnapshot is the resume payload: the current Thread plus its
-// historical Items (when available). v1 MVP does not guarantee cross-process
-// event replay; Items is best-effort from the in-memory thread state.
+// ThreadSnapshot is the resume payload: the current Thread.
+//
+// It used to carry historical Items too, and Service.snapshot never set them —
+// both transports forwarded a field that was always absent. Filling it would
+// have meant minting a turnId, a per-thread sequence and a streaming-vocabulary
+// type for each stored MESSAGE, none of which exist for a message read back
+// from the store. v1 does not promise cross-process event replay (see
+// Capabilities); the contract now says so by omission rather than by a field
+// that never arrives.
 type ThreadSnapshot struct {
 	Version string `json:"version"`
 	Thread  Thread `json:"thread"`
-	Items   []Item `json:"items,omitempty"`
 }
 
 // ThreadStartParams are the inputs to thread/start. All fields are optional;
@@ -146,12 +151,11 @@ type ThreadStartResponse struct {
 	Thread  Thread `json:"thread"`
 }
 
-// ThreadResumeResponse is the thread/resume result. Carries the Thread and any
-// historical Items the service could re-derive.
+// ThreadResumeResponse is the thread/resume result. Carries the Thread; see
+// ThreadSnapshot for why item history is not part of it.
 type ThreadResumeResponse struct {
 	Version string `json:"version"`
 	Thread  Thread `json:"thread"`
-	Items   []Item `json:"items,omitempty"`
 }
 
 // TurnStartResponse is the turn/start result. Carries the freshly-started Turn.
