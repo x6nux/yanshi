@@ -597,7 +597,7 @@
   evidence:
     "1": "internal/bootstrap::TestStderrIsReservedForPreLoggerAndTTYMessages; internal/observe/log::TestHandlerAddsCorrelationIDsFromContext"
     "2": "internal/observe/log::TestEveryRedactionRuleActuallyFires"
-    "3": "internal/observe/log::TestParseLevelAllVariants; internal/observe/log::TestParseLevelAndSafeErrorType"
+    "3": "internal/observe/log::TestConfiguredLevelActuallyFilters; internal/observe/log::TestParseLevelAllVariants; internal/observe/log::TestParseLevelAndSafeErrorType"
     "4": "internal/observe/log::TestSamplingNeverDropsAnError; internal/observe/log::TestSuppressedCountIsReported"
 
 - id: "C4/OBS2"
@@ -608,7 +608,7 @@
   evidence:
     "1": "internal/observe/otel::TestSetupWithLiveCollectorFlushesCleanly; internal/api/http::TestWSTurnOpensATurnSpan"
     "2": "internal/api/http::TestAddProviderUsageRecordsToOTel; internal/observe/otel::TestRecordRetryEmitsSafeAttributes; internal/observe/otel::TestStartSessionErrorEndSetsStatus"
-    "3": "internal/observe/otel::TestSetupDisabledReturnsNoop"
+    "3": "internal/observe/otel::TestSetupDisabledReturnsNoop; internal/bootstrap::TestOTelExportIsOffUnlessBothSwitchesAgree"
     "4": "internal/observe/otel::TestToolSpanNeverRecordsErrorBody"
 
 # 2026-08-04 复核：保持 partial，但第 1、2 条其实已经很硬，缺口只在第 3 条 ——

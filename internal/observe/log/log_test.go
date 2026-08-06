@@ -138,3 +138,46 @@ func TestSanitizeIDBoundsWhatAClientCanPutInALogLine(t *testing.T) {
 		t.Errorf("all-rejected id must be empty, got %q", got)
 	}
 }
+
+// TestConfiguredLevelActuallyFilters is the half ParseLevel cannot prove.
+//
+// The ledger cited only the parser mapping for "级别可配", which is necessary
+// and not sufficient: a correct string→slog.Level table says nothing about
+// whether the value reaches a handler. New could have dropped cfg.Level on the
+// floor and every ParseLevel case would still pass.
+//
+// Sampling has to stay out of the way here, which is why the assertion uses
+// distinct messages: the sampler is keyed per message, and repeating one
+// message would eventually throttle it and look like level filtering.
+//
+// ledger: C4/OBS1#3 级别可配
+func TestConfiguredLevelActuallyFilters(t *testing.T) {
+	var buf bytes.Buffer
+	logger := New(Config{Writer: &buf, Format: "json", Level: "error"})
+	ctx := context.Background()
+	logger.DebugContext(ctx, "debug line")
+	logger.InfoContext(ctx, "info line")
+	logger.WarnContext(ctx, "warn line")
+	logger.ErrorContext(ctx, "error line")
+
+	out := buf.String()
+	for _, dropped := range []string{"debug line", "info line", "warn line"} {
+		if strings.Contains(out, dropped) {
+			t.Errorf("level=error still emitted %q: the configured level is not reaching "+
+				"the handler\n%s", dropped, out)
+		}
+	}
+	if !strings.Contains(out, "error line") {
+		t.Fatalf("level=error dropped an error, which would make the assertions above "+
+			"pass for the wrong reason:\n%s", out)
+	}
+
+	// And the other direction, so "filters everything" cannot masquerade as
+	// "filters correctly".
+	buf.Reset()
+	debugLogger := New(Config{Writer: &buf, Format: "json", Level: "debug"})
+	debugLogger.DebugContext(ctx, "debug line")
+	if !strings.Contains(buf.String(), "debug line") {
+		t.Errorf("level=debug dropped a debug line: %s", buf.String())
+	}
+}

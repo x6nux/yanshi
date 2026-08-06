@@ -1387,3 +1387,82 @@ func TestBuild_AutoMigrateReadOnlyConfig(t *testing.T) {
 	require.NoError(t, err, "Build should succeed even when config file is read-only")
 	defer app.Shutdown(context.Background())
 }
+
+// TestOTelExportIsOffUnlessBothSwitchesAgree closes the gap the old ledger note
+// named and the previous test could not: TestBuildSetsUpOTelAndShutsDown drives
+// only the enabled side, and App.OTel is non-nil either way (a disabled runtime
+// is a no-op object, not nil), so it is insensitive to whether either switch
+// works at all.
+//
+// The two switches are ANDed on purpose -- observability.otel.enabled is the
+// operator's YAML, observe.otel_export is the runtime flag -- and "can be
+// switched off" has to hold for each of them independently. A test that only
+// flipped both together would pass with either one ignored.
+//
+// A LIVE positive control is mandatory here, and the first version of this
+// test did not have one. otelobs.Setup degrades to a no-op when the collector
+// is unreachable, so with a dead endpoint every case reports Enabled()==false
+// and the test passes no matter which switch is ignored -- both mutations
+// (dropping either side of the AND) stayed green. The stub below makes the
+// enabled case observably enabled, which is what gives the three off-cases
+// their meaning.
+//
+// ledger: C4/OBS2#3 可关闭
+func TestOTelExportIsOffUnlessBothSwitchesAgree(t *testing.T) {
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer stub.Close()
+	endpoint := stub.Listener.Addr().String()
+
+	build := func(t *testing.T, yamlEnabled, flagEnabled bool) *bootstrap.App {
+		t.Helper()
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "config.yaml")
+		body := fmt.Sprintf(`
+server: { http_addr: "127.0.0.1:0" }
+storage: { sqlite_path: %q }
+observability:
+  otel:
+    enabled: %t
+    endpoint: %q
+    sample_ratio: 1
+features:
+  overrides:
+    observe.otel_export: %t
+`, toYAMLPath(filepath.Join(dir, "yanshi.db")), yamlEnabled, endpoint, flagEnabled)
+		if err := os.WriteFile(cfgPath, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		app, err := bootstrap.Build(bootstrap.Options{ConfigPath: cfgPath, FakeModel: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
+		return app
+	}
+
+	for _, tc := range []struct {
+		name               string
+		yaml, flag, wantOn bool
+	}{
+		{"both off", false, false, false},
+		{"yaml off, flag on", false, true, false},
+		{"yaml on, flag off", true, false, false},
+		// The positive control. Without it the three rows above are satisfied
+		// by any implementation that never enables anything.
+		{"both on", true, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := build(t, tc.yaml, tc.flag)
+			if app.OTel == nil {
+				t.Fatal("App.OTel is nil: a disabled runtime is a no-op object, not nil")
+			}
+			if app.OTel.Enabled() != tc.wantOn {
+				t.Errorf("Enabled() = %v, want %v: this switch does not switch anything",
+					app.OTel.Enabled(), tc.wantOn)
+			}
+		})
+	}
+}
