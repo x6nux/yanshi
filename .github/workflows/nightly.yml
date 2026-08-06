@@ -33,24 +33,61 @@ jobs:
           go test -fuzz=FuzzMatchGlob -fuzztime=10m ./internal/guard/...
 
   bench:
-    name: bench (F2)
+    name: bench trend (soft)
     runs-on: ubuntu-latest
-    continue-on-error: true   # soft until F2 bench targets land; trend-only even then
+    # Trend-only, deliberately soft: ns/op on a shared runner swings well past
+    # the 20% threshold from neighbour load alone, so a hard gate here
+    # manufactures flakes rather than catching regressions. "Do the benchmarks
+    # RUN" is asserted hard in ci.yml (bench-compiles); this job answers the
+    # different question of whether they got slower.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-      - name: bench if targets present
+      - name: download previous baseline
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Previous nightly's artifact, via gh rather than a third-party
+          # action: this repository's supply-chain posture is that CI pulls
+          # only from GitHub itself. A miss (first run, expired retention) is
+          # not an error -- benchstat is simply skipped below.
+          set -euo pipefail
+          prev=$(gh run list --workflow nightly.yml --status success \
+                   --limit 2 --json databaseId --jq '.[1].databaseId' || true)
+          if [ -n "${prev:-}" ]; then
+            mkdir -p .bench-results
+            gh run download "$prev" -n bench-results -D .bench-results || true
+            [ -f .bench-results/new.txt ] && mv .bench-results/new.txt .bench-results/old.txt || true
+          fi
+
+      - name: bench + trend
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           if ! go test -list 'Benchmark.*' ./... 2>/dev/null | grep -q '^Benchmark'; then
-            echo "no Benchmark target yet (F2 pending); soft-pass"
+            echo "no Benchmark target found"
             exit 0
           fi
-          go test -bench=. -benchmem ./... | tee bench-results.txt
+          go install golang.org/x/perf/cmd/benchstat@latest
+          # bench.sh keeps stderr out of the results file; slog writes there and
+          # its lines would otherwise land in the data benchstat parses.
+          ./scripts/bench.sh --diff | tee bench-console.txt
+          cp .bench-results/new.txt bench-results.txt
+          {
+            echo "## Benchmark trend"
+            echo '```'
+            if [ -f .bench-results/old.txt ]; then
+              benchstat .bench-results/old.txt .bench-results/new.txt || true
+            else
+              echo "(no previous baseline — first run or artifact expired)"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: upload bench results
         if: always()
         uses: actions/upload-artifact@v4

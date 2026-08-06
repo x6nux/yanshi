@@ -131,6 +131,26 @@ jobs:
   # unnumbered gates (D2/O12 removal, phantom slash commands). For the current
   # roster: grep -rn '^func Test' internal/archtest/
 
+  # bench-compiles is a HARD gate, and the reason is specific:
+  # BenchmarkOrchestratorTurn was broken for an unknown length of time while CI
+  # stayed green, because the only bench job was continue-on-error. A benchmark
+  # that fails to RUN is a broken test, not a slow one -- the numbers are a
+  # trend signal and stay soft in nightly, but "does it execute" is a fact CI
+  # can assert cheaply.
+  #
+  # -benchtime=10x, never 1x: 1x is precisely the value that hid the bug (a
+  # FakeModel exhausts its script on the second iteration).
+  bench-compiles:
+    name: benchmarks run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -run '^$' -bench=. -benchtime=10x ./internal/vcs ./internal/tools ./internal/agent/orchestrator
+
   governance:
     name: governance (all archtest gates except GOV5/GOV7 + ledger)
     runs-on: ubuntu-latest
