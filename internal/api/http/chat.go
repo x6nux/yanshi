@@ -105,13 +105,16 @@ func (s *Server) handleSSEInternal(w http.ResponseWriter, r *http.Request,
 	// conversation identity of its own -- which makes the client's id the only
 	// thing that can link two requests of one conversation. An absent turn_id
 	// still gets a minted one so a single request's own lines stay joined.
-	turnID := req.TurnID
+	// Sanitized, not trusted: these are the only two identifiers in the system
+	// that a client chooses, and they land in every log line and span attribute
+	// of the request. See obslog.SanitizeID for the three ways a raw one bites.
+	turnID := obslog.SanitizeID(req.TurnID)
 	if turnID == "" {
 		turnID = obslog.NewTurnID()
 	}
 	reqCtx := obslog.WithIDs(r.Context(), obslog.IDs{
 		TraceID:   obslog.NewTraceID(),
-		SessionID: req.ThreadID,
+		SessionID: obslog.SanitizeID(req.ThreadID),
 		TurnID:    turnID,
 	})
 	var turnErr error

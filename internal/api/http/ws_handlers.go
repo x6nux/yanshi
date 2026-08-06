@@ -24,23 +24,28 @@ import (
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/secrets"
 	"github.com/x6nux/yanshi/internal/skills"
+	"github.com/x6nux/yanshi/internal/store"
 )
 
-// handleSessionList replies to a session_list frame with the stored sessions.
-func handleSessionList(s *Server, conn *wsConn) {
-	if s.store == nil {
-		conn.write(proto.NewSessions(nil))
-		return
-	}
-	sessions, err := s.store.ListSessions(0)
-	if err != nil {
-		conn.write(proto.NewSessions(nil))
-		return
-	}
+// sessionInfos projects stored session rows into the wire shape.
+//
+// Extracted because handleSessionList and handleArchivedSessionList carried
+// byte-identical copies of it, and the cost gate below has to apply to both:
+// a flag honoured on one of two identical projections is worse than one
+// honoured on neither, because the difference looks like a data bug.
+//
+// observe.cost_in_status (OBS3) governs the two cost fields here for the same
+// reason it governs statusFrame — /stats renders session cost, so leaving it
+// populated here would keep showing spend after the operator switched cost
+// reporting off. The STORED ledger is untouched: turning a display off must
+// not lose accounting, so store.BillingMeta (connSession.billingMeta) stays
+// unconditional and switching the flag back on shows the full history.
+func (s *Server) sessionInfos(sessions []store.SessionSummary) []proto.SessionInfo {
+	showCost := s.featuresReg.EnabledOrDefault("observe.cost_in_status")
 	info := make([]proto.SessionInfo, 0, len(sessions))
 	for _, ss := range sessions {
 		count, _ := s.store.SessionMessageCount(ss.ID)
-		info = append(info, proto.SessionInfo{
+		row := proto.SessionInfo{
 			ID:              ss.ID,
 			Title:           ss.Title,
 			CreatedAt:       ss.CreatedAt,
@@ -53,11 +58,28 @@ func handleSessionList(s *Server, conn *wsConn) {
 			CachedTokens:    ss.CachedTokens,
 			ReasoningTokens: ss.ReasoningTokens,
 			Turns:           ss.Turns,
-			CostUSD:         ss.CostUSD,
-			CostKnown:       ss.CostKnown,
-		})
+		}
+		if showCost {
+			row.CostUSD = ss.CostUSD
+			row.CostKnown = ss.CostKnown
+		}
+		info = append(info, row)
 	}
-	conn.write(proto.NewSessions(info))
+	return info
+}
+
+// handleSessionList replies to a session_list frame with the stored sessions.
+func handleSessionList(s *Server, conn *wsConn) {
+	if s.store == nil {
+		conn.write(proto.NewSessions(nil))
+		return
+	}
+	sessions, err := s.store.ListSessions(0)
+	if err != nil {
+		conn.write(proto.NewSessions(nil))
+		return
+	}
+	conn.write(proto.NewSessions(s.sessionInfos(sessions)))
 }
 
 // handleRestoreSession replies to a restore_session frame by loading the
@@ -123,8 +145,10 @@ func handleRestoreSession(s *Server, conn *wsConn, cs *connSession, sessionID st
 	// Reply with the restored session state. Carry CostUSD/CostKnown so the
 	// TUI doesn't briefly render "$0.0000" between restore and first usage.
 	restored := proto.NewSessionRestored(sessionID, hist, cs.model, cs.thinking, cs.tokensIn, cs.tokensOut, cs.turns)
-	restored.CostUSD = cs.costUSD
-	restored.CostKnown = cs.costKnown
+	if s.featuresReg.EnabledOrDefault("observe.cost_in_status") {
+		restored.CostUSD = cs.costUSD
+		restored.CostKnown = cs.costKnown
+	}
 	conn.write(restored)
 }
 
@@ -374,27 +398,7 @@ func handleArchivedSessionList(s *Server, conn *wsConn) {
 		conn.write(proto.NewSessions(nil))
 		return
 	}
-	info := make([]proto.SessionInfo, 0, len(sessions))
-	for _, ss := range sessions {
-		count, _ := s.store.SessionMessageCount(ss.ID)
-		info = append(info, proto.SessionInfo{
-			ID:              ss.ID,
-			Title:           ss.Title,
-			CreatedAt:       ss.CreatedAt,
-			UpdatedAt:       ss.UpdatedAt,
-			MsgCount:        count,
-			Model:           ss.Model,
-			Thinking:        ss.Thinking,
-			TokensIn:        ss.TokensIn,
-			TokensOut:       ss.TokensOut,
-			CachedTokens:    ss.CachedTokens,
-			ReasoningTokens: ss.ReasoningTokens,
-			Turns:           ss.Turns,
-			CostUSD:         ss.CostUSD,
-			CostKnown:       ss.CostKnown,
-		})
-	}
-	conn.write(proto.NewSessions(info))
+	conn.write(proto.NewSessions(s.sessionInfos(sessions)))
 }
 
 // wsConn wraps a gorilla WebSocket connection with a write mutex. gorilla/

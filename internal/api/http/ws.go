@@ -530,6 +530,12 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 					SessionID: cs.sessionID,
 					TurnID:    obslog.NewTurnID(),
 				})
+			} else {
+				// NOT merely "skip the binding": the orchestrator mints ids for
+				// any turn that arrives without them (ensureTurnIDs), so a bare
+				// context comes back correlated a few frames later. WithoutIDs
+				// is the only form of "off" that survives that.
+				turnCtx = obslog.WithoutIDs(turnCtx)
 			}
 
 			// THIS is the WS drain boundary the orchestrator's Query doc comment
