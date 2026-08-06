@@ -43,7 +43,17 @@ func runApp(args []string, in io.Reader, out io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg := appserver.NewMemoryConfig()
+	// The runtime config store follows -config. This used to be an
+	// unconditional NewMemoryConfig(), so config/write reported success and
+	// dropped the value at exit while the JSON-RPC docs called the pair
+	// "读/写运行时配置". A backend that cannot be opened is fatal rather than a
+	// silent downgrade to memory: falling back would restore exactly the
+	// behaviour this replaced, with nothing on the wire to say so.
+	cfg, err := appserver.NewFileConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "yanshi app: %v\n", err)
+		return exitErr
+	}
 	srv := appserver.New(app.AgentAPI, cfg)
 	if err := srv.Serve(ctx, in, out); err != nil {
 		fmt.Fprintf(os.Stderr, "yanshi app: %v\n", err)

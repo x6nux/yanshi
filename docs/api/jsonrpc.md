@@ -12,8 +12,8 @@
 | `thread/resume` | 按 id 加载 thread（不含历史 item —— v1 不承诺跨进程事件回放，item 只经流式通道到达） |
 | `thread/interrupt` / `turn/interrupt` | 取消一个 thread 的活动 turn（幂等） |
 | `turn/start` | 启动 turn（params：[TurnStartParams](resources.md#turnstartparams)）；items 经通知流式到达 |
-| `config/read` | 读运行时配置 |
-| `config/write` | 写运行时配置 |
+| `config/read` | 读运行时配置（见下方「运行时配置存放在哪」） |
+| `config/write` | 写运行时配置；成功即已落盘 |
 | `shutdown` | 优雅关闭 |
 
 未知方法返回 `-32601 method not found`。方法名与错误码定义在 `internal/appserver/rpc.go` / `server.go`。
@@ -43,3 +43,21 @@ turn 期间产生的 items 以 `item/updated` 通知（`RPCNotification`，**无
 > app-server 与 HTTP/SSE 共用同一个 `*v1.Service`，语义不漂移。
 
 不对称点：HTTP 的 SSE 路径用**静态权限 profile**（无交互式弹窗）；WebSocket 与 app-server 走同一个 service，权限模式按 transport 配置（见 [../adr/0007-ws-holds-history-sse-replays-shared-proto.md](../adr/0007-ws-holds-history-sse-replays-shared-proto.md) 与 [../adr/0010-sse-static-profile-no-interactive-perm.md](../adr/0010-sse-static-profile-no-interactive-perm.md)）。
+
+## 运行时配置存放在哪
+
+`config/read|write` 操作的是一个**独立的 JSON sidecar**，路径由 `-config` 派生：
+`config.yaml` → `config.appstate.json`（`internal/appserver::SidecarPath`）。
+
+**不写进 `config.yaml` 本身**是有意的：那份 YAML 由操作员手工维护、带注释、
+且在这套 RPC 存在之前就被 bootstrap 读过；让一个 JSON-RPC 调用方去重写它，
+等于为了存一个 bootstrap 从不读的键而毁掉操作员的注释与排版。
+
+这两个方法此前**根本不落盘** —— `cmd/yanshi/app.go` 无条件构造
+`appserver::MemoryConfig`，传不传 `-config` 都一样，于是 `config/write` 收下值、
+回报成功、进程退出即丢，而本文档一直把它们描述成「读/写运行时配置」。
+照着这份文档配置的机群会在每次重启时静默复位。
+
+**秘密路径在两个方向上都被拒绝**（`token` / `api_key` / `apikey` / `secret`，
+以及任何含 `password` 的 dot-segment），且拒绝发生在 JSON decode **之前** ——
+落盘之后这条更重要：泄漏一旦到达这个后端就是持久的。

@@ -19,10 +19,10 @@ var secretPathFragments = map[string]bool{
 	"secret":  true,
 }
 
-// MemoryConfig is the default ConfigBackend: a thread-safe in-memory key/value
-// store. It is used by `yanshi app --fake-model` tests and by supervisors that
-// do not want a YAML file on disk. The YAML-backed variant lives at the
-// supervisor layer (Task 11 future work) — the contract is the same.
+// MemoryConfig is the process-scoped ConfigBackend: a thread-safe in-memory
+// key/value store, used by tests and by supervisors that do not want a file on
+// disk. `yanshi app` uses FileConfig — it used to use this one unconditionally,
+// which is how config/write came to report success and drop the value at exit.
 type MemoryConfig struct {
 	mu     sync.Mutex
 	values map[string]any
