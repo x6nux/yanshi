@@ -354,8 +354,12 @@ func (s *Server) handleSSEInternal(w http.ResponseWriter, r *http.Request,
 	sseStatus.ReasoningTokens = usage.ReasoningTokens
 	// C4 COST1: surface the per-request cost. /cost on SSE reflects ONE POST
 	// (the stateless model); the WS path reflects the cumulative session.
-	sseStatus.CostUSD = sseCostUSD
-	sseStatus.CostKnown = sseCostKnown
+	// Gated by observe.cost_in_status, same as the WS statusFrame — a flag
+	// honoured on one transport only is worse than one honoured on neither.
+	if s.featuresReg.EnabledOrDefault("observe.cost_in_status") {
+		sseStatus.CostUSD = sseCostUSD
+		sseStatus.CostKnown = sseCostKnown
+	}
 	// MEM1: surface memory path on SSE status too, for remote clients.
 	sseStatus.MemoryPath = s.memoryPath
 	// C4: surface log path on SSE status too (parity with WS).

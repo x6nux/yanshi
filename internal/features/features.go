@@ -115,6 +115,36 @@ func (r *Registry) Enabled(key string) bool {
 	return known && r.values[key]
 }
 
+// EnabledOrDefault reports the flag's value, falling back to the flag's
+// REGISTERED default when this registry does not know it (including the nil
+// registry, which knows nothing).
+//
+// Enabled is the wrong function for a gate. It answers false for a nil
+// receiver and false for an unknown key, which is correct only for flags whose
+// default is off. observe.slog_trace_id is Stable with Default: true, so a
+// gate written as `if reg.Enabled(k)` silently DISABLES a default-on feature
+// for every caller that never passed a registry -- and leaves nothing behind
+// saying why the feature stopped working. Callers that gate behaviour must use
+// this; Enabled remains for /features rendering, where "the registry does not
+// have it" really is the answer to show.
+func (r *Registry) EnabledOrDefault(key string) bool {
+	if r != nil {
+		r.mu.RLock()
+		_, known := r.specs[key]
+		value := r.values[key]
+		r.mu.RUnlock()
+		if known {
+			return value
+		}
+	}
+	for _, spec := range DefaultSpecs() {
+		if spec.Key == key {
+			return spec.Default
+		}
+	}
+	return false
+}
+
 // Set toggles a flag at runtime. It is the single entry point for /features
 // and ALWAYS rejects unknown keys (regardless of strict mode): runtime
 // toggling of an unknown flag is either a typo or a stale client, neither of

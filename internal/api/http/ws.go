@@ -514,12 +514,23 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 			// through them. The turn-start log records only boolean/numeric
 			// diagnostics so an operator can reconstruct turn boundaries
 			// without seeing content.
-			turnIDs := obslog.IDs{
-				TraceID:   obslog.NewTraceID(),
-				SessionID: cs.sessionID,
-				TurnID:    obslog.NewTurnID(),
+			//
+			// observe.slog_trace_id gates the binding itself, which is the only
+			// place it CAN be gated: the ids are read straight off the context
+			// by the redacting handler (internal/observe/log) and by StartTurn,
+			// and neither of those may import features without inverting the
+			// dependency direction. Off therefore means no correlation ids
+			// anywhere for the turn -- logs AND the span -- because there is
+			// one set of ids, not two. EnabledOrDefault (not Enabled): this
+			// flag is Stable with Default true, and a nil registry must not
+			// silently turn it off.
+			if s.featuresReg.EnabledOrDefault("observe.slog_trace_id") {
+				turnCtx = obslog.WithIDs(turnCtx, obslog.IDs{
+					TraceID:   obslog.NewTraceID(),
+					SessionID: cs.sessionID,
+					TurnID:    obslog.NewTurnID(),
+				})
 			}
-			turnCtx = obslog.WithIDs(turnCtx, turnIDs)
 
 			// THIS is the WS drain boundary the orchestrator's Query doc comment
 			// points at. Query opens its own span because it is synchronous and

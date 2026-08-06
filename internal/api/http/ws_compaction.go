@@ -216,8 +216,15 @@ func (cs *connSession) statusFrame(s *Server) proto.ServerFrame {
 	// C4 COST1: per-session cumulative USD estimate. costKnown=false is the
 	// N/A signal — the TUI renders "N/A" rather than "$0.0000" so operators
 	// can distinguish "unknown model" from "known model, zero spend".
-	st.CostUSD = cs.costUSD
-	st.CostKnown = cs.costKnown
+	//
+	// observe.cost_in_status (OBS3) gates it. Off leaves both fields zero,
+	// which omitempty drops from the wire and the TUI renders as N/A — the
+	// honest reading of "cost reporting is switched off". EnabledOrDefault
+	// because this flag defaults ON and s.featuresReg may be nil.
+	if s.featuresReg.EnabledOrDefault("observe.cost_in_status") {
+		st.CostUSD = cs.costUSD
+		st.CostKnown = cs.costKnown
+	}
 	return st
 }
 
