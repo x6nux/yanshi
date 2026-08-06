@@ -38,7 +38,11 @@ func NewMCPTools(mgr *mcp.Manager) []*GuardedTool {
 			if !ok {
 				return errorResult("MCP manager not bound"), nil
 			}
-			res, err := bound.CallTool(ctx, td.Qualified, []byte(args))
+			// CallToolRetry, not CallTool: it reconnects once on failure. The
+			// retry wrapper existed with zero callers, so a server that died
+			// between turns turned every tool call into a hard error the
+			// model could only report, never recover from.
+			res, err := bound.CallToolRetry(ctx, td.Qualified, []byte(args))
 			if err != nil {
 				return errorResult(err.Error()), nil
 			}

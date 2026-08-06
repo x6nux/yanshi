@@ -133,6 +133,11 @@ type App struct {
 	// MCP is the MCP connection manager (soft-degrade: may be Enabled()==false).
 	MCP *mcp.Manager
 
+	// mcpHealthCancel stops the MCP health loop. Unexported because nothing
+	// outside Shutdown has any business stopping it: a caller that cancelled
+	// it early would leave every dead server permanently marked Ready.
+	mcpHealthCancel context.CancelFunc
+
 	// C1Scheduler is the automation tick loop started by BuildAutomation as a
 	// goroutine over the root context. Nil when C1 failed to build.
 	//
@@ -861,6 +866,9 @@ func Build(opts Options) (*App, error) {
 	// manager (Enabled()==false), tools.NewMCPTools returns nil, the orchestrator
 	// skips context injection. Startup failures log to stderr but do not block.
 	mcpManager := buildMCPManager(cfg)
+	// The loop runs for the process lifetime; its cancel is invoked from
+	// App.Shutdown alongside MCP.Shutdown.
+	mcpHealthCancel := mcpManager.StartHealthLoop(context.Background())
 	for _, t := range tools.NewMCPTools(mcpManager) {
 		allTools = append(allTools, t)
 	}
@@ -1212,6 +1220,7 @@ func Build(opts Options) (*App, error) {
 		AgentAPI:        agentAPI,
 		Skills:          registry,
 		ToolNames:       toolNames,
+		mcpHealthCancel: mcpHealthCancel,
 		ToolTimeouts:    toolTimeouts,
 		VCS:             vcsInstance,
 		VCSRepoID:       vcsRepoID,
@@ -1296,6 +1305,12 @@ func defaultLogDir() (string, error) {
 	}
 	return filepath.Join(base, "yanshi", "logs"), nil
 }
+
+// MCPHealthRunning reports whether the MCP health loop was started. Exposed
+// for the wiring assertion: the loop is a goroutine with no other observable
+// effect, so nothing else can tell a started loop from an unstarted one until
+// a server dies and nobody notices.
+func (a *App) MCPHealthRunning() bool { return a.mcpHealthCancel != nil }
 
 // effectiveSafeOutput returns the caller-provided output or a default that
 // writes to os.Stderr with a fresh empty Redactor. The default is used by
@@ -1442,6 +1457,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 		_ = a.LSP.Close()
 	}
 	if a.MCP != nil {
+		if a.mcpHealthCancel != nil {
+			a.mcpHealthCancel()
+		}
 		a.MCP.Shutdown()
 	}
 	// Flush OTel exporters BEFORE the store so spans/metrics referencing
@@ -1557,5 +1575,16 @@ func buildMCPManager(cfg *config.Config) *mcp.Manager {
 			fmt.Fprintf(os.Stderr, "yanshi: mcp server %q failed: %s\n", st.Name, st.Error)
 		}
 	}
+	// internal/mcp/health.go shipped complete, tested, and with ZERO non-test
+	// callers: SetHealthConfig, StartHealthLoop and CallToolRetry were all
+	// written and never wired. A server that died after StartAll stayed Ready
+	// forever, its tools kept being advertised to the model, and every call to
+	// them failed with no reconnect attempted.
+	//
+	// GOV4 does not catch this shape. It asserts bootstrap's exported Build*
+	// functions are reachable from Build, and buildMCPManager IS reachable;
+	// what went unwired is a method on a component the composition root
+	// already holds -- one level below where the gate looks.
+	mgr.SetHealthConfig(mcp.DefaultHealthConfig())
 	return mgr
 }

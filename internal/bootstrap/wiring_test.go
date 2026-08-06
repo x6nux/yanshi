@@ -861,3 +861,26 @@ func TestNoRegisteredToolHasAZeroTimeout(t *testing.T) {
 		}
 	}
 }
+
+// TestMCPHealthLoopIsStarted pins a wiring that GOV4 structurally cannot see.
+//
+// internal/mcp/health.go shipped complete, tested, and with zero non-test
+// callers: SetHealthConfig, StartHealthLoop and CallToolRetry were all
+// written and never wired. A server that died after StartAll stayed Ready
+// forever, its tools kept being advertised to the model, and every call to
+// them failed with no reconnect attempted.
+//
+// GOV4 asserts bootstrap's exported Build* functions are reachable from
+// Build, and buildMCPManager IS reachable. What went unwired is a method on a
+// component the composition root already holds -- one level below where the
+// gate looks. This test watches that level for the MCP manager specifically.
+func TestMCPHealthLoopIsStarted(t *testing.T) {
+	app := buildAppWithProviders(t, "")
+	if app.MCP == nil {
+		t.Skip("no MCP manager in this build")
+	}
+	if !app.MCPHealthRunning() {
+		t.Fatal("the MCP health loop was never started: a dead server stays Ready " +
+			"and its tools keep being offered to the model")
+	}
+}
