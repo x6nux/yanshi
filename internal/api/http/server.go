@@ -2,10 +2,9 @@
 package http
 
 import (
-	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/x6nux/yanshi/internal/approval"
@@ -236,7 +235,11 @@ func (s *Server) sealTurnBoundary(sessionID string, turnSeq, historyLen int, kin
 		return
 	}
 	if _, err := s.vcs.SealMainTurnSeam(s.repoID, sessionID, turnSeq, historyLen, vcs.SeamKind(kind), label); err != nil {
-		fmt.Fprintf(os.Stderr, "yanshi: %s seam (%s) failed: %v\n", kind, label, err)
+		// slog rather than stderr: this fires while a request is in flight, so
+		// the redacting handler's trace/session/turn IDs are what make the
+		// line attributable to a request -- a bare stderr write is an
+		// orphaned sentence in a multi-connection server.
+		slog.Warn("seam failed", "kind", kind, "label", label, "error", err)
 	}
 }
 

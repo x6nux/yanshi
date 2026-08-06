@@ -925,3 +925,41 @@ func TestLSPOverrideKeepsWorkspaceMarkers(t *testing.T) {
 		t.Fatalf("a language with no default was dropped: %+v", langs2)
 	}
 }
+
+// TestStderrIsReservedForPreLoggerAndTTYMessages pins which bootstrap
+// messages may bypass slog, and why.
+//
+// Most posture warnings moved to slog in W7 so they land in the log file and
+// any collector, not only on the terminal of whoever started the process --
+// stderr on a detached server is nobody's inbox, and the sandbox line in
+// particular is what an operator needs when auditing after the fact.
+//
+// Exactly two categories may stay on stderr, and both would be BROKEN by
+// migrating:
+//
+//   - Messages emitted before obslog.Setup runs. resolveLogWriter reports a
+//     log file it could not open; routing that through the logger being
+//     configured is a message about the failure of its own delivery path.
+//   - Messages deliberately shown to a TUI user at launch (the log path).
+//
+// The assertion is a ceiling on the COUNT rather than a list of allowed
+// lines: a list would have to be edited for every message reworded, which
+// trains people to edit it without thinking. A ceiling only moves when
+// someone adds a bypass, which is the event worth a second look.
+func TestStderrIsReservedForPreLoggerAndTTYMessages(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "..", "internal", "bootstrap", "bootstrap.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := strings.Count(string(src), "fmt.Fprintf(os.Stderr") + strings.Count(string(src), "fmt.Fprintln(os.Stderr")
+
+	// Current inventory: log-path notice, pre-Setup log-open failure, and the
+	// startup posture block (config/provider/sandbox/network) that a human at
+	// a terminal is meant to read as the process comes up.
+	const ceiling = 10
+	if n > ceiling {
+		t.Errorf("bootstrap has %d direct stderr writes (ceiling %d). A new one is only "+
+			"justified if it runs before obslog.Setup or is meant for a TUI user at launch; "+
+			"otherwise use slog so it reaches the log file and collectors too", n, ceiling)
+	}
+}

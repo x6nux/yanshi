@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -575,7 +576,7 @@ func Build(opts Options) (*App, error) {
 		lspMgr = lsp.New(lsp.Config{WorkRoot: workRoot})
 	}
 	if !lspMgr.Enabled() {
-		fmt.Fprintf(os.Stderr, "yanshi: lsp disabled (no language server found or enabled:false)\n")
+		slog.Warn("lsp disabled", "reason", "no language server found or enabled:false")
 	}
 
 	// Choose model: fake when requested or when no providers are configured.
@@ -648,7 +649,9 @@ func Build(opts Options) (*App, error) {
 	}
 	if visionAux == nil && len(cfg.LLM.Providers) > 0 {
 		if !cfg.LLM.Providers[0].Multimodal {
-			fmt.Fprintf(os.Stderr, "yanshi: vision auxiliary disabled (no provider has multimodal: true); image_describe returns a config error\n")
+			slog.Warn("vision auxiliary disabled",
+				"reason", "no provider has multimodal: true",
+				"effect", "image_describe returns a config error")
 		}
 	}
 	imageStore := imagestore.New(imagestore.Config{MaxItems: 20, MaxBytes: 100 << 20})
@@ -938,8 +941,12 @@ func Build(opts Options) (*App, error) {
 		NetworkDeny:   cfg.Security.Sandbox.NetworkDeny,
 	})
 	if report := sb.Report(); report.Effective != sandbox.OSIsolated {
-		fmt.Fprintf(os.Stderr, "yanshi: sandbox phase0 (%s): %s; OS/network isolation NOT enforced\n",
-			report.Effective, report.Reason)
+		// Security posture: goes through slog so it lands in the log file and
+		// any collector, not only on the terminal of whoever started the
+		// process. An operator auditing after the fact needs this line, and
+		// stderr on a detached server is nobody's inbox.
+		slog.Warn("sandbox not enforcing OS/network isolation",
+			"effective", string(report.Effective), "reason", report.Reason)
 	}
 	// networkPolicy is enforced for yanshi's OWN in-process HTTP (web_fetch and
 	// web_search, via netpolicy.NewTransport/PolicyDialer). It is NOT enforced
@@ -1596,7 +1603,7 @@ func buildMCPManager(cfg *config.Config) *mcp.Manager {
 	mgr := mcp.NewManager(servers)
 	for _, st := range mgr.StartAll(context.Background()) {
 		if st.Status == mcp.StatusFailed {
-			fmt.Fprintf(os.Stderr, "yanshi: mcp server %q failed: %s\n", st.Name, st.Error)
+			slog.Warn("mcp server failed to start", "server", st.Name, "error", st.Error)
 		}
 	}
 	// internal/mcp/health.go shipped complete, tested, and with ZERO non-test
