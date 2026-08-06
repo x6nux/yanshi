@@ -47,6 +47,7 @@ func (m *delayedFake) Generate(
 	return m.FakeModel.Generate(ctx, messages, opts...)
 }
 
+// ledger: C1/RLM1#2 顺序对应
 func TestRunUsesGenerateAndPreservesOrder(t *testing.T) {
 	fake := einollm.NewFakeModel([]string{"ok-a", "ok-b", "ok-c"}, nil)
 	runner := rlm.Runner{Model: fake, MaxConcurrency: 4}
@@ -62,6 +63,7 @@ func TestRunUsesGenerateAndPreservesOrder(t *testing.T) {
 	assert.Equal(t, 0, fake.StreamCalls, "StreamCalls")
 }
 
+// ledger: C1/RLM1#3 cap 生效
 func TestRunCapsConcurrencyAtSixteen(t *testing.T) {
 	gate := make(chan struct{})
 	fake := &delayedFake{

@@ -54,6 +54,7 @@ func TestRLMQueryMetadataAndGenerateOnly(t *testing.T) {
 	assert.Equal(t, 0, fake.StreamCalls, "StreamCalls")
 }
 
+// ledger: C1/RLM1#1 1-16 并发
 func TestRLMQueryRejectsMoreThanSixteen(t *testing.T) {
 	fake := einollm.NewFakeModel([]string{"ok"}, nil)
 	set := tools.NewRLMTools(rlm.Runner{Model: fake})

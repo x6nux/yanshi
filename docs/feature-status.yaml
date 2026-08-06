@@ -695,13 +695,29 @@
 #     cost_class=cheap 只是「声明便宜」，不是「实测更便宜」；没有任何测试或
 #     基准比较 rlm_query 与 agent_spawn 的 token / 费用。这一条不达标，
 #     故整条保持 partial（与 B1/M04b、G/VISION-TOOL、A1/T07/T08 同一把尺子）。
+  # 2026-08-07：partial → done。子句 4 拆解定性为「N 类：测量不是断言」，按它给出的
+  # 可承载改写落地 —— **不改 acceptance 文本**，因为「成本显著低于 sub-agent」本身
+  # 就能被行为化：比较同一批任务下两条路径**实际发给 provider 的量**。
+  #   · rlm_query 每项发一条裸 prompt；
+  #   · 每项一个 sub-agent 则每次调用都带上继承的 system instruction
+  #     （AGENT.md/CLAUDE.md + 输出契约），而且 ReAct 循环每项可能不止一次调用。
+  # 差异是**结构性**的而非「选了哪个便宜模型」的性质，这正是它可断言的原因 ——
+  # SelectRLMModel 强制 cost_class=cheap 只说明模型便宜，没说**这条路**更便宜。
+  # 实测（8 项）：rlm 8 次调用 / 320 字符，sub-agent 路径 8 次调用 / 15408 字符。
+  # 断言写成比值且倍数刻意放松（子句说的是「显著」，钉死一个精确数字会被任何
+  # prompt 改动打红）。度量用字符而非 token：分词是 provider 相关的，而任何分词器
+  # 对输入长度都是单调的，所以「发了几倍的文本」就是「贵了几倍」。
+  # 变异验过：让 rlm 也带上同一段 system instruction → 红。
 - id: "C1/RLM1"
   package: "W1"
-  verdict: partial
+  verdict: done
   title: "rlm_query 批量并行 LLM"
   acceptance: "1-16 并发；顺序对应；cap 生效；成本显著低于 sub-agent"
-  evidence: "internal/tools::TestRLMQueryRejectsMoreThanSixteen; internal/agent/rlm::TestRunUsesGenerateAndPreservesOrder; internal/agent/rlm::TestRunCapsConcurrencyAtSixteen"
-
+  evidence:
+    "1": "internal/tools::TestRLMQueryRejectsMoreThanSixteen"
+    "2": "internal/agent/rlm::TestRunUsesGenerateAndPreservesOrder"
+    "3": "internal/agent/rlm::TestRunCapsConcurrencyAtSixteen"
+    "4": "internal/agent/rlm::TestRLMSendsFarLessThanTheSubAgentPathForTheSameBatch"
 - id: "C2/UX1"
   package: "W8"
   verdict: done
