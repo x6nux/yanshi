@@ -139,29 +139,33 @@ security:
     enabled: true              # *bool semantics: omit = default (true); false = opt-out
     tier: read-only            # read-only | workspace-write | full-access
     network_deny: true         # Phase 0 hint for the future OS-isolation backend
-  # ⚠️ Phase 0 scope: these four keys apply to yanshi's OWN in-process HTTP
-  # (web_fetch / web_search) and NOTHING ELSE. They are not consulted for
-  # subprocesses at all.
+  # ⚠️ Scope: these four keys govern yanshi's OWN in-process HTTP (web_fetch /
+  # web_search) AND, since W5, subprocesses launched through the shell/secproc
+  # factories — bootstrap starts a real loopback proxy and publishes its
+  # address as http_proxy/https_proxy (both cases). `allow` therefore does
+  # something now: a widened list genuinely admits egress for shell_run /
+  # run_tests / github_* / git_*.
   #
-  # What subprocesses get instead: http_proxy/https_proxy (both cases) pointing
-  # at a dead port (http://127.0.0.1:0), unconditionally — the policy proxy that
-  # would honor these rules is written but never started (W5). So today:
-  #   * `allow` does nothing for shell_run / run_tests / github_* / git_*;
-  #     widening it grants those no egress whatsoever.
-  #   * `default: allow` does not restore their network either — the dead port
-  #     is published regardless of this value.
-  #   * Only proxy-aware clients are affected (curl, gh, git-over-HTTP, go mod
-  #     download, npm). Raw sockets, SSH and custom DNS are untouched, so this
-  #     is not a containment boundary — treat the guard layer as the boundary.
-  #   * It reaches only children launched through the shell/secproc factories.
-  #     ACP agent CLIs, stdio MCP servers and LSP servers are spawned with the
+  # (This block used to say the proxy "is written but never started" and that a
+  # dead port http://127.0.0.1:0 was published unconditionally. That was true
+  # before W5 and is no longer; if you are copying an older config.yaml, the
+  # symptom "Failed to connect to 127.0.0.1 port 0" is gone.)
+  #
+  # What it still does NOT cover — the boundary has not moved as far as it
+  # looks (see docs/adr/0014-managed-proxy-is-the-only-governed-egress-channel.md):
+  #   * Only proxy-AWARE clients obey it (curl, gh, git-over-HTTP, go mod
+  #     download, npm). A subprocess that ignores http_proxy and calls
+  #     connect() directly, or opens a raw socket, is unaffected. Blocking
+  #     those needs OS-level enforcement (seccomp / Seatbelt / AppContainer)
+  #     and is S1 work. Treat the guard layer as the containment boundary.
+  #   * ACP agent CLIs, stdio MCP servers and LSP servers are spawned with the
   #     host environment: they get NO managed proxy and DO inherit whatever
   #     http_proxy/https_proxy the operator's shell had. If that upstream proxy
   #     is untrusted, those subprocesses route through it.
-  # Symptom to recognize: a subprocess failing with
-  #   "Failed to connect to 127.0.0.1 port 0".
+  #   * If the proxy fails to start, bootstrap prints
+  #     "subprocess egress is UNFILTERED" on stderr and continues.
   network:
-    default: deny              # deny-wins posture (in-process HTTP only, see above)
+    default: deny              # deny-wins posture (see the scope note above)
     allow: []                  # glob host patterns admitted (e.g. "*.github.com")
     deny: []                   # glob host patterns always rejected (deny wins)
     allow_private: false       # admit loopback / RFC1918 / link-local (SSRF risk)
