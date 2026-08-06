@@ -12,13 +12,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/x6nux/yanshi/internal/acp"
 	"github.com/x6nux/yanshi/internal/config"
 	"github.com/x6nux/yanshi/internal/i18n"
 	corekeymap "github.com/x6nux/yanshi/internal/keymap"
 	"github.com/x6nux/yanshi/internal/lockfile"
+	"github.com/x6nux/yanshi/internal/lsp"
 	"github.com/x6nux/yanshi/internal/sandbox"
 	"github.com/x6nux/yanshi/internal/secrets"
 	"github.com/x6nux/yanshi/internal/store"
@@ -554,32 +554,92 @@ func checkSandbox(cfg *config.Config, cfgErr error, workRoot string) CheckResult
 	return CheckResult{Name: "sandbox", Status: StatusOK, Message: msg}
 }
 
+// checkMCP reports the configured MCP servers and which of them are enabled.
+//
+// It used to return a fixed "no mcp servers exposed via chat" regardless of
+// configuration -- a statement that was false for anyone who configured one,
+// since the tools bridge registers every ready server's tools into the chat
+// tool set. An operator debugging a server that would not connect got a line
+// telling them none were expected.
+//
+// It deliberately does NOT start the servers. doctor runs before/alongside a
+// live instance, and spawning stdio servers here would fork processes the
+// operator did not ask for, race the real manager for stdio, and make a
+// diagnostic command have side effects. Reachability is the health loop's job
+// (internal/mcp/health.go); what doctor can answer honestly is what the
+// configuration says and whether it is coherent.
 func checkMCP(cfg *config.Config, cfgErr error) CheckResult {
 	if cfgErr != nil {
 		return skipped("mcp", cfgErr)
 	}
-	return CheckResult{
-		Name:    "mcp",
-		Status:  StatusOK,
-		Message: "no mcp servers exposed via chat (vcs-mcp serves the ACP path)",
+	if len(cfg.MCP.Servers) == 0 {
+		return CheckResult{Name: "mcp", Status: StatusOK, Message: "no mcp servers configured"}
 	}
+	var enabled, disabled, broken []string
+	for name, sc := range cfg.MCP.Servers {
+		switch {
+		case sc.Transport == "http" && sc.URL == "":
+			broken = append(broken, name+" (http transport with no url)")
+		case sc.Transport != "http" && sc.Command == "":
+			broken = append(broken, name+" (stdio transport with no command)")
+		case !sc.Enabled:
+			disabled = append(disabled, name)
+		default:
+			enabled = append(enabled, name)
+		}
+	}
+	sort.Strings(enabled)
+	sort.Strings(disabled)
+	sort.Strings(broken)
+
+	msg := fmt.Sprintf("%d configured: %d enabled", len(cfg.MCP.Servers), len(enabled))
+	if len(enabled) > 0 {
+		msg += " (" + strings.Join(enabled, ", ") + ")"
+	}
+	if len(disabled) > 0 {
+		msg += fmt.Sprintf("; %d disabled (%s)", len(disabled), strings.Join(disabled, ", "))
+	}
+	if len(broken) > 0 {
+		// A server that can never start is a configuration error, not a
+		// preference: it will fail at every boot and the failure text names
+		// the transport rather than the missing field.
+		return CheckResult{Name: "mcp", Status: StatusFail,
+			Message: msg + "; unusable: " + strings.Join(broken, ", ")}
+	}
+	return CheckResult{Name: "mcp", Status: StatusOK, Message: msg}
 }
 
+// checkLSP reports which language servers will actually start in this
+// workspace, by asking lsp.New the same question bootstrap asks it.
+//
+// It used to probe one hardcoded binary (gopls) and report "present" or "not
+// in PATH". That answered a question nobody has: gopls being installed says
+// nothing about whether yanshi will use it, and it says nothing at all about
+// the other five languages in the table. Worse, since W6 there is a SECOND
+// gate -- a workspace marker file -- so "gopls present" and "gopls will run
+// here" are now genuinely different facts, and only the second one is useful
+// to someone whose diagnostics are empty.
+//
+// Going through lsp.New rather than re-deriving the rules is the point: two
+// implementations of "will this server start" would disagree the first time
+// either gate changes, and doctor's whole value is that it agrees with the
+// runtime.
 func checkLSP(ctx context.Context, root string) CheckResult {
-	probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-	defer cancel()
-	bin := "gopls"
-	if _, err := exec.LookPath(bin); err != nil {
-		return CheckResult{Name: "lsp", Status: StatusWarn, Message: fmt.Sprintf("lsp: %q not in PATH (optional; install for code intelligence)", bin)}
+	_ = ctx // no subprocess is spawned; kept for signature symmetry with the other checks
+	mgr := lsp.New(lsp.Config{WorkRoot: root, Languages: lsp.DefaultLanguages()})
+	usable := mgr.Languages()
+	if len(usable) == 0 {
+		return CheckResult{Name: "lsp", Status: StatusWarn,
+			Message: "no language server will start here: none of the configured commands are on PATH, " +
+				"or this workspace has no marker file (go.mod, Cargo.toml, tsconfig.json, ...)"}
 	}
-	cmd := exec.CommandContext(probeCtx, bin, "-rpc.trace")
-	cmd.Dir = root
-	if err := cmd.Start(); err != nil {
-		return CheckResult{Name: "lsp", Status: StatusWarn, Message: fmt.Sprintf("lsp: start %q: %v", bin, err)}
+	names := make([]string, 0, len(usable))
+	for lang, ls := range usable {
+		names = append(names, lang+" ("+ls.Command+")")
 	}
-	_ = cmd.Process.Kill()
-	_ = cmd.Wait()
-	return CheckResult{Name: "lsp", Status: StatusOK, Message: fmt.Sprintf("lsp: %q present", bin)}
+	sort.Strings(names)
+	return CheckResult{Name: "lsp", Status: StatusOK,
+		Message: fmt.Sprintf("%d language server(s) active here: %s", len(names), strings.Join(names, ", "))}
 }
 
 func checkPermissions(cfg *config.Config, cfgErr error) CheckResult {

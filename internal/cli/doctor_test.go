@@ -332,13 +332,36 @@ func TestCheckMCP_ServersListedOrNoneConfigured(t *testing.T) {
 	}
 }
 
+// TestCheckLSP_ReportsProbes asserts the check DISTINGUISHES workspaces.
+//
+// It previously required the literal string "lsp" in the message, which any
+// wording satisfies and which the old one-binary probe satisfied while
+// answering a question nobody has -- gopls being installed says nothing about
+// whether yanshi will use it here. Since W6 there is a second gate (a
+// workspace marker), so "installed" and "will run here" are different facts.
+//
+// An empty directory and a Go module must therefore not produce the same
+// answer. If the toolchain under test has no language server installed at all
+// both are the warn case, and the test says so rather than pretending to have
+// checked.
 func TestCheckLSP_ReportsProbes(t *testing.T) {
-	c := checkLSP(context.Background(), t.TempDir())
-	if c.Status != StatusOK && c.Status != StatusWarn {
-		t.Errorf("got %s (%s)", c.Status, c.Message)
+	empty := checkLSP(context.Background(), t.TempDir())
+	if empty.Status != StatusOK && empty.Status != StatusWarn {
+		t.Errorf("got %s (%s)", empty.Status, empty.Message)
 	}
-	if !strings.Contains(c.Message, "lsp") {
-		t.Errorf("expected 'lsp' in message: %s", c.Message)
+
+	goRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(goRoot, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withMod := checkLSP(context.Background(), goRoot)
+
+	if withMod.Status == StatusWarn && empty.Status == StatusWarn {
+		t.Skip("no language server installed in this environment: both cases are the warn path")
+	}
+	if withMod.Message == empty.Message {
+		t.Fatalf("a Go module and an empty directory report identically (%q): "+
+			"the check is not looking at the workspace", empty.Message)
 	}
 }
 
@@ -423,4 +446,51 @@ func TestCheckSandboxReportsTheRuntimePosture(t *testing.T) {
 			t.Fatalf("a config error must skip rather than guess a posture: %+v", got)
 		}
 	})
+}
+
+// TestCheckMCPReadsTheConfiguration replaces a constant with a report.
+//
+// checkMCP returned "no mcp servers exposed via chat" whatever the config
+// said -- false for anyone who configured one, since the tools bridge
+// registers every ready server's tools into the chat tool set. Someone
+// debugging a server that would not connect was told none were expected.
+//
+// The unusable case is a FAIL rather than a warning on purpose: a stdio entry
+// with no command, or an http entry with no url, cannot start at any boot.
+// It is a configuration error, and the runtime's own failure message names
+// the transport rather than the missing field.
+func TestCheckMCPReadsTheConfiguration(t *testing.T) {
+	mk := func(servers map[string]*config.MCPServerConfig) CheckResult {
+		cfg := &config.Config{}
+		cfg.MCP.Servers = servers
+		return checkMCP(cfg, nil)
+	}
+
+	if got := mk(nil); got.Status != StatusOK || !strings.Contains(got.Message, "no mcp servers") {
+		t.Errorf("empty config: %+v", got)
+	}
+
+	got := mk(map[string]*config.MCPServerConfig{
+		"files": {Enabled: true, Command: "mcp-files"},
+		"old":   {Enabled: false, Command: "mcp-old"},
+	})
+	if got.Status != StatusOK {
+		t.Fatalf("a coherent config must not warn: %+v", got)
+	}
+	if !strings.Contains(got.Message, "files") || !strings.Contains(got.Message, "old") {
+		t.Fatalf("both servers must appear: %q", got.Message)
+	}
+	if !strings.Contains(got.Message, "disabled") {
+		t.Fatalf("a disabled server must be labelled, not just listed: %q", got.Message)
+	}
+
+	broken := mk(map[string]*config.MCPServerConfig{
+		"nocmd": {Enabled: true},
+	})
+	if broken.Status != StatusFail {
+		t.Fatalf("a stdio server with no command can never start; want fail, got %+v", broken)
+	}
+	if !strings.Contains(broken.Message, "nocmd") {
+		t.Fatalf("the failure must name the server: %q", broken.Message)
+	}
 }
