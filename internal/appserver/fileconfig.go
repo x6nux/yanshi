@@ -23,9 +23,8 @@ import (
 // key/value store is a separate sidecar next to it, so "which file did my
 // write go to" has one answer and neither file can clobber the other.
 type FileConfig struct {
-	mu     sync.Mutex
-	path   string
-	values map[string]any
+	mu   sync.Mutex
+	path string
 }
 
 // SidecarPath returns the runtime-config file that accompanies a YAML config
@@ -47,7 +46,7 @@ func SidecarPath(configPath string) string {
 	return filepath.Join(dir, base+".appstate.json")
 }
 
-// NewFileConfig opens (or starts) the sidecar store for a YAML config path.
+// NewFileConfig opens the sidecar store for a YAML config path.
 //
 // A missing file is an empty store, not an error: the first `yanshi app` run
 // against a fresh config has nothing to load, and refusing to start would make
@@ -56,21 +55,39 @@ func SidecarPath(configPath string) string {
 // corrupted store as an unconfigured one, and the next write would overwrite
 // whatever the operator still had.
 func NewFileConfig(configPath string) (*FileConfig, error) {
-	c := &FileConfig{path: SidecarPath(configPath), values: map[string]any{}}
+	c := &FileConfig{path: SidecarPath(configPath)}
+	if _, err := c.load(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// load reads the store from disk. There is no in-memory cache, deliberately.
+//
+// Nothing stops two `yanshi app` processes sharing one -config, and while each
+// held its own snapshot and flushed the WHOLE document, the second writer
+// erased every key the first had written — last-writer-wins over the entire
+// store rather than per key — and a long-running reader served a view frozen
+// at startup. The file is the truth; it is a handful of keys read on a
+// JSON-RPC call, so re-reading costs nothing worth caching around.
+//
+// The residual race is narrow and named: two processes writing DIFFERENT keys
+// in the same instant can still lose one, because read-modify-write is not
+// atomic across processes. Closing that needs file locking, which is a real
+// dependency for a store nobody writes concurrently in practice.
+func (c *FileConfig) load() (map[string]any, error) {
 	data, err := os.ReadFile(c.path)
 	if os.IsNotExist(err) {
-		return c, nil
+		return map[string]any{}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read runtime config %s: %w", c.path, err)
 	}
-	if err := json.Unmarshal(data, &c.values); err != nil {
+	values := map[string]any{}
+	if err := json.Unmarshal(data, &values); err != nil {
 		return nil, fmt.Errorf("parse runtime config %s: %w", c.path, err)
 	}
-	if c.values == nil {
-		c.values = map[string]any{}
-	}
-	return c, nil
+	return values, nil
 }
 
 // Read returns the stored value for key, applying the same restricted-path
@@ -82,7 +99,11 @@ func (c *FileConfig) Read(key string) (any, error) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	value, ok := c.values[key]
+	values, err := c.load()
+	if err != nil {
+		return nil, err
+	}
+	value, ok := values[key]
 	if !ok {
 		return nil, fmt.Errorf("config key %q is not set", key)
 	}
@@ -95,6 +116,9 @@ func (c *FileConfig) Read(key string) (any, error) {
 // is touched, matching MemoryConfig. That ordering matters more here than it
 // did in memory: a leak that reaches this backend is durable, and outlives the
 // process that made the mistake.
+//
+// The store is re-read before the merge so this write adds a key rather than
+// replacing the document with one process's idea of it.
 func (c *FileConfig) Write(key string, value json.RawMessage) error {
 	if err := validateConfigKey(key); err != nil {
 		return err
@@ -105,27 +129,19 @@ func (c *FileConfig) Write(key string, value json.RawMessage) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	prev, had := c.values[key]
-	c.values[key] = decoded
-	if err := c.flushLocked(); err != nil {
-		// Roll back so the in-memory view never claims a value the next
-		// process will not find. Reporting success on a failed flush is the
-		// same defect this type exists to fix, one layer down.
-		if had {
-			c.values[key] = prev
-		} else {
-			delete(c.values, key)
-		}
+	values, err := c.load()
+	if err != nil {
 		return err
 	}
-	return nil
+	values[key] = decoded
+	return c.flushLocked(values)
 }
 
 // flushLocked writes the store atomically: a temp file in the same directory
 // followed by a rename, so a crash mid-write leaves the previous contents
 // rather than a truncated file.
-func (c *FileConfig) flushLocked() error {
-	data, err := json.MarshalIndent(c.values, "", "  ")
+func (c *FileConfig) flushLocked(values map[string]any) error {
+	data, err := json.MarshalIndent(values, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode runtime config: %w", err)
 	}

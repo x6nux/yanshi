@@ -27,6 +27,20 @@ import (
 
 // crossFixture builds one service and both transports over it.
 func crossFixture(t *testing.T) (*httptest.Server, func(method, params string) map[string]any) {
+	ts, raw := crossFixtureRaw(t)
+	return ts, func(method, params string) map[string]any {
+		msg := raw(method, params)
+		if e, ok := msg["error"]; ok {
+			t.Fatalf("rpc %s returned an error: %v", method, e)
+		}
+		result, _ := msg["result"].(map[string]any)
+		return result
+	}
+}
+
+// crossFixtureRaw is the same fixture without the success assertion, so error
+// paths can be compared too.
+func crossFixtureRaw(t *testing.T) (*httptest.Server, func(method, params string) map[string]any) {
 	t.Helper()
 	model := einollm.NewFakeModel([]string{"answer"}, nil)
 	svc, err := v1.NewService(v1.Config{DefaultModel: model})
@@ -52,11 +66,7 @@ func crossFixture(t *testing.T) (*httptest.Server, func(method, params string) m
 		if err := json.Unmarshal([]byte(line), &msg); err != nil {
 			t.Fatalf("rpc response %q: %v", line, err)
 		}
-		if e, ok := msg["error"]; ok {
-			t.Fatalf("rpc %s returned an error: %v", method, e)
-		}
-		result, _ := msg["result"].(map[string]any)
-		return result
+		return msg
 	}
 	return ts, rpc
 }
@@ -202,5 +212,66 @@ func TestInterruptAgreesAcrossTransports(t *testing.T) {
 	if len(diffs) > 0 {
 		t.Errorf("the two transports describe thread/interrupt differently:\n  %s",
 			strings.Join(diffs, "\n  "))
+	}
+}
+
+// postStatus returns the HTTP status for a request, for the error-path
+// comparison.
+func postStatus(t *testing.T, ts *httptest.Server, path, body string) int {
+	t.Helper()
+	resp, err := ts.Client().Post(ts.URL+path, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+	return resp.StatusCode
+}
+
+// TestErrorsAgreeAcrossTransports compares the FAILURE direction.
+//
+// The two transports map v1 service errors independently — HTTP to status
+// codes, JSON-RPC to standard codes — and the happy-path comparison above says
+// nothing about that half. A client written against one door and moved to the
+// other must not find an operation that fails on one and succeeds on the
+// other; the codes differ by design, the verdict must not.
+//
+// Equivalence class, not equality: 404 and -32602 are the same answer said in
+// two vocabularies. What this pins is that both say NO, and that neither
+// silently succeeds.
+func TestErrorsAgreeAcrossTransports(t *testing.T) {
+	ts, rpc := crossFixtureRaw(t)
+
+	cases := []struct {
+		name       string
+		httpPath   string
+		rpcMethod  string
+		body       string
+		wantHTTPOK bool
+	}{
+		{"unknown thread on resume", "/api/v1/thread/resume", "thread/resume",
+			`{"threadId":"no-such-thread"}`, false},
+		{"unknown thread on turn start", "/api/v1/turn/start", "turn/start",
+			`{"threadId":"no-such-thread","input":"hi"}`, false},
+		{"missing threadId on resume", "/api/v1/thread/resume", "thread/resume",
+			`{}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status := postStatus(t, ts, tc.httpPath, tc.body)
+			httpOK := status < 400
+
+			msg := rpc(tc.rpcMethod, tc.body)
+			_, hasErr := msg["error"]
+			rpcOK := !hasErr
+
+			if httpOK != rpcOK {
+				t.Errorf("the transports disagree on whether this fails: "+
+					"HTTP %d (ok=%v), JSON-RPC ok=%v (%v)", status, httpOK, rpcOK, msg)
+			}
+			if httpOK != tc.wantHTTPOK {
+				t.Errorf("HTTP returned %d, want a failure", status)
+			}
+		})
 	}
 }

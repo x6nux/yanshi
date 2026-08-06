@@ -81,3 +81,78 @@ func TestFileConfigWriteIsVisibleToAFreshReader(t *testing.T) {
 		t.Errorf("Read = %v, want dark", got)
 	}
 }
+
+// TestFileConfigDoesNotLoseAnotherWritersKeys covers the multi-process seam.
+//
+// Two `yanshi app` processes may share one -config; nothing prevents it. When
+// each held its own in-memory snapshot and flushed the WHOLE document, the
+// second writer's flush erased every key the first had written — last-writer-
+// wins over the entire store rather than per key. A supervisor that wrote
+// ui.theme from one process and log.level from another kept whichever flushed
+// last and lost the other, silently.
+//
+// Two FileConfig values over one path is exactly that shape: they are as
+// independent as two processes are.
+func TestFileConfigDoesNotLoseAnotherWritersKeys(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.yaml")
+
+	a, err := NewFileConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := NewFileConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Write("ui.theme", json.RawMessage(`"dark"`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Write("log.level", json.RawMessage(`"debug"`)); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh, err := NewFileConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]any{"ui.theme": "dark", "log.level": "debug"} {
+		got, err := fresh.Read(key)
+		if err != nil {
+			t.Errorf("%s was lost: %v", key, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s = %v, want %v", key, got, want)
+		}
+	}
+}
+
+// TestFileConfigReadSeesAnotherWritersValue is the read half of the same seam.
+//
+// A long-running process must not serve a snapshot frozen at startup: a
+// supervisor that writes from one process and reads from another would get
+// "config key is not set" for a key that is plainly in the file.
+func TestFileConfigReadSeesAnotherWritersValue(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.yaml")
+
+	reader, err := NewFileConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := NewFileConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Write("ui.theme", json.RawMessage(`"dark"`)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := reader.Read("ui.theme")
+	if err != nil {
+		t.Fatalf("a reader opened before the write cannot see it: %v", err)
+	}
+	if got != "dark" {
+		t.Errorf("Read = %v, want dark", got)
+	}
+}
