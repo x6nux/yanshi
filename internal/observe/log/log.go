@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 )
 
 // Config controls the process logger. Zero values mean info/json/os.Stderr.
@@ -101,14 +102,35 @@ func ParseLevel(level string) slog.Level {
 	}
 }
 
-type redactHandler struct{ inner slog.Handler }
+type redactHandler struct {
+	inner slog.Handler
+	// sample may be nil, which disables sampling entirely. Shared by
+	// WithAttrs/WithGroup derivatives on purpose: the budget belongs to the
+	// message, and a logger that re-derives itself per request would otherwise
+	// get a fresh budget each time and never be throttled at all.
+	sample *sampler
+}
 
 func (h *redactHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return h.inner.Enabled(ctx, level)
 }
 
 func (h *redactHandler) Handle(ctx context.Context, record slog.Record) error {
+	suppressed := 0
+	if h.sample != nil {
+		ok, n := h.sample.allow(record.Level, record.Message)
+		if !ok {
+			return nil
+		}
+		suppressed = n
+	}
 	clean := slog.NewRecord(record.Time, record.Level, record.Message, record.PC)
+	if suppressed > 0 {
+		// Report the gap rather than closing over it silently: a reader who
+		// cannot tell throttling from absence will draw the wrong conclusion
+		// about how often something happened.
+		clean.AddAttrs(slog.Int("suppressed", suppressed))
+	}
 	record.Attrs(func(attr slog.Attr) bool {
 		clean.AddAttrs(redactAttr(attr))
 		return true
@@ -130,11 +152,11 @@ func (h *redactHandler) Handle(ctx context.Context, record slog.Record) error {
 }
 
 func (h *redactHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &redactHandler{inner: h.inner.WithAttrs(redactAttrs(attrs))}
+	return &redactHandler{inner: h.inner.WithAttrs(redactAttrs(attrs)), sample: h.sample}
 }
 
 func (h *redactHandler) WithGroup(name string) slog.Handler {
-	return &redactHandler{inner: h.inner.WithGroup(name)}
+	return &redactHandler{inner: h.inner.WithGroup(name), sample: h.sample}
 }
 
 // New creates a redacting structured logger.
@@ -150,7 +172,10 @@ func New(cfg Config) *slog.Logger {
 	} else {
 		inner = slog.NewJSONHandler(writer, opts)
 	}
-	return slog.New(&redactHandler{inner: inner})
+	// 20 copies of a message per 10s window: enough that a burst is visible in
+	// full, low enough that a tight loop cannot bury the rest of the log.
+	// WARN and above bypass this entirely (see sampler).
+	return slog.New(&redactHandler{inner: inner, sample: newSampler(20, 10*time.Second)})
 }
 
 // Setup installs the redacting logger as slog.Default.
