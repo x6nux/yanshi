@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"github.com/x6nux/yanshi/internal/guard"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	obslog "github.com/x6nux/yanshi/internal/observe/log"
+	otelobs "github.com/x6nux/yanshi/internal/observe/otel"
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/shell"
 	"github.com/x6nux/yanshi/internal/skills"
@@ -507,16 +509,36 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 			defer sealPostTurn()
 
 			// Bind safe correlation IDs (trace/session/turn) for the redacting
-			// logger and (later) OTel spans. The IDs are random per-turn; nothing
-			// sensitive (no prompts, tool args, paths) flows through them. The
-			// turn-start log records only boolean/numeric diagnostics so an
-			// operator can reconstruct turn boundaries without seeing content.
+			// logger and the turn span opened just below. The IDs are random
+			// per-turn; nothing sensitive (no prompts, tool args, paths) flows
+			// through them. The turn-start log records only boolean/numeric
+			// diagnostics so an operator can reconstruct turn boundaries
+			// without seeing content.
 			turnIDs := obslog.IDs{
 				TraceID:   obslog.NewTraceID(),
 				SessionID: cs.sessionID,
 				TurnID:    obslog.NewTurnID(),
 			}
 			turnCtx = obslog.WithIDs(turnCtx, turnIDs)
+
+			// THIS is the WS drain boundary the orchestrator's Query doc comment
+			// points at. Query opens its own span because it is synchronous and
+			// owns its whole turn; the streaming paths return an iterator whose
+			// drain happens here, so the span has to be opened and closed here
+			// or not at all. It used to be "not at all": StartTurn had a single
+			// production caller (Query) that neither transport uses, so every
+			// turn a real user ran produced no span.
+			//
+			// StartTurn reads the IDs bound above, so the ordering is
+			// load-bearing: opened earlier, the span would carry no session.id
+			// or turn.id and could not be joined against these log lines.
+			// turnCtx is re-derived many times below (callbacks, counters); all
+			// of those preserve the span, so a tool span opened deep inside the
+			// runner still nests under this one.
+			var turnErr error
+			turnCtx, endTurn := otelobs.StartTurn(turnCtx, cs.displayModel())
+			defer func() { endTurn(turnErr) }()
+
 			slog.InfoContext(turnCtx, "turn started",
 				"model", cs.displayModel(),
 				"thinking", cs.thinking != "",
@@ -876,8 +898,9 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 						break // schema satisfied — done
 					}
 					if attempt == retryCap {
-						conn.write(proto.NewError("output did not match the required schema after " +
-							strconv.Itoa(attempt+1) + " attempt(s): " + verr.Error()))
+						turnErr = fmt.Errorf("output did not match the required schema after %d attempt(s): %w",
+							attempt+1, verr)
+						conn.write(proto.NewError(turnErr.Error()))
 						break
 					}
 					prevAssistantText = assistantText
@@ -905,7 +928,8 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 					// Cap exhausted: the judge kept flagging the turn as
 					// incomplete. Accept the last attempt's output and warn
 					// the user.
-					conn.write(proto.NewError("turn ended without the completion judge accepting it; output may be incomplete"))
+					turnErr = errors.New("turn ended without the completion judge accepting it; output may be incomplete")
+					conn.write(proto.NewError(turnErr.Error()))
 					break
 				}
 				// About to retry: capture this attempt's assistant text and

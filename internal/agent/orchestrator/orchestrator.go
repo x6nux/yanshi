@@ -492,8 +492,17 @@ func (o *Orchestrator) FlushRunners() {
 
 // Query runs a single user turn and returns the final assistant text.
 // The turn span opens at function entry and closes when the iterator is fully
-// drained (the synchronous completion point). Streaming Events* paths manage
-// their own spans at the WS/SSE drain boundary.
+// drained (the synchronous completion point).
+//
+// The streaming Events* paths cannot be covered from here: they RETURN an
+// iterator, so the turn ends wherever the caller stops draining it, which is
+// past this function's lifetime. Their spans are therefore opened by the
+// drain sites themselves — internal/api/http/ws.go (right after the turn's
+// correlation IDs are bound) and internal/api/http/chat.go (around the whole
+// schema-retry loop, since one client request is one turn no matter how many
+// attempts it takes). This comment previously described that arrangement as
+// already existing when neither site had it, so every turn a real user ran
+// through either transport produced no span at all.
 func (o *Orchestrator) Query(ctx context.Context, userMessage string) (answer string, retErr error) {
 	ctx = o.withTurnContext(ctx, TurnOpts{})
 	ctx, endTurn := otelobs.StartTurn(ctx, "")

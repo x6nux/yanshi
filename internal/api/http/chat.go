@@ -11,6 +11,8 @@ import (
 	"github.com/x6nux/yanshi/internal/agent/orchestrator"
 	"github.com/x6nux/yanshi/internal/ctxcompact"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
+	obslog "github.com/x6nux/yanshi/internal/observe/log"
+	otelobs "github.com/x6nux/yanshi/internal/observe/otel"
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/secrets"
 	"github.com/x6nux/yanshi/internal/skills"
@@ -88,6 +90,33 @@ func (s *Server) handleSSEInternal(w http.ResponseWriter, r *http.Request,
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	fl, _ := w.(http.Flusher)
+
+	// Correlation IDs + the turn span. SSE bound neither: its log lines during
+	// a turn carried no ids, and otelobs.StartTurn's only production caller was
+	// the synchronous Orchestrator.Query, which this path does not use -- so a
+	// real request produced no span at all. This is the SSE half of the drain
+	// boundary the orchestrator's Query doc comment refers to; the span has to
+	// wrap the whole retry loop below, because a schema retry is one turn from
+	// the client's point of view, not several.
+	//
+	// thread_id / turn_id come off the wire. They were declared on the request
+	// struct and read nowhere in the file, so a client that sent them got a 200
+	// and silently no correlation. SSE is stateless -- the server has no
+	// conversation identity of its own -- which makes the client's id the only
+	// thing that can link two requests of one conversation. An absent turn_id
+	// still gets a minted one so a single request's own lines stay joined.
+	turnID := req.TurnID
+	if turnID == "" {
+		turnID = obslog.NewTurnID()
+	}
+	reqCtx := obslog.WithIDs(r.Context(), obslog.IDs{
+		TraceID:   obslog.NewTraceID(),
+		SessionID: req.ThreadID,
+		TurnID:    turnID,
+	})
+	var turnErr error
+	reqCtx, endTurn := otelobs.StartTurn(reqCtx, einollm.ResolveModelName(models, req.Model))
+	defer func() { endTurn(turnErr) }()
 
 	msgs := make([]*schema.Message, len(history))
 	for i := range history {
@@ -231,7 +260,7 @@ func (s *Server) handleSSEInternal(w http.ResponseWriter, r *http.Request,
 		// denied (no interactive prompt). Interactive permissions are
 		// WS-only (see ws.go). The orchestrator injects the static profile
 		// here. tc is recreated per attempt so the err-counter is fresh.
-		tc := tools.WithErrCounter(r.Context())
+		tc := tools.WithErrCounter(reqCtx)
 
 		lifecycleRelay := newSSELifecycleRelay()
 		tc = tools.WithSubAgentEmit(tc, lifecycleRelay.Emit)
