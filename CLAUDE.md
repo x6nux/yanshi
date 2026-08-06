@@ -77,7 +77,9 @@ go run ./cmd/gendocs -config docs/user-guide/configuration.md
 go run ./cmd/gendocs -help-all docs/user-guide/tui.md docs/user-guide/entrypoints.md
 ```
 
-**其余 dev 工具（不参与运行时）：** `cmd/depsanalyze` 打印 internal 包的 fan-in/fan-out、分层与风险标记；`cmd/agent-worker` 是连接 Task API 的独立远程 worker；`cmd/featurestatus` 读 `docs/feature-status.yaml` 打印 S0 功能状态统计（`-open` 只列未结项）。
+**其余 dev 工具（不参与运行时）：** `cmd/depsanalyze` 打印 internal 包的 fan-in/fan-out、分层与风险标记；`cmd/agent-worker` 是连接 Task API 的独立远程 worker；`cmd/featurestatus` 读 `docs/feature-status.yaml` 打印 S0 功能状态统计（`-open` 只列未结项）；`cmd/covercheck` 按包检查语句覆盖率下限（阈值表在 `cmd/covercheck/main.go::thresholds`，`-v` 打印每个包的实测值）。
+
+**覆盖率门禁不在 archtest 里，在 `ci.yml` 的 `coverage` job。** 理由是类别不同：GOV1–GOV9 全是对**源码结构**的静态断言（AST / `go list`），覆盖率是测试二进制的**运行产物**。放进 archtest 意味着在 `go test` 里再起 `go test`（范围写 `./...` 直接自我递归，写死包名又是另一张要维护的表），并且会在 `-race` job 下变成嵌套的非 race 运行 —— 而 `bootstrap` 的测试会真起 sqlite 与 `127.0.0.1:0` 监听。**CI job 同样是机器强制的，并不比 archtest 弱。** 阈值取 `max(spec 验收值, 实测 − 3pp)`：spec 的下限（proto 80 / store 75 / bootstrap 50）当前分别有 18/21/44 个百分点的余量，只守它们等于把那么多退化空间免费送出去。
 
 **CI 硬门禁（`.github/workflows/ci.yml`）：** `go test ./...`（ubuntu/windows/macos）、`go vet`、`go test -race`（逐包、最多 3 次重试 —— 真实 race 会 3/3 全挂，时序 flake 通常重试即过）、以及 `CGO_ENABLED=0` 的构建矩阵（含 `-tags=nokeyring`）加 `yanshi -h` 冒烟。`governance`（跑 `go test ./internal/archtest`）与 `fuzz-seed` 在 W0 已从 `continue-on-error` 收紧为**硬门禁**。注意 governance job 只覆盖 archtest 包 —— 住在 `internal/bootstrap` 的 GOV5/GOV7 由主 `go test ./...` job 承担。
 

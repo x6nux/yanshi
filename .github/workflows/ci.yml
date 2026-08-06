@@ -239,3 +239,20 @@ jobs:
         run: |
           pip install -e 'sdk/python[test]'
           pytest sdk/python -q
+
+  # Hard gate. Until W10 there was no coverage gate anywhere — `rg -- '-cover'
+  # .github/workflows/` returned nothing — so any of these packages could have
+  # gone from 94% to 20% without a job turning red. Thresholds live in
+  # cmd/covercheck and are max(spec floor, measured - 3pp), so the gate is a
+  # real ratchet rather than the 20-45 points of free regression the spec
+  # floors alone would have allowed.
+  coverage:
+    name: coverage (per-package floors)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go run ./cmd/covercheck -v
