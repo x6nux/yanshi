@@ -63,7 +63,7 @@
   evidence:
     "1": "internal/approval::TestRecordedRulesCarryAnExpiry; internal/approval::TestRuleTTLGovernsExpiry"
     "2": "internal/approval::TestEveryMatchOutcomeIsAudited"
-    "3": "internal/cli/tui::TestCmdPermissions_ListRevokeUsage"
+    "3": "internal/cli/tui::TestCmdPermissions_ListRevokeUsage; internal/api/http::TestChatWS_PermissionsListAndRevokeRoundTrip"
     "4": "internal/approval::TestScopeMatchIsExactNotPrefix"
 
 - id: "A1/S09"
