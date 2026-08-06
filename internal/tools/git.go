@@ -36,14 +36,38 @@ type gitDiffArgs struct {
 	Paths []string `json:"paths,omitempty"`
 }
 
-// gitEnvIsolation returns env entries that prevent git from reading/writing the
-// user's global or system config: GIT_CONFIG_NOSYSTEM skips /etc/gitconfig, and
-// XDG_CONFIG_HOME points at a throwaway dir under the work root so any
-// home-directory ~/.gitconfig is neither consulted nor mutated.
+// gitEnvIsolation returns env entries that keep git from reading or writing the
+// operator's global and system configuration.
+//
+// Three variables, because each closes a different file and no two of them
+// overlap:
+//
+//   - GIT_CONFIG_NOSYSTEM=1 skips /etc/gitconfig.
+//   - GIT_CONFIG_GLOBAL redirects ~/.gitconfig (git 2.32+).
+//   - XDG_CONFIG_HOME redirects $XDG_CONFIG_HOME/git/config.
+//
+// The middle one used to be missing, and this comment used to claim
+// XDG_CONFIG_HOME covered it. It does not: git consults the XDG copy only when
+// ~/.gitconfig is ABSENT, so on every machine that has one — which is every
+// machine where `git config --global user.email` has ever been run — the
+// operator's global config was read in full. Measured with a global
+// core.excludesFile of `*.go`: git_status reported a clean tree for a work
+// tree with an untracked .go file in it. A config the tool silently obeys can
+// suppress the very changes the model is asking about.
+//
+// On git older than 2.32 the second entry is ignored and behaviour falls back
+// to what it was before — no worse, still not isolated. That floor is above
+// the 2.24 the base_ref/commit diff scopes need, so it is stated here rather
+// than in the tool description: isolation degrades, nothing breaks.
+//
+// The throwaway paths sit under the work root rather than in a temp dir so a
+// process that does write config leaves it somewhere attributable.
 func gitEnvIsolation(root string) []string {
+	throwaway := filepath.Join(root, ".yanshi", "tmp", "gitxdg")
 	return []string{
 		"GIT_CONFIG_NOSYSTEM=1",
-		"XDG_CONFIG_HOME=" + filepath.Join(root, ".yanshi", "tmp", "gitxdg"),
+		"GIT_CONFIG_GLOBAL=" + filepath.Join(throwaway, "gitconfig"),
+		"XDG_CONFIG_HOME=" + throwaway,
 	}
 }
 

@@ -76,6 +76,8 @@ func toolchainProbeReply(spec secproc.SecureProcessSpec, version string) cannedR
 // So this test pins the aggregation SHAPE, not the claim that production
 // aggregates all five dimensions; B3/DT5#1 stays open until defaultFileLister
 // is a real implementation (or the LSP row leaves the promise).
+//
+// ledger: B3/DT5#1 一次调用聚合
 func TestDiagnosticsAggregatesIndependentProbes(t *testing.T) {
 	src := stubLSPManager{enabled: true, byPath: map[string][]lsp.Diagnostic{"a.go": {{Severity: lsp.SeverityError, Message: "bad"}}}}
 	diagLSPSourceOverride = src
@@ -118,6 +120,8 @@ func TestDiagnosticsAggregatesIndependentProbes(t *testing.T) {
 // TestDiagnosticsLSPUnavailableIsLocalDegradation pins the LSP half of the
 // per-probe isolation rule: a disabled LSP manager reports itself unavailable
 // in its own row instead of failing the call.
+//
+// ledger: B3/DT5#2 各子项可独立失败不拖垮
 func TestDiagnosticsLSPUnavailableIsLocalDegradation(t *testing.T) {
 	diagLSPSourceOverride = stubLSPManager{enabled: false}
 	t.Cleanup(func() { diagLSPSourceOverride = nil })
@@ -136,6 +140,8 @@ func TestDiagnosticsLSPUnavailableIsLocalDegradation(t *testing.T) {
 // and the harsher one: git exits 128 ("not a repo") and the toolchain row must
 // still arrive intact. A probe that aborted the aggregate would turn one
 // missing subsystem into a blind spot across all of them.
+//
+// ledger: B3/DT5#2 各子项可独立失败不拖垮
 func TestDiagnosticsGitFailureDoesNotHideOthers(t *testing.T) {
 	diagLSPSourceOverride = stubLSPManager{enabled: false}
 	t.Cleanup(func() { diagLSPSourceOverride = nil })
@@ -173,6 +179,8 @@ func TestDiagnosticsGitFailureDoesNotHideOthers(t *testing.T) {
 // EMPTY row: wrong argv → probe exits non-zero → runToolchainProbes drops it →
 // the operator reads "no Go toolchain" from a machine that has one. The final
 // loop therefore also requires all three rows to be populated.
+//
+// ledger: B3/DT5#3 toolchain 版本准确
 func TestDiagnosticsProbesEachToolchainWithItsOwnVersionArgv(t *testing.T) {
 	diagLSPSourceOverride = stubLSPManager{enabled: false}
 	t.Cleanup(func() { diagLSPSourceOverride = nil })

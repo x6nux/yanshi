@@ -326,10 +326,22 @@
   # sandbox 硬编码与 go --version 两条此前已修（实测确认，非采信审计）。
 - id: "B3/DT5"
   package: "W6"
-  verdict: partial
+  verdict: done
   title: "diagnostics 工具"
+  # 2026-08-07：**曾因「LSP 维度在生产里是死的」退回 partial，那条判定已被推翻。**
+  # 论据是 defaultFileLister 恒返回 nil、bootstrap 传 nil，所以
+  # open_diagnostics_count 恒为 0。但那个 lister 是 **override**，在真实 source
+  # 之后被查询；生产读的是 lsp.Manager.OpenDocuments，而 fs_patch 与 lspctx 在
+  # agent 每次编辑后经 DidChange → rememberOpen 填充它。所以这一行恰好在
+  # 「agent 编辑过东西」时是活的 —— 那也是它唯一有东西可报的时候。
+  # 新测试用生产构造 NewDiagnosticsTool(nil) 驱动，注入的 probe 不可能是它通过的
+  # 原因；变异探针（让 OpenDocuments 不再被消费，即那条判定描述的洞）当场打红。
+  # 同时补上拆解文档要求的反向用例：只让 cargo 探针死掉，断言 go/node 与 LSP 行仍在。
   acceptance: "一次调用聚合；各子项可独立失败不拖垮；toolchain 版本准确"
-  evidence: "internal/tools::TestDiagnosticsGitFailureDoesNotHideOthers; internal/tools::TestDiagnosticsLSPUnavailableIsLocalDegradation; internal/tools::TestDiagnosticsProbesEachToolchainWithItsOwnVersionArgv"
+  evidence:
+    "1": "internal/tools::TestDiagnosticsLSPRowIsLiveInTheProductionConstruction; internal/tools::TestDiagnosticsAggregatesIndependentProbes"
+    "2": "internal/tools::TestDiagnosticsGitFailureDoesNotHideOthers; internal/tools::TestDiagnosticsLSPUnavailableIsLocalDegradation; internal/tools::TestDiagnosticsToolchainProbeFailureLeavesTheOthers"
+    "3": "internal/tools::TestDiagnosticsProbesEachToolchainWithItsOwnVersionArgv"
 
   # W6/Task 6：ghSpec 把 Tool 写死成 "github"，而注册的是四个真名 —— 出厂
   # profile 下四个工具全被 guard 拒绝，且错误信息指向注册表里不存在的名字
@@ -434,12 +446,29 @@
   # 各带半个 diff、untracked 文本文件被判 binary。
   # 这些全在"已跟踪"分支，而原测试只 os.WriteFile 不 git add，从未进过那条分支。
   # ⚠️ 翻牌前需逐句核对"大 diff 成 artifact"与"边界清晰"两句的证据。
+# 2026-08-07：partial → done。四条子句逐条对账，三条此前**没有可失败的断言**：
+#   - 子句 1 的既有 fixture 只写 UNTRACKED 文件，porcelain-v2 的 tracked 分支
+#     （类型 1、2）从没被走过。补测当场证伪了两个记在拆解里的解析缺陷 —— 它们
+#     早已修好 —— 但补的是「entry 计数」而不是「路径出现」：只断言真实路径出现，
+#     一条从重命名原路径合成的幻影记录会与它们并排通过。
+#   - 子句 2 的 TestGitToolsDoNotWriteGitConfig 断言全局配置文件未被修改，为真
+#     且变异盲：`git status` 本来就不写配置，把 gitEnvIsolation 从每个 spec 上
+#     删光它照样绿。改成观测**读**的那一半，并因此发现了真缺口：
+#     gitEnvIsolation 只设 XDG_CONFIG_HOME，而 git 仅在 ~/.gitconfig 缺席时才看
+#     XDG —— 操作员的全局配置一直被完整读入。补 GIT_CONFIG_GLOBAL 修掉。
+#   - 子句 3 没有任何 fixture 超过 SpillThreshold；子句 4 的三个 scope 在既有
+#     fixture 下答案完全相同，把 base_ref/commit 塌缩成 working_tree 不会变红。
+# 两条变异探针都验过：摘掉 writeArtifactOrSpill / 摘掉 gitEnvIsolation 各自红。
 - id: "B3/W07"
   package: "W6"
-  verdict: partial
+  verdict: done
   title: "git_status / git_diff 专用工具"
   acceptance: "status/diff 结构化；不修改用户配置；大 diff 成 artifact；边界清晰"
-  evidence: "internal/tools::TestGitToolsDoNotWriteGitConfig"
+  evidence:
+    "1": "internal/tools::TestGitStatusHandlesTrackedSpacesAndRenames"
+    "2": "internal/tools::TestGitToolsIsolateUserConfigObservably"
+    "3": "internal/tools::TestGitDiffSpillsLargePatchToAnArtifact"
+    "4": "internal/tools::TestGitDiffScopesSeeDifferentChanges"
 
 # W1/Task 4 Step 7：BuildC1 此前只被测试调用，八个 automation_* 工具在运行时是死代码。
 # 证据测试断言 App.ToolNames —— GOV4 只证明 BuildC1 被调用，不证明其产物被使用。

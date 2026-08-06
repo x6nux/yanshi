@@ -839,6 +839,7 @@
 - ⚠️ **硬伤：LSP 维度在生产里是死的**。`defaultFileLister.recentFiles` 恒返回 `nil`（`diagnostics.go`），而 `bootstrap.go::Build` 传的是 `nil` → override 保持默认 → 生产环境 `open_diagnostics_count` **恒为 0**。测试之所以拿到 1，是因为注入了 `diagTestProbe{files:["a.go"]}` —— **这个 probe 在生产不存在**。这是一处占位实现（违反仓库「禁占位」约定），且让 `done` 的第 1 句在生产路径上只聚合了 4/5 个维度。
 - 证据形状：要么补齐 `defaultFileLister` 的真实实现并断言**生产构造**（`NewDiagnosticsTool(nil)`）下也能拿到非零诊断数，要么把 LSP 行从「聚合」的承诺里摘出去。
 - **已回退 `partial`**（2026-08-04）：硬伤经实测确认 —— 把 `TestDiagnosticsAggregatesIndependentProbes` 的构造换成生产形态 `NewDiagnosticsTool(nil)`、其余一律不变（stub LSP 仍报 `a.go` 有一条 error 诊断），结果是 `available=true open_diagnostics_count=0`。三条 `ledger: B3/DT5#n` marker 已随之删除。
+- ⚠️ **2026-08-07 推翻上面这条判定，改回 `done`。** 那个 lister 是 **override**，在真实 source **之后**被查询；生产读的是 `internal/lsp/manager.go::OpenDocuments`，而 `internal/tools/fs_patch.go` 与 `internal/tools/lspctx.go` 在 agent 每次编辑后经 `DidChange` → `rememberOpen` 填充它。**这一行恰好在「agent 编辑过东西」时是活的**，而那也是它唯一有东西可报的时候。当时那次实测拿到 0，是因为**当时的 stub 的 `OpenDocuments()` 返回空**（它此后被改成返回 seed 的路径集合）—— 量到的是 stub 的性质，不是生产代码的洞。新证据 `internal/tools::TestDiagnosticsLSPRowIsLiveInTheProductionConstruction` 用生产构造 `NewDiagnosticsTool(nil)` 驱动，变异探针（让 `OpenDocuments` 不再被消费，即这条判定描述的那个洞）当场打红。**教训与 W10-T4 的 `^style` 同形：写下的实测结论会随被测物一起腐烂，复核时要重跑而不是重读。**
 
 **2. 各子项可独立失败不拖垮** — 已兑现
 - 依据：`diagnostics.go::runGitProbe`（git 吞错）、`::runToolchainProbes`（toolchain `continue`）、`::runLSPProbe`（LSP 短路）；`TestDiagnosticsGitFailureDoesNotHideOthers`（git exit 128 时断言 toolchain 行完整）、`TestDiagnosticsLSPUnavailableIsLocalDegradation`。
