@@ -1205,12 +1205,34 @@ func withFakeGH(t *testing.T, fn func(ctx context.Context, args ...string) (stri
 	t.Cleanup(func() { ghExec = prev })
 }
 
+// withPRConfig points `yanshi pr` at a throwaway config with a fake model, so
+// runPR can build the App it now needs.
+//
+// It needs one because runPR used to pass the bare process context into the
+// review tool, which reads its sub-agent runner from context values only a
+// turn binds -- so the review ALWAYS failed and runPR still returned exitOK
+// on the in-band error string. The previous version of this helper did not
+// exist and TestRunPRFakeGHSuccess's own doc comment described that failure
+// as the expected path. A test that documents a defect as behaviour is worse
+// than no test: it makes the fix look like the regression.
+func withPRConfig(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	body := "server:\n  http_addr: \"127.0.0.1:0\"\nstorage:\n  sqlite_path: \"" +
+		strings.ReplaceAll(filepath.Join(dir, "pr.db"), "\\", "/") + "\"\n"
+	require.NoError(t, os.WriteFile(cfgPath, []byte(body), 0o644))
+	prev := prBuildConfigPath
+	prBuildConfigPath = cfgPath
+	t.Cleanup(func() { prBuildConfigPath = prev })
+}
+
 // TestRunPRFakeGHSuccess drives runPR end-to-end with a fake gh that returns
-// valid metadata JSON for `pr view` and a diff for `pr diff`. The headless
-// review returns an in-band error string (no bound sub-agent runner), so runPR
-// reaches the final fmt.Println + return exitOK. Covers the entire tail of
+// valid metadata JSON for `pr view` and a diff for `pr diff`, against a real
+// App built from a throwaway fake-model config. Covers the entire tail of
 // runPR that the real gh (absent in the test env) guards.
 func TestRunPRFakeGHSuccess(t *testing.T) {
+	withPRConfig(t)
 	withFakeGH(t, func(ctx context.Context, args ...string) (string, string, error) {
 		if len(args) > 1 && args[1] == "view" {
 			return `{"number":1,"title":"T","body":"b","headRefName":"h","baseRefName":"main","author":{"login":"a"},"files":[{"path":"f.go","additions":1,"deletions":0}],"changedFiles":1}`, "", nil
@@ -1290,6 +1312,7 @@ func TestDispatchAppBadFlag(t *testing.T) {
 // TestDispatchPRValid runs `yanshi pr <url>` through dispatch with a fake gh, so
 // the pr-valid branch of dispatch (runPR(argv[2])) is exercised end-to-end.
 func TestDispatchPRValid(t *testing.T) {
+	withPRConfig(t)
 	withFakeGH(t, func(ctx context.Context, args ...string) (string, string, error) {
 		if len(args) > 1 && args[1] == "view" {
 			return `{"number":1,"title":"T","body":"","headRefName":"h","baseRefName":"main","author":{"login":"a"},"files":[],"changedFiles":0}`, "", nil

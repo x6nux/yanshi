@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/x6nux/yanshi/internal/bootstrap"
 	"os"
 	osexec "os/exec"
 	"strconv"
@@ -15,6 +16,11 @@ import (
 // runPR is the entry point for `yanshi pr <PR-number-or-URL>`. It fetches PR
 // metadata + diff via `gh`, parses the metadata via the shared FetchGitHubContext
 // narrow export, then runs the headless review pipeline.
+// prBuildConfigPath is the config `yanshi pr` builds its App from. A
+// package-level var so tests can point it at a temp config instead of
+// whatever the developer has in the working directory.
+var prBuildConfigPath = "config.yaml"
+
 func runPR(ctx context.Context, prInput string) int {
 	repo, number := parsePRInput(prInput)
 	if repo == "" || number <= 0 {
@@ -46,6 +52,25 @@ func runPR(ctx context.Context, prInput string) int {
 	}
 
 	// Build review input and run headless.
+	//
+	// The App is built here rather than reusing the process context because
+	// the review tool reads its sub-agent runner, profile and work root from
+	// context values that ONLY a turn binds. Passing the bare ctx made
+	// streamReview answer "review requires a bound sub-agent runner" on every
+	// single invocation -- `yanshi pr` had never worked, and nothing at build
+	// or startup said so.
+	app, err := bootstrap.Build(bootstrap.Options{ConfigPath: prBuildConfigPath})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Review failed: cannot build app: %v\n", err)
+		return 1
+	}
+	defer func() { _ = app.Shutdown(context.Background()) }()
+	if app.Orch == nil {
+		fmt.Fprintln(os.Stderr, "Review failed: no orchestrator (configure an llm provider)")
+		return 1
+	}
+	ctx = app.Orch.BindHeadlessContext(ctx)
+
 	prompt := buildPRReviewPrompt(ghCtx, diff)
 	result, err := runHeadlessPrompt(ctx, "review", prompt)
 	if err != nil {

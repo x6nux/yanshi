@@ -392,6 +392,25 @@ func (o *Orchestrator) bindManagedRunner(ctx context.Context) context.Context {
 	return tools.WithManagedRunnerFactory(ctx, factory)
 }
 
+// BindHeadlessContext prepares a context for a caller that invokes a tool
+// DIRECTLY, outside a turn.
+//
+// Everything a tool reads comes from context values the orchestrator binds
+// per turn, so a caller that skips the turn hands the tool an empty context
+// and the tool fails on its first lookup. `yanshi pr` did exactly that: it
+// called tools.RunReviewHeadless with the process context, streamReview found
+// no SubAgentRunner, and the command answered "review requires a bound
+// sub-agent runner" on EVERY invocation -- the subcommand could never have
+// worked, and nothing failed at build or startup to say so.
+//
+// This binds the same execution context a turn would, minus the turn-scoped
+// pieces (images, thread links, work-event callbacks) that a headless caller
+// has no source for.
+func (o *Orchestrator) BindHeadlessContext(ctx context.Context) context.Context {
+	ctx = o.bindExecutionContext(ctx, "headless")
+	return o.bindSubAgentRunner(ctx)
+}
+
 // bindSubAgentRunner returns ctx with a SubAgentRunner bound.
 func (o *Orchestrator) bindSubAgentRunner(ctx context.Context) context.Context {
 	if o.model == nil {
