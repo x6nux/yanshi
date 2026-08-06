@@ -184,6 +184,7 @@ Agent Client Protocol 适配器，以子进程方式拉起外部 agent CLI，并
 - **注释是承重文档** —— 包和导出符号都带有多段 doc 注释来解释*为什么*（尤其在 ADK、guard、VCS 周围）。在这些区域增改时，请保持同样的注释密度。
 - **Fake 优先于 mock** —— `einollm.FakeModel`、`goalloop.FakePlanner`/`FakeImplementer`、`cli.FakeBackend`、`acp.FakeAgent` 驱动确定性测试，无需 API key 或子进程。优先新增一个 fake，而非引入 mock 框架。
 - **承重架构决策走 ADR** —— `docs/adr/` 是单决策的演进档案（ADR-0001..0011 已覆盖 UnknownToolsHandler、guard fail-closed、压缩、WS/SSE、autoVCS scope 覆盖、台账逐句对账等）。新增或修改上述架构章节里的约束时，从 `docs/adr/0000-template.md` 复制一条新 ADR（编号取当前最大 +1），把不可违反的约束落进 Consequences。CLAUDE.md 写全景当前态，ADR 写单条决策的来龙去脉 —— 交叉引用，不要互相复制。
-- **对外契约在 `sdk/`** —— `sdk/schema/` 存放版本化的 API 契约（v1、v1.1），`sdk/python` 与 `sdk/ts` 是从中生成/校验的客户端。改动 `internal/api` 的 wire 格式时同步这里。
+- **对外契约在 `sdk/`** —— `sdk/schema/` 存放版本化的 API 契约（v1、v1.1），**它就是真相源**：`sdk/schema/schema.go` 用 embed 暴露那两个物理文件，`internal/api/v1::SchemaBytes` 原样返回 v1，`GET /api/v1/schema/agent-v1.json` 吐的就是这串字节。此前运行时另有一份 3-`$defs` 的 Go 字面量、`$id` 与 SDK 那份 21-`$defs` 的不同，客户端 fetch 到的文档描述的不是它自己 SDK 强制的契约。
+  `sdk/python` 与 `sdk/ts` 是**手工维护**的镜像（都不是生成的 —— `cmd/api-schema` 曾自称 TS 生成器而实为手抄字面量，那一半已删，命令现在只有 `-markdown` 一个职责）。四路一致性由 `internal/api/v1/parity_test.go::TestContractParityAcrossFourSources` 对账：Go struct / JSON Schema / TS / pydantic 的字段集合必须一致，差异逐条具名带理由，死条目判失败。落点在 Go 侧是因为 `go test ./...` 无条件跑，而 Node/Python 工具链在 CI 里是可选步骤。改动 `internal/api` 的 wire 格式时四处同改，漏一处那条测试会红。
 - **提交信息用 conventional commit** —— `feat(scope):` / `fix:` / `docs:` / `refactor:` / `test:` / `chore:` / `ci:`，CHANGELOG 由 `cliff.toml` 自动生成。**（重要：用户没主动要求时，绝对不要执行 git 提交/分支操作）**
 - **被忽略的产物**：`config.yaml`、`*.db`（运行时 SQLite 存储，含 `yanshi.db`）以及构建出的二进制都被 gitignore。构建产物（`yanshi.exe`、`yanshi.exe~`）可能出现在工作树中 —— 不要提交它们。

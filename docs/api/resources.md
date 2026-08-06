@@ -1,6 +1,8 @@
 # 资源参考（Thread / Turn / Item）
 
-v1 Agent API 的三类核心资源与请求/响应形状。字段表由 `go run ./cmd/api-schema -markdown` 从 `internal/api/v1` 生成；不要手改本页的生成区块（修改 `internal/api/v1/types.go` 或 `sdk/schema/v1/agent-api.schema.json`（`internal/api/v1/schema.go::SchemaBytes` 原样返回它）后重生成，CI 守门）。
+v1 Agent API 的三类核心资源与请求/响应形状。字段表由 `go run ./cmd/api-schema -markdown` 从 **JSON Schema**（`sdk/schema/v1/agent-api.schema.json`，`internal/api/v1/schema.go::SchemaBytes` 原样返回它）生成；不要手改本页的生成区块，改 schema 后重生成，CI 守门。
+
+改 `internal/api/v1/types.go` **不会**改变本页 —— 它们由 `internal/api/v1/parity_test.go::TestContractParityAcrossFourSources` 对账而不是同源。本页此前还有一张**第二张手工表**层叠在上面且写在后面所以赢，`TurnStartParams.images` 那行就是它印的（TS 与 Python 都没有这个字段），它还在继续印一个已从四路契约删掉的 `ThreadResumeResponse.items`。那张表已删除。
 
 ## Thread
 
