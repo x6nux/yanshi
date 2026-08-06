@@ -119,6 +119,8 @@ func liveSlashCommands(t *testing.T) map[string]bool {
 
 // TestPhantomSlashCommandsNotAdvertised fails when any text carrier presents a
 // never-registered slash command as if an operator could type it.
+//
+// ledger: H2/UDOC1#3 与实际不漂移
 func TestPhantomSlashCommandsNotAdvertised(t *testing.T) {
 	root := moduleRoot(t)
 	live := liveSlashCommands(t)

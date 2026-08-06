@@ -62,6 +62,8 @@ token: "test-token"
 // assertions currently scattered across TestBuild_RegistersAllSecuritySubsystems
 // / TestBuild_LSPWired / TestBuildWiresFeaturesAndPricing into one assembly-
 // order gate.
+//
+// ledger: E1/COV3#2 最小 App 可构建并跑一轮 turn
 func TestBuild_MinimalApp(t *testing.T) {
 	app := buildMinimalApp(t)
 	for _, c := range []struct {
@@ -109,6 +111,8 @@ func TestBuild_AssemblyOrder(t *testing.T) {
 //
 // Both halves are asserted: Build must not fail, AND VCSRepoID must be empty.
 // Without the second, a boot that quietly succeeded would still pass.
+//
+// ledger: E1/COV3#3 软降级被验证
 func TestBuild_VCSSoftDegrade(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
@@ -241,6 +245,8 @@ func TestBuild_OptionsOutputInjection(t *testing.T) {
 // and a final agent_chunk. This is the only bootstrap test that drives a real
 // ReAct turn end-to-end; it reuses the proven "rebuild orchestrator with a
 // scripted model" pattern from TestBuild_VCSToolsRunThroughOrchestrator.
+//
+// ledger: E1/COV3#2 最小 App 可构建并跑一轮 turn
 func TestBuild_EndToEndTurn(t *testing.T) {
 	app := buildMinimalApp(t)
 	require.NotNil(t, app.Store)

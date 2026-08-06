@@ -122,8 +122,11 @@ jobs:
       # The goal-loop example ships its own assertions (it greps for the
       # decision line) and was not run by any workflow step — an example with
       # a self-check nobody executes is an example that can rot silently.
-      - name: goal-loop example
-        run: bash examples/goalloop-config/run.sh
+      # Both of these ship their own assertions and neither was in any CI step.
+      - name: headless examples
+        run: |
+          bash examples/headless-exec/run.sh
+          bash examples/goalloop-config/run.sh
 
       - name: TS typecheck (SDK + example)
         run: |

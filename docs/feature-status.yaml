@@ -840,17 +840,35 @@
 # 在其中之一落地前，本条保持 partial —— 这是记账形状的问题，不是实现缺口。
 - id: "E1/COV2"
   package: "W10"
-  verdict: partial
+  verdict: done
   title: "proto 覆盖 67% → 80%+"
+  # 2026-08-06 W10：**真实缺口不是覆盖率**（实测 97.8%，验收要 ≥80%），是测试语义。
+  # golden 语料没覆盖它自己冻结的词表：NewTaskUpdate(nil) 短路返回零值 ServerFrame，
+  # 于是那一行冻结的是 `event: `（空）与 `data: {"type":""}` —— task_update 的
+  # wire 形状从未被冻结，语料里还多了一个任何构造器都产不出的空类型。
+  # 子句 4 引的 TestVocabulary_Symmetry 曾是**恒真重言式**：断言 f.Type == event，
+  # 而 SSEEvent 第一行就是 event = f.Type。
   acceptance: "覆盖率 ≥80%；全帧往返；SSE golden 稳定；WS/SSE 词表对称"
-  evidence: "internal/proto::TestVocabulary_Symmetry; internal/proto::TestSSEEvent_Golden"
+  evidence:
+    "1": "internal/archtest::TestCoverageFloorsAreEnforcedInCI"
+    "2": "internal/proto::TestServerFrame_ParityRoundTrip; internal/proto::TestGoldenCoversEveryDeclaredFrameType"
+    "3": "internal/proto::TestSSEEvent_Golden"
+    "4": "internal/proto::TestVocabulary_Symmetry"
 
 - id: "E1/COV3"
   package: "W10"
-  verdict: partial
+  verdict: done
   title: "bootstrap 集成测试 23% → 50%+"
+  # 2026-08-06 W10：同 COV2 —— 覆盖率实测 94.2%（验收要 ≥50%），缺的是语义。
+  # 子句 3「软降级被验证」引的 TestBuild_VCSSoftDegrade 只调 buildMinimalApp 后
+  # 断言 App.VCS != nil，那次 InitRepo **成功**（进程 cwd 是真目录）——
+  # 它命名的那条分支从未执行过。根因是 bootstrap 里硬编码的 os.Getwd()，
+  # 测试无法让进程自己的 cwd 失效；W10 加了 Options.WorkRoot seam。
   acceptance: "覆盖率 ≥50%；最小 App 可构建并跑一轮 turn；软降级被验证"
-  evidence: "internal/bootstrap::TestBuild_EndToEndTurn; internal/bootstrap::TestBuild_VCSSoftDegrade"
+  evidence:
+    "1": "internal/archtest::TestCoverageFloorsAreEnforcedInCI"
+    "2": "internal/bootstrap::TestBuild_MinimalApp; internal/bootstrap::TestBuild_EndToEndTurn"
+    "3": "internal/bootstrap::TestBuild_VCSSoftDegrade"
 
 # 2026-08-04 复核：done → partial。理由与 C1/AU1 那次退回逐字相同 ——「掏空后测试
 # 仍 PASS」。前一次复核（见本条历史）把 8 个 TestProperty_* 当成覆盖面的证据，但只
@@ -1047,17 +1065,35 @@
 
 - id: "H1/PKG1"
   package: "W10"
-  verdict: partial
+  verdict: done
   title: "多平台打包分发"
+  # 2026-08-06 W10：配置能解析这一条 W0 已闭合（ci.yml 的 release-config 跑
+  # goreleaser check）。**剩余缺口是流水线从未真跑过** —— 本仓库一个 tag 都没有。
+  # W10 本地跑通 snapshot 并逐条核验（4 归档 / 4 checksum / 归档含 LICENSE /
+  # 解包后 nokeyring 二进制 -h 退 0），做成 nightly 的 release-snapshot job。
+  # 仓库此前**没有 LICENSE 文件**，归档物里自然也没有。
   acceptance: "多平台二进制可构建；release 产物完整；checksum；fork 行为保留"
-  evidence: ""
+  evidence:
+    "1": "internal/archtest::TestReleaseSnapshotIsVerifiedNightly"
+    "2": "internal/archtest::TestLicenseShipsWithTheBinary; internal/archtest::TestReleaseSnapshotIsVerifiedNightly"
+    "3": "internal/archtest::TestReleaseSnapshotIsVerifiedNightly"
+    "4": "internal/archtest::TestBubbleteaForkIsPinned"
 
 - id: "H1/VER1"
   package: "W10"
-  verdict: partial
+  verdict: done
   title: "语义化版本 + CHANGELOG 自动化"
+  # 2026-08-06 W10：CHANGELOG 生成有两条从未触发过的缺陷（本仓库无 tag）——
+  # `--latest` + 覆盖写会让**第二次**发布丢掉 v1 的全部历史；changelog 回写排在
+  # goreleaser 之前且 push 到 main，而 tag build 是 detached HEAD，
+  # non-fast-forward 会让整个 Release 发不出去。cliff.toml 另有两条：
+  # 缺 `^style`（那条提交落进 git-cliff 自己推导的游离段），
+  # 以及 breaking 规则只认 `^feat!`（`fix(api)!` 被当普通 bugfix 发布）。
   acceptance: "版本号来自 git tag；CHANGELOG 可生成；发布流程文档化"
-  evidence: ""
+  evidence:
+    "1": "internal/archtest::TestReleaseSnapshotIsVerifiedNightly"
+    "2": "internal/archtest::TestChangelogGenerationKeepsHistory; internal/archtest::TestCliffParsersCoverTheDocumentedPrefixes"
+    "3": "internal/archtest::TestContributingDocumentsTheEnforcedGates"
 
 - id: "H2/APIREF1"
   package: "W9"
@@ -1079,24 +1115,48 @@
 
 - id: "H2/CONTRIB1"
   package: "W10"
-  verdict: partial
+  verdict: done
   title: "贡献指南 + docs 归档"
+  # 2026-08-06 W10：文件本身一直在且引用可达，但**对机器强制治理零字提及** ——
+  # W0 刚把 governance 变成硬门禁，而 CONTRIBUTING 对 internal/archtest、
+  # cmd/codelines、豁免表、cmd/featurestatus 一个字都没写，也没提「改 config /
+  # -h / schema 必须重跑生成器并提交」。贡献者照着它走会在两个 job 上撞墙。
+  # SECURITY.md 的联系邮箱则是自标的占位符（文件自己写着「公开前替换」）。
   acceptance: "CONTRIBUTING 存在；约定可执行；docs 结构清晰"
-  evidence: ""
+  evidence:
+    "1": "internal/archtest::TestContributingDocumentsTheEnforcedGates"
+    "2": "internal/archtest::TestContributingDocumentsTheEnforcedGates"
+    "3": "internal/archtest::TestSecurityContactIsNotAPlaceholder; internal/archtest::TestArchiveIndexMatchesTheDirectory"
 
 - id: "H2/EX1"
   package: "W10"
-  verdict: partial
+  verdict: done
   title: "examples 目录"
+  # 2026-08-06 W10：7 个示例（验收要 ≥5）都在，但**两个从没被任何 CI 步骤跑过**
+  # —— examples/goalloop-config 与 examples/headless-exec 各自带着自检脚本，
+  # 都不在 docs.yml 的任何一步里。custom-skill 是 SKILL.md 没有脚本，改用 Go 侧
+  # 断言把它真的喂给 loader。EX1 的 AttributeError（item.toolName）在 W9-T7
+  # 与文档那处一起修掉了。
   acceptance: "≥5 个示例；可跑；覆盖主要集成点"
-  evidence: ""
+  evidence:
+    "1": "internal/archtest::TestExamplesAreRunnableAndExercised"
+    "2": "internal/archtest::TestExamplesAreRunnableAndExercised; internal/skills::TestShippedExampleSkillLoads"
+    "3": "internal/archtest::TestExamplesCoverTheMainIntegrationPoints"
 
 - id: "H2/UDOC1"
   package: "W10"
-  verdict: partial
+  verdict: done
   title: "用户指南"
+  # 2026-08-06 W10：8 页用户指南齐全，但**根 README 对 docs/user-guide、docs/api、
+  # docs/adr、examples/、CONTRIBUTING.md 的引用数实测全部为 0** —— 开源之后陌生人
+  # 从落地页找不到用户指南、贡献指南和任何示例。子句 3「与实际不漂移」曾有两处
+  # 实锤：`/keymap` `/vim` `/contrast` 被宣传而从未注册（W8 把它们做成了真的），
+  # 以及 `pr` 与 `auth` 两个子命令在顶层 `yanshi -h` 里隐身（W10-T7）。
   acceptance: "覆盖主要用法；getting started 可零依赖跑通；与实际不漂移"
-  evidence: ""
+  evidence:
+    "1": "internal/archtest::TestReadmeReachesEveryEntryPoint"
+    "2": "cmd/gendocs::TestRenderConfigSkeletonCoversExampleYAMLKeys"
+    "3": "cmd/yanshi::TestUsageListsEverySubcommandItDispatches; internal/archtest::TestPhantomSlashCommandsNotAdvertised"
 
 - id: "M1/G02"
   package: "W2"

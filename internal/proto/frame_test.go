@@ -105,6 +105,8 @@ func TestClientFrame_ParityRoundTrip(t *testing.T) {
 
 // TestServerFrame_ParityRoundTrip verifies the Phase-10 server frames (models/
 // status/permission_request) round-trip with all their fields.
+//
+// ledger: E1/COV2#2 全帧往返
 func TestServerFrame_ParityRoundTrip(t *testing.T) {
 	t.Run("models", func(t *testing.T) {
 		in := NewModels([]string{"a", "b", "c"})
@@ -458,6 +460,8 @@ func goldenFrames() []ServerFrame {
 // regenerate testdata/sse_golden.txt after adding/changing a frame; CI runs
 // without -update so an un-regenerated change fails the build. This guards the
 // "two transports, one vocabulary" invariant from CLAUDE.md.
+//
+// ledger: E1/COV2#3 SSE golden 稳定
 func TestSSEEvent_Golden(t *testing.T) {
 	frames := goldenFrames() // every type, one representative constructor each
 	var b strings.Builder
@@ -504,6 +508,8 @@ func TestUnknownField_Compatibility(t *testing.T) {
 // compares the function's output against the value the function just copied.
 // Checking against the frozen file instead means a change to either side has
 // to be justified against the other.
+//
+// ledger: E1/COV2#4 WS/SSE 词表对称
 func TestVocabulary_Symmetry(t *testing.T) {
 	frozen, err := os.ReadFile(filepath.Join("testdata", "sse_golden.txt"))
 	require.NoError(t, err, "golden missing — run: go test -run TestSSEEvent_Golden -update ./internal/proto/")

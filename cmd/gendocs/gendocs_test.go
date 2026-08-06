@@ -53,6 +53,7 @@ func TestRenderConfigSkeletonIdempotent(t *testing.T) {
 	}
 }
 
+// ledger: H2/UDOC1#2 getting started 可零依赖跑通
 func TestRenderConfigSkeletonCoversExampleYAMLKeys(t *testing.T) {
 	// Every top-level key present in config.example.yaml must have a group in
 	// the skeleton (the skeleton is the source of truth for what Config can do).

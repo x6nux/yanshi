@@ -268,6 +268,14 @@ func TestFuzzGatesHaveNoEscapeHatch(t *testing.T) {
 // tags at all, so release.yml has never fired and nothing had ever verified
 // that the artifacts build, that the archives carry the licence, or that the
 // CGO_ENABLED=0 -tags=nokeyring binary starts.
+//
+// ledger: H1/PKG1#1 多平台二进制可构建
+//
+// ledger: H1/PKG1#2 release 产物完整
+//
+// ledger: H1/PKG1#3 checksum
+//
+// ledger: H1/VER1#1 版本号来自 git tag
 func TestReleaseSnapshotIsVerifiedNightly(t *testing.T) {
 	body, ok := workflowJobBody(readWorkflow(t, "nightly.yml"), "release-snapshot")
 	if !ok {
@@ -303,6 +311,8 @@ func TestReleaseSnapshotIsVerifiedNightly(t *testing.T) {
 //  2. The write-back ran BEFORE goreleaser and pushed to main. A tag build
 //     checks out a detached HEAD, so the push is a non-fast-forward the moment
 //     main has moved on — the step fails and the entire Release never goes out.
+//
+// ledger: H1/VER1#2 CHANGELOG 可生成
 func TestChangelogGenerationKeepsHistory(t *testing.T) {
 	body, ok := workflowJobBody(readWorkflow(t, "release.yml"), "release")
 	if !ok {
@@ -371,6 +381,8 @@ func withoutComments(src, marker string) string {
 // mean re-deriving git-cliff's template behaviour in Go, and the probe that
 // found the style defect showed how easily an assumption about that goes
 // wrong: the plan predicted the commit would vanish silently; it did not.
+//
+// ledger: H1/VER1#2 CHANGELOG 可生成
 func TestCliffParsersCoverTheDocumentedPrefixes(t *testing.T) {
 	cliff, err := os.ReadFile(abs("cliff.toml"))
 	if err != nil {
@@ -420,6 +432,8 @@ func TestCliffParsersCoverTheDocumentedPrefixes(t *testing.T) {
 // deps_analysis.md was tracked too, just sitting in the repo root. An index
 // that disagrees with its own directory sends readers looking for files where
 // they are not, and claims absent things that are present.
+//
+// ledger: H2/CONTRIB1#3 docs 结构清晰
 func TestArchiveIndexMatchesTheDirectory(t *testing.T) {
 	dir := abs(filepath.Join("docs", "archive"))
 	entries, err := os.ReadDir(dir)

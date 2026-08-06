@@ -98,6 +98,8 @@ func constValue(file *ast.File, name string) string {
 // an empty-string type present in it that no constructor can produce. Both
 // directions matter: a missing type means the format is unfrozen, an extra one
 // means the golden file documents a frame that does not exist.
+//
+// ledger: E1/COV2#2 全帧往返
 func TestGoldenCoversEveryDeclaredFrameType(t *testing.T) {
 	declared := declaredTypes(t)
 	if len(declared) < 20 {

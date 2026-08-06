@@ -100,6 +100,8 @@ func usageSubcommands() map[string]bool {
 //
 // Both directions: a name in usage that dispatches nowhere is a documented
 // command that does not exist.
+//
+// ledger: H2/UDOC1#3 与实际不漂移
 func TestUsageListsEverySubcommandItDispatches(t *testing.T) {
 	dispatched := dispatchedSubcommands(t)
 	if len(dispatched) < 5 {
