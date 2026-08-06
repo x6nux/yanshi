@@ -12,6 +12,7 @@ import (
 	"github.com/x6nux/yanshi/internal/skills"
 )
 
+// ledger: C3/E03#4 模型可 load 匹配技能
 func TestSkillUse_ReturnsBody(t *testing.T) {
 	root := t.TempDir()
 	d := filepath.Join(root, "greet")

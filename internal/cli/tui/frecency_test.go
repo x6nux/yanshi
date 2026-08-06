@@ -8,9 +8,9 @@ import (
 	"time"
 )
 
-// TestFrecency_RecordAndTopN.
-//
-// ledger: C2/UX4#2 衰减合理
+// TestFrecency_RecordAndTopN pins count-based ranking. It carried the marker
+// for "衰减合理" and never advanced the clock once — count ordering holds under
+// any decay function, including no decay at all.
 func TestFrecency_RecordAndTopN(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "frec.json")
@@ -67,6 +67,7 @@ func TestFrecency_PersistAcrossLoad(t *testing.T) {
 	}
 }
 
+// ledger: C2/UX4#2 衰减合理
 func TestFrecency_DecayOldEntries(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "frec.json")

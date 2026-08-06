@@ -560,7 +560,7 @@
   acceptance: "@path 补全候选按 frecency 排序;衰减合理;tui.frecency 可禁用"
   evidence:
     "1": "internal/cli/tui::TestAtCompletionIsOrderedByFrecency; internal/cli/tui::TestAtCompletionStaysInsideTheProject"
-    "2": "internal/cli/tui::TestFrecency_RecordAndTopN"
+    "2": "internal/cli/tui::TestFrecency_DecayOldEntries; internal/cli/tui::TestCov_Score_DecayBuckets"
     "3": "internal/cli/tui::TestFrecencyCanBeDisabled"
 
 # 2026-08-04 复核：partial → done。这是台账**低报**：四条子句各有具名测试，且整条
@@ -597,7 +597,7 @@
     "1": "internal/cli/tui::TestCmdSkill_AllSubcommands; internal/cli/tui::TestSkillValidateIsRoutedToTheServer"
     "2": "internal/skills::TestValidateSkillRechecksAnInstalledSkill"
     "3": "internal/skills::TestLoadReportsShadowedSkills; internal/api/http::TestSkillsListCarriesShadowedCopies; internal/cli/tui::TestSkillsEntryShowsShadowedCopies"
-    "4": "internal/cli/tui::TestCommand_Skills_SendsListSkills"
+    "4": "internal/skills::TestRegistry_MetaPrompt; internal/tools::TestSkillUse_ReturnsBody"
 
 - id: "C4/COST1"
   package: "W7"
@@ -750,7 +750,7 @@
   title: "keymap 配置（重映射 / Vim 开关 / 高对比 / 冲突诊断）"
   acceptance: "核心按键可重映射；Vim 开关；高对比主题；冲突可诊断"
   evidence:
-    "1": "internal/keymap::TestBuild_DefaultLookupUsesRealKeyMessages"
+    "1": "internal/keymap::TestBuild_DefaultLookupUsesRealKeyMessages; internal/cli/tui::TestRebindingAKeyChangesWhatItDoes"
     "2": "internal/cli/tui::TestPreferencesRoundTripAcrossModels"
     "3": "internal/cli/tui::TestPreferenceCommandsAreRegistered"
     "4": "internal/cli/tui::TestKeymapDiagnosticsRendersTheConflictReport"

@@ -198,6 +198,7 @@ func TestRegistry_ReadFile_RejectsAbsolutePath(t *testing.T) {
 	assert.Contains(t, err.Error(), "must be relative", "absolute path must be rejected by the IsAbs gate")
 }
 
+// ledger: C3/E03#4 模型可 load 匹配技能
 func TestRegistry_MetaPrompt(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, root, "greet", "---\nname: greet\ndescription: Use when saying hello\n---\nx")

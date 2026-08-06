@@ -54,6 +54,8 @@ func TestCov_TopN_TiebreakerAndOverflow(t *testing.T) {
 
 // TestCov_Score_DecayBuckets covers the 1h–24h (0.9) and 1d–7d (0.5) decay
 // buckets (the <1h and >=7d buckets are already covered).
+//
+// ledger: C2/UX4#2 衰减合理
 func TestCov_Score_DecayBuckets(t *testing.T) {
 	now := time.Now()
 	// 1h–24h → 0.9

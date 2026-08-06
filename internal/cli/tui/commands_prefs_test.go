@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/require"
 )
 
@@ -231,4 +232,43 @@ func TestHelpSurfacesLocalizeCommandHelp(t *testing.T) {
 			t.Errorf("the command palette still renders the English help for /clear")
 		}
 	})
+}
+
+// TestRebindingAKeyChangesWhatItDoes drives a user-configured binding through
+// the TUI's real key path, which is the only thing "可重映射" can mean.
+//
+// The ledger cited internal/keymap::TestBuild_DefaultLookupUsesRealKeyMessages
+// for this clause. That test is necessary and not sufficient: it proves the
+// map resolves ctrl+g to an action, and internal/keymap was a complete, tested
+// leaf package with ZERO production consumers for exactly as long as this
+// feature was claimed to work. A correct lookup table nobody consults rebinds
+// nothing.
+//
+// ctrl+g is deliberate: it is absent from builtinKeys, so it exercises the
+// remapped path rather than the hardcoded switch, and it has no default
+// binding — the observed effect can only come from the configured one.
+//
+// ledger: D3/C15#1 核心按键可重映射
+func TestRebindingAKeyChangesWhatItDoes(t *testing.T) {
+	withTempPrefs(t)
+	prev := projectBindings
+	t.Cleanup(func() { SetProjectBindings(prev) })
+
+	// Unbound by default: pressing it must do nothing.
+	SetProjectBindings(nil)
+	base := newModel(&recordingSession{}, "/proj")
+	base, _, _ = base.handleKeyMsg(tea.KeyMsg{Type: tea.KeyCtrlG})
+	if base.helpVisible {
+		t.Fatal("ctrl+g toggled help WITHOUT a binding; this test cannot " +
+			"distinguish a rebind from a default")
+	}
+
+	// Bound to help: the same keystroke now opens the panel.
+	SetProjectBindings(map[string]string{"ctrl+g": "help"})
+	m := newModel(&recordingSession{}, "/proj")
+	m, _, _ = m.handleKeyMsg(tea.KeyMsg{Type: tea.KeyCtrlG})
+	if !m.helpVisible {
+		t.Error("the configured binding did not reach the key dispatcher: " +
+			"keymap resolves it, but the TUI never asks")
+	}
 }

@@ -11,8 +11,6 @@ import (
 )
 
 // TestCommand_Skills_SendsListSkills proves /skills sends a list_skills frame.
-//
-// ledger: C3/E03#4 模型可 load 匹配技能
 func TestCommand_Skills_SendsListSkills(t *testing.T) {
 	rec := &recordingSession{}
 	m := newModel(rec, "/proj")
