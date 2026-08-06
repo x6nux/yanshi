@@ -965,3 +965,33 @@ func TestStderrIsReservedForPreLoggerAndTTYMessages(t *testing.T) {
 			"otherwise use slog so it reaches the log file and collectors too", n, ceiling)
 	}
 }
+
+// TestOrchestrationToolNamesAreRegistered is GOV5's twin for the sub-agent
+// deny set.
+//
+// orchestrator.OrchestrationToolNames names the delegation tools a sub-agent
+// must NOT inherit — handing them down is how one turn becomes an unbounded
+// tree. A phantom name here is the mirror image of a phantom in the profile's
+// allow list: it occupies a "blocked" slot that can never match, so the set
+// reads stricter than it is, and the day someone registers a tool under that
+// name it is silently exempt from the block it was written for.
+//
+// GOV5 cannot see this: that gate reconciles the guard PROFILE against the
+// registry, and this is neither. "spawn_agent" sat here until W9, pointing at
+// internal/agent/spawn — a package whose every file begins with //go:build
+// ignore, so it never compiled into the binary at all.
+func TestOrchestrationToolNamesAreRegistered(t *testing.T) {
+	app := buildAppWithProviders(t, productionNoRLMYAML)
+	registered := registeredSet(t, app)
+
+	// Precondition: the registry must be non-empty, or every name below would
+	// "fail" for a reason that has nothing to do with the deny set.
+	require.NotEmpty(t, registered, "harness broken: no tools registered")
+
+	for name := range orchestrator.OrchestrationToolNames {
+		require.True(t, registered[name],
+			"orchestrator.OrchestrationToolNames blocks %q in sub-agents, but no boot "+
+				"registers a tool by that name. The block matches nothing; delete the "+
+				"name, or register the tool it was written for.", name)
+	}
+}

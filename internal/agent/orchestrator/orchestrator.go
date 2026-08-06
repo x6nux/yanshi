@@ -676,20 +676,30 @@ func (o *Orchestrator) selectSubAgentTools(allowed []string) []BaseTool {
 	return out
 }
 
+// OrchestrationToolNames are the delegation tools a sub-agent must not be
+// given, because handing them down is how one turn becomes an unbounded tree.
+//
+// Exported so bootstrap can check the names against the real tool registry.
+// It carried "spawn_agent" until W9: that tool lives in internal/agent/spawn,
+// a package whose every file begins with //go:build ignore, so it is not
+// merely unwired — it does not compile into the binary at all, and the name
+// occupied a "block this in sub-agents" slot that could never match anything.
+// GOV5 could not see it: that gate reconciles the guard PROFILE against the
+// registry, and this map is neither.
+var OrchestrationToolNames = map[string]struct{}{
+	"agent_start":    {},
+	"workflow_start": {},
+	"analysis":       {},
+}
+
 func withoutOrchestrationTools(in []BaseTool) []BaseTool {
-	constNames := map[string]struct{}{
-		"agent_start":    {},
-		"workflow_start": {},
-		"analysis":       {},
-		"spawn_agent":    {},
-	}
 	out := make([]BaseTool, 0, len(in))
 	for _, t := range in {
 		info, err := t.Info(context.Background())
 		if err != nil || info == nil {
 			continue
 		}
-		if _, blocked := constNames[info.Name]; blocked {
+		if _, blocked := OrchestrationToolNames[info.Name]; blocked {
 			continue
 		}
 		out = append(out, t)

@@ -453,3 +453,75 @@ func TestR2_DetectsNewViolationInSyntheticGraph(t *testing.T) {
 	}
 	t.Logf("synthetic gate correctly detected violation (expected): %v", violations)
 }
+
+// ---------------------------------------------------------------------------
+// R6: Who may depend on the orchestrator
+// ---------------------------------------------------------------------------
+
+// orchestratorConsumers is the closed set of packages allowed to import
+// internal/agent/orchestrator, with the reason each one does.
+//
+// The direction is the point. portAllowlists answers "what may this package
+// depend on"; this answers the reverse — "who may depend on THIS package" —
+// and no existing table states that. R5's serviceLayerPrefixes is the nearest
+// neighbour and says something different again (ports must not import the
+// service layer).
+//
+// The orchestrator owns the ReAct loop, tool dispatch, sub-agent delegation
+// and per-turn context injection. Every front door that reaches it directly
+// re-implements the turn setup rather than going through a seam — which is
+// exactly the drift the two S3 entries below record. The consumer set is
+// small enough today to pin, so a new front end or channel wiring itself
+// straight into the orchestrator turns red at the moment it is written
+// instead of after it has grown its own copy of the turn plumbing.
+//
+// internal/agent/spawn is NOT here, and the dead-entry check is what said so:
+// grep finds it importing the orchestrator, `go list` does not, because every
+// file in that package starts with //go:build ignore. It is not unwired — it
+// does not compile into the binary. Whether the package should be revived or
+// deleted is W10's call; what W9 removed is the "spawn_agent" entry it left
+// behind in the sub-agent deny set.
+//
+// This is an architectural allowlist, not a debt table: entries name a
+// legitimate role. It still carries a dead-entry check, because a package that
+// stopped importing the orchestrator has genuinely left the set, and package
+// imports do not fluctuate the way a fan-out count does.
+var orchestratorConsumers = map[string]string{
+	ip("internal/bootstrap"): "the composition root; it builds the orchestrator",
+	ip("internal/api/http"): "the WS/SSE chat transports. ws.go builds its own " +
+		"TurnOpts and calls EventsWithHistoryOpts — converging that with the v1 " +
+		"service's copy is S3 work, deliberately NOT done in W9.",
+	ip("internal/api/v1"): "the versioned Agent API service, shared by HTTP and " +
+		"JSON-RPC. It builds its own TurnOpts; same S3 convergence as api/http.",
+}
+
+// TestR6_OrchestratorConsumersAreClosed pins the reverse dependency edge.
+func TestR6_OrchestratorConsumersAreClosed(t *testing.T) {
+	graph := buildImportGraph(t)
+	target := ip("internal/agent/orchestrator")
+
+	seen := map[string]bool{}
+	for pkg, deps := range graph {
+		for _, dep := range deps {
+			if dep != target {
+				continue
+			}
+			seen[pkg] = true
+			if _, ok := orchestratorConsumers[pkg]; !ok {
+				t.Errorf("%s imports the orchestrator directly and is not in "+
+					"orchestratorConsumers.\n"+
+					"  Reaching the ReAct loop from a new package means re-implementing "+
+					"turn setup (TurnOpts, context injection, sub-agent binding) rather "+
+					"than going through a seam. If this really is a new front door, add "+
+					"it with the reason; otherwise depend on the v1 service.", pkg)
+			}
+		}
+	}
+	for pkg := range orchestratorConsumers {
+		if !seen[pkg] {
+			t.Errorf("orchestratorConsumers lists %s, which no longer imports the "+
+				"orchestrator — delete the row. A stale entry pre-authorises the "+
+				"dependency to come back unnoticed.", pkg)
+		}
+	}
+}
