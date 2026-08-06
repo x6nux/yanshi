@@ -494,3 +494,96 @@ func TestCheckMCPReadsTheConfiguration(t *testing.T) {
 		t.Fatalf("the failure must name the server: %q", broken.Message)
 	}
 }
+
+// TestDoctorNeverEchoesACredential is the canary for a property doctor was
+// getting right by construction and nothing was holding it to.
+//
+// Five call sites deliberately withhold detail so a credential cannot reach
+// the report: checkConfig and skipped() drop cfgErr entirely (a YAML parse
+// failure routinely quotes the offending line, which is where the api_key
+// is), checkProviders reports only set/not set, checkSecretsRefs says only
+// "invalid credential reference", and checkKeymapConfig does not echo the
+// raw key or action. Every one of those is a decision someone made, and any
+// of them could be "improved" into a leak by a well-meaning edit that adds
+// %v to an error message.
+//
+// Both renderers are asserted because they are independent code paths --
+// testing one protects half the surface. The config deliberately uses
+// legacy_insecure with a raw literal, which is the only shape where a real
+// credential sits in the config file in plaintext, and it is also the shape
+// most likely to make a parse error quote it.
+func TestDoctorNeverEchoesACredential(t *testing.T) {
+	const canary = "sk-CANARY-3f9d1a7c4b2e8065-DO-NOT-LEAK"
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	body := "" +
+		"auth:\n  legacy_insecure: true\n" +
+		"llm:\n  providers:\n    - name: p1\n      type: openai\n      api_key: \"" + canary + "\"\n" +
+		"storage:\n  sqlite_path: \"" + strings.ReplaceAll(filepath.Join(dir, "d.db"), "\\", "/") + "\"\n"
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rep := RunDoctor(context.Background(), DoctorOptions{ConfigPath: cfgPath})
+
+	var text bytes.Buffer
+	rep.RenderText(&text)
+	if strings.Contains(text.String(), canary) {
+		t.Errorf("RenderText leaked the credential:\n%s", text.String())
+	}
+
+	var jsonOut bytes.Buffer
+	if err := rep.RenderJSON(&jsonOut); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(jsonOut.String(), canary) {
+		t.Errorf("RenderJSON leaked the credential:\n%s", jsonOut.String())
+	}
+
+	// A malformed config is the other half: the parse error is the most
+	// likely carrier, and checkConfig drops it on purpose.
+	badPath := filepath.Join(dir, "bad.yaml")
+	if err := os.WriteFile(badPath, []byte("llm: [\n  api_key: \""+canary+"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	badRep := RunDoctor(context.Background(), DoctorOptions{ConfigPath: badPath})
+
+	var badText, badJSON bytes.Buffer
+	badRep.RenderText(&badText)
+	if err := badRep.RenderJSON(&badJSON); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(badText.String(), canary) {
+		t.Errorf("a parse failure leaked the credential through RenderText:\n%s", badText.String())
+	}
+	if strings.Contains(badJSON.String(), canary) {
+		t.Errorf("a parse failure leaked the credential through RenderJSON:\n%s", badJSON.String())
+	}
+}
+
+// TestDoctorSurvivesAnIncompleteEnvironment pins the degradation skipped()
+// provides: every check must return a result rather than panic when the
+// config never loaded. doctor is what an operator runs WHEN things are
+// broken, so a panic here removes the tool exactly when it is needed.
+func TestDoctorSurvivesAnIncompleteEnvironment(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join(t.TempDir(), "does-not-exist.yaml"),
+		filepath.Join(t.TempDir(), "empty.yaml"),
+	} {
+		if strings.HasSuffix(path, "empty.yaml") {
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		rep := RunDoctor(context.Background(), DoctorOptions{ConfigPath: path})
+		if len(rep.Checks) == 0 {
+			t.Fatalf("%s: doctor produced no checks at all", path)
+		}
+		var b bytes.Buffer
+		rep.RenderText(&b)
+		if err := rep.RenderJSON(&b); err != nil {
+			t.Fatalf("%s: RenderJSON: %v", path, err)
+		}
+	}
+}
