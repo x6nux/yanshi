@@ -759,9 +759,13 @@
   package: "W8"
   verdict: done
   title: "locale / i18n（en / zh-Hans）"
+  # 2026-08-06 W8-R4：子句 1 原先只引目录清单 —— 两套 key 都在，不代表 UI 用得上。
+  # `command.helpKey` 当时只有 /help 记录条一个消费者，F1 面板与 `/` palette 都读
+  # 静态英文字段，切到 zh-Hans 得到的是三分之二英文的界面。补 localizedHelp 与
+  # 驱动两个表面的回归测试后才真正成立。
   acceptance: "至少 en/zh-Hans 切换；UI 与输出语言独立；自动检测"
   evidence:
-    "1": "internal/i18n::TestBundle_CatalogKeyManifest"
+    "1": "internal/i18n::TestBundle_CatalogKeyManifest; internal/cli/tui::TestHelpSurfacesLocalizeCommandHelp"
     "2": "internal/cli/tui::TestLocalePersistsTheDeclaredValueNotTheResolvedOne"
     "3": "internal/cli/tui::TestUILocaleReachesTheTUIFromConfigAndEnv"
 

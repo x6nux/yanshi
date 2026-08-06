@@ -45,7 +45,9 @@ var keyBindings = []helpItem{
 func (m model) collectHelpEntries() []helpItem {
 	var items []helpItem
 	for _, cmd := range commandTable {
-		items = append(items, helpItem{Label: "/" + cmd.name, Source: "command", Hint: cmd.help})
+		items = append(items, helpItem{
+			Label: "/" + cmd.name, Source: "command", Hint: localizedHelp(m.bundle, cmd),
+		})
 	}
 	for _, mode := range guard.Modes() { // 防漂移
 		items = append(items, helpItem{Label: string(mode), Source: "mode", Hint: "permission mode"})

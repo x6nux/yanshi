@@ -28,7 +28,7 @@ const (
 
 // command describes one slash command or palette entry. kind distinguishes
 // MCP tools/groups from slash commands (default cmdSlash for commandTable
-// entries). helpKey is optional: when set, /help and the palette render the
+// entries). helpKey is optional: when set, every help surface renders the
 // localized text from the i18n.Bundle instead of the static help string.
 // Migration is incremental — entries without a helpKey still use help.
 type command struct {
@@ -190,7 +190,7 @@ func (m model) paletteBlock() string {
 		case cmdAtPath:
 			line = fmt.Sprintf("  @%-30s %s", c.name, toolMeta.Render(c.help))
 		default:
-			line = fmt.Sprintf("  /%-7s  %s", c.name, toolMeta.Render(c.help))
+			line = fmt.Sprintf("  /%-7s  %s", c.name, toolMeta.Render(localizedHelp(m.bundle, c)))
 		}
 		if i == m.paletteSel {
 			rows = append(rows, selPaletteStyle.Render("▶ "+line))
@@ -1268,4 +1268,22 @@ func (e *thinkingEntry) render(width int, _ spinner.Model) string {
 	// Collapsed (default once thinking ends): one line + the expand hint.
 	b.WriteString("  " + thinkingDoneStyle.Render("✻ Thought for "+dur+" (ctrl+o to expand)") + "\n\n")
 	return b.String()
+}
+
+// localizedHelp resolves a command's help text through the catalog, falling
+// back to the static English when the entry has no key or the key is missing.
+//
+// Both help surfaces go through it. Before this, the doc comment on `command`
+// claimed /help and the palette rendered the localized string and NEITHER did:
+// helpKey had exactly one consumer (the /help transcript entry), so switching
+// to zh-Hans produced a half-translated UI — the transcript in Chinese, the F1
+// panel and the command palette still in English.
+func localizedHelp(b *i18n.Bundle, c command) string {
+	if b == nil || c.helpKey == "" {
+		return c.help
+	}
+	if s := b.Get(c.helpKey); s != "" && s != c.helpKey {
+		return s
+	}
+	return c.help
 }

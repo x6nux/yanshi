@@ -1,6 +1,8 @@
 package http
 
 import (
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -266,5 +268,52 @@ func TestSkillsListCarriesShadowedCopies(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("skills_list does not report the collision: %+v", f.Skills)
+	}
+}
+
+// TestSSEAttachmentIsNotKeptInClientHistory pins the transport divergence so
+// it cannot be closed or widened by accident.
+//
+// The server expands @path into the message the model sees. WS owns the
+// history and keeps the expansion; SSE's history is client-held and carries
+// only the bare text, so the file is present for one turn and then gone.
+// Neither is obviously right — keeping it re-sends up to 256 KiB every turn —
+// but the two differing SILENTLY is the defect, and closing it needs the
+// server to publish the expanded text back (a wire-contract change, W9).
+func TestSSEAttachmentIsNotKeptInClientHistory(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "notes.md"), []byte("MARKER"), 0o644))
+
+	fm := einollm.NewFakeModel([]string{"ok"}, nil)
+	fm.RecordMessages = true
+	o, err := orchestrator.New(orchestrator.Config{
+		Model: fm, WorkRoot: root,
+		Profile: guard.PermissionProfile{
+			Tools: guard.ToolsPerm{Allow: []string{"fs_read"}},
+			FS:    guard.FSPerm{Read: []string{filepath.Join(root, "**")}},
+		},
+	})
+	require.NoError(t, err)
+	s := New(Config{Token: "t"})
+	s.Chat(o, nil, nil)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	body := `{"message":"read @notes.md","attachments":[{"path":` +
+		`"` + filepath.ToSlash(filepath.Join(root, "notes.md")) + `"}]}`
+	req, _ := http.NewRequest("POST", ts.URL+"/api/v1/chat", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer t")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ts.Client().Do(req)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	var seen string
+	for _, msg := range fm.ReceivedMessages {
+		seen += msg.Content
+	}
+	if !strings.Contains(seen, "MARKER") {
+		t.Fatal("the SSE turn did not resolve the attachment at all")
 	}
 }

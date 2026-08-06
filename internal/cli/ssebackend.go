@@ -69,6 +69,22 @@ func (b *sseBackend) Send(ctx context.Context, text string) (<-chan StreamEvent,
 // POSTed to SSE used to vanish without an error.
 func (b *sseBackend) SendTurn(ctx context.Context, frame proto.ClientFrame) (<-chan StreamEvent, error) {
 	text := frame.Text
+	// KNOWN DIVERGENCE from WS, recorded here because it is invisible from
+	// either side alone.
+	//
+	// The server expands @path attachments into the message it hands the model.
+	// WS owns the history, so the expanded text stays in it and the model can
+	// refer back to the file on later turns. SSE's history is CLIENT-held and
+	// what goes in here is the bare text, so the file content is present for
+	// exactly one turn and then gone — the model ends up having answered about
+	// something it can no longer see.
+	//
+	// Neither behaviour is obviously right: keeping it re-sends up to 256 KiB
+	// on every subsequent turn and eats the compaction budget. What is wrong is
+	// that the two transports differ silently. Closing it needs the server to
+	// publish the expanded text back to the client (the history_replaced frame
+	// SSE already uses for compaction is the obvious vehicle), which is a
+	// wire-contract change and belongs to W9.
 	b.histMu.Lock()
 	b.history = append(b.history, schema.Message{Role: schema.User, Content: text})
 	snapshot := make([]schema.Message, len(b.history))

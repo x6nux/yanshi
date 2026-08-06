@@ -181,3 +181,54 @@ func TestLocalePersistsTheDeclaredValueNotTheResolvedOne(t *testing.T) {
 			"auto must stay auto, or it silently stops following the system", raw)
 	}
 }
+
+// TestHelpSurfacesLocalizeCommandHelp closes the second half of I18N1.
+//
+// `command.helpKey` had exactly ONE consumer — the /help transcript entry —
+// while the doc comment on the struct claimed /help and the palette both
+// rendered the localized text. Neither did: collectHelpEntries (the F1 panel)
+// and paletteBlock (the `/` menu) both read the static English `help` field.
+// So /locale zh-Hans produced a half-translated UI, and D3/I18N1 was flipped to
+// done on a surface that was two thirds English.
+//
+// Both surfaces are asserted, in both directions: the localized string must
+// appear AND the English one must not, because a fallback that silently keeps
+// English satisfies "contains something" forever.
+//
+// ledger: D3/I18N1#1 至少 en/zh-Hans 切换
+func TestHelpSurfacesLocalizeCommandHelp(t *testing.T) {
+	withTempPrefs(t)
+	m := newModelWithPrefs(&recordingSession{}, "/proj", Preferences{UILocale: "zh-Hans"})
+	if got := m.bundle.Effective(); got != "zh-Hans" {
+		t.Fatalf("fixture locale = %q; this test cannot observe localization", got)
+	}
+	const (
+		zh = "清空当前会话"
+		en = "reset conversation"
+	)
+
+	t.Run("help panel", func(t *testing.T) {
+		out := ""
+		for _, it := range m.collectHelpEntries() {
+			out += it.Label + " " + it.Hint + "\n"
+		}
+		if !strings.Contains(out, zh) {
+			t.Errorf("the F1 help panel does not render the localized help for /clear")
+		}
+		if strings.Contains(out, en) {
+			t.Errorf("the F1 help panel still renders the English help for /clear")
+		}
+	})
+
+	t.Run("command palette", func(t *testing.T) {
+		pm := m
+		pm.paletteItems = commandTable
+		out := stripANSI(pm.paletteBlock())
+		if !strings.Contains(out, zh) {
+			t.Errorf("the command palette does not render the localized help for /clear")
+		}
+		if strings.Contains(out, en) {
+			t.Errorf("the command palette still renders the English help for /clear")
+		}
+	})
+}
