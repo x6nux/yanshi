@@ -298,3 +298,17 @@ tracked `config.example.yaml`. Top-level keys: `server`, `storage`, `token`,
 (builtin/user/plugin directories). See `config.example.yaml` for a full
 illustrative config including a `coding` profile that grants the filesystem,
 shell, and network tools.
+
+## Where to go next
+
+| 你要做的事 | 去哪 |
+|---|---|
+| 装上并跑起来（`--fake-model`，零 API key） | [`docs/user-guide/`](docs/user-guide/) —— getting started、配置、TUI、各入口 |
+| 从代码调用 v1 Agent API | [`docs/api/`](docs/api/) —— 资源形状、JSON Schema、JSON-RPC、TS / Python SDK |
+| 弄清某个架构约束**为什么**是这样 | [`docs/adr/`](docs/adr/) —— 单决策的演进档案 |
+| 照着可跑的样例改 | [`examples/`](examples/) —— 自定义工具 / 技能、headless 批处理、goal loop、两个 SDK |
+| 提 PR | [`CONTRIBUTING.md`](CONTRIBUTING.md) —— 含机器强制的治理门禁与生成文档的重跑步骤 |
+
+## License
+
+[MIT](LICENSE)。

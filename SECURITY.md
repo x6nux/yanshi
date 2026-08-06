@@ -15,7 +15,7 @@ If you discover a security vulnerability in **yanshi**, please report it private
 
 **Do not** file a public GitHub issue — instead, send details to:
 
-- **Email**: security@x6nux.dev *(placeholder — replace before going public)*
+- **Email**: xunl47236@gmail.com
 - **GitHub Advisory**: https://github.com/x6nux/yanshi/security/advisories/new
 
 Your report will be acknowledged within 48 hours. We ask that you allow up to 90 days for a fix before disclosing the vulnerability publicly.

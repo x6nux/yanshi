@@ -44,6 +44,10 @@ archives:
       - config.example.yaml
       - src: README.md
         dst: README.md
+      # LICENSE ships in the archive because MIT requires the notice to travel
+      # with every copy — a binary downloaded from a release IS a copy.
+      - src: LICENSE
+        dst: LICENSE
 
 checksum:
   name_template: "checksums.txt"
