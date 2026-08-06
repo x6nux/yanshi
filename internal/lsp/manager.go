@@ -26,14 +26,33 @@ type Config struct {
 type LanguageServer struct {
 	Command string
 	Args    []string
+	// Markers are workspace files that confirm this really is a project of
+	// that language. Empty means no confirmation required. See
+	// DefaultLanguages for why an unconfirmed server is worse than none.
+	Markers []string
 }
 
-// DefaultLanguages 是 MVP 内置的语言→命令表。命令缺失时由 New 探测并剔除
-// 该语言(软降级)。
+// DefaultLanguages 是内置的语言→命令表。命令缺失时由 New 探测并剔除该语言
+// (软降级),所以列一个用户多半没装的 server 是没有代价的。
+//
+// 这张表必须覆盖 detectLanguage 认得的每一种语言。此前它只有 go 和 python,
+// 而 detectLanguage 认 12 种扩展名——编辑一个 .ts / .rs / .c 文件时,语言认得
+// 出来、server 查不到,DidChange 静默 no-op。没有任何报错:文件被编辑了、
+// 诊断永远是空的、看起来就像"这个文件没问题"。
+// TestEveryDetectedLanguageHasAServer 钉住两张表相等。
+//
+// marker 是确认这个工作区确实是该语言项目的标志文件。没有它,一个只放了几个
+// .py 脚本的目录也会拉起 gopls,而 gopls 在没有 go.mod 的目录里对每个请求都
+// 报错——一个永远失败的子进程,还占着一个 client 槽位。空 marker 表示"只要
+// 命令在就启用"。
 func DefaultLanguages() map[string]LanguageServer {
 	return map[string]LanguageServer{
-		"go":     {Command: "gopls"},
-		"python": {Command: "pyright-langserver", Args: []string{"--stdio"}},
+		"go":         {Command: "gopls", Markers: []string{"go.mod", "go.work"}},
+		"python":     {Command: "pyright-langserver", Args: []string{"--stdio"}, Markers: []string{"pyproject.toml", "setup.py", "requirements.txt", "setup.cfg"}},
+		"typescript": {Command: "typescript-language-server", Args: []string{"--stdio"}, Markers: []string{"tsconfig.json", "package.json"}},
+		"javascript": {Command: "typescript-language-server", Args: []string{"--stdio"}, Markers: []string{"package.json", "jsconfig.json"}},
+		"rust":       {Command: "rust-analyzer", Markers: []string{"Cargo.toml"}},
+		"cpp":        {Command: "clangd", Markers: []string{"compile_commands.json", "CMakeLists.txt", "Makefile"}},
 	}
 }
 
@@ -75,13 +94,33 @@ func New(cfg Config) *Manager {
 	}
 	usable := map[string]LanguageServer{}
 	for lang, ls := range cfg.Languages {
-		if cfg.Dial != nil || commandAvailable(ls.Command) {
+		// Dial != nil is the test path: fake command names and no real
+		// workspace, so neither the PATH probe nor the marker check applies.
+		if cfg.Dial != nil {
+			usable[lang] = ls
+			continue
+		}
+		if commandAvailable(ls.Command) && workspaceHasMarker(cfg.WorkRoot, ls.Markers) {
 			usable[lang] = ls
 		}
 	}
 	m.cfg.Languages = usable
 	m.enabled = len(usable) > 0 && cfg.WorkRoot != ""
 	return m
+}
+
+// workspaceHasMarker reports whether root holds any of markers. An empty
+// marker list means "no confirmation required".
+func workspaceHasMarker(root string, markers []string) bool {
+	if len(markers) == 0 {
+		return true
+	}
+	for _, name := range markers {
+		if _, err := os.Stat(filepath.Join(root, name)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func commandAvailable(cmd string) bool {

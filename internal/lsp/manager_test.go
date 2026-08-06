@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"io"
 	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -38,13 +40,26 @@ func TestDetectLanguage_ByExtension(t *testing.T) {
 	}
 }
 
+// TestManager_HasGoplsConfig 断言的语义在 W6 收紧了一次:从"装了 gopls 就
+// enabled"变成"装了 gopls **且这确实是一个 Go 工作区**才 enabled"。
+//
+// 旧版把工作区设成空的 t.TempDir() 却期望 enabled——那正是标志文件闸门要挡的
+// 情形:在没有 go.mod 的目录里,gopls 对每个请求都报错,于是这个 Manager 会
+// 一直持有一个永远失败的子进程。测试原本钉住的是那个行为本身。
 func TestManager_HasGoplsConfig(t *testing.T) {
 	if _, err := exec.LookPath("gopls"); err != nil {
 		t.Skip("gopls 未安装,跳过(软降级)")
 	}
-	m := New(Config{WorkRoot: t.TempDir(), Languages: DefaultLanguages()})
+	root := t.TempDir()
+	if m := New(Config{WorkRoot: root, Languages: DefaultLanguages()}); m.Enabled() {
+		t.Fatal("没有 go.mod 的目录不该拉起 gopls")
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := New(Config{WorkRoot: root, Languages: DefaultLanguages()})
 	if !m.Enabled() {
-		t.Fatalf("装了 gopls 时 Manager 应 enabled")
+		t.Fatalf("装了 gopls 且有 go.mod 时 Manager 应 enabled")
 	}
 	_ = m.Close()
 }
@@ -178,5 +193,66 @@ func TestOpenDocumentsTracksDidChange(t *testing.T) {
 	m.enabled = false
 	if got := m.OpenDocuments(); got != nil {
 		t.Fatalf("disabled manager returned %v", got)
+	}
+}
+
+// TestEveryDetectedLanguageHasAServer pins the two tables against each other.
+//
+// detectLanguage recognised 12 extensions across 6 languages while
+// DefaultLanguages held servers for 2. Editing a .ts, .rs or .c file therefore
+// resolved a language, found no server, and DidChange silently did nothing --
+// no error anywhere, diagnostics permanently empty, indistinguishable from
+// "this file is fine". A table that promises more than its partner delivers is
+// the failure mode here, so the assertion is equality in both directions.
+func TestEveryDetectedLanguageHasAServer(t *testing.T) {
+	servers := DefaultLanguages()
+	// One representative extension per language detectLanguage knows.
+	for _, ext := range []string{".go", ".py", ".ts", ".tsx", ".js", ".jsx", ".c", ".cc", ".cpp", ".h", ".hpp", ".rs"} {
+		lang := detectLanguage("x" + ext)
+		if lang == "" {
+			t.Fatalf("%s no longer resolves to a language", ext)
+		}
+		if _, ok := servers[lang]; !ok {
+			t.Errorf("%s resolves to language %q, which has no server: DidChange will "+
+				"silently do nothing for every such file", ext, lang)
+		}
+	}
+	// And nothing in the server table that detectLanguage cannot produce: a
+	// server keyed on a language no file ever maps to can never be spawned.
+	reachable := map[string]bool{}
+	for _, ext := range []string{".go", ".py", ".ts", ".js", ".c", ".rs"} {
+		reachable[detectLanguage("x"+ext)] = true
+	}
+	for lang := range servers {
+		if !reachable[lang] {
+			t.Errorf("server for %q is unreachable: no extension maps to it", lang)
+		}
+	}
+}
+
+// TestMarkerFilesGateSpawning covers the confirmation half. Without it a
+// directory holding a few .py scripts also starts gopls, which then errors on
+// every request in a workspace with no go.mod -- a permanently failing
+// subprocess occupying a client slot.
+func TestMarkerFilesGateSpawning(t *testing.T) {
+	root := t.TempDir()
+	langs := map[string]LanguageServer{
+		"go":     {Command: "sh", Markers: []string{"go.mod"}},
+		"python": {Command: "sh"}, // no markers: always eligible
+	}
+	m := New(Config{WorkRoot: root, Languages: langs})
+	if _, ok := m.cfg.Languages["go"]; ok {
+		t.Error("go server kept in a workspace with no go.mod")
+	}
+	if _, ok := m.cfg.Languages["python"]; !ok {
+		t.Error("a server with no markers must stay eligible")
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m2 := New(Config{WorkRoot: root, Languages: langs})
+	if _, ok := m2.cfg.Languages["go"]; !ok {
+		t.Error("go server dropped despite go.mod being present")
 	}
 }
