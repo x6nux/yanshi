@@ -204,13 +204,23 @@ func collectGitDiffFiles(ctx context.Context, root string, args gitDiffArgs) ([]
 		}
 	}
 	files := make([]gitFile, 0)
-	for _, e := range filterGitByPaths(entries, args.Paths) {
+	for _, e := range filterGitByPaths(mergeNumstatByPath(entries), args.Paths) {
+		// Untracked files are skipped entirely rather than probed. `git diff`
+		// renders no content for a path git does not track, so the probe was
+		// guaranteed to come back empty -- and the empty-output heuristic
+		// below reads empty as "binary". Every untracked text file was
+		// therefore reported to the model as a binary blob, at the cost of one
+		// pointless subprocess each.
+		if e.Untracked {
+			files = append(files, gitFile{Path: e.Path, Additions: e.Additions, Deletions: e.Deletions, Binary: e.Binary})
+			continue
+		}
 		patch, binary, err := gitPatchForFile(ctx, root, e.Path, args, patchBuilder)
 		if err != nil {
 			return nil, err
 		}
 		entry := gitFile{Path: e.Path, Additions: e.Additions, Deletions: e.Deletions, Binary: binary || e.Binary}
-		if !binary && !e.Binary && !e.Untracked {
+		if !binary && !e.Binary {
 			art := writeArtifactOrSpill(ctx, "git-diff", sanitizeLabel(e.Path), patch)
 			entry.Patch = art.Summary
 			entry.ArtifactRef = art.ArtifactRef
@@ -353,41 +363,94 @@ func parseGitNumstatZ(stdout string) []gitNumstatEntry {
 	return out
 }
 
+// splitPorcelainV2 pulls the XY field and the path out of a porcelain v2
+// record whose path begins after exactly nFields space-separated fields.
+//
+// Counting fields is the whole point. The previous implementation took the
+// LAST space-separated field as the path, which silently truncated every
+// tracked path containing a space to its final word -- and paths with spaces
+// are ordinary. Porcelain v2's layout before the path is fixed-width in
+// FIELDS (not bytes), so SplitN with a known count is exact, and everything
+// after it is the path verbatim, spaces included.
+func splitPorcelainV2(record string, nFields int) (xy, path string, ok bool) {
+	parts := strings.SplitN(record, " ", nFields+1)
+	if len(parts) != nFields+1 {
+		return "", "", false
+	}
+	return parts[1], parts[nFields], true
+}
+
 func parseGitStatusZ(stdout string) any {
 	type entry struct {
 		Path string `json:"path"`
 		XY   string `json:"xy"`
 	}
 	var entries []entry
-	for _, record := range strings.Split(strings.TrimRight(stdout, "\x00"), "\x00") {
+	// Porcelain v2 is NUL-delimited, and a rename record is followed by a
+	// SEPARATE NUL-delimited field carrying the original path. That field is
+	// not a record, so the loop consumes it explicitly rather than letting the
+	// next iteration mistake it for one and invent a phantom entry.
+	records := strings.Split(strings.TrimRight(stdout, "\x00"), "\x00")
+	for i := 0; i < len(records); i++ {
+		record := records[i]
 		if record == "" {
 			continue
 		}
-		// Untracked: "? <path>"
-		if strings.HasPrefix(record, "? ") {
+		switch {
+		case strings.HasPrefix(record, "? "):
+			// Untracked: "? <path>"
 			entries = append(entries, entry{XY: "??", Path: record[2:]})
-			continue
+		case strings.HasPrefix(record, "1 "):
+			// 1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>
+			if xy, path, ok := splitPorcelainV2(record, 8); ok {
+				entries = append(entries, entry{XY: xy, Path: path})
+			}
+		case strings.HasPrefix(record, "2 "):
+			// 2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <score> <path>
+			// followed by a separate field holding the original path.
+			if xy, path, ok := splitPorcelainV2(record, 9); ok {
+				entries = append(entries, entry{XY: xy, Path: path})
+			}
+			i++ // skip the original-path field
 		}
-		// Tracked: "1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>"
-		// or "2 <XY> ... <path>" etc.
-		parts := strings.SplitN(record, " ", 3)
-		if len(parts) < 2 {
-			continue
-		}
-		if len(parts) == 3 {
-			// For "1" or "2" type entries: extract XY from parts[1],
-			// extract path from the end of parts[2]
-			xy := parts[1]
-			tail := parts[2]
-			// path is the last field in the tail
-			subFields := strings.Split(tail, " ")
-			path := subFields[len(subFields)-1]
-			entries = append(entries, entry{XY: xy, Path: path})
-		}
+		// "u" (unmerged) and "#" (header) records are deliberately not
+		// reported here: git_status's contract is the working-tree entry list,
+		// and an unmerged path needs a richer shape than {path, xy}.
 	}
 	return struct {
 		Entries []entry `json:"entries"`
 	}{Entries: entries}
+}
+
+// mergeNumstatByPath folds the three sources collectGitDiffFiles queries for a
+// working-tree diff -- unstaged numstat, --cached numstat, and ls-files
+// --others -- into one entry per path, preserving first-seen order.
+//
+// Without this a file that is BOTH staged and modified again in the working
+// tree appears twice, because the two numstat runs were simply appended. The
+// duplicate is not cosmetic: each entry drives its own gitPatchForFile call,
+// so the model receives the same path twice with two different partial diffs
+// and no indication that they are halves of one change.
+//
+// Line counts add, which matches what the caller asked for: "how much did this
+// file change", not "how much did it change in the index". Untracked is
+// sticky because a path reported by ls-files --others has no diff at all and
+// its patch must stay suppressed.
+func mergeNumstatByPath(entries []gitNumstatEntry) []gitNumstatEntry {
+	merged := make([]gitNumstatEntry, 0, len(entries))
+	idx := make(map[string]int, len(entries))
+	for _, e := range entries {
+		if at, ok := idx[e.Path]; ok {
+			merged[at].Additions += e.Additions
+			merged[at].Deletions += e.Deletions
+			merged[at].Binary = merged[at].Binary || e.Binary
+			merged[at].Untracked = merged[at].Untracked || e.Untracked
+			continue
+		}
+		idx[e.Path] = len(merged)
+		merged = append(merged, e)
+	}
+	return merged
 }
 
 func filterGitByPaths(entries []gitNumstatEntry, paths []string) []gitNumstatEntry {
