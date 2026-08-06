@@ -69,9 +69,28 @@ func TestRealGoplsReportsTheBrokenLine(t *testing.T) {
 	}
 	m.DidChange(main, string(body))
 
+	start := time.Now()
 	diags := m.Diagnostics(main, 30*time.Second)
+	elapsed := time.Since(start)
 	if len(diags) == 0 {
 		t.Fatal("a real gopls reported no diagnostics for a file that does not compile")
+	}
+
+	// The generous 30s above is a CI ceiling, not the production budget —
+	// bootstrap's default is 800ms (config lsp.timeout), and the edit path caps
+	// at tools.LSPDiagBudget. A test that only ever runs with 30s cannot notice
+	// gopls getting slower, and what that looks like in production is not an
+	// error: it is an empty diagnostics section, which reads as "this file is
+	// fine". Measured on darwin/arm64: ~120ms cold, including the module index.
+	//
+	// The bound here is 4x the production default rather than the default
+	// itself, so a slower CI box does not make this flaky while a real
+	// regression — anything approaching an order of magnitude — still lands.
+	const productionDefault = 800 * time.Millisecond
+	if elapsed > 4*productionDefault {
+		t.Errorf("a cold gopls took %v for one file; production allows %v, after which the "+
+			"model gets an empty diagnostics section that reads as 'no problems'",
+			elapsed, productionDefault)
 	}
 
 	var found bool

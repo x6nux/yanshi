@@ -218,3 +218,49 @@ func keysOf(m map[string]ToolDescriptor) []string {
 	}
 	return out
 }
+
+// TestToolCallReturnsTheServersContent covers the tools half of the clause.
+//
+// The two resources tests cover resources; the tools half was left leaning on
+// enumeration — "the manager knows these tools exist" — which is clause 1. A
+// tool that lists but whose CallTool drops the payload satisfies enumeration
+// and is useless. The assertion is that the server's own content comes back.
+//
+// ledger: A3/V16#2 tools/resources 可用
+func TestToolCallReturnsTheServersContent(t *testing.T) {
+	srv, fake := NewFakeHTTPServer([]ToolDescriptor{{ToolName: "echo", Description: "echoes"}})
+	defer srv.Close()
+
+	mgr := NewManager(map[string]*ServerConfig{
+		"srv": {Enabled: true, Transport: TransportHTTP, URL: srv.URL},
+	})
+	defer mgr.Shutdown()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for _, st := range mgr.StartAll(ctx) {
+		if st.Error != "" {
+			t.Fatalf("server failed: %s", st.Error)
+		}
+	}
+
+	raw, err := mgr.CallTool(ctx, "mcp_srv_echo", []byte(`{"x":1}`))
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if len(raw) == 0 {
+		t.Fatal("CallTool returned an empty payload: the tool lists but produces nothing")
+	}
+	if fake.CallCount != 1 {
+		t.Errorf("the fake server saw %d calls, want 1 — the result did not come from it",
+			fake.CallCount)
+	}
+	// The fake answers tools/call with a text content block wrapping the
+	// literal below. The manager unwraps the MCP envelope and hands back the
+	// inner text — asserting on that exact string is what distinguishes
+	// "unwrapped correctly" from "returned the envelope" and from "returned
+	// something plausible it made up".
+	const wantText = `{"ok":true}`
+	if got := strings.TrimSpace(string(raw)); got != wantText {
+		t.Errorf("CallTool returned %q, want the server's own %q", got, wantText)
+	}
+}

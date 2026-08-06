@@ -168,7 +168,7 @@
   title: "`/mcp` 实化管理界面"
   acceptance: "展示 server/tool/status/error；enable/disable 生效；状态与 client 实际连接一致"
   evidence:
-    "1": "internal/api/http::TestMCPStatusCarriesTheManagersOwnErrorText"
+    "1": "internal/api/http::TestMCPStatusCarriesTheManagersOwnErrorText; internal/cli/tui::TestMCPStatusBlockRendersTheServersRealError"
     "2": "internal/api/http::TestMCPDisableRemovesToolsFromTheModelsView"
     "3": "internal/api/http::TestMCPStatusFollowsTheClientNotACachedFlag"
 
@@ -240,7 +240,7 @@
   acceptance: "stdio/HTTP server 可配可连；tools/resources 可用；启动超时/重连/权限检查有测试；命名冲突可诊断"
   evidence:
     "1": "internal/mcp::TestManagerConnectsOverBothTransports"
-    "2": "internal/mcp::TestHTTPClientResourcesAndClose; internal/mcp::TestSnapshotReportsResources"
+    "2": "internal/mcp::TestToolCallReturnsTheServersContent; internal/mcp::TestHTTPClientResourcesAndClose; internal/mcp::TestSnapshotReportsResources"
     "3": "internal/mcp::TestManager_StartupTimeout; internal/mcp::TestManager_CallToolRetry_Reconnects; internal/tools::TestMCPToolCallIsGatedEndToEnd"
     "4": "internal/mcp::TestSameToolNameOnTwoServersCoexists"
 
@@ -1385,7 +1385,7 @@
   evidence:
     "1": "internal/bootstrap::TestEveryRegisteredToolImplementsTheToolContract; internal/tools::TestEmptyDisplayNamePanicsAtConstruction"
     "2": "internal/tools::TestModelSeesOnlyResultAndTUISeesEveryField"
-    "3": "internal/archtest::TestRetiredToolSymbolsDoNotReturn"
+    "3": "internal/archtest::TestRetiredToolSymbolsDoNotReturn; internal/tools::TestModelSeesOnlyResultAndTUISeesEveryField"
     "4": "internal/tools::TestSubAgentProgressArrivesAsStatusNotResult"
     "5": "internal/cli/tui::TestToolBlockRendersFromAFixedTemplate; internal/cli/tui::TestToolBlockTemplateVariesOnlyByName"
 

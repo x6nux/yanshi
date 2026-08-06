@@ -27,7 +27,15 @@ import (
 // tool does. That is the point: identical values are exactly what makes the
 // leak invisible.
 //
+// It also carries the "废弃 JSON 包装" half of clause 3, which the symbol gate
+// cannot: the retired JSON envelope left no named symbol behind to forbid, so
+// the only thing left to assert is the behaviour that replaced it — the model
+// receives the Result fields concatenated and nothing else, not a wrapper
+// object carrying progress alongside the answer.
+//
 // ledger: M1/SPEC-TOOLIF#2 输出走固定字段 ToolChunk
+//
+// ledger: M1/SPEC-TOOLIF#3 废弃 JSON 包装与 ToolProgressCallback/lineProgressWriter
 func TestModelSeesOnlyResultAndTUISeesEveryField(t *testing.T) {
 	tl := NewGuardedTool("probe_fields", "Probe", "field ownership probe", time.Minute, nil,
 		func(ctx context.Context, argsJSON string) <-chan ToolChunk {

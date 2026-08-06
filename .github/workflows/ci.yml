@@ -163,8 +163,13 @@ jobs:
       # TestRealGoplsReportsTheBrokenLine skips when gopls is absent, and a test
       # that always skips reads as a pass. This step is what makes B2/LSP1's
       # end-to-end clause an executed assertion rather than a permanent skip.
+      # Pinned, not @latest. The assertion is a diagnostic's line number, which
+      # is a property of gopls output — an upstream change would turn this job
+      # red for a reason that has nothing to do with a change in this repo, and
+      # the first person to see it would have no way to tell the difference.
+      # Bump deliberately.
       - name: install gopls
-        run: go install golang.org/x/tools/gopls@latest
+        run: go install golang.org/x/tools/gopls@v0.22.0
       - name: run the real-server test
         run: |
           set -e

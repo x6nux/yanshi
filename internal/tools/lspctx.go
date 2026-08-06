@@ -60,6 +60,12 @@ func diagFor(ctx context.Context, absPath, content string) string {
 // patch path, which divides it across the files it touches.
 const LSPDiagBudget = 2 * time.Second
 
+// lspDiagGrace is how much longer diagnosticsWithin waits than the budget it
+// passed down. Small enough that a stalled manager is still cut off promptly,
+// large enough to cover the scheduling delay between an implementation
+// returning and its value reaching the channel.
+const lspDiagGrace = 50 * time.Millisecond
+
 // diagnosticsWithin calls mgr.Diagnostics on its own goroutine and abandons the
 // result after budget.
 //
@@ -82,7 +88,14 @@ func diagnosticsWithin(mgr LSPManager, path string, budget time.Duration) []lsp.
 	}
 	done := make(chan []lsp.Diagnostic, 1)
 	go func() { done <- mgr.Diagnostics(path, budget) }()
-	timer := time.NewTimer(budget)
+	// The timer gets a grace margin over the budget handed to the
+	// implementation, so a manager that honours its argument wins the select
+	// and its result is used. With both set to exactly budget, an
+	// implementation returning right on its own deadline makes the select a
+	// coin flip and throws away diagnostics it had already produced. This
+	// caller-side bound is a backstop for an implementation that ignores the
+	// argument, not the primary clock.
+	timer := time.NewTimer(budget + lspDiagGrace)
 	defer timer.Stop()
 	select {
 	case d := <-done:

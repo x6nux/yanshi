@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/spinner"
+
 	"github.com/x6nux/yanshi/internal/proto"
 )
 
@@ -162,4 +164,42 @@ func TestPaletteMoveTerminatesWhenEveryItemIsAHeader(t *testing.T) {
 	}
 	m.paletteMove(1)
 	m.paletteMove(-1)
+}
+
+// TestMCPStatusBlockRendersTheServersRealError is the RENDERING half of the
+// display clause.
+//
+// TestMCPStatusCarriesTheManagersOwnErrorText asserts the wire snapshot carries
+// the manager's own text. The clause says 展示 — displayed — and a snapshot that
+// carries an error a render function then drops satisfies the wire assertion
+// completely. These are two different layers and only one of them is what the
+// operator looks at.
+//
+// ledger: A3/C13#1 展示 server/tool/status/error
+func TestMCPStatusBlockRendersTheServersRealError(t *testing.T) {
+	const reason = "dial tcp 127.0.0.1:1: CONNECTION_REFUSED_MARKER"
+	e := mcpStatusEntry{servers: []proto.MCPServerStatus{
+		{Name: "good", Transport: "http", Status: "ready", ToolCount: 3},
+		{Name: "broken", Transport: "stdio", Status: "failed", Error: reason},
+	}}
+
+	out := e.render(80, spinner.Model{})
+
+	for _, want := range []string{"good", "broken", "http", "stdio", reason} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the rendered block omits %q:\n%s", want, out)
+		}
+	}
+	// The tool count has to come from the data. A block that prints the name
+	// and status but not the count leaves the operator unable to tell a
+	// connected-but-empty server from a working one.
+	if !strings.Contains(out, "3 tools") {
+		t.Errorf("the rendered block does not show the tool count:\n%s", out)
+	}
+	// A failed server must be visually distinguishable from a ready one even
+	// with styling stripped, which is what a non-TTY and a screenshot give you.
+	if !strings.Contains(out, "✗") {
+		t.Errorf("no failure marker in the rendered block; with colour stripped a failed "+
+			"server reads exactly like a healthy one:\n%s", out)
+	}
 }
