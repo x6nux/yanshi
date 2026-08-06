@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,6 +18,15 @@ import (
 // ~500-line file. Each iteration rewrites the baseline file (excluded from the
 // timer) and then performs the edit. Zero external deps.
 func BenchmarkFSEdit(b *testing.B) {
+	// guard's audit path logs one INFO line per authorized tool call, on the
+	// process-wide slog default. Those lines interleave with benchmark output
+	// and -- until scripts/bench.sh stopped folding stderr into the baseline --
+	// landed in the file benchstat parses. Silenced at the sink: the logging
+	// is correct production behaviour and a benchmark should not change what
+	// production code decides to say.
+	restore := benchSilenceLogs()
+	defer restore()
+
 	root := b.TempDir()
 	path := filepath.Join(root, "target.go")
 	content := []byte(`package main
@@ -65,4 +76,12 @@ func foo() {
 			}
 		}
 	})
+}
+
+// benchSilenceLogs points the default slog logger at io.Discard for the
+// duration of a benchmark and returns a restore func.
+func benchSilenceLogs() func() {
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return func() { slog.SetDefault(prev) }
 }

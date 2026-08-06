@@ -22,7 +22,12 @@ export THRESHOLD_PCT
 mkdir -p "$OUTPUT_DIR"
 
 echo "=== Running F2 benchmarks (count=5 for stable benchstat) ==="
-go test $BENCH_ARGS $BENCH_PKGS 2>&1 | tee "$OUTPUT_DIR/new.txt" | grep -E "^(Benchmark|ok|PASS|FAIL)" || true
+# stdout only. The 2>&1 that used to be here folded stderr into new.txt, and
+# stderr is where slog writes -- so guard's per-tool-call "INFO permission
+# decision" lines landed in the file benchstat parses. nightly.yml already
+# omitted it, which is why its artifact was clean and local runs were not.
+# Benchmark failures still surface: they go to stdout via the grep below.
+go test $BENCH_ARGS $BENCH_PKGS | tee "$OUTPUT_DIR/new.txt" | grep -E "^(Benchmark|ok|PASS|FAIL)" || true
 
 if [ "${1:-}" = "--diff" ] && [ -f "$OUTPUT_DIR/old.txt" ]; then
     echo ""

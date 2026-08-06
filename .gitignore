@@ -74,3 +74,6 @@ _covstats.py
 _tmp_analyze_cov.py
 deps_raw.txt
 *.tmp
+
+# Benchmark output written by scripts/bench.sh (old.txt/new.txt baselines).
+.bench-results/
