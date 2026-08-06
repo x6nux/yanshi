@@ -64,6 +64,14 @@ type Config struct {
 	MultimodalMap map[string]bool
 	// ImageStore is the session-level image store (Tier G).
 	ImageStore *imagestore.Store
+
+	// VisionAuxAvailable reports whether an auxiliary vision model is
+	// configured, which is what makes the placeholder path usable: a
+	// placeholder is only a reference, and image_describe is what resolves it.
+	// Without the aux model the tool answers with a configuration error, so a
+	// turn that inserted placeholders anyway would look like it had read the
+	// image. See ErrNoVisionPath.
+	VisionAuxAvailable bool
 	// MemorySuffix is appended to Instruction (after SkillMetaPrompt) as an
 	// independent block, so it survives instructionOverride in runSubAgentTurn.
 	// It carries the user/project memory block (MEM1) so the model sees user
@@ -147,6 +155,11 @@ type Orchestrator struct {
 	availableModels map[string]bool
 	multimodalMap   map[string]bool
 	imageStore      *imagestore.Store
+	// visionAuxAvailable reports whether an auxiliary vision model is
+	// configured. Only the boolean is kept: the orchestrator never calls the
+	// aux model itself — image_describe does — so holding the model here would
+	// be a second reference to the same thing with no consumer.
+	visionAuxAvailable bool
 }
 
 // runnerToolMode distinguishes between agent (full tools) and plan (filtered tools) runners.
@@ -214,30 +227,31 @@ func New(cfg Config) (*Orchestrator, error) {
 	rawModel := cfg.Model
 
 	return &Orchestrator{
-		model:           wrapCompaction(cfg.Model, cfg.Compaction, 0),
-		rawModel:        rawModel,
-		profile:         profile,
-		vcsScope:        cfg.VCSScope,
-		workRoot:        cfg.WorkRoot,
-		instruction:     instruction,
-		baseInstruction: baseInstruction,
-		memorySuffix:    cfg.MemorySuffix,
-		agentTools:      agentTools,
-		toolNames:       toolNames,
-		maxIters:        maxIters,
-		compaction:      cfg.Compaction,
-		taskManager:     cfg.TaskManager,
-		approvals:       cfg.Approvals,
-		sandbox:         cfg.Sandbox,
-		networkPolicy:   cfg.NetworkPolicy,
-		secureFactory:   cfg.SecureFactory,
-		shellManager:    cfg.ShellManager,
-		subagentMgr:     cfg.SubagentManager,
-		lspMgr:          cfg.LSP,
-		mcpMgr:          cfg.MCP,
-		multimodalMap:   cfg.MultimodalMap,
-		imageStore:      cfg.ImageStore,
-		availableModels: cfg.AvailableModels,
+		model:              wrapCompaction(cfg.Model, cfg.Compaction, 0),
+		rawModel:           rawModel,
+		profile:            profile,
+		vcsScope:           cfg.VCSScope,
+		workRoot:           cfg.WorkRoot,
+		instruction:        instruction,
+		baseInstruction:    baseInstruction,
+		memorySuffix:       cfg.MemorySuffix,
+		agentTools:         agentTools,
+		toolNames:          toolNames,
+		maxIters:           maxIters,
+		compaction:         cfg.Compaction,
+		taskManager:        cfg.TaskManager,
+		approvals:          cfg.Approvals,
+		sandbox:            cfg.Sandbox,
+		networkPolicy:      cfg.NetworkPolicy,
+		secureFactory:      cfg.SecureFactory,
+		shellManager:       cfg.ShellManager,
+		subagentMgr:        cfg.SubagentManager,
+		lspMgr:             cfg.LSP,
+		mcpMgr:             cfg.MCP,
+		multimodalMap:      cfg.MultimodalMap,
+		imageStore:         cfg.ImageStore,
+		visionAuxAvailable: cfg.VisionAuxAvailable,
+		availableModels:    cfg.AvailableModels,
 	}, nil
 }
 
@@ -617,7 +631,14 @@ func (o *Orchestrator) EventsWithHistoryOpts(ctx context.Context, messages []*sc
 	// *schema.Message by value and writes the copy back into the slice, so it
 	// never mutates a message the caller still points at.
 	if len(opts.Images) > 0 {
-		messages = o.ApplyImages(slices.Clone(messages), opts.ModelID, opts.Images)
+		applied, err := o.applyImages(slices.Clone(messages), opts.ModelID, opts.Images)
+		if err != nil {
+			// Reported as a turn error rather than swallowed: the whole point
+			// of this branch is that silence here produces a confident answer
+			// about an image nobody looked at.
+			return singleErrorIterator(err)
+		}
+		messages = applied
 	}
 
 	// adk.WithChatModelOptions ASSIGNS the option slice rather than appending

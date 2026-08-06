@@ -1418,6 +1418,10 @@ func TestApplyImages_NonMultimodalInsertsPlaceholderAndStores(t *testing.T) {
 		Model:         einollm.NewFakeModel([]string{"ok"}, nil),
 		MultimodalMap: map[string]bool{"text-model": false},
 		ImageStore:    store,
+		// The placeholder path presupposes an auxiliary vision model: the
+		// placeholder is a reference and image_describe is what resolves it.
+		// Without one the turn now errors instead (ErrNoVisionPath).
+		VisionAuxAvailable: true,
 	}
 	o, err := New(cfg)
 	require.NoError(t, err)
@@ -1448,6 +1452,10 @@ func TestApplyImages_ModelSwitchReEvaluatesCapability(t *testing.T) {
 		Model:         einollm.NewFakeModel([]string{"ok"}, nil),
 		MultimodalMap: map[string]bool{"mm": true, "text": false},
 		ImageStore:    store,
+		// The placeholder path presupposes an auxiliary vision model: the
+		// placeholder is a reference and image_describe is what resolves it.
+		// Without one the turn now errors instead (ErrNoVisionPath).
+		VisionAuxAvailable: true,
 	}
 	o, err := New(cfg)
 	require.NoError(t, err)

@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"slices"
 	"strings"
 
@@ -18,13 +19,42 @@ import (
 // [image:img-N|src|WxH fmt] to the trailing user message (non-multimodal model).
 // history is the in-progress message slice. With no images it is a pass-through.
 func (o *Orchestrator) ApplyImages(history []*schema.Message, modelID string, images []proto.ImageAttach) []*schema.Message {
+	out, _ := o.applyImages(history, modelID, images)
+	return out
+}
+
+// ErrNoVisionPath is returned when a turn carries images, the turn's model is
+// not multimodal, and no auxiliary vision model is configured.
+//
+// The placeholder path is only half a mechanism: it puts [image:img-N|...] into
+// the prompt and relies on the model calling image_describe to turn that back
+// into pixels. With no auxiliary model that tool answers with a configuration
+// error, so the placeholder is a reference to something nobody can resolve.
+// Inserting it anyway means the user attached an image, saw no error, and got
+// an answer written as though the image had been read — the one outcome worth
+// failing loudly to avoid.
+var ErrNoVisionPath = errors.New(
+	"this turn has image attachments but the selected model is not multimodal and no " +
+		"auxiliary vision model is configured (llm.providers: set multimodal: true on a " +
+		"provider, or select a multimodal model with /model)")
+
+// applyImages is ApplyImages with the error the turn path needs.
+//
+// Split rather than changing ApplyImages' signature because ApplyImages is the
+// shape every existing caller and test uses, and the error only has one
+// consumer — EventsWithHistoryOpts, which is the only place with an event
+// stream to report it on.
+func (o *Orchestrator) applyImages(history []*schema.Message, modelID string, images []proto.ImageAttach) ([]*schema.Message, error) {
 	if len(images) == 0 {
-		return history
+		return history, nil
 	}
 	if o.IsMultimodal(modelID) {
-		return appendImageParts(history, images)
+		return appendImageParts(history, images), nil
 	}
-	return o.appendPlaceholders(history, images)
+	if !o.visionAuxAvailable {
+		return history, ErrNoVisionPath
+	}
+	return o.appendPlaceholders(history, images), nil
 }
 
 // IsMultimodal reports whether the given model-id is natively multimodal. A nil
@@ -200,4 +230,18 @@ func (a *imageAttacher) BeforeModelRewriteState(
 	}
 	state.Messages = appendImageParts(slices.Clone(state.Messages), images)
 	return ctx, state, nil
+}
+
+// singleErrorIterator returns an already-closed iterator carrying exactly one
+// error event.
+//
+// EventsWithHistoryOpts hands back a stream, not an error, so a failure
+// detected before the run starts has to be reported on that stream or not at
+// all. Generating and closing before returning is safe because the pair is
+// buffered by the generator: no consumer is attached yet, and none is needed.
+func singleErrorIterator(err error) *adk.AsyncIterator[*adk.AgentEvent] {
+	iter, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
+	gen.Send(&adk.AgentEvent{Err: err})
+	gen.Close()
+	return iter
 }

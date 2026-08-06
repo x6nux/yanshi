@@ -40,6 +40,8 @@ func encodePNGBase64ForE2E(t *testing.T) string {
 // TestE2E_MultimodalMainDirectlyUnderstandsImage proves acceptance criterion 1:
 // when the main model is multimodal, the image goes directly into the message
 // as a native image part (no store, no placeholder).
+//
+// ledger: G/VISION#1 主多模态：图直接通过消息内容到达
 func TestE2E_MultimodalMainDirectlyUnderstandsImage(t *testing.T) {
 	mm := einollm.NewFakeModel([]string{"it is a red square"}, nil)
 	store := imagestore.New(imagestore.Config{MaxItems: 20, MaxBytes: 100 << 20})
@@ -63,12 +65,18 @@ func TestE2E_MultimodalMainDirectlyUnderstandsImage(t *testing.T) {
 // TestE2E_NonMultimodalMainUsesPlaceholderAndStore proves acceptance criterion 2:
 // when the main model is non-multimodal, the image goes into the store and a
 // placeholder appears in the user message (image_describe fetches by id later).
+//
+// ledger: G/VISION#2 主非多模态+有辅助：占位+image_describe 走通
 func TestE2E_NonMultimodalMainUsesPlaceholderAndStore(t *testing.T) {
 	store := imagestore.New(imagestore.Config{MaxItems: 20, MaxBytes: 100 << 20})
 	o, err := New(Config{
 		Model:         einollm.NewFakeModel([]string{"ok"}, nil),
 		MultimodalMap: map[string]bool{"text": false},
 		ImageStore:    store,
+		// The placeholder path only applies when an auxiliary vision model
+		// exists to resolve the reference; without one the turn now errors
+		// rather than inserting a reference nobody can follow (ErrNoVisionPath).
+		VisionAuxAvailable: true,
 	})
 	require.NoError(t, err)
 

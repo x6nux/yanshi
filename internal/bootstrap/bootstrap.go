@@ -1101,15 +1101,16 @@ func Build(opts Options) (*App, error) {
 		// orchestrator.New takes Config by value and the package has no
 		// setters, so assigning them after New writes to a discarded copy and
 		// every tools.With* injection in bindExecutionContext silently no-ops.
-		Sandbox:       sb,
-		NetworkPolicy: networkPolicy,
-		Approvals:     approvalMgr,
-		ShellManager:  shellManager,
-		SecureFactory: secureFactory,
-		LSP:           lspMgr,
-		MCP:           mcpManager,
-		MultimodalMap: multimodalMap,
-		ImageStore:    imageStore,
+		Sandbox:            sb,
+		NetworkPolicy:      networkPolicy,
+		Approvals:          approvalMgr,
+		ShellManager:       shellManager,
+		SecureFactory:      secureFactory,
+		LSP:                lspMgr,
+		MCP:                mcpManager,
+		MultimodalMap:      multimodalMap,
+		ImageStore:         imageStore,
+		VisionAuxAvailable: visionAux != nil,
 		Compaction: orchestrator.CompactionConfig{
 			Threshold:         cfg.Compaction.Threshold,
 			ContextWindow:     cfg.Compaction.ContextWindow,

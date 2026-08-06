@@ -67,7 +67,12 @@ func (t *imageDescribeState) run(ctx context.Context, argsJSON string) (string, 
 	if question == "" {
 		question = defaultVisionQuestion
 	}
-	imgBytes, fmtName, err := t.resolveRef(ctx, args.ImageRef, argsJSON)
+	// Trimmed because the model reads the ref out of a placeholder that reads
+	// "[image:img-1 | attach | 1x1 png]" — the id is followed by a space before
+	// the separator, and copying "img-1 " out of it is the natural mistake.
+	// Untrimmed, that lookup misses and the answer is "not found in store" for
+	// an image that is right there.
+	imgBytes, fmtName, err := t.resolveRef(ctx, strings.TrimSpace(args.ImageRef), argsJSON)
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
