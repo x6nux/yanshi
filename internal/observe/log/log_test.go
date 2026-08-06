@@ -29,6 +29,9 @@ func TestHandlerRedactsDirectBoundNestedAndErrorAttrs(t *testing.T) {
 	}
 }
 
+// TestHandlerAddsCorrelationIDsFromContext.
+//
+// ledger: C4/OBS1#1 关键路径结构化日志
 func TestHandlerAddsCorrelationIDsFromContext(t *testing.T) {
 	var buf bytes.Buffer
 	logger := New(Config{Writer: &buf, Format: "json", Level: "info"})
@@ -47,6 +50,9 @@ func TestHandlerAddsCorrelationIDsFromContext(t *testing.T) {
 	}
 }
 
+// TestParseLevelAndSafeErrorType.
+//
+// ledger: C4/OBS1#3 级别可配
 func TestParseLevelAndSafeErrorType(t *testing.T) {
 	if got := ParseLevel("warn"); got != slog.LevelWarn {
 		t.Fatalf("ParseLevel(warn) = %v", got)

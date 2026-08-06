@@ -42,6 +42,7 @@ import (
 var overlayImmuneGateFiles = []string{
 	"acceptance_pin_test.go",
 	"assembly_test.go",
+	"bench_test.go",
 	"ctxinject_test.go",
 	"deps_test.go",
 	"docs_test.go",

@@ -33,6 +33,9 @@ func TestDefaultPricingRealAnthropicModels(t *testing.T) {
 	}
 }
 
+// TestCostKnownSplitsCacheAndOutput.
+//
+// ledger: C4/COST1#4 缓存价区分
 func TestCostKnownSplitsCacheAndOutput(t *testing.T) {
 	tab := DefaultPricing()
 	price := tab["claude-opus-4-8"]
@@ -54,6 +57,9 @@ func TestCostUnknownModelReportsNA(t *testing.T) {
 	}
 }
 
+// TestLedgerAccumulatesPerProviderUsage.
+//
+// ledger: C4/COST1#2 聚合正确
 func TestLedgerAccumulatesPerProviderUsage(t *testing.T) {
 	tab := DefaultPricing()
 	price := tab["claude-sonnet-5"]

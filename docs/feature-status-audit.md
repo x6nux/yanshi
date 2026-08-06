@@ -658,6 +658,12 @@ t.chatModelOptions = opts   // 第二次调用覆盖第一次
 - **优先级** P2 ｜ **路线图原状态** 缺失 ｜ **接进运行时** 是 ｜ **有针对性测试** 是
 - **验收标准**：flag 注册/切换;strict mode 报错未知 flag;新功能可灰度
 - **实测缺口**：两处缺口。(1) DefaultSpecs 注册的三个 flag 里只有 observe.otel_export 有真实运行时消费点（bootstrap.go:329）；observe.slog_trace_id 与 observe.cost_in_status 在 features.go:82,84 注册后，全仓库非测试代码零消费（rg 'slog_trace_id|cost_in_status' 只命中 features.go 与测试），即 trace id 注入和 status 里的成本显示实际上无视这两个开关，"新功能可灰度"只对 1/3 flag 成立。(2) internal/cli/tui/commands.go:64 与 :65 是完全相同的两行 features 注册（同名同 help 同 handler）；help.go:43 collectHelpEntries 直接遍历 commandTable 无去重，导致 /help 弹窗里 /features 出现两次。此外规划落点写 "CLI /features"，实际做成 TUI slash 命令 + WS 控制帧，无独立 yanshi 子命令（范围差异，但设计合理）。
+> **2026-08-06 W7 更正与结项。** 上面两处行号在写下时就不准，且两处缺口现已修复；原文保留，更正写在这里。
+>
+> - 行号更正：`observe.otel_export` 的消费点不在 `bootstrap.go:329` 而在 `internal/bootstrap/bootstrap.go::Build`（传给 `otelobs.Setup` 的 `Config.Enabled`，是 YAML 与 flag 的与）；`internal/cli/tui/help.go::collectHelpEntries` 也不在 `:43`。两处都改成符号引用，因为**行号会漂而符号引用会被 GOV9 追**（`internal/archtest::TestGOV9DocSymbolReferencesResolve`）—— 这正是它们当初漂掉的原因。
+> - 缺口 (1) 已修：两个 flag 现在各有真实消费点，见 `internal/features::EnabledOrDefault` 与它在 `internal/api/http` 里的两个门。`Enabled` 对 nil registry 返回 false，而 `slog_trace_id` 默认 **true**，所以直接用 `Enabled` 做门会静默关掉一个默认开启的功能 —— 这一条由 `internal/api/http::TestNilRegistryFallsBackToRegisteredDefaults` 钉住。
+> - 缺口 (2) 已修：`/features` 只注册一次，重复注册由 `internal/cli/tui::TestCommandTableNamesAreUnique` 拦住。
+
 - **证据**：/Users/ll/code/yanshi/internal/features/features.go:20-51 Stage(stable\|beta\|experimental)/Spec{Key,Stage,Default,Owner}/Row 与规划的 stage/default/owner 一致 ； /Users/ll/code/yanshi/internal/features/features.go:91-102 Register(重复/缺字段 panic)；:108-116 Enabled；:123-131 Set（始终拒未知）；:140-159 ApplyMap（strict …
 
 #### `D1` APS1 — app-server (JSON-RPC)

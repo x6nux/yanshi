@@ -21,6 +21,8 @@ import (
 // Recording here rather than in the streaming callback is load-bearing: this
 // is the one place with the exactly-once guarantee, and providers that report
 // cumulative totals per chunk would otherwise be counted many times over.
+//
+// ledger: C4/OBS2#2 latency/token/retry/error 可观测
 func TestAddProviderUsageRecordsToOTel(t *testing.T) {
 	var got []int
 	restore := swapUsageRecorder(func(_ context.Context, _ string, prompt, cached, completion, reasoning int) {

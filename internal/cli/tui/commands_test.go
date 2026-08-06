@@ -203,6 +203,8 @@ func findStatusEntry(t *testing.T, m model) *statusEntry {
 
 // TestModel_CommandCost_StatusBlock proves /cost appends a status block, sends
 // get_status, and the status reply fills it.
+//
+// ledger: C4/COST1#1 /cost 显示 $
 func TestModel_CommandCost_StatusBlock(t *testing.T) {
 	rec := &recordingSession{}
 	m := newModel(rec, "/proj")
@@ -834,6 +836,9 @@ func TestModel_CommandFeaturesSendsListEnableDisable(t *testing.T) {
 	}
 }
 
+// TestStatusEntryRendersKnownAndUnknownCost.
+//
+// ledger: C4/COST1#1 /cost 显示 $
 func TestStatusEntryRendersKnownAndUnknownCost(t *testing.T) {
 	known := stripANSI((&statusEntry{tokensIn: 100, tokensOut: 20, costUSD: 0.012345, costKnown: true}).render(120, newSpinner()))
 	assert.Contains(t, known, "$0.012") // FormatCost bands: <1 -> %.3f (was a bespoke $%.6f)
@@ -852,6 +857,8 @@ func TestStatusEntryRendersKnownAndUnknownCost(t *testing.T) {
 // CostUSD at all, while its doc comment claimed "with USD cost". The plan's
 // instruction was to run it first and see how it fails before deciding which
 // side to change -- and both sides were wrong, in different ways.
+//
+// ledger: C4/COST1#2 聚合正确
 func TestStatsEntryAggregatesKnownCostAndNamesUnknown(t *testing.T) {
 	e := &statsEntry{sessions: []proto.SessionInfo{
 		{Title: "known", TokensIn: 100, CostUSD: 0.25, CostKnown: true},

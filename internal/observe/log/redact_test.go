@@ -15,6 +15,8 @@ import (
 // a key spelling that normalizedKey never produces, and a value prefix
 // written with any uppercase character, which can never match because the
 // value is lowercased first. Both are invisible by inspection.
+//
+// ledger: C4/OBS1#2 secret 不入日志
 func TestEveryRedactionRuleActuallyFires(t *testing.T) {
 	t.Run("every sensitive key redacts", func(t *testing.T) {
 		for key := range sensitiveKeys {

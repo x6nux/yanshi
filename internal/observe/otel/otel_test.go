@@ -35,6 +35,9 @@ func resetOTelNoop() {
 	otel.SetMeterProvider(metricnoop.NewMeterProvider())
 }
 
+// TestSetupDisabledReturnsNoop.
+//
+// ledger: C4/OBS2#3 可关闭
 func TestSetupDisabledReturnsNoop(t *testing.T) {
 	restoreOTelGlobals(t)
 	resetOTelNoop()

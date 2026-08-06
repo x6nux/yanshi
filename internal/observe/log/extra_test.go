@@ -62,6 +62,9 @@ func TestWithIDsNilContextAndProgressiveMerge(t *testing.T) {
 	}
 }
 
+// TestParseLevelAllVariants.
+//
+// ledger: C4/OBS1#3 级别可配
 func TestParseLevelAllVariants(t *testing.T) {
 	cases := map[string]slog.Level{
 		"debug":    slog.LevelDebug,

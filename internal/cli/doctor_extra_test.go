@@ -137,6 +137,8 @@ func TestCheckKeymapConfig_UnsupportedNameFails(t *testing.T) {
 // stay something a user can actually do — edit tui.bindings in the YAML — while
 // the raw key and action, which are untrusted config text, must stay out of the
 // output. The closed-set diagnostic Kind is the one detail allowed through.
+//
+// ledger: C4/O07#3 失败明确指引
 func TestCheckKeymapConfig_InvalidBindingsFail(t *testing.T) {
 	const rawAction = "this-is-not-a-real-key!!!"
 	c := checkKeymapConfig(&config.Config{TUI: config.TUIConfig{

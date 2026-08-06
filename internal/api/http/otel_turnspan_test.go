@@ -84,6 +84,8 @@ func spanAttr(s tracetest.SpanStub, key string) string {
 // agent.turn span with no session.id or turn.id cannot be joined against the
 // correlated log lines that ws.go already emits -- the span would exist and
 // still be useless.
+//
+// ledger: C4/OBS2#1 trace 链可导出
 func TestWSTurnOpensATurnSpan(t *testing.T) {
 	exp := recordSpans(t)
 

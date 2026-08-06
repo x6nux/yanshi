@@ -17,6 +17,8 @@ import (
 // matters most, an incident producing thousands of lines, is exactly when the
 // odds are worst. So WARN and above bypass the sampler entirely and do not
 // even consume another message's budget.
+//
+// ledger: C4/OBS1#4 采样不丢关键错误
 func TestSamplingNeverDropsAnError(t *testing.T) {
 	var buf bytes.Buffer
 	s := newSampler(3, time.Minute)
@@ -66,6 +68,8 @@ func TestSamplingIsPerMessage(t *testing.T) {
 // TestSuppressedCountIsReported: a reader who cannot tell throttling from
 // absence draws the wrong conclusion about how often something happened, so
 // the first survivor of a new window carries the count of what was dropped.
+//
+// ledger: C4/OBS1#4 采样不丢关键错误
 func TestSuppressedCountIsReported(t *testing.T) {
 	var buf bytes.Buffer
 	s := newSampler(2, time.Minute)

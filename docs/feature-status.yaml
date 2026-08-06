@@ -570,31 +570,46 @@
 
 - id: "C4/COST1"
   package: "W7"
-  verdict: partial
+  verdict: done
   title: "$ 成本估算"
   acceptance: "/cost 显示 $;聚合正确;价格可配;缓存价区分"
-  evidence: ""
+  evidence:
+    "1": "internal/cli/tui::TestStatusEntryRendersKnownAndUnknownCost; internal/cli/tui::TestModel_CommandCost_StatusBlock"
+    "2": "internal/llm/eino::TestLedgerAccumulatesPerProviderUsage; internal/cli/tui::TestStatsEntryAggregatesKnownCostAndNamesUnknown"
+    "3": "internal/config::TestLoadObservabilityFeaturesAndPricing; internal/bootstrap::TestBuildWiresFeaturesAndPricing"
+    "4": "internal/llm/eino::TestCostKnownSplitsCacheAndOutput"
 
 - id: "C4/O07"
   package: "W7"
-  verdict: partial
+  verdict: done
   title: "doctor 增强"
   acceptance: "覆盖各子系统;JSON 可机读;失败明确指引"
-  evidence: ""
+  evidence:
+    "1": "internal/cli::TestCheckSandboxReportsTheRuntimePosture; internal/cli::TestCheckMCPReadsTheConfiguration; internal/cli::TestCheckLSP_ReportsProbes"
+    "2": "internal/cli::TestRenderJSON_Structure"
+    "3": "internal/cli::TestCheckKeymapConfig_InvalidBindingsFail; internal/cli::TestCheckProviders_MissingKeyIsFailAndRedacted"
 
 - id: "C4/OBS1"
   package: "W7"
-  verdict: partial
+  verdict: done
   title: "slog 结构化日志"
   acceptance: "关键路径结构化日志;secret 不入日志;级别可配;采样不丢关键错误"
-  evidence: ""
+  evidence:
+    "1": "internal/bootstrap::TestStderrIsReservedForPreLoggerAndTTYMessages; internal/observe/log::TestHandlerAddsCorrelationIDsFromContext"
+    "2": "internal/observe/log::TestEveryRedactionRuleActuallyFires"
+    "3": "internal/observe/log::TestParseLevelAllVariants; internal/observe/log::TestParseLevelAndSafeErrorType"
+    "4": "internal/observe/log::TestSamplingNeverDropsAnError; internal/observe/log::TestSuppressedCountIsReported"
 
 - id: "C4/OBS2"
   package: "W7"
-  verdict: partial
+  verdict: done
   title: "OTel 遥测"
   acceptance: "trace 链可导出;latency/token/retry/error 可观测;可关闭;脱敏"
-  evidence: ""
+  evidence:
+    "1": "internal/observe/otel::TestSetupWithLiveCollectorFlushesCleanly; internal/api/http::TestWSTurnOpensATurnSpan"
+    "2": "internal/api/http::TestAddProviderUsageRecordsToOTel; internal/observe/otel::TestRecordRetryEmitsSafeAttributes; internal/observe/otel::TestStartSessionErrorEndSetsStatus"
+    "3": "internal/observe/otel::TestSetupDisabledReturnsNoop"
+    "4": "internal/observe/otel::TestToolSpanNeverRecordsErrorBody"
 
 # 2026-08-04 复核：保持 partial，但第 1、2 条其实已经很硬，缺口只在第 3 条 ——
 #   1 flag 注册/切换 —— internal/features::TestRegistryDefaultsRuntimeSetAndList
@@ -611,10 +626,13 @@
 #     补一条「flag off ⇒ 该功能不生效」的双向测试即可翻终态，归 W7。
 - id: "C4/OBS3"
   package: "W7"
-  verdict: partial
+  verdict: done
   title: "feature flags"
   acceptance: "flag 注册/切换;strict mode 报错未知 flag;新功能可灰度"
-  evidence: "internal/features::TestRegistryStrictRejectsUnknownByNameAtomically"
+  evidence:
+    "1": "internal/features::TestRegistryDefaultsRuntimeSetAndList"
+    "2": "internal/features::TestRegistryStrictRejectsUnknownByNameAtomically"
+    "3": "internal/api/http::TestSlogTraceIDFlagGatesCorrelationIDs; internal/api/http::TestCostInStatusFlagGatesTheStatusFrame; internal/api/http::TestNilRegistryFallsBackToRegisteredDefaults"
 
 - id: "D1/APS1"
   package: "W9"
@@ -824,10 +842,13 @@
 
 - id: "F2/BENCH1"
   package: "W7"
-  verdict: partial
+  verdict: done
   title: "性能基准基线"
   acceptance: "关键路径有基准；CI 记录趋势；大回归可发现"
-  evidence: ""
+  evidence:
+    "1": "internal/archtest::TestBenchmarksExistForTheKeyPaths"
+    "2": "internal/archtest::TestNightlyRecordsTheBenchmarkTrend"
+    "3": "internal/archtest::TestBenchCIGateRunsEveryBenchmarkPackageAboveOneIteration"
 
 # 2026-08-04 复核：missing → partial。「missing」是台账**低报**：cooldown 实现完整
 # 且已接通配置链 —— config.Compaction.CooldownFraction / CooldownDuration /
@@ -927,6 +948,15 @@
 
 # 与 B1/M04b 用同一把尺子：验收要求「五入口各自可产生图像附件」**且**「费用纳入 /cost」。
 # 入口 B 的 TUI 触发面移交 W8，/cost 移交 W7 —— 两条都未做，故保持 partial。
+# 2026-08-06 W7 复核（W1 移交的「费用纳入 /cost」）：保持 partial，但这一条的缺口
+# 与当初移交时的判断不同 —— 它不缺实现，缺的是驱动它的测试。
+#   图像 token 没有独立的计费通道：provider 把图像算进 PromptTokens 回报，
+#   connSession.addProviderUsage（internal/api/http/ws_compaction.go）收的就是那份 usage，
+#   所以「费用纳入 /cost」是**构造上成立**的，不需要额外接线。
+#   但全仓没有一条测试把「带图像的一轮」跑到成本上，因此按 ADR-0011 的尺子它没有可执行证据；
+#   把「构造上应该成立」写进 evidence 正是台账要防的那种虚报。
+# 其余两条子句（五入口各自可产生图像附件、TUI 的 @path 触发面）本就归 W8，
+# 整条一并移交 W8：补一条图像轮 → status.cost_usd > 0 的端到端测试，与 W8 的入口面一起翻牌。
 - id: "G/VISION-TOOL"
   package: "W1"
   verdict: partial
@@ -992,10 +1022,15 @@
 
 - id: "M1/O07"
   package: "W7"
-  verdict: partial
+  verdict: done
   title: "yanshi doctor 自检子命令"
   acceptance: "检查 config/DB/provider/ACP CLI/端口/lockfile/目录/sandbox；人类可读 + --json；退出码 0/1/2；不打印 secret；不完整环境不 panic"
-  evidence: ""
+  evidence:
+    "1": "internal/cli::TestRunDoctor_HappyPath; internal/cli::TestRunDoctor_IncludesEnvChecks"
+    "2": "internal/cli::TestRenderText_Format"
+    "3": "internal/cli::TestExitCodeMapping"
+    "4": "internal/cli::TestDoctorNeverEchoesACredential"
+    "5": "internal/cli::TestDoctorSurvivesAnIncompleteEnvironment"
 
   # W6/Task 1：八个 agent_* 的 DefaultTimeout 全为 0，而 WithTimeout(ctx,0) 给的是
   # 已过期 context —— 工具第一行就失败，且 GuardedTool 把失败当**工具结果**回喂模型，

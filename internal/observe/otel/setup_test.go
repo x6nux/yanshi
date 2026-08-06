@@ -100,6 +100,8 @@ func TestProductionExportersConstruct(t *testing.T) {
 // setupWithFactories: providers are constructed, OTel globals are set, the
 // runtime is enabled, a real span is recorded, and Shutdown flushes both
 // exporters to the HTTP stub without error.
+//
+// ledger: C4/OBS2#1 trace 链可导出
 func TestSetupWithLiveCollectorFlushesCleanly(t *testing.T) {
 	restoreOTelGlobals(t)
 	resetOTelNoop()

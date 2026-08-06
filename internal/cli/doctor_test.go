@@ -41,6 +41,9 @@ func writeTempConfig(t *testing.T, body string) string {
 	return p
 }
 
+// TestRunDoctor_HappyPath.
+//
+// ledger: M1/O07#1 检查 config/DB/provider/ACP CLI/端口/lockfile/目录/sandbox
 func TestRunDoctor_HappyPath(t *testing.T) {
 	dir := t.TempDir()
 	cfgBody := fmt.Sprintf(`
@@ -104,6 +107,9 @@ func TestCheckProviders_NoProviders(t *testing.T) {
 	}
 }
 
+// TestCheckProviders_MissingKeyIsFailAndRedacted.
+//
+// ledger: C4/O07#3 失败明确指引
 func TestCheckProviders_MissingKeyIsFailAndRedacted(t *testing.T) {
 	cfg := &config.Config{LLM: config.LLMConfig{Providers: []config.ProviderConfig{
 		{Name: "openai", Kind: "openai", Model: "gpt-4o", APIKey: "sk-secret-value-xyz"},
@@ -134,6 +140,9 @@ func TestCheckProviders_UnknownKind(t *testing.T) {
 	}
 }
 
+// TestExitCodeMapping.
+//
+// ledger: M1/O07#3 退出码 0/1/2
 func TestExitCodeMapping(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -157,6 +166,9 @@ func TestExitCodeMapping(t *testing.T) {
 	}
 }
 
+// TestRenderText_Format.
+//
+// ledger: M1/O07#2 人类可读 + --json
 func TestRenderText_Format(t *testing.T) {
 	rep := DoctorReport{Checks: []CheckResult{
 		{Name: "config", Status: StatusOK, Message: "loaded"},
@@ -173,6 +185,9 @@ func TestRenderText_Format(t *testing.T) {
 	}
 }
 
+// TestRenderJSON_Structure.
+//
+// ledger: C4/O07#2 JSON 可机读
 func TestRenderJSON_Structure(t *testing.T) {
 	rep := DoctorReport{Checks: []CheckResult{
 		{Name: "config", Status: StatusOK, Message: "loaded"},
@@ -261,6 +276,9 @@ func TestCheckPort_FreeAndInUse(t *testing.T) {
 	}
 }
 
+// TestRunDoctor_IncludesEnvChecks.
+//
+// ledger: M1/O07#1 检查 config/DB/provider/ACP CLI/端口/lockfile/目录/sandbox
 func TestRunDoctor_IncludesEnvChecks(t *testing.T) {
 	dir := t.TempDir()
 	cfgBody := fmt.Sprintf(`
@@ -344,6 +362,8 @@ func TestCheckMCP_ServersListedOrNoneConfigured(t *testing.T) {
 // answer. If the toolchain under test has no language server installed at all
 // both are the warn case, and the test says so rather than pretending to have
 // checked.
+//
+// ledger: C4/O07#1 覆盖各子系统
 func TestCheckLSP_ReportsProbes(t *testing.T) {
 	empty := checkLSP(context.Background(), t.TempDir())
 	if empty.Status != StatusOK && empty.Status != StatusWarn {
@@ -396,6 +416,8 @@ func TestCheckPermissions_ConfigLoadSkipped(t *testing.T) {
 // The assertions are about DISTINGUISHING configurations, not about matching
 // exact prose -- a check that cannot tell two postures apart is the defect,
 // whatever it prints.
+//
+// ledger: C4/O07#1 覆盖各子系统
 func TestCheckSandboxReportsTheRuntimePosture(t *testing.T) {
 	root := t.TempDir()
 
@@ -459,6 +481,8 @@ func TestCheckSandboxReportsTheRuntimePosture(t *testing.T) {
 // with no command, or an http entry with no url, cannot start at any boot.
 // It is a configuration error, and the runtime's own failure message names
 // the transport rather than the missing field.
+//
+// ledger: C4/O07#1 覆盖各子系统
 func TestCheckMCPReadsTheConfiguration(t *testing.T) {
 	mk := func(servers map[string]*config.MCPServerConfig) CheckResult {
 		cfg := &config.Config{}
@@ -512,6 +536,8 @@ func TestCheckMCPReadsTheConfiguration(t *testing.T) {
 // legacy_insecure with a raw literal, which is the only shape where a real
 // credential sits in the config file in plaintext, and it is also the shape
 // most likely to make a parse error quote it.
+//
+// ledger: M1/O07#4 不打印 secret
 func TestDoctorNeverEchoesACredential(t *testing.T) {
 	const canary = "sk-CANARY-3f9d1a7c4b2e8065-DO-NOT-LEAK"
 
@@ -581,6 +607,8 @@ func TestDoctorNeverEchoesACredential(t *testing.T) {
 // provides: every check must return a result rather than panic when the
 // config never loaded. doctor is what an operator runs WHEN things are
 // broken, so a panic here removes the tool exactly when it is needed.
+//
+// ledger: M1/O07#5 不完整环境不 panic
 func TestDoctorSurvivesAnIncompleteEnvironment(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join(t.TempDir(), "does-not-exist.yaml"),

@@ -148,6 +148,9 @@ func TestRecordUsageClampsNegativesAndSkipsZeros(t *testing.T) {
 	RecordUsage(ctx, "", 10, 0, 0, 0)             // single positive kind
 }
 
+// TestRecordRetryEmitsSafeAttributes.
+//
+// ledger: C4/OBS2#2 latency/token/retry/error 可观测
 func TestRecordRetryEmitsSafeAttributes(t *testing.T) {
 	withRecordingTracer(t)
 	ctx := context.Background()
@@ -158,6 +161,8 @@ func TestRecordRetryEmitsSafeAttributes(t *testing.T) {
 // TestStartSessionErrorEndSetsStatus covers the error branch of the shared
 // end function for a session span: the error.type attribute and Error status
 // are set, and the error body itself never enters the span.
+//
+// ledger: C4/OBS2#2 latency/token/retry/error 可观测
 func TestStartSessionErrorEndSetsStatus(t *testing.T) {
 	recorder := withRecordingTracer(t)
 	_, end := StartSession(context.Background())

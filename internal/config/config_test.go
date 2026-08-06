@@ -301,6 +301,9 @@ func TestLoadBytesDefaultsSubagents(t *testing.T) {
 	require.NotEmpty(t, cfg.Subagents.PersistencePath)
 }
 
+// TestLoadObservabilityFeaturesAndPricing.
+//
+// ledger: C4/COST1#3 价格可配
 func TestLoadObservabilityFeaturesAndPricing(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

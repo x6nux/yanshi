@@ -14,6 +14,8 @@ import (
 // TestToolSpanNeverRecordsErrorBody proves the StartTool end function never
 // writes the error body into span attributes or events. Constraint 17 / 1 in
 // the C4 plan: no prompt, args, error body, or sensitive data in telemetry.
+//
+// ledger: C4/OBS2#4 脱敏
 func TestToolSpanNeverRecordsErrorBody(t *testing.T) {
 	recorder := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))

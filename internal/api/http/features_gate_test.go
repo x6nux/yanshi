@@ -75,6 +75,8 @@ func newFlagTestServer(t *testing.T, reg *features.Registry) (*Server, *orchestr
 // nothing outside their own package tests. Only observe.otel_export had a real
 // consumer, so "new features can be dark-launched" was true for one flag in
 // three, and toggling either of the other two changed nothing at all.
+//
+// ledger: C4/OBS3#3 新功能可灰度
 func TestSlogTraceIDFlagGatesCorrelationIDs(t *testing.T) {
 	t.Run("on by default: ids reach the log", func(t *testing.T) {
 		buf := captureLogs(t)
@@ -102,6 +104,8 @@ func TestSlogTraceIDFlagGatesCorrelationIDs(t *testing.T) {
 
 // TestCostInStatusFlagGatesTheStatusFrame is the same defect for the second
 // flag: turning cost reporting off left every cost field on the wire.
+//
+// ledger: C4/OBS3#3 新功能可灰度
 func TestCostInStatusFlagGatesTheStatusFrame(t *testing.T) {
 	run := func(t *testing.T, reg *features.Registry) proto.ServerFrame {
 		t.Helper()
@@ -157,6 +161,8 @@ func TestCostInStatusFlagGatesTheStatusFrame(t *testing.T) {
 // without one (every existing test in this package, and any embedder that
 // doesn't pass FeaturesReg), so gating on Enabled directly would have turned
 // off a stable, default-on feature for those callers and left no trace of why.
+//
+// ledger: C4/OBS3#3 新功能可灰度
 func TestNilRegistryFallsBackToRegisteredDefaults(t *testing.T) {
 	var nilReg *features.Registry
 	for _, tc := range []struct {

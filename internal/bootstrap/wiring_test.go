@@ -946,6 +946,8 @@ func TestLSPOverrideKeepsWorkspaceMarkers(t *testing.T) {
 // lines: a list would have to be edited for every message reworded, which
 // trains people to edit it without thinking. A ceiling only moves when
 // someone adds a bypass, which is the event worth a second look.
+//
+// ledger: C4/OBS1#1 关键路径结构化日志
 func TestStderrIsReservedForPreLoggerAndTTYMessages(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("..", "..", "internal", "bootstrap", "bootstrap.go"))
 	if err != nil {

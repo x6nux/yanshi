@@ -5,6 +5,9 @@ import (
 	"testing"
 )
 
+// TestRegistryDefaultsRuntimeSetAndList.
+//
+// ledger: C4/OBS3#1 flag 注册/切换
 func TestRegistryDefaultsRuntimeSetAndList(t *testing.T) {
 	r := NewRegistry(false)
 	for _, spec := range DefaultSpecs() {
@@ -33,6 +36,9 @@ func TestRegistryDefaultsRuntimeSetAndList(t *testing.T) {
 	}
 }
 
+// TestRegistryStrictRejectsUnknownByNameAtomically.
+//
+// ledger: C4/OBS3#2 strict mode 报错未知 flag
 func TestRegistryStrictRejectsUnknownByNameAtomically(t *testing.T) {
 	r := NewRegistry(true)
 	r.Register(Spec{Key: "known", Stage: Stable, Default: false, Owner: "test"})

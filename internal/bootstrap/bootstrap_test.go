@@ -839,6 +839,8 @@ lsp:
 // YAML features.strict + features.overrides seed App.Features, and the
 // pricing.overrides seed App.Pricing (layered on top of DefaultPricing). This
 // is the only test that asserts the C4 dependency-injection shape end-to-end.
+//
+// ledger: C4/COST1#3 价格可配
 func TestBuildWiresFeaturesAndPricing(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
