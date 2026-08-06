@@ -3,6 +3,7 @@ package archtest
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -406,5 +407,49 @@ func TestCliffParsersCoverTheDocumentedPrefixes(t *testing.T) {
 	if strings.Contains(string(doc), "| `feat!` / `fix!` |") {
 		t.Error("commit-convention.md lists only feat!/fix! as breaking; the rule " +
 			"applies to any type")
+	}
+}
+
+// TestArchiveIndexMatchesTheDirectory reconciles docs/archive/README.md's
+// mapping table with what is actually in the directory.
+//
+// The table listed 3 files while the directory held 7, and the closing note
+// asserted that the synthesis reports and the dependency analysis "were
+// untracked at archive time, so they are not in this directory" — both halves
+// false: the three synthesis reports were in the directory AND tracked, and
+// deps_analysis.md was tracked too, just sitting in the repo root. An index
+// that disagrees with its own directory sends readers looking for files where
+// they are not, and claims absent things that are present.
+func TestArchiveIndexMatchesTheDirectory(t *testing.T) {
+	dir := abs(filepath.Join("docs", "archive"))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read docs/archive: %v", err)
+	}
+	index, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	if err != nil {
+		t.Fatalf("read the archive index: %v", err)
+	}
+
+	var listed int
+	for _, e := range entries {
+		if e.IsDir() || e.Name() == "README.md" {
+			continue
+		}
+		listed++
+		if !strings.Contains(string(index), e.Name()) {
+			t.Errorf("docs/archive/%s is not in the index; a reader browsing the "+
+				"table will not know it exists", e.Name())
+		}
+	}
+	if listed == 0 {
+		t.Fatal("docs/archive holds nothing but its index; this test is vacuous")
+	}
+
+	// And the reverse: a linked file that is gone.
+	for _, m := range regexp.MustCompile(`\]\(([a-zA-Z0-9._-]+)\)`).FindAllStringSubmatch(string(index), -1) {
+		if _, err := os.Stat(filepath.Join(dir, m[1])); err != nil {
+			t.Errorf("the archive index links %s, which is not in the directory", m[1])
+		}
 	}
 }
