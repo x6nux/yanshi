@@ -2,22 +2,33 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://yanshi.dev/schema/agent-api/v1.1/agent-api.schema.json",
   "title": "Yanshi Agent API v1.1 additive compatibility fixture",
-  "description": "Fixture-only v1.1 schema. D1 currently emits only 'v1'; this document lets SDK tests prove forward compatibility with a future minor version that adds fields without changing required ones. Not served by D1.",
+  "description": "Additive v1.1 overlay over v1. D1 currently emits only 'v1'; this document lets SDK tests prove forward compatibility with a future minor version that adds fields without changing required ones. Not served by D1. The allOf carries TWO branches on purpose: the $ref to v1 supplies the whole contract, and the local #/$defs/Item ref is what makes this document's own delta apply. Without that second branch the delta is unreachable — v1's internal #/$defs/Item resolves in v1's $id scope and never reaches here, so reasoningTokens: -5 validated clean.",
   "type": "object",
   "additionalProperties": true,
   "allOf": [
-    { "$ref": "../v1/agent-api.schema.json" }
+    {
+      "$ref": "../v1/agent-api.schema.json"
+    },
+    {
+      "$ref": "#/$defs/Item"
+    }
   ],
   "properties": {
-    "futureRubric": { "type": "string" }
+    "futureRubric": {
+      "type": "string"
+    }
   },
   "$defs": {
     "Item": {
       "type": "object",
       "additionalProperties": true,
       "properties": {
-        "reasoningTokens": { "type": "integer", "minimum": 0 }
-      }
+        "reasoningTokens": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "description": "Applied unconditionally by the allOf above. It declares no required properties and allows additional ones, so it constrains exactly one thing: if reasoningTokens is present anywhere in the envelope it must be a non-negative integer. That is the shape an additive minor version has."
     }
   }
 }

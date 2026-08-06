@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://yanshi.dev/schema/agent-api/v1/agent-api.schema.json",
   "title": "Yanshi Agent API v1",
-  "description": "Provisional v1 contract mirror of internal/api/v1/types.go. D1 serves the canonical schema at GET /api/v1/schema/agent-v1.json; this document is the SDK-handoff copy that adds D2-provisional IDE-context extensions (ContextItem, FileChange). Replace this file when D1 publishes the canonical schema.",
+  "description": "The v1 Agent API contract. This file IS the canonical schema: internal/api/v1.SchemaBytes embeds it and GET /api/v1/schema/agent-v1.json serves these bytes verbatim, so the document a client fetches and the document its SDK validates against are one artifact. It also carries D2-provisional IDE-context extensions (ContextItem, FileChange, Range) that have no Go counterpart by design — see sdk/schema/CONTRACT_HANDOFF.md and the intentional-difference table in internal/api/v1/parity_test.go.",
   "type": "object",
   "additionalProperties": true,
   "$defs": {
