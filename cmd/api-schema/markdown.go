@@ -5,9 +5,9 @@
 // BEGIN/END GENERATED markers, so docs/api/schema.md and docs/api/resources.md
 // can be regenerated idempotently and gated in CI via `git diff --exit-code`.
 //
-// Two kinds of blocks are produced, both sourced from the same schemaDocument
-// so the markdown and the TypeScript output (the -out path) can never diverge
-// into two competing sources of truth:
+// Two kinds of blocks are produced, both sourced from the same embedded
+// schema document, so the markdown and the TypeScript output (the -out path)
+// can never diverge into two competing sources of truth:
 //
 //   - api-schema-full: the entire JSON Schema, pretty-printed inside a ```json
 //     fence. Backs docs/api/schema.md.
@@ -111,8 +111,9 @@ func orderedBlockIDs(blocks map[string]string) []string {
 func renderSchemaFull(schema []byte) string {
 	var doc any
 	if err := json.Unmarshal(schema, &doc); err != nil {
-		// SchemaBytes is a hand-built map[string]any that cannot fail to parse;
-		// fall back to the raw bytes so the block is never empty.
+		// SchemaBytes returns the embedded sdk/schema/v1 document, which the
+		// Go test suite parses on every run; fall back to the raw bytes so the
+		// block is never empty if it somehow does not.
 		return "```json\n" + string(schema) + "\n```"
 	}
 	pretty, err := json.MarshalIndent(doc, "", "  ")
@@ -212,7 +213,7 @@ func renderDefTable(d defTable) string {
 
 // paramResponseDefs is the hand-maintained field map for the request/response
 // shapes that live in internal/api/v1/types.go but are NOT (yet) declared in
-// schemaDocument.$defs. It mirrors the hand-written TS interfaces in main.go
+// the schema's $defs. It mirrors the hand-written TS interfaces in main.go
 // and must be updated alongside them when the wire contract changes. The
 // `images` field on TurnStartParams reflects Tier G (multimodal).
 func paramResponseDefs() []defTable {
@@ -294,7 +295,8 @@ func sortedKeys(m map[string]map[string]any) []string {
 // regenerated in place without touching the prose.
 const schemaDocHeader = "# v1 JSON Schema\n\n" +
 	"> 以下为 `sdk/schema/v1/agent-api.schema.json` 的完整 JSON Schema，由\n" +
-	"> `go run ./cmd/api-schema -markdown` 从 `internal/api/v1/schema.go::schemaDocument` 生成。\n" +
+	"> `go run ./cmd/api-schema -markdown` 经 `internal/api/v1/schema.go::SchemaBytes` 生成 ——\n" +
+	"> 它返回的就是那个文件本身（`sdk/schema/schema.go::V1`），所以这两句同时为真。\n" +
 	"> 修改 schema 后重生成；不要手改本区块。\n\n"
 
 // runMarkdown is the -markdown generator entry point. It renders every block

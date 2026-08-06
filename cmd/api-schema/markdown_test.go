@@ -111,8 +111,11 @@ func TestRenderMarkdownContainsSchemaFull(t *testing.T) {
 		t.Errorf("missing api-schema-full end marker")
 	}
 	// The pretty-printed schema must echo the $id so we know it came from
-	// SchemaBytes (not a stale literal).
-	if !strings.Contains(out, "https://yanshi.dev/schema/agent-api-v1.json") {
+	// SchemaBytes (not a stale literal). This is the SDK document's identity:
+	// the runtime used to serve a separate hand-built literal under
+	// .../agent-api-v1.json, and asserting THAT id would now pass only if the
+	// two documents had drifted apart again.
+	if !strings.Contains(out, "https://yanshi.dev/schema/agent-api/v1/agent-api.schema.json") {
 		t.Errorf("schema $id missing from rendered output")
 	}
 }

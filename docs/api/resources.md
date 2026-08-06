@@ -1,6 +1,6 @@
 # 资源参考（Thread / Turn / Item）
 
-v1 Agent API 的三类核心资源与请求/响应形状。字段表由 `go run ./cmd/api-schema -markdown` 从 `internal/api/v1` 生成；不要手改本页的生成区块（修改 `internal/api/v1/types.go` 或 `internal/api/v1/schema.go::schemaDocument` 后重生成，CI 守门）。
+v1 Agent API 的三类核心资源与请求/响应形状。字段表由 `go run ./cmd/api-schema -markdown` 从 `internal/api/v1` 生成；不要手改本页的生成区块（修改 `internal/api/v1/types.go` 或 `sdk/schema/v1/agent-api.schema.json`（`internal/api/v1/schema.go::SchemaBytes` 原样返回它）后重生成，CI 守门）。
 
 ## Thread
 
@@ -12,12 +12,12 @@ v1 Agent API 的三类核心资源与请求/响应形状。字段表由 `go run 
 | createdAt | integer | yes | |
 | id | string | yes | |
 | model | string |  | |
-| status | string | yes | |
+| status | ThreadStatus | yes | |
 | thinking | string |  | |
 | title | string |  | |
 | turns | array |  | |
 | updatedAt | integer | yes | |
-| version | "v1" | yes | |
+| version | Version | yes | |
 <!-- END GENERATED: api-defs:Thread -->
 
 ## Turn
@@ -31,9 +31,9 @@ v1 Agent API 的三类核心资源与请求/响应形状。字段表由 `go run 
 | id | string | yes | |
 | input | string | yes | |
 | startedAt | integer | yes | |
-| status | string | yes | |
+| status | TurnStatus | yes | |
 | threadId | string | yes | |
-| version | "v1" | yes | |
+| version | Version | yes | |
 <!-- END GENERATED: api-defs:Turn -->
 
 ## Item
@@ -44,6 +44,7 @@ v1 Agent API 的三类核心资源与请求/响应形状。字段表由 `go run 
 | 字段 | 类型 | required | 说明 |
 |---|---|---|---|
 | error | string |  | |
+| fileChange | FileChange |  | |
 | id | string | yes | |
 | sequence | integer | yes | |
 | status | string |  | |
@@ -54,7 +55,7 @@ v1 Agent API 的三类核心资源与请求/响应形状。字段表由 `go run 
 | toolName | string |  | |
 | turnId | string | yes | |
 | type | string | yes | |
-| version | "v1" | yes | |
+| version | Version | yes | |
 <!-- END GENERATED: api-defs:Item -->
 
 ## 请求参数

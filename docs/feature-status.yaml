@@ -683,8 +683,12 @@
   package: "W9"
   verdict: divergent
   title: "版本化 Agent API v1"
+  # 2026-08-06 W9-T1：子句 2 的前半（有 Schema，且只有一份）已闭合 —— 运行时端点
+  # 曾吐一份 3-$defs 的 Go 字面量、$id 与 SDK 那份 21-$defs 的文档不同，两者互不
+  # 知情。现在 sdk/schema 用 embed 暴露那一个物理文件，SchemaBytes 原样返回它。
+  # 保持 divergent 到 parity 测试（W9-T2）落地。
   acceptance: "start/resume/interrupt + 流式 item 可用;有版本+Schema;兼容测试完善"
-  evidence: ""
+  evidence: "internal/api/v1::TestRuntimeSchemaIsTheSDKSchema"
 
 # 2026-08-04 复核：保持 removed，但第 2 条此前**实测为假** —— evidence 只覆盖第 1 条，
 # 而 docs/feature-status-audit.md 仍写着「check-d2.sh…接上即可」（一条会被后来者照做
