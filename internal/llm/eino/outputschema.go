@@ -24,6 +24,13 @@ import (
 // exactly what makes "openai 路径不受影响" structural rather than convention-based.
 type outputSchemaOptions struct {
 	Schema json.RawMessage
+	// ThinkingEffort is "low" | "medium" | "high" for a turn that asked for
+	// extended thinking. It rides THIS struct rather than one of its own, and
+	// that is load-bearing: GetImplSpecificOptions type-asserts each option's
+	// setter against func(*T) and silently skips the ones that do not match,
+	// so a second struct would be invisible to the decoder that reads this one
+	// — no error, no warning, a field that is never set.
+	ThinkingEffort string
 }
 
 // OutputSchemaOption returns a per-call model.Option that carries a JSON Schema
@@ -45,6 +52,31 @@ func OutputSchemaOption(schemaDoc json.RawMessage) *model.Option {
 	}
 	opt := model.WrapImplSpecificOptFn(func(o *outputSchemaOptions) {
 		o.Schema = schemaDoc
+	})
+	return &opt
+}
+
+// ThinkingOption returns a per-call option asking the provider for extended
+// thinking at the given effort, or nil when the turn did not ask for any.
+//
+// It is separate from ReasoningEffortOption, which produces
+// openai.WithReasoningEffort — an option the Anthropic adapter never decodes.
+// That is why /think high on a Claude model changed nothing on the wire while
+// the TUI, the classifier and the frame vocabulary all behaved as though it
+// had: the effort reached a decoder that this provider does not use.
+//
+// Callers pass both. The openai path reads its own option and ignores this
+// one; the anthropic and responses adapters read this one. The type isolation
+// is what keeps "the other provider is unaffected" structural rather than a
+// convention someone has to remember.
+func ThinkingOption(effort string) *model.Option {
+	switch effort {
+	case "low", "medium", "high":
+	default:
+		return nil
+	}
+	opt := model.WrapImplSpecificOptFn(func(o *outputSchemaOptions) {
+		o.ThinkingEffort = effort
 	})
 	return &opt
 }

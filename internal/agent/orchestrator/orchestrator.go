@@ -625,7 +625,17 @@ func (o *Orchestrator) EventsWithHistoryOpts(ctx context.Context, messages []*sc
 	// per-turn model option here and hand them over in a single call — a turn
 	// can legitimately carry both a reasoning effort and an output schema.
 	var modelOpts []model.Option
+	// BOTH thinking options go out, every turn. They target different
+	// providers and neither can see the other's struct: ReasoningEffortOption
+	// produces openai.WithReasoningEffort, which the Anthropic adapter never
+	// decodes, and ThinkingOption rides outputSchemaOptions, which the openai
+	// path never reads. Sending only the first is what made /think high a
+	// no-op on Claude models while every layer above the provider behaved as
+	// though it had worked.
 	if optPtr := einollm.ReasoningEffortOption(opts.ThinkingEffort); optPtr != nil {
+		modelOpts = append(modelOpts, *optPtr)
+	}
+	if optPtr := einollm.ThinkingOption(opts.ThinkingEffort); optPtr != nil {
 		modelOpts = append(modelOpts, *optPtr)
 	}
 	if optPtr := einollm.OutputSchemaOption(opts.OutputSchema); optPtr != nil {

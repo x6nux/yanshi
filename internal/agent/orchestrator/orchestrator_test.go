@@ -835,12 +835,11 @@ func TestEventsWithHistoryOpts_RunnerForIsMemoized(t *testing.T) {
 }
 
 // TestEventsWithHistoryOpts_ThinkingEffortPassesOption proves a non-empty
-// ThinkingEffort adds exactly one per-call model.Option (the reasoning_effort
-// option built by einollm.ReasoningEffortOption) on top of whatever baseline
-// options the ADK agent already forwards. The reasoning_effort option is an
-// impl-specific option (openai.WithReasoningEffort), which can't be decoded
-// from outside the acl package (unexported openaiOptions struct), so we assert
-// by count delta rather than by value.
+// ThinkingEffort adds TWO per-call model.Options on top of the framework
+// baseline: einollm.ReasoningEffortOption for the openai family and
+// einollm.ThinkingOption for anthropic/responses. Both are impl-specific
+// options whose structs cannot be decoded from outside their own package, so
+// the assertion is a count delta rather than a value.
 func TestEventsWithHistoryOpts_ThinkingEffortPassesOption(t *testing.T) {
 	fm := einollm.NewFakeModel([]string{"ok", "ok"}, nil)
 	fm.RecordOpts = true
@@ -853,10 +852,17 @@ func TestEventsWithHistoryOpts_ThinkingEffortPassesOption(t *testing.T) {
 	drainAgentChunks(t, o.EventsWithHistoryOpts(context.Background(), msgs, TurnOpts{}))
 	baseline := len(fm.ReceivedOpts)
 
-	// With effort: exactly one additional option (the reasoning_effort one).
+	// With effort: TWO additional options. One targets openai
+	// (openai.WithReasoningEffort) and one targets anthropic/responses
+	// (einollm.ThinkingOption). Neither adapter can decode the other's struct
+	// — GetImplSpecificOptions type-asserts the setter and skips mismatches —
+	// so sending only one means the other provider silently ignores /think.
+	// That was the state before W8: everything above the provider behaved as
+	// though the effort had been applied, and on Claude models nothing had.
 	drainAgentChunks(t, o.EventsWithHistoryOpts(context.Background(), msgs, TurnOpts{ThinkingEffort: "medium"}))
-	require.Equal(t, baseline+1, len(fm.ReceivedOpts),
-		"ThinkingEffort=medium must add exactly one model option on top of the framework baseline")
+	require.Equal(t, baseline+2, len(fm.ReceivedOpts),
+		"ThinkingEffort=medium must add BOTH provider options; baseline+1 means one provider "+
+			"family is being left out")
 }
 
 // TestEventsWithHistoryOpts_OutputSchemaPassesOption proves a non-empty
@@ -908,8 +914,12 @@ func TestEventsWithHistoryOpts_ThinkingAndSchemaCoexist(t *testing.T) {
 	drainAgentChunks(t, o.EventsWithHistoryOpts(context.Background(), msgs,
 		TurnOpts{ThinkingEffort: "medium", OutputSchema: schemaDoc}))
 
-	require.Equal(t, baseline+2, len(fm.ReceivedOpts),
-		"thinking effort and output schema must BOTH survive; a count of baseline+1 means one overwrote the other")
+	// baseline+3: two thinking options (one per provider family) plus the
+	// schema. They share one options struct on the anthropic side, so this
+	// also guards against the thinking field clobbering the schema field.
+	require.Equal(t, baseline+3, len(fm.ReceivedOpts),
+		"thinking effort (both provider families) and output schema must ALL survive; "+
+			"a lower count means one overwrote another")
 	assert.Equal(t, string(schemaDoc), string(fm.ReceivedOutputSchema),
 		"output schema must still reach the model when thinking effort is also set")
 }

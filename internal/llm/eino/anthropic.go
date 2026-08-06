@@ -147,6 +147,58 @@ type anthropicRequest struct {
 	// for this turn (Anthropic output_config.format json_schema). nil on
 	// text-mode turns so the field is omitted from the wire body entirely.
 	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
+
+	// Thinking, when non-nil, turns on extended thinking for this turn. nil on
+	// ordinary turns so the body stays byte-identical to a request that never
+	// heard of the feature.
+	Thinking *anthropicThinking `json:"thinking,omitempty"`
+}
+
+// anthropicThinking is the API's extended-thinking block.
+//
+// budget_tokens is taken OUT of max_tokens, not added to it, so a budget at or
+// above max_tokens leaves no room for an answer and the API rejects the
+// request outright — the symptom is a 400 on every thinking turn.
+type anthropicThinking struct {
+	Type         string `json:"type"` // always "enabled"
+	BudgetTokens int    `json:"budget_tokens"`
+}
+
+// thinkingBudgetFractions maps an effort level onto a fraction of max_tokens.
+//
+// Fractions rather than absolute counts because max_tokens is per-deployment
+// configuration: a fixed 16k budget is most of a small deployment's allowance
+// and a rounding error in a large one. The fractions leave at least half the
+// allowance for the answer at every level.
+var thinkingBudgetFractions = map[string]float64{
+	"low":    0.15,
+	"medium": 0.30,
+	"high":   0.50,
+}
+
+// minThinkingBudget is Anthropic's floor. A request below it is rejected, so a
+// small max_tokens is clamped UP to the floor and then down again below
+// max_tokens by the caller — a deployment too small for both loses thinking
+// rather than sending a request that cannot succeed.
+const minThinkingBudget = 1024
+
+// thinkingBlock builds the extended-thinking block for an effort level, or nil
+// when the turn asked for none or the deployment has no room for one.
+func thinkingBlock(effort string, maxTokens int) *anthropicThinking {
+	frac, ok := thinkingBudgetFractions[effort]
+	if !ok || maxTokens <= 0 {
+		return nil
+	}
+	budget := int(float64(maxTokens) * frac)
+	if budget < minThinkingBudget {
+		budget = minThinkingBudget
+	}
+	// No room for both the floor and an answer: drop thinking rather than
+	// send a request the API will refuse.
+	if budget >= maxTokens {
+		return nil
+	}
+	return &anthropicThinking{Type: "enabled", BudgetTokens: budget}
 }
 
 type anthropicResponse struct {
@@ -312,6 +364,9 @@ func (m *AnthropicModel) buildRequest(in []*schema.Message, options *model.Optio
 			},
 		}
 	}
+	// UX8: extended thinking. Absent effort leaves Thinking nil and omitempty
+	// drops it, so an ordinary turn is byte-identical to before.
+	req.Thinking = thinkingBlock(implOpts.ThinkingEffort, req.MaxTokens)
 
 	// Extract system message (Anthropic uses a top-level "system" field).
 	var systemParts []string
