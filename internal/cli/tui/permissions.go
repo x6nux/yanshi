@@ -21,13 +21,25 @@ func (m model) pendingPermission() *permissionEntry {
 }
 
 func (m model) sendMode() (tea.Model, tea.Cmd) {
-	m.autoResolvePendingByMode()
 	threshold := m.autoThreshold
 	if threshold == 0 && m.permMode == guard.ModeAuto {
 		threshold = guard.DefaultAutoThreshold
 	}
 	savePermMode(m.permMode, threshold)
+
+	// ORDER IS LOAD-BEARING: announce the new mode BEFORE answering anything
+	// on the strength of it.
+	//
+	// permTracker.deliver refuses an `allow` for a profile-denied request when
+	// the mode changed since the prompt went out. It reads the mode the server
+	// currently knows, and the reader goroutine processes set_mode and
+	// permission_response in arrival order -- so auto-resolving first would
+	// have the server judge those responses against the OLD mode, see no
+	// change, and skip the check entirely. The two files share no symbol and
+	// each is correct alone; the sequence is the contract.
+	// Pinned by TestSendModeAnnouncesTheModeBeforeAnsweringOnIt.
 	_ = m.sess.SendFrame(proto.NewSetMode(string(m.permMode), threshold))
+	m.autoResolvePendingByMode()
 	m.reflow()
 	return m, nil
 }
