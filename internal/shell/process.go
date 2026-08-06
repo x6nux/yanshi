@@ -44,15 +44,29 @@ func (OSProcessFactory) Start(ctx context.Context, spec LaunchSpec) (Process, Co
 	}
 	cmd := exec.CommandContext(ctx, program, args...)
 	cmd.Dir = spec.Dir
+	// Own process group, so Kill can take the whole tree. See killtree_unix.go.
+	setProcessGroup(cmd)
+	// CommandContext's default cancel calls Process.Kill directly, bypassing
+	// the tree kill entirely — so a ctx-cancelled command would reap the shell
+	// and leave its children running, which is the exact failure the process
+	// group exists to prevent. Both cancellation paths must go through the
+	// same function.
+	cmd.Cancel = func() error { return killProcessTree(cmd) }
 	if len(spec.Env) > 0 {
 		cmd.Env = spec.Env
 	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, nil, err
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		_ = stdin.Close()
 		return nil, nil, err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		_ = stdin.Close()
 		_ = stdout.Close()
 		return nil, nil, err
 	}
@@ -60,14 +74,15 @@ func (OSProcessFactory) Start(ctx context.Context, spec LaunchSpec) (Process, Co
 	// goroutines, and a failed Start must not leave them racing the pipes it
 	// is closing.
 	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
 		_ = stdout.Close()
 		_ = stderr.Close()
 		return nil, nil, err
 	}
 	if spec.SeparateStderr {
-		return &osProcess{cmd: cmd}, &pipeConsole{r: stdout, stderr: stderr}, nil
+		return &osProcess{cmd: cmd}, &pipeConsole{r: stdout, stderr: stderr, w: stdin}, nil
 	}
-	return &osProcess{cmd: cmd}, &pipeConsole{r: secproc.MergeOutput(stdout, stderr)}, nil
+	return &osProcess{cmd: cmd}, &pipeConsole{r: secproc.MergeOutput(stdout, stderr), w: stdin}, nil
 }
 
 // Capabilities reports what the OS factory can do without launching a process.
@@ -92,10 +107,7 @@ func (p *osProcess) PID() int {
 	return 0
 }
 func (p *osProcess) Kill() error {
-	if p.cmd.Process == nil {
-		return nil
-	}
-	return p.cmd.Process.Kill()
+	return killProcessTree(p.cmd)
 }
 func (p *osProcess) Capabilities() ProcessCapabilities {
 	return ProcessCapabilities{CanKillTree: CanKillTreeOnPlatform()}
@@ -111,10 +123,22 @@ func (p *osProcess) Capabilities() ProcessCapabilities {
 type pipeConsole struct {
 	r      io.ReadCloser
 	stderr io.ReadCloser
+	// w is the child's stdin. Non-PTY spawns used to leave it nil and answer
+	// "pipe console is read-only" — so shell_write_stdin was registered, in
+	// the factory allow list, and could not deliver a byte. An interactive
+	// command (a prompt, a REPL, anything reading a confirmation) was
+	// unusable, and the caller got a plausible error naming the console
+	// rather than the missing wiring.
+	w io.WriteCloser
 }
 
 func (c *pipeConsole) Read(b []byte) (int, error) { return c.r.Read(b) }
-func (c *pipeConsole) Write([]byte) (int, error)  { return 0, fmt.Errorf("pipe console is read-only") }
+func (c *pipeConsole) Write(b []byte) (int, error) {
+	if c.w == nil {
+		return 0, fmt.Errorf("shell: this session has no stdin")
+	}
+	return c.w.Write(b)
+}
 func (c *pipeConsole) Resize(uint16, uint16) error {
 	return fmt.Errorf("pipe console cannot resize")
 }
@@ -124,6 +148,12 @@ func (c *pipeConsole) PTY() bool { return false }
 // so abandoning the console cannot strand the child writing into a pipe
 // nobody reads.
 func (c *pipeConsole) Close() error {
+	// stdin first: a child blocked reading it sees EOF and can exit, where
+	// closing the read side first would leave it waiting on input nobody will
+	// send.
+	if c.w != nil {
+		_ = c.w.Close()
+	}
 	err := c.r.Close()
 	if c.stderr != nil {
 		if serr := c.stderr.Close(); err == nil {

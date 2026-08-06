@@ -1079,6 +1079,13 @@ func Build(opts Options) (*App, error) {
 			return nil, fmt.Errorf("bootstrap: restore shell jobs: %w", err)
 		}
 	}
+	// Reclaim idle sessions. Config.IdleTimeout previously had one consumer —
+	// the timeout branch inside Manager.Wait, which bounds how long a CALLER
+	// waits and leaves the session and its process untouched. Without this
+	// loop a client that started sessions and stopped reading them leaked one
+	// process per session for the life of the server. No-op when the timeout
+	// is unset, since zero means "no policy" rather than "reap immediately".
+	shellManager.StartReaper(ctx)
 	secureFactory := shell.DefaultSecureFactory{
 		OS:       shell.OSProcessFactory{},
 		Policy:   networkPolicy,

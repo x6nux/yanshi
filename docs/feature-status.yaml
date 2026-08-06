@@ -91,17 +91,46 @@
 #    internal/shell/process.go 未设 Setpgid —— 杀直接子进程不会杀孙进程。
 #    装配断裂已修（这部分是真的），但两条验收未兑现，故不翻 done。
 #    与 B1/M04b、G/VISION-TOOL 用同一把尺子。PTY 与 setpgid 移交 W6。
+  # 2026-08-07：partial → done。**四条子句各有实现缺口，不只是缺测试。**
+  #   2 【两半都缺】① shell_read 只有 id + max_bytes，Manager.Read 返回缓冲区
+  #     **尾部** —— 两次轮询返回重叠数据，调用方分不出新旧；被 cap 挤掉的输出更是
+  #     无声消失。加绝对游标 ReadNew（默认增量，from_start 保留旧尾部形态），并把
+  #     被丢弃的字节数**具名**回报（「有缺口」与「这段时间没输出」是两回事）。
+  #     ② stdin **根本不通**：pipeConsole.Write 恒返回「pipe console is read-only」，
+  #     而 shell_write_stdin 已注册、在出厂 allow 列表里 —— 一个交互式命令（提示、
+  #     REPL、任何要确认的东西）完全不可用，错误信息还指向 console 而不是缺失的接线。
+  #     接上 cmd.StdinPipe()；Close 先关 stdin（阻塞读 stdin 的子进程才能收到 EOF）。
+  #   3 【yield 无实现】shell_wait 没有任何 timeout 参数，模型等一个长构建只有两种
+  #     选择：阻塞到工具自己的 130s deadline 把**调用**杀掉，或者干脆不等。加
+  #     WaitFor + timeout_s，超时是 **yield 而不是取消** —— 会话原样留着，用独立的
+  #     ErrWaitTimeout 与真失败区分（把 yield 当失败会放弃一个还在跑的构建）。
+  #     「超时顺手 cancel」的变异专门验过是红的：让「问一句好了没」变成破坏性操作
+  #     是这里最坏的答案。
+  #   4 【能力谎报】CanKillTreeOnPlatform() 在 unix 返回 true，而它自己的注释写着
+  #     「syscall wiring lands in Phase 1」—— 承诺是活的、行为不是。全仓没有
+  #     Setpgid：`sh -c 'sleep 300 & wait'` 杀掉 shell 后孙进程留着，调用方读到一次
+  #     干净的取消而活还在跑。补 Setpgid + kill(-pgid)，**两条取消路径都接**
+  #     （exec.CommandContext 默认的 cancel 直接调 Process.Kill，绕过树杀 —— 那正是
+  #     调用方最常走的那扇门）。只在子进程确实是组长时才发组信号，否则 -pgid 会连
+  #     测试进程／yanshi 服务端一起杀掉。
+  #   5 【无 reaper】Config.IdleTimeout 唯一的消费者是 Manager.Wait 里的 time.After
+  #     分支 —— 它约束的是**调用方等多久**，会话与其进程原封不动。于是「按策略回收」
+  #     描述的是一个什么都不回收的超时；一个起了会话就不再读的客户端每次泄漏一个进程，
+  #     泄漏到服务端生命周期结束。加真后台 reaper（ReapIdle 收 now 参数，测试不必
+  #     真睡）。判据是**调用方活动**而非输出：一个安静的长构建不是 idle。
+  #     零超时 = 无策略，不发明一个（那会杀掉操作员本想留着的会话）。
+  # 五条变异都验过；两条既有测试因行为变更更新（错误哨兵、stdin 不再恒 error）。
 - id: "A1/T07/T08"
   package: "W1"
-  verdict: partial
+  verdict: done
   title: "Shell runtime v2 + 后台 /jobs"
   acceptance: "长进程返回 session id；可续读/stdin；yield/timeout/输出上限/显式关闭；进程树取消干净；session 关闭按策略回收"
-  evidence: "internal/bootstrap::TestShellV2EndToEndSpawnsRealProcess"
-
-# 2026-08-05 W3 复核：子句 3「thread/turn 关联准确」的接线已补（eb6cc6a：v1 填
-# st.thread.ID + ts.turn.ID，WS 填 cs.sessionID；SSE 无状态故有意不填）。
-# 子句 4「重启后持久恢复」仍未验证 —— work.Manager.Start/Finish 至今零生产调用点
-# （W1 第 27 轮实测），broker 不回写 task_work，生产中 durable task 永远停在 pending。
+  evidence:
+    "1": "internal/bootstrap::TestShellV2EndToEndSpawnsRealProcess"
+    "2": "internal/shell::TestReadNewIsIncrementalNotOverlapping; internal/shell::TestStdinRoundTripsThroughTheSession"
+    "3": "internal/shell::TestWaitForYieldsWithoutKillingTheSession; internal/shell::TestWaitForReturnsTheSessionWhenItFinishes; internal/shell::TestReadNewReportsBytesLostToTheCap"
+    "4": "internal/shell::TestKillTakesTheWholeProcessTree; internal/shell::TestContextCancelAlsoTakesTheTree"
+    "5": "internal/shell::TestReapIdleReclaimsSessionsAndTheirProcesses; internal/shell::TestActivityKeepsASessionAlive"
 - id: "A2/DT1"
   package: "W3"
   verdict: partial

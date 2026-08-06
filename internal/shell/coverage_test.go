@@ -202,9 +202,12 @@ func TestManagerWaitIdleTimeoutFires(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The sentinel replaced the bare string: a caller has to distinguish a
+	// yield (session still running) from a real failure, and matching on
+	// message text cannot do that.
 	_, err = m.Wait(context.Background(), sess.ID)
-	if err == nil || !strings.Contains(err.Error(), "idle timeout") {
-		t.Fatalf("expected idle timeout, got %v", err)
+	if !errors.Is(err, ErrWaitTimeout) {
+		t.Fatalf("expected ErrWaitTimeout, got %v", err)
 	}
 	// Clean up the still-running fake session.
 	_ = m.Cancel(sess.ID)
@@ -353,9 +356,11 @@ func TestOSProcessFactorySpawnsAndDrains(t *testing.T) {
 	if console.PTY() {
 		t.Fatal("pipe console must report PTY=false")
 	}
-	// pipeConsole.Write is read-only.
-	if _, err := console.Write([]byte("x")); err == nil {
-		t.Fatal("pipe console Write must error")
+	// pipeConsole.Write reaches the child's stdin. It used to be hardwired to
+	// an error, which is why shell_write_stdin could not deliver a byte while
+	// being registered and allowed.
+	if _, err := console.Write([]byte("x")); err != nil {
+		t.Fatalf("pipe console Write must reach stdin: %v", err)
 	}
 	// pipeConsole.Resize is a no-op error.
 	if err := console.Resize(10, 10); err == nil {

@@ -575,6 +575,8 @@ func materializeMessage(mv *adk.MessageVariant) (*schema.Message, error) {
 // wiring breaks: "shell: runtime unavailable" (no shell.Manager bound in the
 // turn context) and "no process factory configured" (Manager present but
 // Config.Factory nil).
+//
+// ledger: A1/T07/T08#1 长进程返回 session id
 func TestShellV2EndToEndSpawnsRealProcess(t *testing.T) {
 	app := buildMinimalApp(t)
 

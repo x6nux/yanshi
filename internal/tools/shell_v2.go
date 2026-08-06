@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -29,9 +30,19 @@ type shellWriteArgs struct {
 	Data string `json:"data"`
 }
 
+// shellWaitArgs is shell_wait's input. TimeoutS bounds the wait itself; the
+// session is untouched when it expires.
+type shellWaitArgs struct {
+	ID       string `json:"id"`
+	TimeoutS int    `json:"timeout_s"`
+}
+
 type shellReadArgs struct {
 	ID       string `json:"id"`
 	MaxBytes int    `json:"max_bytes"`
+	// FromStart selects the legacy tail form. Default (false) is incremental:
+	// only what the session produced since the previous read.
+	FromStart bool `json:"from_start"`
 }
 
 // ShellV2Tools is the v2 shell surface: a persistent-session tool family
@@ -74,8 +85,9 @@ func NewShellV2Tools(root string) *ShellV2Tools {
 		SyncStream(v.start))
 	v.Read = NewGuardedTool("shell_read", "Shell", "Read incremental output.", 30*time.Second,
 		params(map[string]*schema.ParameterInfo{
-			"id":        {Type: schema.String, Required: true},
-			"max_bytes": {Type: schema.Integer},
+			"id":         {Type: schema.String, Required: true},
+			"max_bytes":  {Type: schema.Integer},
+			"from_start": {Type: schema.Boolean, Desc: "Return the buffer tail instead of only what is new since the last read. Default false (incremental)."},
 		}),
 		SyncStream(v.read))
 	v.Write = NewGuardedTool("shell_write_stdin", "Shell", "Write stdin to a shell session.", 30*time.Second,
@@ -84,9 +96,12 @@ func NewShellV2Tools(root string) *ShellV2Tools {
 			"data": {Type: schema.String, Required: true},
 		}),
 		SyncStream(v.write))
-	v.Wait = NewGuardedTool("shell_wait", "Shell", "Wait for session completion.", 130*time.Second,
+	v.Wait = NewGuardedTool("shell_wait", "Shell",
+		"Wait for session completion. With timeout_s the wait YIELDS when it expires — "+
+			"the session keeps running and can be waited on or read again.", 130*time.Second,
 		params(map[string]*schema.ParameterInfo{
-			"id": {Type: schema.String, Required: true},
+			"id":        {Type: schema.String, Required: true},
+			"timeout_s": {Type: schema.Integer, Desc: "Give up waiting after this many seconds and return timed_out=true. The session is NOT cancelled. Omit to use the server's idle timeout."},
 		}),
 		SyncStream(v.wait))
 	v.Cancel = NewGuardedTool("shell_cancel", "Shell", "Cancel a shell session.", 30*time.Second,
@@ -192,9 +207,25 @@ func (v *ShellV2Tools) read(ctx context.Context, raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out, err := m.Read(a.ID, a.MaxBytes)
+	// Incremental by default. The tail form returned overlapping data on every
+	// poll, so a model watching a running command re-read the same output and
+	// had no way to tell what was new — and output pushed out of the ring
+	// buffer between two polls vanished with no marker at all.
+	if a.FromStart {
+		out, rerr := m.Read(a.ID, a.MaxBytes)
+		if rerr != nil {
+			return "", rerr
+		}
+		return fmt.Sprintf(`{"output":%q}`, out), nil
+	}
+	out, skipped, err := m.ReadNew(a.ID, a.MaxBytes)
 	if err != nil {
 		return "", err
+	}
+	if skipped > 0 {
+		// Named rather than silent: losing output to the cap and producing
+		// none at all are different situations for the caller.
+		return fmt.Sprintf(`{"output":%q,"skipped_bytes":%d}`, out, skipped), nil
 	}
 	return fmt.Sprintf(`{"output":%q}`, out), nil
 }
@@ -219,7 +250,7 @@ func (v *ShellV2Tools) write(ctx context.Context, raw string) (string, error) {
 }
 
 func (v *ShellV2Tools) wait(ctx context.Context, raw string) (string, error) {
-	var a shellIDArgs
+	var a shellWaitArgs
 	if err := json.Unmarshal([]byte(raw), &a); err != nil {
 		return "", err
 	}
@@ -231,7 +262,13 @@ func (v *ShellV2Tools) wait(ctx context.Context, raw string) (string, error) {
 		return "", err
 	}
 	// Pass ctx so the caller's deadline cancels Wait (Task 17 contract).
-	sess, err := m.Wait(ctx, a.ID)
+	sess, err := m.WaitFor(ctx, a.ID, time.Duration(a.TimeoutS)*time.Second)
+	if errors.Is(err, shell.ErrWaitTimeout) {
+		// A yield, not a failure: reported as a normal result so the model
+		// can go do something else and come back. Returning an error here
+		// would read as "the command failed" for a build that is fine.
+		return fmt.Sprintf(`{"id":%q,"timed_out":true,"still_running":true}`, a.ID), nil
+	}
 	if err != nil {
 		return "", err
 	}

@@ -47,6 +47,10 @@ type liveSession struct {
 	output    *ringBuffer
 	done      chan struct{} // closed once Process.Wait returns
 	finished  bool
+	// touched is the last time a caller read, wrote or waited on this
+	// session. The reaper collects sessions nobody has touched; output alone
+	// does not count, or a long silent build would look idle.
+	touched time.Time
 }
 
 // liveJob is the Manager's internal per-job state. session is set at
@@ -109,6 +113,7 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Session, error) 
 		cancel:    cancel,
 		output:    newRingBuffer(m.cfg.MaxOutputBytes),
 		done:      make(chan struct{}),
+		touched:   time.Now(),
 	}
 	// Bind the Session's MarshalJSON lock to liveSession.mu so json.Marshal of
 	// a Session (e.g. /jobs, /sessions rendering) is serialized against pump()
@@ -173,7 +178,26 @@ func (m *Manager) Read(id string, max int) (string, error) {
 	if s == nil {
 		return "", ErrNotFound
 	}
+	s.touch(time.Now())
 	return s.output.Read(max), nil
+}
+
+// ReadNew returns only the output produced since the previous ReadNew on this
+// session, plus how many bytes were lost to the ring buffer cap in between.
+//
+// This is the polling form: Read returns the tail every time, so a caller
+// watching a running command re-reads the same bytes and cannot tell new
+// output from old.
+func (m *Manager) ReadNew(id string, max int) (string, int64, error) {
+	m.mu.Lock()
+	s := m.sessions[id]
+	m.mu.Unlock()
+	if s == nil {
+		return "", 0, ErrNotFound
+	}
+	s.touch(time.Now())
+	data, skipped := s.output.ReadNew(max)
+	return data, skipped, nil
 }
 
 // sessionForJob resolves a job id to the live session that job runs in.
@@ -251,6 +275,7 @@ func (m *Manager) Write(id string, data []byte) (int, error) {
 	if s == nil {
 		return 0, ErrNotFound
 	}
+	s.touch(time.Now())
 	return s.console.Write(data)
 }
 
@@ -260,17 +285,46 @@ func (m *Manager) Write(id string, data []byte) (int, error) {
 // into the main select so it fires while the process is still running — the
 // previous gating behind s.done made it dead code (s.done was already closed).
 func (m *Manager) Wait(ctx context.Context, id string) (*Session, error) {
+	return m.WaitFor(ctx, id, 0)
+}
+
+// ErrWaitTimeout means the wait gave up before the session finished. The
+// session is STILL RUNNING: this is a yield, not a cancellation.
+//
+// A distinct error because the two need different responses. A caller that
+// treats a yield as failure abandons a build that is still going; one that
+// treats a cancellation as a yield polls a session that will never finish.
+var ErrWaitTimeout = errors.New("shell: wait timed out; the session is still running")
+
+// WaitFor is Wait with a caller-supplied bound.
+//
+// timeout <= 0 falls back to Config.IdleTimeout, preserving the previous
+// behaviour for callers that pass nothing. The bound is the YIELD semantics the
+// acceptance asks for: shell_wait had no timeout parameter at all, so a model
+// waiting on a long build had exactly two options — block until the tool's own
+// 130s deadline killed the call, or not wait. Neither lets it check in and go
+// do something else.
+//
+// Timing out does not touch the session. Reclaiming it here would make a
+// routine "is it done yet?" destructive.
+func (m *Manager) WaitFor(ctx context.Context, id string, timeout time.Duration) (*Session, error) {
 	m.mu.Lock()
 	s := m.sessions[id]
 	m.mu.Unlock()
 	if s == nil {
 		return nil, ErrNotFound
 	}
-	if m.cfg.IdleTimeout > 0 {
+	s.touch(time.Now())
+	if timeout <= 0 {
+		timeout = m.cfg.IdleTimeout
+	}
+	if timeout > 0 {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
 		select {
 		case <-s.done:
-		case <-time.After(m.cfg.IdleTimeout):
-			return nil, fmt.Errorf("shell: idle timeout")
+		case <-timer.C:
+			return nil, ErrWaitTimeout
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -436,6 +490,13 @@ type ringBuffer struct {
 	mu  sync.Mutex
 	cap int
 	buf bytes.Buffer
+	// dropped counts bytes discarded from the head by the cap, and cursor is
+	// the absolute offset a sequential reader has consumed up to. Both are
+	// absolute positions in the stream the process produced, not indices into
+	// buf, so they stay meaningful after the head is trimmed.
+	dropped int64
+	cursor  int64
+	written int64
 }
 
 func newRingBuffer(c int) *ringBuffer { return &ringBuffer{cap: c} }
@@ -444,11 +505,57 @@ func (r *ringBuffer) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.buf.Write(p)
+	r.written += int64(len(p))
 	if r.cap > 0 && r.buf.Len() > r.cap {
 		overflow := r.buf.Len() - r.cap
 		r.buf.Next(overflow)
+		r.dropped += int64(overflow)
 	}
 	return len(p), nil
+}
+
+// ReadNew returns the bytes produced since the last ReadNew and advances the
+// cursor past them.
+//
+// Read (the tail form) is what shell_read used, and repeated calls returned
+// OVERLAPPING data: a model polling a running command re-reads the same output
+// every time and cannot tell what is new. Worse, output produced and then
+// pushed out of the cap between two polls is lost with no marker.
+//
+// dropped tells the caller when that happened, so "I missed some" is
+// distinguishable from "nothing new".
+func (r *ringBuffer) ReadNew(max int) (data string, skipped int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Anything trimmed from the head before the cursor reached it is gone.
+	if r.cursor < r.dropped {
+		skipped = r.dropped - r.cursor
+		r.cursor = r.dropped
+	}
+	avail := r.written - r.cursor
+	if avail <= 0 {
+		return "", skipped
+	}
+	if max > 0 && int64(max) < avail {
+		avail = int64(max)
+	}
+	start := r.cursor - r.dropped
+	buf := r.buf.Bytes()
+	if start < 0 || start > int64(len(buf)) {
+		// Defensive: cursor arithmetic should keep this in range. Resetting to
+		// the whole buffer loses the increment for one call rather than
+		// panicking on a slice bound in a live session.
+		start = 0
+		avail = int64(len(buf))
+	}
+	end := start + avail
+	if end > int64(len(buf)) {
+		end = int64(len(buf))
+	}
+	out := string(buf[start:end])
+	r.cursor += int64(len(out))
+	return out, skipped
 }
 
 func (r *ringBuffer) Read(max int) string {
