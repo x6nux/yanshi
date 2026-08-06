@@ -113,6 +113,15 @@ func DefaultOrchestratorProfile() guard.PermissionProfile {
 			// no callback. task_cancel additionally carries ForcePrompt, so
 			// listing it here authorizes discovery, not unattended cancellation.
 			"task_create", "task_list", "task_read", "task_cancel",
+			// …and the two that make them useful. task_gate_run runs a command,
+			// but its capability is a strict SUBSET of shell_run's, which is
+			// already allowed above: it refuses shell metacharacters, jails cwd
+			// to the work root, and additionally Authorizes an FS read of that
+			// cwd. Leaving it out while shell_run is in is an inverted gradient
+			// — the narrower tool costs a dialog and the wider one does not.
+			// artifact_read is read-only and is the only way to retrieve a gate
+			// log that spilled, so withholding it makes the spill a deletion.
+			"task_gate_run", "artifact_read",
 			"memory_search", "memory_recall", "memory_write",
 			"web_fetch", "web_search", "time_now", "skill_use", "vcs_*",
 			"agent_start", "workflow_start", "analysis", "summarize",

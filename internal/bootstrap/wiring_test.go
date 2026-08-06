@@ -23,6 +23,8 @@ import (
 	"github.com/x6nux/yanshi/internal/guard"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/shell"
+	"github.com/x6nux/yanshi/internal/store"
+	"github.com/x6nux/yanshi/internal/task/work"
 	"github.com/x6nux/yanshi/internal/tools"
 )
 
@@ -1051,7 +1053,12 @@ func TestOrchestrationToolNamesAreRegistered(t *testing.T) {
 func TestDurableTaskToolsAreAllowedOutOfTheBox(t *testing.T) {
 	p := bootstrap.DefaultOrchestratorProfile()
 	g := guard.New()
-	for _, name := range []string{"task_create", "task_list", "task_read", "task_cancel"} {
+	for _, name := range []string{
+		"task_create", "task_list", "task_read", "task_cancel",
+		// task_gate_run is narrower than shell_run, which is already allowed;
+		// artifact_read is the only way to retrieve a spilled gate log.
+		"task_gate_run", "artifact_read",
+	} {
 		d := g.Check(p, guard.Action{Tool: name})
 		require.Equalf(t, guard.Allow, d.Verdict,
 			"%s is not allowed by the factory profile (%s); durable tasks are unusable "+
@@ -1083,4 +1090,76 @@ func TestManagedAgentToolsAreAllowedOutOfTheBox(t *testing.T) {
 			"%s is not allowed by the factory profile (%s): a sub-agent started with "+
 				"agent_start cannot be observed or stopped", name, d.Reason)
 	}
+}
+
+// TestBuildWiresTheDurableLifecycleMirror pins the assembly, not the pieces.
+//
+// work.LifecycleMirror and broker.Work are both correct in isolation and
+// tested in their own packages; if Build does not connect them the durable
+// row goes back to sitting at "pending" forever, and every one of those tests
+// stays green. GOV4 cannot see this — the wiring is inline in Build rather
+// than in its own Build* function — so the assertion is spelled out.
+//
+// ledger: A2/DT1#2 状态机正确
+func TestBuildWiresTheDurableLifecycleMirror(t *testing.T) {
+	app := buildMinimalApp(t)
+	require.NotNil(t, app.Broker, "Build produced no broker")
+	require.NotNil(t, app.Broker.Work,
+		"broker.Work is nil: the broker moves its own row through the lifecycle and the "+
+			"durable task_work row never leaves pending")
+	_, ok := app.Broker.Work.(*work.LifecycleMirror)
+	require.True(t, ok,
+		"broker.Work is %T, not the work-layer mirror", app.Broker.Work)
+}
+
+// TestBuildRecoversInterruptedDurableTasks pins the startup call, not the
+// method.
+//
+// work.Manager.RecoverInterrupted has its own test, and deleting the call from
+// Build leaves that test green — the same shape as every other
+// written-but-not-wired defect this work package closed. A task left running by
+// a killed process is invisible to ListPending and is never re-claimed, so if
+// nothing calls this at startup the recovery logic exists and never runs.
+//
+// The pre-seeded row goes in through a plain Store over the same file Build
+// will open, so nothing but the database crosses between them.
+//
+// ledger: A2/DT1#4 重启后持久恢复
+func TestBuildRecoversInterruptedDurableTasks(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	// A previous process: create a task and leave it running.
+	prev, err := store.Open(dbPath)
+	require.NoError(t, err)
+	ws, err := work.FromDB(prev.DB, prev)
+	require.NoError(t, err)
+	mgr := work.NewManager(ws, nil, work.ArtifactPolicy{})
+	stranded, err := mgr.Create(context.Background(), work.CreateReq{Title: "stranded", Prompt: "p"})
+	require.NoError(t, err)
+	require.NoError(t, mgr.Start(context.Background(), stranded.ID))
+	require.NoError(t, prev.Close())
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte(`
+server:
+  http_addr: "127.0.0.1:0"
+storage:
+  sqlite_path: "`+toYAMLPath(dbPath)+`"
+token: "test-token"
+`), 0o644))
+	app, err := bootstrap.Build(bootstrap.Options{ConfigPath: cfgPath, FakeModel: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
+
+	after, err := store.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = after.Close() })
+	ws2, err := work.FromDB(after.DB, after)
+	require.NoError(t, err)
+	got, err := work.NewManager(ws2, nil, work.ArtifactPolicy{}).Read(context.Background(), stranded.ID)
+	require.NoError(t, err)
+	require.Equal(t, work.StatusPending, got.Status,
+		"the task is still marked running after a restart: Build never called "+
+			"RecoverInterrupted, so no worker will ever pick it up again")
 }

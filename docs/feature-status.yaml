@@ -138,9 +138,9 @@
   acceptance: "可创建/列出/读取/取消；状态机正确；thread/turn 关联准确；重启后持久恢复"
   evidence:
     "1": "internal/tools::TestTaskToolsRoundTripThroughARealDatabase; internal/bootstrap::TestDurableTaskToolsAreAllowedOutOfTheBox"
-    "2": "internal/task/work::TestStateMachineRejectsEveryEdgeItShould; internal/task/work::TestBrokerMirrorMovesTheDurableRow; internal/task::TestBrokerReportsDurableTaskLifecycle; internal/task::TestRequeueStaleReportsToTheWorkLayer"
+    "2": "internal/task/work::TestStateMachineRejectsEveryEdgeItShould; internal/task/work::TestBrokerMirrorMovesTheDurableRow; internal/task::TestBrokerReportsDurableTaskLifecycle; internal/task::TestRequeueStaleReportsToTheWorkLayer; internal/bootstrap::TestBuildWiresTheDurableLifecycleMirror; internal/task::TestDurableTaskRunsEndToEnd; internal/task::TestDurableTaskSurvivesAWorkerThatDies"
     "3": "internal/tools::TestTaskListIsolatesThreads; internal/tools::TestTaskCreate_ReadsThreadLinkFromContext"
-    "4": "internal/task/work::TestRecoverInterruptedReturnsRunningTasksToTheQueue"
+    "4": "internal/task/work::TestRecoverInterruptedReturnsRunningTasksToTheQueue; internal/bootstrap::TestBuildRecoversInterruptedDurableTasks"
 
 # 2026-08-05 W3 复核：偏离已由 ADR-0012 正式接受（gate 直接跑 argv 不经 shell session），
 # 且 53f6719 给 gate 的 guard.Action 补上了 Workdir —— 破坏性删除维度的 workdir 相关规则
