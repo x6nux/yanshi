@@ -930,13 +930,7 @@ func Build(opts Options) (*App, error) {
 	// even when OS isolation is not enforced, so the rest of the system can
 	// label itself correctly. The tier string maps to sandbox.AccessTier; an
 	// unrecognized value falls through to ReadOnly (fail-safe).
-	sandboxTier := sandbox.ReadOnly
-	switch strings.ToLower(cfg.Security.Sandbox.Tier) {
-	case "workspace-write":
-		sandboxTier = sandbox.WorkspaceWrite
-	case "full-access":
-		sandboxTier = sandbox.FullAccess
-	}
+	sandboxTier := sandbox.ParseTier(cfg.Security.Sandbox.Tier)
 	sb := sandbox.New(sandbox.Config{
 		Enabled:       cfg.Security.Sandbox.Enabled == nil || *cfg.Security.Sandbox.Enabled,
 		WorkspaceRoot: workRoot,

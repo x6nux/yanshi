@@ -19,6 +19,7 @@ import (
 	"github.com/x6nux/yanshi/internal/i18n"
 	corekeymap "github.com/x6nux/yanshi/internal/keymap"
 	"github.com/x6nux/yanshi/internal/lockfile"
+	"github.com/x6nux/yanshi/internal/sandbox"
 	"github.com/x6nux/yanshi/internal/secrets"
 	"github.com/x6nux/yanshi/internal/store"
 )
@@ -155,7 +156,7 @@ func RunDoctor(ctx context.Context, opts DoctorOptions) DoctorReport {
 	checks = append(checks, checkLockfile(root))
 	checks = append(checks, checkPort(cfg, cfgErr, opts.Release))
 	checks = append(checks, checkDirectories(cfg, cfgErr))
-	checks = append(checks, checkSandbox())
+	checks = append(checks, checkSandbox(cfg, cfgErr, root))
 	checks = append(checks, checkMCP(cfg, cfgErr))
 	checks = append(checks, checkLSP(ctx, root))
 	checks = append(checks, checkPermissions(cfg, cfgErr))
@@ -509,11 +510,48 @@ func checkDirectories(cfg *config.Config, cfgErr error) CheckResult {
 	return CheckResult{Name: "directories", Status: StatusOK, Message: fmt.Sprintf("%d director(ies) ok", checked)}
 }
 
-// checkSandbox is a placeholder. Full sandbox verification arrives with S08
-// (M2); until then doctor flags it as a known gap so the report is honest
-// rather than silently omitting it.
-func checkSandbox() CheckResult {
-	return CheckResult{Name: "sandbox", Status: StatusWarn, Message: "sandbox verification not implemented yet (arrives with S08 in M2)"}
+// checkSandbox reports the posture the process will actually run under, by
+// building the same sandbox bootstrap builds and reading its CapabilityReport.
+//
+// It used to return a fixed "not implemented yet" warning regardless of
+// configuration -- which was honest about ITSELF but useless about the system:
+// an operator who set tier: full-access and one who left the default got the
+// same line, and neither learned whether OS isolation was actually enforced.
+// A doctor check that cannot distinguish those two is not reporting on the
+// sandbox at all.
+//
+// It goes through sandbox.ParseTier and sandbox.New rather than reading the
+// config strings directly, because the question is not "what did the operator
+// type" but "what will the runtime do with it" -- a tier typo silently falls
+// back to read-only, and doctor has to show the fallback, not the typo.
+func checkSandbox(cfg *config.Config, cfgErr error, workRoot string) CheckResult {
+	if cfgErr != nil {
+		return skipped("sandbox", cfgErr)
+	}
+	enabled := cfg.Security.Sandbox.Enabled == nil || *cfg.Security.Sandbox.Enabled
+	if !enabled {
+		return CheckResult{Name: "sandbox", Status: StatusWarn,
+			Message: "disabled by config (security.sandbox.enabled: false): subprocesses run with this process's privileges"}
+	}
+	sb := sandbox.New(sandbox.Config{
+		Enabled:       true,
+		WorkspaceRoot: workRoot,
+		Tier:          sandbox.ParseTier(cfg.Security.Sandbox.Tier),
+		NetworkDeny:   cfg.Security.Sandbox.NetworkDeny,
+	})
+	rep := sb.Report()
+	msg := fmt.Sprintf("tier %s, effective %s, backend %s", rep.Requested, rep.Effective, rep.Backend)
+	if rep.Reason != "" {
+		msg += " (" + rep.Reason + ")"
+	}
+	if !rep.Enforced {
+		// Warn rather than fail: this is the documented Phase-0 posture, not a
+		// broken install. Saying OK here is what would be wrong -- the guard
+		// layer is the containment boundary and the operator needs to know it.
+		return CheckResult{Name: "sandbox", Status: StatusWarn,
+			Message: msg + "; OS/network isolation NOT enforced — guard is the boundary"}
+	}
+	return CheckResult{Name: "sandbox", Status: StatusOK, Message: msg}
 }
 
 func checkMCP(cfg *config.Config, cfgErr error) CheckResult {

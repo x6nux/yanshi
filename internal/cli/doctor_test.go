@@ -362,3 +362,65 @@ func TestCheckPermissions_ConfigLoadSkipped(t *testing.T) {
 		t.Errorf("got %s (%s)", c.Status, c.Message)
 	}
 }
+
+// TestCheckSandboxReportsTheRuntimePosture pins the replacement of a constant.
+//
+// checkSandbox returned a fixed "not implemented yet" warning regardless of
+// configuration: an operator running with tier full-access and one on the
+// default got the same line, and neither learned whether OS isolation was
+// enforced. It was honest about itself and silent about the system.
+//
+// The assertions are about DISTINGUISHING configurations, not about matching
+// exact prose -- a check that cannot tell two postures apart is the defect,
+// whatever it prints.
+func TestCheckSandboxReportsTheRuntimePosture(t *testing.T) {
+	root := t.TempDir()
+
+	t.Run("disabled is called out specifically", func(t *testing.T) {
+		off := false
+		cfg := &config.Config{}
+		cfg.Security.Sandbox.Enabled = &off
+		got := checkSandbox(cfg, nil, root)
+		if got.Status != StatusWarn {
+			t.Fatalf("status = %v", got.Status)
+		}
+		if !strings.Contains(got.Message, "disabled") {
+			t.Fatalf("a disabled sandbox must say so: %q", got.Message)
+		}
+	})
+
+	t.Run("different tiers produce different reports", func(t *testing.T) {
+		mk := func(tier string) CheckResult {
+			cfg := &config.Config{}
+			cfg.Security.Sandbox.Tier = tier
+			return checkSandbox(cfg, nil, root)
+		}
+		ro := mk("read-only")
+		full := mk("full-access")
+		if ro.Message == full.Message {
+			t.Fatalf("read-only and full-access report identically (%q): "+
+				"the check is not reading the configuration", ro.Message)
+		}
+	})
+
+	t.Run("an unknown tier reports the fallback, not the typo", func(t *testing.T) {
+		cfg := &config.Config{}
+		cfg.Security.Sandbox.Tier = "compleeetly-wrong"
+		got := checkSandbox(cfg, nil, root)
+		if strings.Contains(got.Message, "compleeetly-wrong") {
+			t.Fatalf("doctor echoed the config string instead of what the runtime will use: %q",
+				got.Message)
+		}
+		if !strings.Contains(got.Message, "read-only") {
+			t.Fatalf("an unrecognised tier falls back to read-only and doctor must show that: %q",
+				got.Message)
+		}
+	})
+
+	t.Run("a config error skips rather than guesses", func(t *testing.T) {
+		got := checkSandbox(nil, errors.New("boom"), root)
+		if got.Status != StatusWarn || !strings.Contains(got.Message, "skipped") {
+			t.Fatalf("a config error must skip rather than guess a posture: %+v", got)
+		}
+	})
+}

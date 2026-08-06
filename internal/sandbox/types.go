@@ -14,6 +14,7 @@ package sandbox
 import (
 	"context"
 	"os/exec"
+	"strings"
 )
 
 // AccessTier names the resource-access class a sandboxed command is run under.
@@ -77,6 +78,25 @@ type CapabilityReport struct {
 	Reason      string
 	Enforced    bool
 	CanKillTree bool
+}
+
+// ParseTier maps an operator's tier string to an AccessTier, falling back to
+// ReadOnly for anything unrecognised.
+//
+// Fail-safe is the whole point of the fallback: a typo in the config must not
+// widen the sandbox. It lives here rather than inline in bootstrap because
+// doctor has to report the posture the process will ACTUALLY run under, and
+// two copies of this switch would drift the moment a tier is added -- doctor
+// would then confidently print a tier the runtime does not use.
+func ParseTier(s string) AccessTier {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "workspace-write":
+		return WorkspaceWrite
+	case "full-access":
+		return FullAccess
+	default:
+		return ReadOnly
+	}
 }
 
 // Config is the operator-facing sandbox configuration. *bool is used for
