@@ -836,20 +836,30 @@ func TestModel_CommandFeaturesSendsListEnableDisable(t *testing.T) {
 
 func TestStatusEntryRendersKnownAndUnknownCost(t *testing.T) {
 	known := stripANSI((&statusEntry{tokensIn: 100, tokensOut: 20, costUSD: 0.012345, costKnown: true}).render(120, newSpinner()))
-	assert.Contains(t, known, "$0.012345")
+	assert.Contains(t, known, "$0.012") // FormatCost bands: <1 -> %.3f (was a bespoke $%.6f)
 	unknown := stripANSI((&statusEntry{tokensIn: 100, costKnown: false}).render(120, newSpinner()))
 	assert.Contains(t, unknown, "N/A")
 	assert.NotContains(t, unknown, "$0.000000")
 }
 
-func testStatsEntryAggregatesKnownCostAndNamesUnknown_disabled(t *testing.T) {
+// TestStatsEntryAggregatesKnownCostAndNamesUnknown was dormant: it shipped
+// named testStats...(lowercase t), so `go test` never ran it, and it asserted
+// "$0.2500" -- a format that has never existed in this codebase. FormatCost
+// has been banded since it was written (<0.01 -> %.4f, <1 -> %.3f), so 0.25
+// renders as $0.250.
+//
+// Enabling it is what surfaced the actual defect: statsEntry.render never read
+// CostUSD at all, while its doc comment claimed "with USD cost". The plan's
+// instruction was to run it first and see how it fails before deciding which
+// side to change -- and both sides were wrong, in different ways.
+func TestStatsEntryAggregatesKnownCostAndNamesUnknown(t *testing.T) {
 	e := &statsEntry{sessions: []proto.SessionInfo{
 		{Title: "known", TokensIn: 100, CostUSD: 0.25, CostKnown: true},
 		{Title: "unknown", TokensOut: 10, CostKnown: false},
 	}}
 	out := stripANSI(e.render(120, newSpinner()))
 	assert.Contains(t, out, "known")
-	assert.Contains(t, out, "$0.2500")
+	assert.Contains(t, out, "$0.250") // FormatCost bands: <1 -> %.3f
 	assert.Contains(t, out, "unknown")
 	assert.Contains(t, out, "N/A")
 	assert.Contains(t, out, "1 unknown")
@@ -901,5 +911,32 @@ func TestCmdHelpEntry_NoHardcodedEnglish(t *testing.T) {
 	out := e.render(80, spinner.Model{})
 	if strings.Contains(out, "Commands") {
 		t.Fatalf("hardcoded English 'Commands' in zh-Hans rendering: %q", out)
+	}
+}
+
+// TestCommandTableNamesAreUnique guards a duplicate that reached three
+// surfaces at once.
+//
+// commandTable was registered twice for the same name at one point, and
+// help.go's renderer walks the table without deduplicating -- so /help, the
+// Ctrl+K palette and the / palette each listed that command twice. Nothing
+// broke, the count was just quietly wrong everywhere a user looks.
+//
+// Removing the duplicate line fixes it once; this makes it stay fixed. The
+// table is edited by hand every time a command is added, which is exactly the
+// edit that reintroduces a name.
+func TestCommandTableNamesAreUnique(t *testing.T) {
+	seen := map[string]int{}
+	for _, c := range commandTable {
+		seen[c.name]++
+	}
+	for name, n := range seen {
+		if n > 1 {
+			t.Errorf("command %q registered %d times: /help and both palettes render it once per entry",
+				name, n)
+		}
+	}
+	if len(seen) != len(commandTable) {
+		t.Errorf("commandTable has %d entries but %d distinct names", len(commandTable), len(seen))
 	}
 }

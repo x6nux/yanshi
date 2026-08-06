@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/i18n"
+	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/proto"
 )
 
@@ -1016,11 +1016,12 @@ func (e *statusEntry) render(_ int, _ spinner.Model) string {
 	}
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("    turns: %d\n", e.turns))
-	if e.costKnown {
-		b.WriteString(fmt.Sprintf("    estimated cost: $%.6f\n", e.costUSD))
-	} else {
-		b.WriteString("    estimated cost: N/A\n")
-	}
+	// One formatter for every cost surface. This was $%.6f while /stats used
+	// nothing at all and einollm.FormatCost -- the banded formatter written
+	// for exactly this -- had zero production callers. Two surfaces showing
+	// the same number in two precisions is how a user concludes one of them
+	// is wrong.
+	b.WriteString("    estimated cost: " + einollm.FormatCost(e.costUSD, e.costKnown) + "\n")
 	b.WriteString("\n")
 	return b.String()
 }
@@ -1100,71 +1101,6 @@ func (e *sessionsEntry) render(_ int, _ spinner.Model) string {
 		b.WriteString(fmt.Sprintf("    %s  %s\n", okStyle.Render("•"), toolMeta.Render(s.ID)))
 		b.WriteString(fmt.Sprintf("      %s  %s  %d msgs\n", title, created, s.MsgCount))
 	}
-	b.WriteString("\n")
-	return b.String()
-}
-
-// statsEntry renders a per-session token-consumption histogram with USD cost,
-// "sessions" reply (same NewSessionList fetch as /sessions — SessionInfo already
-// carries TokensIn/TokensOut). Bars are scaled to the largest consumer so the
-// relative cost of each session reads at a glance.
-type statsEntry struct {
-	sessions []proto.SessionInfo
-}
-
-const statsBarWidth = 20
-
-func (e *statsEntry) render(_ int, _ spinner.Model) string {
-	var b strings.Builder
-	b.WriteString("  " + toolName.Render("stats") + toolMeta.Render("  · per-session token consumption") + "\n\n")
-
-	// Keep only sessions that burned tokens; rank by total descending so the
-	// biggest consumers top the chart.
-	type row struct {
-		label string
-		total int
-		when  time.Time
-	}
-	var rows []row
-	sum := 0
-	for _, s := range e.sessions {
-		total := s.TokensIn + s.TokensOut
-		if total <= 0 {
-			continue
-		}
-		label := s.Title
-		if label == "" {
-			label = "(untitled)"
-		}
-		rows = append(rows, row{label, total, time.Unix(s.UpdatedAt, 0)})
-		sum += total
-	}
-	if len(rows) == 0 {
-		b.WriteString("    " + warnStyle.Render("(no token usage recorded yet — send a message first)") + "\n\n")
-		return b.String()
-	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].total > rows[j].total })
-	if len(rows) > 15 {
-		rows = rows[:15]
-	}
-	maxTotal := rows[0].total // sorted desc
-	for _, r := range rows {
-		barLen := 0
-		if maxTotal > 0 {
-			barLen = (r.total*statsBarWidth + maxTotal - 1) / maxTotal // ceil division
-		}
-		bar := okStyle.Render(strings.Repeat("█", barLen)) +
-			strings.Repeat("░", statsBarWidth-barLen)
-		// Right-align the token count in a 7-cell field so the numbers line up.
-		count := fmt.Sprintf("%7s", formatTokens(r.total))
-		b.WriteString(fmt.Sprintf("    %s %s  %s\n", bar, toolMeta.Render(count), r.label))
-	}
-	avg := 0
-	if len(rows) > 0 {
-		avg = sum / len(rows)
-	}
-	b.WriteString(fmt.Sprintf("\n    %s  %d sessions · total %s · avg %s\n",
-		toolMeta.Render("summary"), len(rows), formatTokens(sum), formatTokens(avg)))
 	b.WriteString("\n")
 	return b.String()
 }

@@ -237,6 +237,21 @@ features:
 
 # COST1 模型单价表覆盖。键为模型名,值为 USD per million tokens。
 # bootstrap 把这些转成 einollm.ModelPricing 注入价格表;未知模型走 N/A。
+# COST1 每模型价格。内置表**只覆盖 claude-***（来源见 internal/llm/eino/pricing.go
+# 的包头，含抓取日期）。用别家 provider 时 /status 与 /stats 的成本会显示 N/A ——
+# 那是诚实的"没有价格数据"，不是坏了。
+#
+# 为什么不内置别家的价目：一张写死在代码里的第三方价目表会安静地腐烂，而腐烂后的
+# 症状比 N/A 糟得多 —— 用户看到一个像模像样的数字，没有任何迹象表明它是按去年的
+# 单价算的。N/A 会让人去查，错的数字不会。
+#
+# 单价按**每百万 token** 计。cache_hit_per_m 省略则回落到 input_per_m。
+# pricing:
+#   overrides:
+#     gpt-4o:
+#       input_per_m: 2.50
+#       cache_hit_per_m: 1.25
+#       output_per_m: 10.00
 pricing:
   overrides: {}
 

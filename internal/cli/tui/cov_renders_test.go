@@ -87,7 +87,7 @@ func TestStatusEntry_RenderVariants(t *testing.T) {
 	assert.Contains(t, out, "high")
 	assert.Contains(t, out, "cache 80")
 	assert.Contains(t, out, "think 20")
-	assert.Contains(t, out, "$0.001230")
+	assert.Contains(t, out, "$0.0012") // FormatCost bands: <0.01 -> %.4f
 }
 
 func TestJobsEntry_Render(t *testing.T) {
