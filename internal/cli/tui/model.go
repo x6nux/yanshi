@@ -223,6 +223,18 @@ type model struct {
 	// enters picker mode (instead of rendering a sessionsEntry).
 	restoreMode bool
 
+	// sessionsCache is the last session list the server sent, kept so the
+	// Ctrl+K action palette can offer sessions without blocking on a round
+	// trip. It mirrors the models cache exactly, including the staleness
+	// problem: opening the palette refetches even when the cache is warm,
+	// because a session created in another window is otherwise invisible.
+	//
+	// It is filled on EVERY "sessions" frame, whatever that frame was
+	// requested for (/sessions, /stats, the restore picker). Routing the
+	// display side and the cache side off the same reply is what keeps the
+	// palette current without a second request per open.
+	sessionsCache []proto.SessionInfo
+
 	// Interactive command picker state for "/model", "/mode", "/theme" etc.
 	// When pickerKind != "" the picker popup is shown and Up/Down/Enter/Escape
 	// are captured for navigation. "model-loading" is a transient state while
@@ -878,6 +890,10 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 		// OR enter restore picker mode when restoreMode is set,
 		// OR fill the pending statsEntry (/stats reuses this fetch).
 		m.flushAssistant()
+		// The cache is updated before the routing switch, not inside a branch:
+		// this frame answers four different requests and the palette wants the
+		// list from all of them.
+		m.sessionsCache = ev.Sessions
 		switch {
 		case m.restoreMode:
 			m.restoreMode = false

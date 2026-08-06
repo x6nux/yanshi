@@ -36,8 +36,13 @@ type actionState struct {
 //   - mode: guard.Modes() 的每一项(防漂移)
 //   - model: m.models(由 applyEvent case "models" 填充;首次 Ctrl+K 前为空)
 //   - theme: themeList 的每一项
+//   - session: m.sessionsCache(由 applyEvent case "sessions" 填充;
+//     openActionPopup 每次打开都重新请求,理由同 models —— 另一个窗口里新建的
+//     会话否则永远不出现)
 //
-// session + tool/MCP source DEFERRED(见设计要点①)。
+// tool/MCP source remains deferred: those are not a fixed registry the TUI
+// holds, so offering them means a round trip per keystroke rather than a
+// cached list, which is a different design from the five sources here.
 func (m model) collectActions() []actionItem {
 	var items []actionItem
 	// /help is the first action item even though it's not in commandTable:
@@ -108,6 +113,25 @@ func (m model) collectActions() []actionItem {
 			Hint:     "color theme",
 			Action: func(mm model) (tea.Model, tea.Cmd) {
 				return cmdTheme(mm, []string{thName})
+			},
+		})
+	}
+	// session source(从 m.sessionsCache);closure 调用真实 cmdRestore
+	// (commands.go),所以选中一项就是恢复它 —— 与其他四源一样直接执行,而不是
+	// 把命令填进输入框等用户再按一次 Enter。
+	for _, ss := range m.sessionsCache {
+		id := ss.ID
+		label := ss.Title
+		if strings.TrimSpace(label) == "" {
+			label = id
+		}
+		items = append(items, actionItem{
+			Label:    label,
+			Source:   "session",
+			Category: "session",
+			Hint:     fmt.Sprintf("restore %s (%d msgs)", id, ss.MsgCount),
+			Action: func(mm model) (tea.Model, tea.Cmd) {
+				return cmdRestore(mm, []string{id})
 			},
 		})
 	}

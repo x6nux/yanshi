@@ -401,8 +401,13 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		// so the list_models request goes through Update here. Do NOT return
 		// a local "loaded" Msg — wait for the real reply, then applyEvent's
 		// case "models" populates m.models + refreshes the popup in place.
-		mm, cmd := m.sendControlFrame(proto.NewListModels())
-		return mm.(model), cmd, true
+		// Two refreshes, one per cached source. Both caches go stale for the
+		// same reason (another window changed something) and neither can be
+		// fetched lazily: the palette renders synchronously.
+		mm, modelsCmd := m.sendControlFrame(proto.NewListModels())
+		m = mm.(model)
+		mm2, sessionsCmd := m.sendControlFrame(proto.NewSessionList())
+		return mm2.(model), tea.Batch(modelsCmd, sessionsCmd), true
 	case tea.KeyCtrlS:
 		// C2 — UX5: stash current textarea as a draft. No-op when any popup
 		// is open (the popup owns keystrokes; /stash handles its own saves).
