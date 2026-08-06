@@ -71,7 +71,13 @@ C1 批处理与自动化：`rlm_model`（RLM fan-out 用的廉价 provider 名�
 
 ## lsp
 
-B2-LSP1 编辑后诊断回喂：`enabled`（*bool，省略=默认 true）、`diag_timeout`（单文件诊断等待，默认 800ms）、`languages`（覆盖/扩展语言→server 表，空=内置 {go: gopls, python: pyright-langserver}）。找不到的 server 静默跳过（软降级）。
+B2-LSP1 编辑后诊断回喂：`enabled`（*bool，省略=默认 true）、`diag_timeout`（单文件诊断等待，默认 800ms）、`languages`（覆盖语言→server 表）。
+
+内置表覆盖 yanshi 能按扩展名识别的**全部**语言：`go`（gopls）、`python`（pyright-langserver）、`typescript` / `javascript`（typescript-language-server）、`rust`（rust-analyzer）、`cpp`（clangd）。列一个你没装的 server 没有代价 —— 命令不在 PATH 上时该语言被静默剔除（软降级）。
+
+**两道启用闸门，都必须过**：命令在 PATH 上，**且**工作区里有该语言的标志文件（`go.mod` / `pyproject.toml` / `tsconfig.json` / `Cargo.toml` / `compile_commands.json` 等）。第二道是必要的：在没有 `go.mod` 的目录里 gopls 对每个请求都报错，于是你会得到一个永远失败的子进程，而不是一个诚实的"此处无诊断"。
+
+`languages` 里的每一项**只覆盖 command/args**，标志文件沿用内置值 —— 把 yanshi 指向你自己编译的 gopls，不等于要求它停止判断"这里是不是一个 Go 工作区"。
 
 ## mcp
 

@@ -59,3 +59,45 @@ V16-c 与 W6 Task 2 的 `netpolicy.ManagedEnv` 是**同一种形状**：导出�
 这一种签名。一条「导出符号零生产调用点」的通用门禁会同时抓到这两个，
 但也会误伤大量合法的库导出（sdk/、给测试用的 seam），所以它需要一张
 豁免表和一次认真的设计 —— 记在这里作为线索，不在 W6 内实施。
+
+---
+
+# W6 五轮评审记录（2026-08-06，主循环自评）
+
+subagent 配额本会话十次实测锁死（200/200），五轮全部自评，**独立评审 0 轮**。
+
+| 轮次 | 角度 | 发现 |
+|---|---|---|
+| R1 | 配置缝 | **实** —— `cfg.LSP.Override` 重建条目时丢掉默认 Markers，覆盖一个语言的命令就静默改变了它的**启动闸门**（已修 `30e2028`） |
+| R2 | 边界与状态面 | 零发现。race 干净；`rememberOpen` 的 cap 边界正确；`hostOnly(searchBase)` 与新端点一致（补了断言） |
+| R3 | 空壳测试识别 | **实** —— `TestMergeNumstatByPathDeduplicates` 直接驱动纯函数，摘掉调用点后照绿。去重可被静默拔线（已补端到端断言） |
+| R4 | 文档虚报 | **实** —— `configuration.md` 仍写「空=内置 {go, python}」，实际已 6 种，且未提两道启用闸门 |
+| R5 | 幻影名与死代码 | **实，未修** —— 见下 |
+
+## R5 的未处理项：7 个幻影帧构造器
+
+与本轮删掉的 `mcp_list` 完全同型：有构造器、有往返测试（让它们看起来在被维护）、**零生产构造点**。
+
+`NewDisableSkill` / `NewEnableSkill` / `NewTrustSkill` / `NewUninstallSkill` /
+`NewUntrustSkill` / `NewUserMessageWithSchema` / `NewToolProgress`
+
+现场清点命令（不要抄数字）：
+
+```sh
+for f in $(grep -oE 'func New[A-Za-z]+\(' internal/proto/frame.go | sed 's/func //;s/(//' | sort -u); do
+  n=$(grep -rn "proto\.$f(\|[^a-zA-Z]$f(" --include='*.go' internal cmd | grep -v _test.go \
+      | grep -v 'internal/proto/frame.go' | wc -l | tr -d ' ')
+  [ "$n" = "0" ] && echo "$f"
+done
+```
+
+**`NewToolProgress` 是其中最具误导性的一个**：`internal/cli/tui/model.go` 里有
+`case "tool_progress":` 分支、`internal/api/v1/events.go` 里也有 —— 两个消费者在等一个
+**没有任何服务端会构造**的帧。读代码的人会以为这条链路是活的。
+
+未在本轮删除，因为删 wire 词表要同时动 parity 测试、SSE golden 与 `sdk/` 契约，
+而这需要一次完整的、不赶时间的编辑。**归 W9（对外契约）**，那正是它的主场。
+
+⚠️ 删除时的判据（与 `mcp_list` 那次相同）：**服务端零构造点 = 客户端永远收不到**，
+所以删掉它不改变任何外部可观察行为；留着它则会持续把「有名字、有测试」误读为
+「有实现」。
