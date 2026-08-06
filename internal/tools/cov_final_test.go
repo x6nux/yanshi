@@ -27,9 +27,15 @@ import (
 
 func TestCov_WebRunSearchHTMLParse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// result__a is the class DuckDuckGo's html endpoint emits. The old
+		// fixture used "result-link", a class that appears nowhere in any
+		// DuckDuckGo response -- so this test proved the parser could read
+		// markup only this test produced, which is how a parser that returned
+		// zero results against the real endpoint stayed green.
 		_, _ = w.Write([]byte(`<html><body>
-<a class="result-link" href="https://example.com">Example</a>
-<a class="result-link" href="https://test.org">Test Org</a>
+<a class="result__a" href="https://example.com">Example</a>
+<a class="result__snippet" href="#">An example site.</a>
+<a class="result__a" href="https://test.org">Test Org</a>
 </body></html>`))
 	}))
 	defer srv.Close()

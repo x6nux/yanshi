@@ -155,7 +155,9 @@ func TestFormatDur(t *testing.T) {
 
 func TestWebRunSearchInitialization(t *testing.T) {
 	w := NewWebTools(1000, time.Second)
-	if w.searchBase != "https://lite.duckduckgo.com/lite" {
+	// The lite endpoint became an anti-bot page returning no results; the
+	// html endpoint is what serves results to a POSTed form (W6/T11).
+	if w.searchBase != "https://html.duckduckgo.com/html/" {
 		t.Fatalf("unexpected searchBase: %s", w.searchBase)
 	}
 }

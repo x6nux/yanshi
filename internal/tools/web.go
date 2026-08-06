@@ -3,9 +3,11 @@ package tools
 import (
 	"context"
 	"fmt"
+	htmlpkg "html"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -26,7 +28,7 @@ type WebTools struct {
 // 1 MiB); timeout caps each HTTP request (0 → default 30s). Both the fetch and
 // search tools are constructed with the same timeout/maxBytes.
 func NewWebTools(maxBytes int, timeout time.Duration) *WebTools {
-	w := &WebTools{maxBytes: maxBytes, timeout: timeout, searchBase: "https://lite.duckduckgo.com/lite"}
+	w := &WebTools{maxBytes: maxBytes, timeout: timeout, searchBase: "https://html.duckduckgo.com/html/"}
 	if w.maxBytes <= 0 {
 		w.maxBytes = 1 << 20 // 1 MiB default
 	}
@@ -200,7 +202,15 @@ func (w *WebTools) runSearch(ctx context.Context, argsJSON string) (string, erro
 	if d := policy.CheckHost(searchHost); !d.Allowed {
 		return "", &DenyErr{Reason: d.Reason}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, w.searchBase+"?q="+url.QueryEscape(a.Query), nil)
+	// POST with a form body, not GET with a query string. The lite endpoint
+	// this used to query became an anti-bot page that returns no results at
+	// all, and the html endpoint answers a GET the same way; the POST form is
+	// the shape it actually serves results to.
+	form := url.Values{"q": {a.Query}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.searchBase, strings.NewReader(form.Encode()))
+	if req != nil {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
 	if err != nil {
 		return "", fmt.Errorf("web.search: build request: %w", err)
 	}
@@ -219,17 +229,94 @@ func (w *WebTools) runSearch(ctx context.Context, argsJSON string) (string, erro
 	if err != nil {
 		return "", fmt.Errorf("web.search: read: %w", err)
 	}
-	html := string(body)
-	results := make([]searchItem, 0, a.MaxResults)
-	// Simple HTML extraction: find <a> tags with href in search results.
-	for _, line := range strings.Split(html, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "<a ") && strings.Contains(line, "class=\"result-link\"") {
-			results = append(results, searchItem{Title: line, URL: ""})
-			if len(results) >= a.MaxResults {
+	results := parseDuckDuckGoHTML(string(body), a.MaxResults)
+	return toJSON(searchResult{Results: results}), nil
+}
+
+var (
+	// ddgResultRe matches one result anchor: class="result__a", an href, and
+	// the inner markup that holds the title.
+	ddgResultRe = regexp.MustCompile(`(?is)<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>`)
+	// ddgSnippetRe matches the description anchor that follows a result.
+	ddgSnippetRe = regexp.MustCompile(`(?is)<a[^>]*class="result__snippet"[^>]*>(.*?)</a>`)
+	ddgTagRe     = regexp.MustCompile(`(?s)<[^>]*>`)
+	ddgSpaceRe   = regexp.MustCompile(`\s+`)
+)
+
+// parseDuckDuckGoHTML extracts title, URL and snippet from a DuckDuckGo HTML
+// results page.
+//
+// It is a pure function so it can be asserted against a fixture. A test that
+// queried the live endpoint would be testing DuckDuckGo's uptime, and -- worse
+// -- would keep passing on the day the markup changed, because the tool
+// degrades a failed search to an empty result set rather than an error. That
+// is exactly how the previous parser went unnoticed: it stored the raw <a>
+// line as the title, hardcoded URL to "", never assigned Snippet at all, and
+// pointed at an endpoint that had become an anti-bot page. Every search
+// returned an empty list, and an empty list is indistinguishable from "nothing
+// matched".
+//
+// Snippets are paired by ORDER rather than by containment: the markup nests
+// each snippet in the same result block as its anchor, but matching blocks
+// with a regex is fragile in a way that ordering is not, and DuckDuckGo emits
+// them strictly interleaved. A result with no snippet simply gets none --
+// pairing must not shift every later snippet up by one.
+func parseDuckDuckGoHTML(html string, max int) []searchItem {
+	if max <= 0 {
+		max = 10
+	}
+	anchors := ddgResultRe.FindAllStringSubmatchIndex(html, -1)
+	snippets := ddgSnippetRe.FindAllStringSubmatchIndex(html, -1)
+
+	out := make([]searchItem, 0, len(anchors))
+	for i, m := range anchors {
+		if len(out) >= max {
+			break
+		}
+		item := searchItem{
+			URL:   ddgResolveURL(html[m[2]:m[3]]),
+			Title: ddgText(html[m[4]:m[5]]),
+		}
+		// The snippet belonging to this anchor is the first one that starts
+		// after it and before the next anchor begins.
+		nextAnchor := len(html)
+		if i+1 < len(anchors) {
+			nextAnchor = anchors[i+1][0]
+		}
+		for _, sm := range snippets {
+			if sm[0] > m[1] && sm[0] < nextAnchor {
+				item.Snippet = ddgText(html[sm[2]:sm[3]])
 				break
 			}
 		}
+		out = append(out, item)
 	}
-	return toJSON(searchResult{Results: results}), nil
+	return out
+}
+
+// ddgResolveURL unwraps DuckDuckGo's /l/?uddg= redirect to the real
+// destination. A direct href is returned unchanged, so a markup change that
+// drops the redirect degrades to a working URL rather than to nothing.
+func ddgResolveURL(href string) string {
+	href = htmlpkg.UnescapeString(strings.TrimSpace(href))
+	if strings.HasPrefix(href, "//") {
+		href = "https:" + href
+	}
+	u, err := url.Parse(href)
+	if err != nil {
+		return href
+	}
+	if target := u.Query().Get("uddg"); target != "" {
+		return target
+	}
+	return href
+}
+
+// ddgText strips tags, decodes entities and collapses whitespace. The <b>
+// highlight tags DuckDuckGo wraps around matched terms are why the raw inner
+// markup cannot be used as a title.
+func ddgText(s string) string {
+	s = ddgTagRe.ReplaceAllString(s, "")
+	s = htmlpkg.UnescapeString(s)
+	return strings.TrimSpace(ddgSpaceRe.ReplaceAllString(s, " "))
 }
