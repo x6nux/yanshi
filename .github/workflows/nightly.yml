@@ -15,7 +15,11 @@ jobs:
   fuzz-long:
     name: fuzz-long (E2 FUZ1)
     runs-on: ubuntu-latest
-    continue-on-error: true   # soft until E2 fuzz targets land
+    # Hard gate since W10. The comment here used to read "soft until E2 fuzz
+    # targets land" — FuzzMatchGlob has landed, so the stated precondition is
+    # met. Leaving it soft would also defeat the point: nightly blocks no
+    # merge, so continue-on-error's ONLY effect is turning red into silence,
+    # and a fuzz job's entire value is the alert.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -26,9 +30,14 @@ jobs:
         shell: bash
         run: |
           set -e
+          # Missing targets FAIL. This used to soft-pass and exit 0, which
+          # meant deleting every fuzz target left the job green — the escape
+          # hatch was in the shell, not on the YAML key, so removing
+          # continue-on-error alone would not have closed it.
           if ! go test -list 'Fuzz.*' ./internal/guard/... 2>/dev/null | grep -q '^Fuzz'; then
-            echo "no Fuzz target yet (E2 pending); soft-pass"
-            exit 0
+            echo "no Fuzz target found under internal/guard — they were removed, " \
+                 "or the package moved. This job exists to run them." >&2
+            exit 1
           fi
           go test -fuzz=FuzzMatchGlob -fuzztime=10m ./internal/guard/...
 
@@ -110,3 +119,40 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go test -race ./...
+
+  release-snapshot:
+    name: release-snapshot (PKG1 artifacts build)
+    runs-on: ubuntu-latest
+    # `goreleaser check` in ci.yml only proves the config PARSES. Until W10 ran
+    # it by hand, nothing had ever verified that the artifacts build, that the
+    # archives carry LICENSE/README/config.example.yaml, or that the
+    # CGO_ENABLED=0 -tags=nokeyring binary actually starts. The repo has no
+    # tags at all, so release.yml has never fired.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2.7"
+          args: release --snapshot --clean --skip=publish
+      - name: verify the artifacts
+        shell: bash
+        run: |
+          set -e
+          archives=$(ls dist/*.tar.gz dist/*.zip | wc -l)
+          [ "$archives" -eq 4 ] || { echo "expected 4 archives, got $archives" >&2; exit 1; }
+          [ "$(wc -l < dist/checksums.txt)" -eq 4 ] || { echo "checksums.txt is short" >&2; exit 1; }
+          # The archive must carry the licence, or every downloaded copy ships
+          # without the notice MIT requires.
+          tar tf dist/yanshi_*_linux_amd64.tar.gz | grep -qx LICENSE
+          tar tf dist/yanshi_*_linux_amd64.tar.gz | grep -qx config.example.yaml
+          # The only real smoke test of the nokeyring build.
+          rm -rf /tmp/relsmoke && mkdir -p /tmp/relsmoke
+          tar xf dist/yanshi_*_linux_amd64.tar.gz -C /tmp/relsmoke
+          /tmp/relsmoke/yanshi -h > /dev/null

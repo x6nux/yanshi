@@ -193,3 +193,97 @@ func TestAPIReferenceDocsCarryTheGeneratedBlocks(t *testing.T) {
 		}
 	}
 }
+
+// jobLevelContinueOnError reports whether a job body carries continue-on-error
+// on the JOB, at 4-space indent.
+//
+// Indentation is the whole point. A plain substring search cannot tell a job
+// key from a step key, and nightly's bench job has BOTH: soft at the job
+// level, plus a soft "download previous baseline" step. The first version of
+// the assertions below used Contains and stayed green when the job-level key
+// was deleted, because the step-level one kept matching — an assertion written
+// down that was not sensitive to the fact it asserted.
+func jobLevelContinueOnError(body string) bool {
+	for line := range strings.SplitSeq(body, "\n") {
+		if strings.HasPrefix(line, "    continue-on-error:") &&
+			!strings.HasPrefix(line, "     ") {
+			return true
+		}
+	}
+	return false
+}
+
+// TestFuzzGatesHaveNoEscapeHatch pins that the fuzz jobs fail when their
+// targets are gone.
+//
+// Both jobs used to end their guard with `soft-pass; exit 0`: delete every
+// fuzz and property target and they stayed green. The hatch was in the SHELL,
+// not on a YAML key, so removing continue-on-error would not have closed it —
+// and no gate in this package could see it, because they all reason about Go
+// source or workflow keys.
+//
+// nightly's fuzz-long also carried continue-on-error with the comment "soft
+// until E2 fuzz targets land". FuzzMatchGlob has landed. Nightly blocks no
+// merge, so that key's only effect was turning red into silence, on a job
+// whose entire value is the alert.
+func TestFuzzGatesHaveNoEscapeHatch(t *testing.T) {
+	cases := []struct{ workflow, job string }{
+		{"ci.yml", "fuzz-seed"},
+		{"nightly.yml", "fuzz-long"},
+	}
+	for _, tc := range cases {
+		body, ok := workflowJobBody(readWorkflow(t, tc.workflow), tc.job)
+		if !ok {
+			t.Errorf("%s has no %s job", tc.workflow, tc.job)
+			continue
+		}
+		if strings.Contains(body, "soft-pass") || strings.Contains(body, "exit 0") {
+			t.Errorf("%s/%s still soft-passes when its targets are missing: deleting "+
+				"every fuzz target would leave it green", tc.workflow, tc.job)
+		}
+		if jobLevelContinueOnError(body) {
+			t.Errorf("%s/%s is continue-on-error; a fuzz job that cannot go red "+
+				"reports nothing", tc.workflow, tc.job)
+		}
+	}
+	// The bench trend job stays soft on purpose — ns/op on a shared runner
+	// swings past any threshold from neighbour load alone. Asserting it keeps
+	// the exemption from being "fixed" by someone applying the rule above
+	// uniformly.
+	bench, ok := workflowJobBody(readWorkflow(t, "nightly.yml"), "bench")
+	if !ok {
+		t.Fatal("nightly.yml has no bench job")
+	}
+	if !jobLevelContinueOnError(bench) {
+		t.Error("nightly's bench trend job lost its JOB-level continue-on-error: it is " +
+			"trend-only, and a hard gate there manufactures flakes rather than " +
+			"catching regressions")
+	}
+}
+
+// TestReleaseSnapshotIsVerifiedNightly pins the artifact check.
+//
+// `goreleaser check` in ci.yml only proves the config PARSES. The repo has no
+// tags at all, so release.yml has never fired and nothing had ever verified
+// that the artifacts build, that the archives carry the licence, or that the
+// CGO_ENABLED=0 -tags=nokeyring binary starts.
+func TestReleaseSnapshotIsVerifiedNightly(t *testing.T) {
+	body, ok := workflowJobBody(readWorkflow(t, "nightly.yml"), "release-snapshot")
+	if !ok {
+		t.Fatal("nightly.yml has no release-snapshot job: `goreleaser check` alone " +
+			"never builds an artifact")
+	}
+	for _, want := range []string{
+		"release --snapshot",
+		"grep -qx LICENSE",
+		"yanshi -h",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the release-snapshot job does not %s", want)
+		}
+	}
+	if jobLevelContinueOnError(body) {
+		t.Error("release-snapshot is continue-on-error: a broken release pipeline " +
+			"would report green until the day someone pushes a tag")
+	}
+}

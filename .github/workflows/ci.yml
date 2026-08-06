@@ -176,10 +176,15 @@ jobs:
         shell: bash
         run: |
           set -e
-          # Guard: E2 ships FUZ1 seed corpora + PROP1 property tests in guard/ctxcompact.
+          # Missing targets FAIL. This used to soft-pass and exit 0, so deleting
+          # every fuzz and property target left the job green — the escape
+          # hatch lived in the shell, not on a YAML key, and no gate could see
+          # it. E2's assets (FuzzMatchGlob plus internal/ctxcompact's
+          # TestProperty_*) have landed, so the stated precondition is met.
           if ! go test -list 'Fuzz.*|TestProperty.*' ./internal/guard/... ./internal/ctxcompact/... 2>/dev/null | grep -Eq 'Fuzz|TestProperty'; then
-            echo "no fuzz/property targets yet (E2 pending); soft-pass"
-            exit 0
+            echo "no fuzz/property target found in internal/guard or internal/ctxcompact — " \
+                 "they were removed, or a package moved. This job exists to run them." >&2
+            exit 1
           fi
           go test -run 'Fuzz|TestProperty' -count=1 ./internal/guard/... ./internal/ctxcompact/...
 
