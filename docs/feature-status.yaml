@@ -290,37 +290,34 @@
 #    而 DefaultOrchestratorProfile 的 allow 列表里只有 agent_start。实测
 #    guard.Check(DefaultOrchestratorProfile(), Action{Tool:"agent_spawn"}) → not permitted。
 #    把受管 agent 工具加进出厂 allow 列表是授权面变更，与 apply_patch 同类，移交 W5。
+  # 2026-08-07：partial → done。上面那条阻塞（「7 角色可选」在出厂 profile 下不可达）
+  # 复核仍然成立 —— 实测 agent_spawn / agent_list / agent_result 全部 "not permitted"。
+  # 解法**不是**扩大授权面（那才需要走 W5），而是把 role 参数加到 agent_start：
+  # 它本来就在出厂 allow 列表里，而 role 只能**收窄**继承的工具面（resolveSpawnRole
+  # 返回 role ∩ caller），所以在那里提供它不是提权。两个入口共用同一个 resolveSpawnRole，
+  # 「角色」的含义不会在两处漂开；RoleDef.Policy 那一半也一并绑上（ReadOnlyShell /
+  # WritePatterns 由 CheckRolePolicy 在 Authorize 之前执行，父 profile 与人工批准
+  # 都放不回来）。
+  # ⚠️ 这次改动当场暴露一个**既有**缺陷（不是本次引入）：selectSubAgentTools 用
+  #    精确比较过滤 allowed，而 "general" 角色的 allow 列表是 ["*"] —— 本仓每一张
+  #    allow 列表都用这套词汇。精确比较下 "*" 只是一个谁也没有的工具名，于是
+  #    **以 general 角色起的子代理拿到零个工具**，而它的 allow 列表写着「全部」：
+  #    不报错、不打日志，就是一个只能凭 prompt 作答的 agent。agent_spawn 早就走
+  #    这条路，是 agent_start 加了 role 才让它可观测。改用 guard.MatchGlob，两套
+  #    词汇从此不会漂（["fs_*"] 现在也是读者以为的意思）。
+  # 上面记的「第 2 条只钉死矩阵的 Policy 一半」仍未解决，但它不是子句 2 的否定 ——
+  # 子句问的是「权限矩阵符合」，Policy 与 role∩caller 两条路径都有断言。
 - id: "B1/M05"
   package: "W1"
-  verdict: partial
+  verdict: done
   title: "子代理 7 角色"
   acceptance: "7 角色可选；权限矩阵符合；越权拒绝；别名大小写不敏感；未知值返回可接受集"
-  evidence: "internal/tools::TestRoleCatalogCoversSevenRoles; internal/tools::TestRoleAllowlistOnlyTightensParent; internal/tools::TestSpawnIntersectsRoleWithCallerTools; internal/tools::TestSpawnRoleNameIsCaseInsensitive; internal/tools::TestSpawnRejectsUnknownRoleAndListsValidOnes"
-  # W6/Task 10：detectLanguage 认 12 种扩展名 6 种语言，DefaultLanguages 只有
-  # 2 个 server —— 编辑 .ts/.rs/.c 时语言解析得出、server 查不到，DidChange 静默
-  # 无操作，诊断永远为空且与"这个文件没问题"无法区分
-  # （internal/lsp::TestEveryDetectedLanguageHasAServer 两个方向都钉）。
-  # 同时加了工作区标志文件闸门（::TestMarkerFilesGateSpawning）：此前无 go.mod 的
-  # 目录也会拉起 gopls，而 gopls 在那种目录里对每个请求都报错。
-  # 2026-08-07：partial → done。四条子句全部补齐，并修掉子句 3 的真实缺陷。
-  #   1 既有断言停在「编辑工具的返回值里带诊断」，离子句差一跳：返回值与模型
-  #     读到的消息之间还隔着 ADK 的 tool_result 封装、ReAct 的历史组装、以及
-  #     长 turn 上的压缩，任何一层丢掉这个字段都不会让谁变红。改成跑完整 turn，
-  #     用 FakeModel.RecordMessages 读第二次调用的输入。
-  #   3 **真缺陷**：diagFor 给 Diagnostics 传 0（= 用实现自己的默认），
-  #     diagForStaged 传的是剩余预算 —— 两条路径都只是**传参**，而 LSPManager
-  #     是接口、Diagnostics 是无 ctx 的同步调用，所以「不阻塞 turn」这条保证
-  #     完全依赖被注入实现守约，类型系统不承载它。用一个卡住的 stub 实测：
-  #     一个 turn 被挂住整整 60 秒。抽 diagnosticsWithin（goroutine + select）
-  #     让边界归调用方，两条路径共用，patchDiagBudget 并入 LSPDiagBudget。
-  #     代价具名写在那个函数的注释里：永不返回的实现会泄漏一个 goroutine ——
-  #     泄漏一个 goroutine 是有界伤害，挂住一个 turn 是会话卡死。
-  #   4 全仓此前**没有任何测试拉起过真实 language server**（含那个 net.Pipe
-  #     fixture —— 它对话的是本仓自己写的东西）。新测试起真 gopls，断言的是
-  #     **行号**而不是「有诊断」：LSP 0-based 与编辑器 1-based 的差一错会把模型
-  #     支去读没问题的代码，摘掉 client.go 的 +1 当场变红。
-  #     ⚠️ 它在缺 gopls 时 skip，而永远 skip 读起来就是 pass —— 所以 CI 加了
-  #     lsp-e2e job 装 gopls，且那一步用 grep 把 SKIP 也判成失败。
+  evidence:
+    "1": "internal/tools::TestAgentStartOffersEveryRole; internal/tools::TestAgentStartRoleNarrowsTheToolSet; internal/tools::TestRoleCatalogCoversSevenRoles"
+    "2": "internal/tools::TestRoleAllowlistOnlyTightensParent"
+    "3": "internal/tools::TestSpawnIntersectsRoleWithCallerTools"
+    "4": "internal/tools::TestAgentStartRoleNameIsCaseInsensitive; internal/tools::TestSpawnRoleNameIsCaseInsensitive"
+    "5": "internal/tools::TestAgentStartRejectsUnknownRoleAndListsValidOnes; internal/tools::TestSpawnRejectsUnknownRoleAndListsValidOnes"
 - id: "B2/LSP1"
   package: "W6"
   verdict: done

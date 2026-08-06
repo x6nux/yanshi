@@ -138,6 +138,8 @@ func spawnCapture(t *testing.T, argsJSON string) (allowedSeen []string, err erro
 // model-authored tool arguments, where "Explore" is as likely as "explore".
 // Without folding, the capitalized spelling matches no catalog entry and the
 // sub-agent silently runs unrestricted.
+//
+// ledger: B1/M05#4 别名大小写不敏感
 func TestSpawnRoleNameIsCaseInsensitive(t *testing.T) {
 	lower, ok := LookupRole("review")
 	if !ok {
@@ -164,6 +166,8 @@ func TestSpawnRoleNameIsCaseInsensitive(t *testing.T) {
 // TestSpawnRejectsUnknownRoleAndListsValidOnes guards the fail-closed direction:
 // a typo must not fall back to an unrestricted role, and the rejection has to
 // name the legal roles or the caller has no way to correct itself.
+//
+// ledger: B1/M05#5 未知值返回可接受集
 func TestSpawnRejectsUnknownRoleAndListsValidOnes(t *testing.T) {
 	_, err := spawnCapture(t, `{"prompt":"p","role":"reviewr"}`)
 	if err == nil {
@@ -203,6 +207,8 @@ func TestSpawnCustomRoleRequiresExplicitTools(t *testing.T) {
 // only ever NARROW the caller's tool surface. explore allows fs_read/time_now
 // but not fs_write, so a caller asking for all three gets the two-tool
 // intersection, never the union.
+//
+// ledger: B1/M05#3 越权拒绝
 func TestSpawnIntersectsRoleWithCallerTools(t *testing.T) {
 	allowed, err := spawnCapture(t,
 		`{"prompt":"p","role":"explore","tools":"[\"fs_read\",\"fs_write\",\"time_now\"]"}`)

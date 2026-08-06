@@ -682,7 +682,7 @@ func (o *Orchestrator) selectSubAgentTools(allowed []string) []BaseTool {
 		if err != nil || info == nil {
 			return nil, false
 		}
-		if len(allowed) > 0 && !contains(allowed, info.Name) {
+		if len(allowed) > 0 && !allowedToolMatches(allowed, info.Name) {
 			return nil, false
 		}
 		it, ok := t.(tool.InvokableTool)
@@ -726,6 +726,31 @@ func withoutOrchestrationTools(in []BaseTool) []BaseTool {
 		out = append(out, t)
 	}
 	return out
+}
+
+// allowedToolMatches reports whether name is permitted by an allow list, using
+// the SAME glob semantics as guard.Tools.Allow.
+//
+// Exact comparison was the original, and it made one entry unrepresentable: the
+// "general" role's allow list is ["*"], written in the vocabulary every other
+// allow list in this repo uses, and against an exact match "*" is simply a tool
+// name nothing has. A sub-agent spawned with the general role therefore got
+// ZERO tools while its allow list said "everything" — no error, no log, just an
+// agent that answers from the prompt alone.
+//
+// Sharing MatchGlob rather than special-casing "*" keeps the two vocabularies
+// from drifting: a role allow list of ["fs_*"] now means what the reader
+// expects it to.
+func allowedToolMatches(allowed []string, name string) bool {
+	for _, pat := range allowed {
+		if pat == name {
+			return true
+		}
+		if ok, err := guard.MatchGlob(pat, name); err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 func contains(s []string, v string) bool {

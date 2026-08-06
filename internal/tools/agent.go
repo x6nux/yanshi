@@ -70,6 +70,7 @@ func NewAgentTools(chatModel model.BaseChatModel) *AgentTools {
 			"prompt":      {Type: schema.String, Desc: "The task description or prompt for the sub-agent to process", Required: true},
 			"tools":       {Type: schema.String, Desc: "JSON array of tool names the sub-agent may use, e.g. [\"fs_read\",\"fs_search\"]. Omit to inherit the parent's full tool set.", Required: false},
 			"instruction": {Type: schema.String, Desc: "Optional system instruction override for the sub-agent. When omitted, the sub-agent inherits the parent's instruction (including project AGENT.md/CLAUDE.md).", Required: false},
+			"role":        {Type: schema.String, Desc: "Sub-agent role. A role NARROWS the inherited tool set; it can never widen it. Omit for \"general\".", Required: false, Enum: AgentRoleNames()},
 		}),
 		t.streamStartAgent,
 	)
@@ -243,6 +244,7 @@ type agentStartArgs struct {
 	Prompt      string `json:"prompt"`
 	Tools       string `json:"tools"`       // JSON array of tool names, e.g. ["fs_read","fs_search"]; "" = inherit all
 	Instruction string `json:"instruction"` // optional system prompt override; "" = inherit parent's
+	Role        string `json:"role"`        // one of AgentRoleNames(); "" = general
 }
 
 // bindSubAgentProgress wires a SubAgentProgress callback into ctx that, on each
@@ -346,7 +348,30 @@ func (t *AgentTools) streamStartAgent(ctx context.Context, argsJSON string) <-ch
 			pushErrChunk(ch, perr)
 			return
 		}
-		sctx, finalize := bindSubAgentProgress(ctx, ch, "")
+		// The role is resolved through the SAME function agent_spawn uses, so
+		// the two entry points cannot drift on what a role means. It returns
+		// role ∩ caller: a role can only narrow the inherited tool set, never
+		// widen it, which is why offering it here is not a privilege change.
+		//
+		// agent_start carries this at all because it is the delegation entry
+		// point the factory profile actually permits — agent_spawn is not in
+		// DefaultOrchestratorProfile's allow list, so a `role` that existed
+		// only there made "seven selectable roles" unreachable in the shipped
+		// configuration.
+		roleName, allowed, rerr := resolveSpawnRole(a.Role, allowed)
+		if rerr != nil {
+			pushErrChunk(ch, rerr)
+			return
+		}
+		// Both halves of a role apply, not just the tool list: RoleDef.Policy
+		// carries the restrictions (read-only shell, write path patterns) that
+		// CheckRolePolicy enforces ahead of Authorize, so neither the parent
+		// profile nor an interactive approval can widen them back out.
+		rctx := ctx
+		if def, ok := LookupRole(roleName); ok && def.Policy != nil {
+			rctx = WithRolePolicy(rctx, *def.Policy)
+		}
+		sctx, finalize := bindSubAgentProgress(rctx, ch, "")
 		result, err := t.runSubAgent(WithLeafSubAgentTools(sctx), a.Prompt, allowed, a.Instruction)
 		finalize()
 		if err != nil {

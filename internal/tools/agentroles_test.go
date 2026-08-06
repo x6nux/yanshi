@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// ledger: B1/M05#1 7 角色可选
 func TestRoleCatalogCoversSevenRoles(t *testing.T) {
 	names := []string{}
 	for _, r := range AgentRoles() {
@@ -14,6 +15,7 @@ func TestRoleCatalogCoversSevenRoles(t *testing.T) {
 	require.ElementsMatch(t, []string{"general", "explore", "plan", "review", "implementer", "verifier", "custom"}, names)
 }
 
+// ledger: B1/M05#2 权限矩阵符合
 func TestRoleAllowlistOnlyTightensParent(t *testing.T) {
 	for _, r := range AgentRoles() {
 		require.NotEmpty(t, r.PromptPrefix, "role %s missing prompt prefix", r.Name)
