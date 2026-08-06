@@ -270,6 +270,8 @@ func TestLoop_NoVacuousCompletion(t *testing.T) {
 // ledger: F2/LEAK3#2 budget 含子进程
 //
 // ledger: M1/G02#2 预算耗尽可靠停止并把原因持久化
+//
+// ledger: B0/TD1#2 overBudget 在循环顶与 plan 后双检查
 func TestLoop_BudgetStopsOnAccumulatedUsage(t *testing.T) {
 	t.Parallel()
 	// Simulate two evaluators each adding usage to a shared sink, then verify
@@ -298,6 +300,7 @@ func TestLoop_BudgetStopsOnAccumulatedUsage(t *testing.T) {
 	assert.Greater(t, decision.Usage.Total(), 0, "Decision carries the usage snapshot")
 }
 
+// ledger: B0/TD1#2 overBudget 在循环顶与 plan 后双检查
 func TestLoop_BudgetCheckMidIteration_AfterPlan(t *testing.T) {
 	t.Parallel()
 	// A planner that charges the sink on Plan, crossing the budget mid-turn.

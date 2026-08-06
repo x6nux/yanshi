@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// ledger: B0/TD1#1 UsageSink 逐次累计不覆盖不漏计
 func TestUsageSink_AddAccumulates(t *testing.T) {
 	t.Parallel()
 	s := &UsageSink{}
@@ -37,6 +38,7 @@ func TestUsage_Total_FallsBackToInOutSum(t *testing.T) {
 	assert.Equal(t, 99, u2.Total(), "non-zero TotalTokens wins")
 }
 
+// ledger: B0/TD1#1 UsageSink 逐次累计不覆盖不漏计
 func TestAddUsage_NilSafe(t *testing.T) {
 	t.Parallel()
 	// Components call addUsage unconditionally; a nil sink or nil message must
@@ -47,6 +49,7 @@ func TestAddUsage_NilSafe(t *testing.T) {
 	})
 }
 
+// ledger: B0/TD1#1 UsageSink 逐次累计不覆盖不漏计
 func TestUsageFromMeta(t *testing.T) {
 	t.Parallel()
 	msg := &schema.Message{ResponseMeta: &schema.ResponseMeta{

@@ -303,10 +303,21 @@
 # 混在实现提交里顺手做掉。
 - id: "B0/TD1"
   package: "W2"
-  verdict: partial
+  verdict: done
   title: "SpentTokens 死代码 / goal loop token budget 失效"
-  acceptance: "路线图未给 B0 独立验收标准，仅在实测表里给出判定依据：'goalloop/usage.go 完整 UsageSink+addUsage/usageFromMeta；loop.go spent()→sink、overBudget() 在循环顶 & plan 后双检查；planner/evaluators/tier 全接 Sink；TestLoop_BudgetStopsOnAccumulatedUsage 等测试守护'；隐含目标为原缺口'budget 控制完全失效'被修复"
-  evidence: ""
+  acceptance: "UsageSink 逐次累计不覆盖不漏计；overBudget 在循环顶与 plan 后双检查；planner/evaluator/tier 的模型调用都进同一个 sink"
+  evidence:
+    "1": "internal/agent/goalloop::TestUsageSink_AddAccumulates; internal/agent/goalloop::TestUsageFromMeta; internal/agent/goalloop::TestAddUsage_NilSafe"
+    "2": "internal/agent/goalloop::TestLoop_BudgetStopsOnAccumulatedUsage; internal/agent/goalloop::TestLoop_BudgetCheckMidIteration_AfterPlan"
+    "3": "internal/agent/goalloop::TestEveryLLMComponentReportsToTheSharedSink; internal/agent/goalloop::TestNoLLMComponentLacksASinkField"
+# 2026-08-07：partial → done，**acceptance 已改写**（acceptancePins 同步显式改写）。
+# 原文是一段元陈述：「路线图未给 B0 独立验收标准，仅在实测表里给出判定依据：'……'；
+# 隐含目标为原缺口'budget 控制完全失效'被修复」。按「；」切出 5 条子句，其中
+# 第 1 条（「路线图未给标准」）与第 4 条（「TestLoop_BudgetStopsOnAccumulatedUsage
+# 等测试守护」）都不是行为断言 —— 前者在描述文档缺失，后者点名一条测试当作验收，
+# 是自指。GOV8 的子句级握手对这两条无从落笔，条目因此永远出不了 partial，
+# 与代码好坏无关（同 F2/CCL1#3「keepRecent 文档清晰」）。
+# 新 acceptance 把「实测表里那段判定依据」翻译成三条可断言的行为主张，覆盖面不变。
 
 - id: "B1/M04"
   package: "W3"
