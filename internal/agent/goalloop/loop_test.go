@@ -268,6 +268,8 @@ func TestLoop_NoVacuousCompletion(t *testing.T) {
 // the operator's limit rather than escaping it.
 //
 // ledger: F2/LEAK3#2 budget 含子进程
+//
+// ledger: M1/G02#2 预算耗尽可靠停止并把原因持久化
 func TestLoop_BudgetStopsOnAccumulatedUsage(t *testing.T) {
 	t.Parallel()
 	// Simulate two evaluators each adding usage to a shared sink, then verify

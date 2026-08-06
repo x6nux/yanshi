@@ -1494,10 +1494,25 @@
 
 - id: "M1/G02"
   package: "W2"
-  verdict: partial
+  verdict: done
   title: "Goal Token 预算累计（UsageSink）"
   acceptance: "SpentTokens 随 LLM 调用累计；预算耗尽可靠停止并把原因持久化"
-  evidence: ""
+  evidence:
+    "1": "cmd/yanshi::TestLightweightGoalReportsItsTokensToTheSink; cmd/yanshi::TestLightweightGoalReportsTokensEvenWhenTheTurnFails; internal/agent/goalloop::TestUsageWatchDistinguishesUnmeteredFromFree"
+    "2": "cmd/yanshi::TestPersistedRunRecordCarriesTheStopReason; internal/agent/goalloop::TestLoop_BudgetStopsOnAccumulatedUsage"
+# 2026-08-07：partial → done。两条子句各有一个真缺口，都不是补测试能了事的：
+#   1 T0-T2 轻量路径**完全不喂 sink** —— runLightweightGoal 调 Orchestrator.Query，
+#     而 Query 把 usage 扔掉，于是每一次 T0-T2 goal 的 run record 都记零 token，
+#     无论实际花了多少。重路径（T3-T4）经 loop 各组件上报，所以只读 loop 的人看不到
+#     这个洞：能上报的组件全都上报了，唯一绕开它们的是最便宜、也最常走的那条路。
+#     新增 Orchestrator.QueryWithUsage（Query 成为它的薄封装），usage 在**错误分支
+#     之前**上报 —— token 花了就是花了，只统计成功 turn 的预算等于给失败循环无限重试。
+#   2 「把原因持久化」从来没被端到端断言过：TestPersistGoalRun_WritesRecord 只查
+#     `COUNT(*) LIKE 'goalrun:%' >= 1` 且传 Decision{Complete:true}。把 NewRunRecord
+#     里的 StopReason 换成 "" 在持久化侧不会红。现在写进 kv 再读回来逐字段断言。
+# 顺带修：bootstrap 的 fake model 之前报零 usage。--fake-model 正是大多数计费路径
+#   被跑到的模式，一个报零的 fake 会让 /cost、goal 预算、run record 全都「看起来对、
+#   实际什么都没量」。现在报 12/8/20（数字任意，非零才是重点）。
 
 - id: "M1/G03"
   package: "W2"

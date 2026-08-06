@@ -787,7 +787,7 @@ func runGoal(args []string) int {
 
 		if resolvedTier.Path() == "lightweight" {
 			// --- T0-T2: one orchestrator turn with the tier's skill body ---
-			decision := runLightweightGoal(ctx, app, resolvedTier, text)
+			decision := runLightweightGoal(ctx, app, resolvedTier, text, loopSink)
 			persistGoalRun(loopStore, resolvedTier, decision, loopSink.Snapshot(), 1)
 			fmt.Printf("decision: complete=%v, summary=%s\n", decision.Complete, decision.Summary)
 			if decision.Complete {
@@ -878,14 +878,25 @@ func resolveGoalTier(flagValue, text string) (goalloop.Tier, bool, error) {
 // carrying the assistant summary and, when the tier is below T4, an escalation
 // hint so an undersized tier surfaces a next step instead of exiting silently
 // (G03).
-func runLightweightGoal(ctx context.Context, app *bootstrap.App, tier goalloop.Tier, text string) goalloop.Decision {
+func runLightweightGoal(ctx context.Context, app *bootstrap.App, tier goalloop.Tier, text string, sink *goalloop.UsageSink) goalloop.Decision {
 	prompt := text
 	if skill, ok := app.Skills.Get(tier.SkillName()); ok {
 		if body, err := app.Skills.Body(skill); err == nil && body != "" {
 			prompt = body + "\n\n---\n\nGoal: " + text
 		}
 	}
-	result, err := app.Orch.Query(ctx, prompt)
+	result, u, err := app.Orch.QueryWithUsage(ctx, prompt)
+	// Report BEFORE the error branch: the tokens were spent either way, and a
+	// budget that only counts successful turns is a budget a failing loop runs
+	// straight past. This path used to call Query, which discards usage, so
+	// every T0-T2 run record said zero tokens regardless of what it cost.
+	if sink != nil {
+		sink.Add(goalloop.Usage{
+			PromptTokens:     u.PromptTokens,
+			CompletionTokens: u.CompletionTokens,
+			TotalTokens:      u.TotalTokens,
+		})
+	}
 	if err != nil {
 		return goalloop.Decision{
 			Complete: false,

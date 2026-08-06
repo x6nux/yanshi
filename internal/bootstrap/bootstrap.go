@@ -621,6 +621,12 @@ func Build(opts Options) (*App, error) {
 			schema.AssistantMessage("(no real model configured)", nil),
 		}, nil)
 		fm.Repeat = true
+		// Report a plausible token count. A fake that reports zero makes every
+		// accounting path — the /cost line, the goal loop's budget, the
+		// persisted run record — look correct while measuring nothing, and
+		// --fake-model is the mode most of those paths are exercised in. The
+		// numbers are arbitrary; being non-zero is the point.
+		fm.Usage = &schema.TokenUsage{PromptTokens: 12, CompletionTokens: 8, TotalTokens: 20}
 		chatModel = fm
 		fakeChatModel = fm
 	} else {

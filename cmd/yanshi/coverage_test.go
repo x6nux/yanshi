@@ -261,7 +261,7 @@ func TestRunLightweightGoal(t *testing.T) {
 	app := buildFakeApp(t)
 	defer app.Shutdown(context.Background())
 
-	dec := runLightweightGoal(context.Background(), app, goalloop.TierQuickFix, "do a thing")
+	dec := runLightweightGoal(context.Background(), app, goalloop.TierQuickFix, "do a thing", nil)
 	assert.True(t, dec.Complete, "lightweight turn should complete with fake model: %s", dec.Summary)
 	assert.NotEmpty(t, dec.Summary)
 	// T0 is below T4, so an escalation hint is appended (non-silent upgrade path).
@@ -275,7 +275,7 @@ func TestRunLightweightGoal_NonTier4Hint(t *testing.T) {
 	app := buildFakeApp(t)
 	defer app.Shutdown(context.Background())
 	// T2 (Designed) is still lightweight and below T4 → hint present.
-	dec := runLightweightGoal(context.Background(), app, goalloop.TierDesigned, "goal text")
+	dec := runLightweightGoal(context.Background(), app, goalloop.TierDesigned, "goal text", nil)
 	assert.True(t, dec.Complete)
 }
 
@@ -1175,7 +1175,7 @@ func TestRunLightweightGoalSkillFound(t *testing.T) {
 	_, ok := app.Skills.Get(goalloop.TierQuickFix.SkillName())
 	require.True(t, ok, "dev-quick-fix skill must be loaded from repo skills/")
 
-	dec := runLightweightGoal(context.Background(), app, goalloop.TierQuickFix, "do a thing")
+	dec := runLightweightGoal(context.Background(), app, goalloop.TierQuickFix, "do a thing", nil)
 	assert.True(t, dec.Complete, "summary=%s", dec.Summary)
 }
 
@@ -1188,7 +1188,7 @@ func TestRunLightweightGoalQueryError(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	dec := runLightweightGoal(ctx, app, goalloop.TierQuickFix, "do a thing")
+	dec := runLightweightGoal(ctx, app, goalloop.TierQuickFix, "do a thing", nil)
 	assert.False(t, dec.Complete, "a cancelled turn should not complete: %s", dec.Summary)
 	assert.Contains(t, dec.Summary, "lightweight turn error")
 }

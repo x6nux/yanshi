@@ -524,6 +524,23 @@ func (o *Orchestrator) FlushRunners() {
 // already existing when neither site had it, so every turn a real user ran
 // through either transport produced no span at all.
 func (o *Orchestrator) Query(ctx context.Context, userMessage string) (answer string, retErr error) {
+	answer, _, retErr = o.QueryWithUsage(ctx, userMessage)
+	return answer, retErr
+}
+
+// QueryWithUsage is Query plus what the turn cost.
+//
+// It exists because the goal loop's lightweight path (T0–T2, one orchestrator
+// turn) had no way to report into the shared UsageSink: runLightweightGoal
+// called Query, Query threw the usage away, and the run record persisted for
+// every T0–T2 goal therefore said zero tokens no matter what the turn spent.
+// The heavy path (T3–T4) reported through the loop's own components, so the
+// gap was invisible to anyone reading only the loop.
+//
+// Usage is the LATEST model call's, not a sum: providers report cumulative
+// totals per call within a turn, so summing would double-count. That is the
+// same rule TurnUsage.set follows for the transports.
+func (o *Orchestrator) QueryWithUsage(ctx context.Context, userMessage string) (answer string, usage TurnUsage, retErr error) {
 	ctx = o.withTurnContext(ctx, TurnOpts{})
 	ctx, endTurn := otelobs.StartTurn(ctx, "")
 	defer func() { endTurn(retErr) }()
@@ -532,28 +549,35 @@ func (o *Orchestrator) Query(ctx context.Context, userMessage string) (answer st
 	iter := runner.Query(ctx, userMessage)
 
 	var acc finalOutputAccumulator
+	observe := func(msg *schema.Message) {
+		if msg != nil && msg.ResponseMeta != nil {
+			usage.set(msg.ResponseMeta.Usage)
+		}
+		acc.observe(msg)
+	}
 	for {
 		ev, ok := iter.Next()
 		if !ok {
 			break
 		}
 		if ev.Err != nil {
-			return "", fmt.Errorf("orchestrator: agent error: %w", ev.Err)
+			return "", usage, fmt.Errorf("orchestrator: agent error: %w", ev.Err)
 		}
 		if ev.Output != nil && ev.Output.MessageOutput != nil {
 			mv := ev.Output.MessageOutput
 			if mv.IsStreaming && mv.MessageStream != nil {
 				msg, err := mv.GetMessage()
 				if err != nil {
-					return "", fmt.Errorf("orchestrator: drain stream: %w", err)
+					return "", usage, fmt.Errorf("orchestrator: drain stream: %w", err)
 				}
-				acc.observe(msg)
+				observe(msg)
 				continue
 			}
-			acc.observe(mv.Message)
+			observe(mv.Message)
 		}
 	}
-	return acc.finalize()
+	out, err := acc.finalize()
+	return out, usage, err
 }
 
 // Events runs a turn and returns the raw ADK event iterator.

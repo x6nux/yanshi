@@ -286,6 +286,8 @@ func TestACPImplementerWorkerAccumulatesSubprocessUsage(t *testing.T) {
 // The distinction is the entire point: an agent that reports nothing and an
 // agent that genuinely spent nothing produce the same sink total, and the
 // budget cannot tell them apart. Only this flag can.
+//
+// ledger: M1/G02#1 SpentTokens 随 LLM 调用累计
 func TestUsageWatchDistinguishesUnmeteredFromFree(t *testing.T) {
 	w := &worker{sink: &UsageSink{}}
 
