@@ -109,10 +109,18 @@ func NewGitHubTools(ghFactory secproc.Factory) *GitHubTools {
 	}
 }
 
-// ghSpec builds a secproc spec for running `gh` with the given args.
-func ghSpec(args ...string) secproc.SecureProcessSpec {
+// ghSpec builds a secproc spec for running `gh` on behalf of tool.
+//
+// tool must be the REGISTERED tool name, because guard authorizes the action
+// by that string. This parameter exists because the field was previously
+// hardcoded to "github", which is not a tool: the factory profile allows the
+// four real names, so every call was refused with `denied: tool "github" not
+// permitted` and all four github_* tools were dead out of the box. The error
+// named a tool that does not exist anywhere in the registry, which made it
+// look like a profile typo rather than a spec builder writing the wrong name.
+func ghSpec(tool string, args ...string) secproc.SecureProcessSpec {
 	return secproc.SecureProcessSpec{
-		Tool: "github", Program: "gh", Args: args,
+		Tool: tool, Program: "gh", Args: args,
 		UseSandboxTier: sandbox.FullAccess, // gh needs network + gh config reads
 	}
 }
@@ -141,7 +149,7 @@ func runGitHubPRContext(ctx context.Context, argsJSON string) (string, error) {
 	if err := ParseArgs(argsJSON, &p); err != nil {
 		return errorResult(err.Error()), nil
 	}
-	res, err := secureCommandRunner(ctx, ghSpec("pr", "view", "--repo", p.Repo, "--json",
+	res, err := secureCommandRunner(ctx, ghSpec("github_pr_context", "pr", "view", "--repo", p.Repo, "--json",
 		"number,title,body,headRefName,baseRefName,author,files,changedFiles", fmt.Sprintf("%d", p.Number)), 30*time.Second)
 	if fail := ghFailure(res, err); fail != "" {
 		return fail, nil
@@ -162,7 +170,7 @@ func runGitHubComment(ctx context.Context, argsJSON string) (string, error) {
 	if err := ParseArgs(argsJSON, &p); err != nil {
 		return errorResult(err.Error()), nil
 	}
-	res, err := secureCommandRunner(ctx, ghSpec("pr", "comment", "--repo", p.Repo, "--body", p.Body, fmt.Sprintf("%d", p.Number)), 30*time.Second)
+	res, err := secureCommandRunner(ctx, ghSpec("github_comment", "pr", "comment", "--repo", p.Repo, "--body", p.Body, fmt.Sprintf("%d", p.Number)), 30*time.Second)
 	if fail := ghFailure(res, err); fail != "" {
 		return fail, nil
 	}
@@ -185,7 +193,7 @@ func runGitHubApprove(ctx context.Context, argsJSON string) (string, error) {
 		ghArgs = append(ghArgs, "--body", p.Body)
 	}
 	ghArgs = append(ghArgs, fmt.Sprintf("%d", p.Number))
-	res, err := secureCommandRunner(ctx, ghSpec(ghArgs...), 30*time.Second)
+	res, err := secureCommandRunner(ctx, ghSpec("github_approve", ghArgs...), 30*time.Second)
 	if fail := ghFailure(res, err); fail != "" {
 		return fail, nil
 	}
@@ -213,7 +221,7 @@ func runGitHubMerge(ctx context.Context, argsJSON string) (string, error) {
 		ghArgs = append(ghArgs, "--"+p.Method)
 	}
 	ghArgs = append(ghArgs, fmt.Sprintf("%d", p.Number))
-	res, err := secureCommandRunner(ctx, ghSpec(ghArgs...), 30*time.Second)
+	res, err := secureCommandRunner(ctx, ghSpec("github_merge", ghArgs...), 30*time.Second)
 	if fail := ghFailure(res, err); fail != "" {
 		return fail, nil
 	}
