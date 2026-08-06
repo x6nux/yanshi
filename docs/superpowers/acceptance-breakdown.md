@@ -417,7 +417,7 @@
 > acceptance：每个 tier（T0–T4）都产生真实结果；auto/强制 tier 可测；升级不再静默退出
 
 **1. 每个 tier（T0–T4）都产生真实结果** — 部分（**T3/T4 无任何结果断言**）
-- 依据：`tier.go::Tier.Path` `Path()` 分流；T0–T2 → `cmd/yanshi/main.go` `runLightweightGoal`（加载 `skills/dev-*` 的 SKILL.md → `app.Orch.Query`）；T3–T4 → `main.go::runGoal` 完整 loop；五个 tier 的 skill 目录都存在。T0 有 `TestRunLightweightGoalSkillFound`（断言 `dec.Complete`）与 `TestRunGoalRealPathLightweight`；T2 有 `TestRunLightweightGoal_NonTier4Hint`；T1 无专门测试（同一条代码路径，风险低）。**T3/T4 的 `cmd/yanshi::TestRunGoalRealPathLoopSetup` 是吞错** —— 它显式 `_ = code`（`coverage_test.go`）丢弃退出码，注释自陈「Any non-timeout result means the setup path ran cleanly」→ **只可能因 20s 超时而失败**，loop 返回什么都算过。这是覆盖率打卡，不是「产生真实结果」的证据。
+- 依据：`tier.go::Tier.Path` `Path()` 分流；T0–T2 → `cmd/yanshi/main.go` `runLightweightGoal`（加载 `skills/dev-*` 的 SKILL.md → `app.Orch.Query`）；T3–T4 → `main.go::runGoal` 完整 loop；五个 tier 的 skill 目录都存在。T0 有 `TestRunLightweightGoalSkillFound`（断言 `dec.Complete`）与 `TestRunGoalRealPathLightweight`；T2 有 `TestRunLightweightGoal_NonTier4Hint`；T1 无专门测试（同一条代码路径，风险低）。**T3/T4 的 `TestRunGoalRealPathLoopSetup`（2026-08-07 已删除，故此处刻意不带包路径 —— GOV9 对解析不出的路径放行）是吞错** —— 它显式 `_ = code`（`coverage_test.go`）丢弃退出码，注释自陈「Any non-timeout result means the setup path ran cleanly」→ **只可能因 20s 超时而失败**，loop 返回什么都算过。这是覆盖率打卡，不是「产生真实结果」的证据。
 - 证据形状：T3/T4 需要一条不依赖外部 CLI 的路径（Implementer 换成 `FakeImplementer`，或把 `ACPImplementer` 的 agent 指向 `acp.FakeAgent`），断言 Decision 的 Complete/StopReason 与迭代数。**骗过去**：任何丢弃退出码 / 只防超时的测试。
 
 **2. auto/强制 tier 可测** — 已兑现

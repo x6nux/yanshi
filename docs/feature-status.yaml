@@ -1516,10 +1516,25 @@
 
 - id: "M1/G03"
   package: "W2"
-  verdict: partial
+  verdict: done
   title: "T0–T4 难度路由接通"
   acceptance: "每个 tier（T0–T4）都产生真实结果；auto/强制 tier 可测；升级不再静默退出"
-  evidence: ""
+  evidence:
+    "1": "cmd/yanshi::TestGoalTiersT3AndT4ProduceARealDecision; cmd/yanshi::TestGoalT3WithoutAnAgentCLIFailsPredictably; cmd/yanshi::TestRunLightweightGoalSkillFound"
+    "2": "internal/agent/goalloop::TestResolveTierFlag; cmd/yanshi::TestResolveGoalTier; internal/agent/goalloop::TestRuleTierer"
+    "3": "internal/agent/goalloop::TestLoop_MaxIterationsHasEscalationHint; internal/agent/goalloop::TestLoop_T4MaxIterationsNoEscalationHint; cmd/yanshi::TestRunLightweightGoal_NonTier4Hint"
+# 2026-08-07：partial → done。子句 1 的 T3/T4 此前由 TestRunGoalRealPathLoopSetup
+#   守着，而它 `_ = code` 丢弃退出码、注释自陈「任何非超时结果都算 setup 跑通」——
+#   只可能因 20s 超时而失败，loop 返回什么都算过。那是覆盖率打卡不是结果断言，已删。
+#   现在两条：--fake-model 那条自足路径（FakePlanner + FailFirst 的 FakeImplementer +
+#   passAt:2 的 counterEvaluator）断言 exitOK + `complete=true` + **跑到了第 2 轮**
+#   （少了最后这条，一个根本不迭代的 loop 同样通过）；真路径那条断言无 agent CLI 时
+#   必须是 exitErr —— 「以可预测方式失败」与「挂住」「谎报成功」是三件事。
+# ⚠️ 未闭合（不否定子句 2，但影响 auto 路由的完整性）：LLMTierer **零生产调用点** ——
+#   ResolveTierFlag 的 auto 分支永远只走 RuleTierer{}，所以 LLMTierer.Sink 那条 G02
+#   接线也是生产不可达的。它不是 With<X>(ctx,…) 形状，GOV6 抓不到。接它需要在
+#   bootstrap 之后才有 model，而 resolveGoalTier 在 bootstrap 之前就要决定走哪条路径 ——
+#   是设计问题不是接线问题，另开工作包。
 
 - id: "M1/O07"
   package: "W7"

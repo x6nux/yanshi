@@ -332,6 +332,7 @@ func (p *chargingPlanner) Plan(context.Context, Goal) (Plan, error) {
 	return Plan{Goal: "x", Steps: []string{"s1"}, Tests: []AcceptanceTest{{Name: "t", Command: "true"}}}, nil
 }
 
+// ledger: M1/G03#3 升级不再静默退出
 func TestLoop_MaxIterationsHasEscalationHint(t *testing.T) {
 	t.Parallel()
 	// A low tier that never passes must surface an escalation hint (not exit
@@ -354,6 +355,7 @@ func TestLoop_MaxIterationsHasEscalationHint(t *testing.T) {
 	assert.Equal(t, StopReasonEscalate, decision.StopReason)
 }
 
+// ledger: M1/G03#3 升级不再静默退出
 func TestLoop_T4MaxIterationsNoEscalationHint(t *testing.T) {
 	t.Parallel()
 	// T4 is the top tier: exhaustion reports max-iterations without an upgrade

@@ -12,6 +12,7 @@ import (
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 )
 
+// ledger: M1/G03#2 auto/强制 tier 可测
 func TestRuleTierer(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -181,6 +182,7 @@ func TestEvaluatorsForTier_StampSink(t *testing.T) {
 	assert.Equal(t, sink, evals[2].(QualityEvaluator).Sink)
 }
 
+// ledger: M1/G03#2 auto/强制 tier 可测
 func TestResolveTierFlag(t *testing.T) {
 	t.Parallel()
 	// auto → RuleTierer (forced=false)

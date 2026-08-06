@@ -171,6 +171,8 @@ func TestExpandHome(t *testing.T) {
 // ---- goal helpers --------------------------------------------------------
 
 // TestResolveGoalTier covers the auto path, a forced tier, and the error path.
+//
+// ledger: M1/G03#2 auto/强制 tier 可测
 func TestResolveGoalTier(t *testing.T) {
 	t.Run("auto", func(t *testing.T) {
 		tier, forced, err := resolveGoalTier("auto", "fix a typo")
@@ -271,6 +273,8 @@ func TestRunLightweightGoal(t *testing.T) {
 // TestRunLightweightGoal_SkillBodyAppend proves that when the tier's skill body
 // is available, it is prepended to the goal text before the orchestrator turn.
 // We verify via the decision being complete (the orchestrator received a prompt).
+//
+// ledger: M1/G03#3 升级不再静默退出
 func TestRunLightweightGoal_NonTier4Hint(t *testing.T) {
 	app := buildFakeApp(t)
 	defer app.Shutdown(context.Background())
@@ -831,22 +835,11 @@ func TestRunGoalRealPathLightweight(t *testing.T) {
 // enough to exercise the T3-T4 setup code (LLMPlanner, ACPImplementer,
 // EvaluatorsForTier, loop.New). The ACPImplementer cannot spawn a real agent
 // CLI in the test environment, so loop.Run fails and runGoal returns exitErr —
-// but every setup statement before the run is covered.
-func TestRunGoalRealPathLoopSetup(t *testing.T) {
-	cfgPath := writeServeConfig(t)
-	done := make(chan int, 1)
-	go func() {
-		done <- runGoal([]string{"-config", cfgPath, "-tier", "t3", "-max-iters", "1", "-goal", "loop goal"})
-	}()
-	select {
-	case code := <-done:
-		// The loop fails to implement (no external CLI); that is exitErr, not a
-		// hang. Any non-timeout result means the setup path ran cleanly.
-		_ = code
-	case <-time.After(20 * time.Second):
-		t.Fatal("runGoal t3 real path did not terminate within 20s")
-	}
-}
+// TestRunGoalRealPathLoopSetup was deleted. It drove `-tier t3` and then
+// discarded the exit code with `_ = code`, so it could only fail by hanging
+// for 20 seconds — the loop could return anything at all and it passed.
+// goal_tier_result_test.go asserts the exit code on that same path, and
+// asserts a real completed decision on the self-contained --fake-model path.
 
 // ---- runHeadlessCommand happy path ---------------------------------------
 
@@ -1169,6 +1162,8 @@ skills:
 
 // TestRunLightweightGoalSkillFound proves the skill-body branch: when the tier's
 // skill is registered, its body is prepended to the goal text before the turn.
+//
+// ledger: M1/G03#1 每个 tier（T0–T4）都产生真实结果
 func TestRunLightweightGoalSkillFound(t *testing.T) {
 	app := buildFakeAppWithSkills(t)
 	defer app.Shutdown(context.Background())
