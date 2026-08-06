@@ -58,6 +58,8 @@ func hintTools(t *testing.T, canned string) (*AgentTools, context.Context) {
 // terminal path — its result goes straight back to the parent agent — so the
 // EVIDENCE section must be re-surfaced as an explicit parent-facing hint rather
 // than staying buried in an opaque blob.
+//
+// ledger: B1/M04b#4 父可消费 EVIDENCE
 func TestAgentStart_AppendsParentWorkingSetHint(t *testing.T) {
 	at, ctx := hintTools(t, fiveSectionResult)
 	got := drainResult(at.streamStartAgent(ctx, `{"prompt":"inspect the config loader"}`))
@@ -70,6 +72,8 @@ func TestAgentStart_AppendsParentWorkingSetHint(t *testing.T) {
 
 // TestAnalysis_AppendsParentWorkingSetHint covers the second terminal path:
 // analysis in "agent" mode also hands its result straight to the parent.
+//
+// ledger: B1/M04b#4 父可消费 EVIDENCE
 func TestAnalysis_AppendsParentWorkingSetHint(t *testing.T) {
 	at, ctx := hintTools(t, fiveSectionResult)
 	got := drainResult(at.streamAnalysis(ctx, `{"target":"internal/config","mode":"agent"}`))
@@ -82,6 +86,8 @@ func TestAnalysis_AppendsParentWorkingSetHint(t *testing.T) {
 // contract: a sub-agent that does not follow the five-section format (no
 // EVIDENCE block) must have its result forwarded byte-for-byte. Appending an
 // empty hint header would corrupt free-form tool output.
+//
+// ledger: B1/M04b#4 父可消费 EVIDENCE
 func TestAgentStart_NoEvidenceIsPassedThroughVerbatim(t *testing.T) {
 	const freeform = "just a plain answer\nwith two lines and no sections at all"
 	at, ctx := hintTools(t, freeform)

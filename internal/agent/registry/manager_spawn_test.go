@@ -42,6 +42,16 @@ func TestSpawnReturnsIDAndPersistsRunning(t *testing.T) {
 	close(block)
 }
 
+// TestSpawnRespectsCapAndReturnsSpawnErrCap is the upper-bound half of the
+// concurrency clause: with the cap full of agents that are still running, the
+// next Spawn is refused with a typed error carrying the cap.
+//
+// On its own this says nothing about the cap being a CONCURRENCY limit — the
+// same assertion holds for a counter that never decrements, which is what this
+// Manager had. TestTerminalAgentReleasesItsConcurrencySlot supplies the release
+// direction; the clause needs both.
+//
+// ledger: B1/M04b#2 并发上限生效
 func TestSpawnRespectsCapAndReturnsSpawnErrCap(t *testing.T) {
 	m, _ := newManager(t)
 	block := make(chan struct{})

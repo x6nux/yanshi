@@ -428,3 +428,75 @@ func protoFromRegistryEvent(ev registry.Event) proto.ServerFrame {
 
 // keep unused-import satisfaction
 var _ = filepath.Base
+
+// ResultSections is a sub-agent result parsed into the five contract sections.
+//
+// Missing is the list of sections the contract requires that the result did not
+// carry, in contract order. It is what makes the parse RESULT usable rather
+// than a best-effort map: a caller reading Evidence cannot otherwise tell an
+// empty section from an absent one, and the difference decides whether to ask
+// the sub-agent again.
+type ResultSections struct {
+	Summary  string
+	Changes  string
+	Evidence string
+	Risks    string
+	Blockers string
+	Missing  []string
+}
+
+// Get returns a section by its contract name, or "" for an unknown name.
+func (r ResultSections) Get(name string) string {
+	switch name {
+	case "SUMMARY":
+		return r.Summary
+	case "CHANGES":
+		return r.Changes
+	case "EVIDENCE":
+		return r.Evidence
+	case "RISKS":
+		return r.Risks
+	case "BLOCKERS":
+		return r.Blockers
+	}
+	return ""
+}
+
+// Complete reports whether every contract section was present.
+func (r ResultSections) Complete() bool { return len(r.Missing) == 0 }
+
+// ParseResultSections splits a sub-agent result into the five contract
+// sections.
+//
+// Only EVIDENCE was ever extracted — knownResultSections had exactly one
+// consumer, and the other four sections had none at all. So "the five-section
+// output is parseable" was true of the vocabulary and of nothing else: a
+// sub-agent could emit four of them, or emit them out of order, and no code
+// path would notice.
+//
+// Order is deliberately NOT required. The contract lists the sections in an
+// order, but a model that answers with BLOCKERS first has still answered; a
+// parser that rejected that would turn a cosmetic deviation into a failed turn.
+// What IS reported is absence, through Missing.
+func ParseResultSections(result string) ResultSections {
+	var out ResultSections
+	for _, name := range knownResultSections {
+		body := strings.TrimSpace(extractResultSection(result, name))
+		switch name {
+		case "SUMMARY":
+			out.Summary = body
+		case "CHANGES":
+			out.Changes = body
+		case "EVIDENCE":
+			out.Evidence = body
+		case "RISKS":
+			out.Risks = body
+		case "BLOCKERS":
+			out.Blockers = body
+		}
+		if body == "" {
+			out.Missing = append(out.Missing, name)
+		}
+	}
+	return out
+}

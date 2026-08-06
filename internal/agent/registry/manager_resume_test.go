@@ -11,6 +11,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestResumeRestoresSavedConstraintsAndEmitsEvent is the loader half of the
+// restart clause: given a state file from a previous boot, every constraint
+// the resumed agent must respect comes back off disk field by field, not just
+// its ID and status.
+//
+// The state file here is written by the test, which is deliberate — it pins the
+// loader against a fixture the test controls, including the new-boot rule that
+// a persisted Running becomes Interrupted. The writer half (a live Manager
+// producing a file of this shape) is
+// TestASecondManagerOverTheSameFileSeesAndResumesWhatTheFirstWrote; neither
+// test covers the clause alone.
+//
+// ledger: B1/M04b#1 重启后可 list/resume
 func TestResumeRestoresSavedConstraintsAndEmitsEvent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.json")
 	rec := Record{

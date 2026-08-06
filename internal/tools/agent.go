@@ -368,11 +368,28 @@ func (t *AgentTools) streamStartAgent(ctx context.Context, argsJSON string) <-ch
 		// CheckRolePolicy enforces ahead of Authorize, so neither the parent
 		// profile nor an interactive approval can widen them back out.
 		rctx := ctx
-		if def, ok := LookupRole(roleName); ok && def.Policy != nil {
-			rctx = WithRolePolicy(rctx, *def.Policy)
+		instruction := a.Instruction
+		if def, ok := LookupRole(roleName); ok {
+			if def.Policy != nil {
+				rctx = WithRolePolicy(rctx, *def.Policy)
+			}
+			// The role's PromptPrefix carries the five-section output contract
+			// (SUMMARY/CHANGES/EVIDENCE/RISKS/BLOCKERS). It used to be applied
+			// only in managedTurnRunner — the agent_spawn path — which
+			// DefaultOrchestratorProfile does not permit. So on the entry point
+			// that ships, no sub-agent was ever ASKED for the five sections,
+			// and ParentWorkingSetHint (which reads EVIDENCE out of them) was a
+			// no-op in production for want of an input.
+			if def.PromptPrefix != "" {
+				if instruction == "" {
+					instruction = def.PromptPrefix
+				} else {
+					instruction = def.PromptPrefix + "\n\n" + instruction
+				}
+			}
 		}
 		sctx, finalize := bindSubAgentProgress(rctx, ch, "")
-		result, err := t.runSubAgent(WithLeafSubAgentTools(sctx), a.Prompt, allowed, a.Instruction)
+		result, err := t.runSubAgent(WithLeafSubAgentTools(sctx), a.Prompt, allowed, instruction)
 		finalize()
 		if err != nil {
 			pushErrChunk(ch, err)

@@ -302,10 +302,14 @@
 # 「重启后 list/resume」「输出 5 段可解析」本工作包未做 —— 故保持 partial。
 - id: "B1/M04b"
   package: "W1"
-  verdict: partial
+  verdict: done
   title: "持久化 + 并发上限 + 输出契约"
   acceptance: "重启后可 list/resume；并发上限生效；输出 5 段可解析；父可消费 EVIDENCE"
-  evidence: ""
+  evidence:
+    "1": "internal/agent/registry::TestASecondManagerOverTheSameFileSeesAndResumesWhatTheFirstWrote; internal/agent/registry::TestResumeRestoresSavedConstraintsAndEmitsEvent"
+    "2": "internal/agent/registry::TestTerminalAgentReleasesItsConcurrencySlot; internal/agent/registry::TestSpawnRespectsCapAndReturnsSpawnErrCap"
+    "3": "internal/tools::TestParseResultSectionsReturnsAllFive; internal/tools::TestParseResultSectionsNamesWhatIsMissing; internal/tools::TestAgentStartAsksForTheOutputContract"
+    "4": "internal/tools::TestAgentStart_AppendsParentWorkingSetHint; internal/tools::TestAnalysis_AppendsParentWorkingSetHint; internal/tools::TestAgentStart_NoEvidenceIsPassedThroughVerbatim"
 
 # W1/Task 9：role 此前只用于「空则回落 general」，RoleDef.AllowedTools 从不参与任何
 # 判断。现在 resolveSpawnRole 归一化 + 拒绝未知名（并枚举合法值）+ 返回 role ∩ caller
