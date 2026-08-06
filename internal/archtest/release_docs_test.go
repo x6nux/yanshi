@@ -35,18 +35,24 @@ func TestExamplesAreRunnableAndExercised(t *testing.T) {
 			len(dirs), dirs)
 	}
 
-	// "Exercised" means a CI step OR a Go test drives it. custom-skill is a
-	// SKILL.md rather than a program, so there is no run.sh to add — it is
-	// covered by internal/skills::TestShippedExampleSkillLoads, which is a
-	// stronger check than a shell step anyway (it proves the frontmatter this
-	// repo tells authors to write is the frontmatter the loader accepts).
-	haystack := readWorkflow(t, "docs.yml") + testSourcesMentioning(t, "examples/")
+	// "Exercised" means a CI step runs it, or the named Go test drives it.
+	//
+	// The Go-test side is an explicit table rather than a scan for
+	// `examples/<dir>` across every _test.go: a scan counts a test that merely
+	// MENTIONS the path in a comment, which is the loose direction — an
+	// example could go uncovered while looking covered. Each row here names
+	// the test that actually loads it, and TestExampleCoverageTestsExist below
+	// checks those tests are real.
+	byGoTest := map[string]string{
+		"custom-skill": "internal/skills::TestShippedExampleSkillLoads",
+	}
+	docs := readWorkflow(t, "docs.yml")
 	var unexercised []string
 	for _, d := range dirs {
-		if !strings.Contains(haystack, "examples/"+d) &&
-			!strings.Contains(haystack, `"`+d+`"`) {
-			unexercised = append(unexercised, d)
+		if strings.Contains(docs, "examples/"+d) || byGoTest[d] != "" {
+			continue
 		}
+		unexercised = append(unexercised, d)
 	}
 	if len(unexercised) > 0 {
 		t.Errorf("no CI step touches %d example(s): %s\n"+
@@ -181,30 +187,39 @@ func TestSecurityContactIsNotAPlaceholder(t *testing.T) {
 	}
 }
 
-// testSourcesMentioning concatenates every _test.go under internal/ and cmd/
-// that mentions needle, so a Go test can count as exercising an example.
-func testSourcesMentioning(t *testing.T, needle string) string {
-	t.Helper()
-	var sb strings.Builder
-	for _, root := range []string{"internal", "cmd"} {
-		err := filepath.WalkDir(abs(root), func(path string, d fs.DirEntry, err error) error {
+// TestExampleCoverageTestsExist keeps the byGoTest table above honest.
+//
+// A row there exempts an example from the CI-step requirement, so a row
+// naming a test that does not exist would be a silent hole: the example looks
+// covered and nothing runs it.
+func TestExampleCoverageTestsExist(t *testing.T) {
+	for example, ref := range map[string]string{
+		"custom-skill": "internal/skills::TestShippedExampleSkillLoads",
+	} {
+		pkg, fn, ok := strings.Cut(ref, "::")
+		if !ok {
+			t.Errorf("malformed reference %q for examples/%s", ref, example)
+			continue
+		}
+		found := false
+		err := filepath.WalkDir(abs(pkg), func(path string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() || !strings.HasSuffix(path, "_test.go") {
 				return nil
 			}
 			data, readErr := os.ReadFile(path)
-			if readErr != nil {
-				return nil
-			}
-			if strings.Contains(string(data), needle) {
-				sb.Write(data)
+			if readErr == nil && strings.Contains(string(data), "func "+fn+"(t *testing.T)") {
+				found = true
 			}
 			return nil
 		})
 		if err != nil {
-			t.Fatalf("walk %s: %v", root, err)
+			t.Fatalf("walk %s: %v", pkg, err)
+		}
+		if !found {
+			t.Errorf("examples/%s is exempted from the CI-step requirement by %s, "+
+				"which does not exist", example, ref)
 		}
 	}
-	return sb.String()
 }
 
 // TestCoverageFloorsAreEnforcedInCI pins the coverage gate's existence.
@@ -215,7 +230,6 @@ func testSourcesMentioning(t *testing.T, needle string) string {
 // any of these packages could have gone from 94% to 20% without a red job.
 //
 // ledger: E1/COV2#1 覆盖率 ≥80%
-//
 // ledger: E1/COV3#1 覆盖率 ≥50%
 func TestCoverageFloorsAreEnforcedInCI(t *testing.T) {
 	body, ok := workflowJobBody(readWorkflow(t, "ci.yml"), "coverage")
@@ -229,14 +243,13 @@ func TestCoverageFloorsAreEnforcedInCI(t *testing.T) {
 		t.Error("the coverage job is continue-on-error and cannot go red")
 	}
 
-	// The floors themselves must clear the spec's acceptance numbers, or the
-	// gate is green while the contract is broken.
+	// The floors themselves must exist for each package the ledger claims.
 	src, err := os.ReadFile(abs(filepath.Join("cmd", "covercheck", "main.go")))
 	if err != nil {
 		t.Fatalf("read cmd/covercheck: %v", err)
 	}
 	for _, want := range []string{"internal/proto", "internal/store", "internal/bootstrap"} {
-		if !strings.Contains(string(src), want) {
+		if !strings.Contains(withoutComments(string(src), "//"), want) {
 			t.Errorf("cmd/covercheck has no floor for %s", want)
 		}
 	}
@@ -262,5 +275,46 @@ func TestBubbleteaForkIsPinned(t *testing.T) {
 	}
 	if _, err := os.Stat(abs(filepath.Join("third_party", "bubbletea", "go.mod"))); err != nil {
 		t.Errorf("third_party/bubbletea is gone but go.mod still points at it: %v", err)
+	}
+}
+
+// TestGettingStartedRunsInCI is UDOC1's "getting started 可零依赖跑通" clause.
+//
+// The ledger cited cmd/gendocs's config-skeleton test for this. That test
+// reconciles the skeleton with config.example.yaml's top-level keys — a real
+// check, of an unrelated fact. Nothing said the getting-started path itself
+// still works.
+//
+// What makes the claim checkable is that the guide's zero-dependency steps are
+// literally what CI runs. The alt-screen TUI step is the one exception and
+// says so: a Bubble Tea program cannot be driven through a pipe, which is why
+// CLAUDE.md points at `yanshi -h` for a startup smoke instead.
+//
+// ledger: H2/UDOC1#2 getting started 可零依赖跑通
+func TestGettingStartedRunsInCI(t *testing.T) {
+	guide, err := os.ReadFile(abs(filepath.Join("docs", "user-guide", "getting-started.md")))
+	if err != nil {
+		t.Fatalf("read getting-started.md: %v", err)
+	}
+	text := string(guide)
+	for _, step := range []string{
+		"go build -o yanshi ./cmd/yanshi",
+		`exec --fake-model -p "hello"`,
+	} {
+		if !strings.Contains(text, step) {
+			t.Errorf("getting-started.md no longer shows %q; this test pins the wrong "+
+				"steps and would keep passing on a guide that changed underneath it", step)
+		}
+	}
+
+	ci := readWorkflow(t, "ci.yml") + readWorkflow(t, "docs.yml")
+	if !strings.Contains(ci, "go build") {
+		t.Error("no workflow builds the binary the guide's first step builds")
+	}
+	// The one command a new user runs to see output.
+	if !strings.Contains(ci, `exec --fake-model -p "hi"`) &&
+		!strings.Contains(ci, `exec --fake-model -p "hello"`) {
+		t.Error("no workflow runs the guide's `yanshi exec --fake-model -p` step; " +
+			"the zero-dependency path is documented and unverified")
 	}
 }

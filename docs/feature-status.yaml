@@ -1155,7 +1155,7 @@
   acceptance: "覆盖主要用法；getting started 可零依赖跑通；与实际不漂移"
   evidence:
     "1": "internal/archtest::TestReadmeReachesEveryEntryPoint"
-    "2": "cmd/gendocs::TestRenderConfigSkeletonCoversExampleYAMLKeys"
+    "2": "internal/archtest::TestGettingStartedRunsInCI"
     "3": "cmd/yanshi::TestUsageListsEverySubcommandItDispatches; internal/archtest::TestPhantomSlashCommandsNotAdvertised"
 
 - id: "M1/G02"

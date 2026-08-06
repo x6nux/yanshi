@@ -53,7 +53,9 @@ func TestRenderConfigSkeletonIdempotent(t *testing.T) {
 	}
 }
 
-// ledger: H2/UDOC1#2 getting started 可零依赖跑通
+// TestRenderConfigSkeletonCoversExampleYAMLKeys reconciles the skeleton with
+// config.example.yaml. It was cited for「getting started 可零依赖跑通」and
+// shows nothing of the sort — a real check of an unrelated fact.
 func TestRenderConfigSkeletonCoversExampleYAMLKeys(t *testing.T) {
 	// Every top-level key present in config.example.yaml must have a group in
 	// the skeleton (the skeleton is the source of truth for what Config can do).
