@@ -238,6 +238,31 @@ func auditPermission(ctx context.Context, tool, decision, source, reasonCode str
 	slog.LogAttrs(ctx, slog.LevelInfo, "permission decision", attrs...)
 }
 
+// explainDecision renders a guard Decision as the one-line reason a user sees.
+//
+// It exists because execpolicy's Justification -- the human-written "why" on
+// the rule that fired -- had zero readers outside internal/guard. checkShell
+// dutifully copied it into Decision.Justification and every exit in Authorize
+// then wrote only Decision.Reason into DenyErr, so the explanation died at the
+// tool boundary. A rule engine whose explanations never reach the person being
+// denied is not explainable, whatever its structs contain.
+//
+// Reason says WHAT matched ("deny flag matched"); Justification says why the
+// operator wrote that rule ("real-CLI e2e tests cost money"). The second is
+// the useful half and it is optional, so it is appended in parentheses only
+// when present.
+//
+// ledger: A1/S06#2 规则结果可解释
+func explainDecision(dec guard.Decision) string {
+	if dec.Justification == "" {
+		return dec.Reason
+	}
+	if dec.Reason == "" {
+		return dec.Justification
+	}
+	return dec.Reason + " (" + dec.Justification + ")"
+}
+
 // Authorize checks the acting agent's PermissionProfile against the action and,
 // when the static profile returns Prompt, consults the approval manager and the
 // permission callback (in that order). It is the single consultation point used
@@ -342,7 +367,7 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 			// take the escalation path below. Reading them as structural makes
 			// yolo look narrower than it is.
 			auditPermission(ctx, action.Tool, "deny", "hard_deny", "firewall")
-			return &DenyErr{Reason: dec.Reason}
+			return &DenyErr{Reason: explainDecision(dec)}
 		}
 		// Overridable profile-policy deny: YOLO/Auto may override via the callback
 		// (resolvePermissionMode gates by mode); the SSE path (no callback) and
@@ -376,10 +401,10 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 	ask, hasCallback := permissionCallback(ctx)
 	if !hasCallback {
 		auditPermission(ctx, action.Tool, "deny", "no_callback", "static_denied")
-		return &DenyErr{Reason: dec.Reason}
+		return &DenyErr{Reason: explainDecision(dec)}
 	}
 	decision := ask(PermissionRequest{
-		Tool: action.Tool, Args: argsJSON, Reason: dec.Reason,
+		Tool: action.Tool, Args: argsJSON, Reason: explainDecision(dec),
 		ProfileHardDeny: profileDenied,
 		Shell:           action.Shell,
 		Workdir:         action.Workdir,
@@ -418,7 +443,7 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 		return &DenyErr{Reason: "persistent approval store unavailable"}
 	default:
 		auditPermission(ctx, action.Tool, "deny", "interactive", "user_denied")
-		return &DenyErr{Reason: dec.Reason}
+		return &DenyErr{Reason: explainDecision(dec)}
 	}
 }
 
