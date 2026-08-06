@@ -47,6 +47,11 @@ func TestWebFetchMarksOversizeBodyDegraded(t *testing.T) {
 	}
 }
 
+// TestWebSearchReturnsEmptyOnUnreachable pins the degradation contract: an
+// unreachable backend yields an empty result set, not a hard failure that
+// blocks the turn.
+//
+// ledger: B3/T11#4 后端不可用降级
 func TestWebSearchReturnsEmptyOnUnreachable(t *testing.T) {
 	ctx := WithProfile(context.Background(), profileWithWebTool())
 	ctx = WithNetworkPolicy(ctx, allowAllPolicy())

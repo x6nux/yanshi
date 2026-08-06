@@ -12,6 +12,54 @@ type reviewInput struct {
 	TaskID string `json:"task_id"`
 	Repo   string `json:"repo,omitempty"`
 	Number int    `json:"number,omitempty"`
+
+	// Base selects what to review when diff is omitted: "working_tree",
+	// "base_ref" or "commit", with Ref supplying the ref for the latter two.
+	//
+	// Without this the caller had to produce the diff text itself, which made
+	// "review the branch" a two-tool dance the model had to get right — and
+	// made the acceptance's "supports three bases" false, even though git_diff
+	// had all three scopes the whole time. The diff field still wins when both
+	// are given: a caller holding a diff (a PR payload, say) is not asking for
+	// a working tree to be read.
+	Base string `json:"base,omitempty"`
+	Ref  string `json:"ref,omitempty"`
+}
+
+// resolveReviewDiff produces the unified diff for a base selection.
+//
+// It reuses git_diff's scope machinery rather than shelling out separately, so
+// the three bases keep producing the three argv shapes that tool already pins
+// — a second implementation here would be a second thing to keep correct.
+func resolveReviewDiff(ctx context.Context, in reviewInput) (string, error) {
+	root := WorkRootFromContext(ctx)
+	if root == "" {
+		return "", fmt.Errorf("review: no work root bound")
+	}
+	var args gitDiffArgs
+	args.Scope.Kind = in.Base
+	args.Scope.Ref = in.Ref
+	switch in.Base {
+	case "working_tree":
+	case "base_ref", "commit":
+		if strings.TrimSpace(in.Ref) == "" {
+			return "", fmt.Errorf("review: base %q requires a ref", in.Base)
+		}
+	default:
+		return "", fmt.Errorf("review: unknown base %q (want working_tree, base_ref or commit)", in.Base)
+	}
+	files, err := collectGitDiffFiles(ctx, root, args)
+	if err != nil {
+		return "", fmt.Errorf("review: collect diff: %w", err)
+	}
+	var b strings.Builder
+	for _, f := range files {
+		b.WriteString(f.Patch)
+		if !strings.HasSuffix(f.Patch, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	return b.String(), nil
 }
 
 // streamReview is the core pipeline:
@@ -21,6 +69,13 @@ type reviewInput struct {
 //  4. dedupe + sort findings
 //  5. writeArtifactOrSpill if total serialized size exceeds SpillThreshold
 func streamReview(ctx context.Context, in reviewInput) (string, error) {
+	if in.Diff == "" && in.Base != "" {
+		diff, err := resolveReviewDiff(ctx, in)
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+		in.Diff = diff
+	}
 	runner := SubAgentRunnerFromContext(ctx)
 	if runner == nil {
 		return errorResult("review requires a bound sub-agent runner (task-orchestrator)"), nil

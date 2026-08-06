@@ -191,7 +191,11 @@ func NewAgentTools(chatModel model.BaseChatModel) *AgentTools {
 			"deduplicate and sort findings, and persist large outputs as artifacts.",
 		10*time.Minute,
 		params(map[string]*schema.ParameterInfo{
-			"diff":    {Type: schema.String, Required: true, Desc: "Unified diff text to review"},
+			"diff": {Type: schema.String,
+				Desc: "Unified diff text to review. Omit it and pass base instead to review the repository directly."},
+			"base": {Type: schema.String, Enum: []string{"working_tree", "base_ref", "commit"},
+				Desc: "What to review when diff is omitted"},
+			"ref":     {Type: schema.String, Desc: "Ref for base_ref / commit"},
 			"task_id": {Type: schema.String, Desc: "Task ID for artifact storage"},
 			"repo":    {Type: schema.String, Desc: "GitHub repo (owner/name) for context"},
 			"number":  {Type: schema.Integer, Desc: "PR number for context"},

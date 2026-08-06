@@ -11,6 +11,7 @@ import (
 	"github.com/x6nux/yanshi/internal/secproc"
 )
 
+// ledger: B3/DT4#1 至少 Go 解析正确
 func TestParseGoJSONCountsPassFailSkip(t *testing.T) {
 	raw := `{"Action":"pass","Package":"p","Test":"TestA"}` + "\n" +
 		`{"Action":"fail","Package":"p","Test":"TestB"}` + "\n" +
@@ -103,6 +104,7 @@ func TestDetectRunnerPriority(t *testing.T) {
 	}
 }
 
+// ledger: B3/DT4#1 至少 Go 解析正确
 func TestRunTestsExecutesGoTestJSONWithWorkspaceWriteTier(t *testing.T) {
 	var last secproc.SecureProcessSpec
 	factory := newScriptedFactory(t, func(s secproc.SecureProcessSpec) cannedResult {
@@ -147,6 +149,8 @@ func TestRunTestsExecutesGoTestJSONWithWorkspaceWriteTier(t *testing.T) {
 //
 // Each framework is exercised because each has its own parser and each one
 // reached the same wrong conclusion independently.
+//
+// ledger: B3/DT4#2 结构化计数+失败列表
 func TestRunTestsReportsRunnerFailureInsteadOfPass(t *testing.T) {
 	for _, tc := range []struct {
 		marker string
@@ -189,6 +193,8 @@ func TestRunTestsReportsRunnerFailureInsteadOfPass(t *testing.T) {
 // exit-code reconciliation: a non-zero exit with parsed failures must stay
 // "fail" (the parser already knows what broke) and must not be flattened into
 // the coarser "error" bucket.
+//
+// ledger: B3/DT4#2 结构化计数+失败列表
 func TestRunTestsKeepsFailWhenTestsActuallyFailed(t *testing.T) {
 	factory := newScriptedFactory(t, func(secproc.SecureProcessSpec) cannedResult {
 		return cannedResult{

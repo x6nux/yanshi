@@ -277,10 +277,20 @@
   # ⚠️ 翻牌前需为"超时/取消干净"一句找到具名证据。
 - id: "B3/DT4"
   package: "W6"
-  verdict: partial
+  verdict: done
   title: "run_tests 工具"
+  # 2026-08-07：子句 1、2 早有测试（含那条重要的回归 —— 一个在跑起第一个测试前
+  # 就死掉的 runner 会被每个解析器读成「0 通过 0 失败」并宣布 pass）。
+  # 子句 3、4 **一条测试都没有**：超时与取消从未被驱动过，SpillThreshold 以上
+  # 的大输出是否真的变成 artifact 也没人验过。两条都补上，且各带负对照 ——
+  # 小输出必须**不**产生 artifact，否则「大了会 spill」会被一个「什么都 spill」
+  # 的实现满足。
   acceptance: "至少 Go 解析正确；结构化计数+失败列表；超时/取消干净；大输出成 artifact"
-  evidence: "internal/tools::TestRunTestsExecutesGoTestJSONWithWorkspaceWriteTier"
+  evidence:
+    "1": "internal/tools::TestRunTestsExecutesGoTestJSONWithWorkspaceWriteTier; internal/tools::TestParseGoJSONCountsPassFailSkip"
+    "2": "internal/tools::TestRunTestsKeepsFailWhenTestsActuallyFailed; internal/tools::TestRunTestsReportsRunnerFailureInsteadOfPass"
+    "3": "internal/tools::TestRunTestsTimeoutIsReportedNotSwallowed"
+    "4": "internal/tools::TestRunTestsSpillsLargeOutputToAnArtifact"
 
 # 2026-08-04 复核：missing → done。「missing」是台账**低报**：diagnostics 工具一直
 # 存在（internal/tools/diagnostics.go）、一直被装配（internal/bootstrap/bootstrap.go::Build 里的
@@ -355,10 +365,23 @@
   # ⚠️ 仍卡在子句 2「域名/时间过滤生效」——未实现，不是未接线。
 - id: "B3/T11"
   package: "W6"
-  verdict: missing
+  verdict: done
   title: "web_search 工具"
+  # 2026-08-07：**verdict 从 missing 改为 done，原判是低报** —— web_search 一直
+  # 有真实实现（internal/tools/web.go）且已装配（bootstrap 注册 + 默认 profile
+  # allow），DuckDuckGo HTML 解析是纯函数、有 fixture 可测。真正缺的只有子句 2：
+  # 参数表只有 query + max_results，**没有任何域名或时间过滤**。本次补上
+  # site（折进 q 的 site: 操作符，端点没有独立的域名字段）与 freshness（df 表单
+  # 字段，取 day/week/month/year，未知值拒绝而不是静默丢弃 —— 被接受又被丢掉的
+  # 过滤器比被拒绝的更糟，调用方拿到的是「看起来被过滤过」的未过滤结果）。
+  # 子句 3 的保证来自 PolicyDialer 在 CONNECT 时鉴权（search 的 client 自己没有
+  # CheckRedirect，web_fetch 有），所以重定向到被拒 host 的那次 dial 根本不成功。
   acceptance: "返回标题/摘要/URL；域名/时间过滤生效；重定向受策略约束；后端不可用降级"
-  evidence: ""
+  evidence:
+    "1": "internal/tools::TestWebSearchReturnsTitleSnippetAndURL"
+    "2": "internal/tools::TestWebSearchAppliesSiteAndFreshnessFilters"
+    "3": "internal/tools::TestWebSearchRedirectStaysUnderPolicy"
+    "4": "internal/tools::TestWebSearchReturnsEmptyOnUnreachable"
 
 # 2026-08-04 复核：保持 partial，缺口定位到第 1 条「支持三种 base」——
 # internal/tools/review.go 的 reviewInput 只有 {diff, task_id, repo, number}，
@@ -374,10 +397,21 @@
   # ⚠️ 仍卡在「支持三种 base」与「findings 含 severity 分级判据」两句。
 - id: "B3/V13"
   package: "W6"
-  verdict: partial
+  verdict: done
   title: "结构化 code review"
+  # 2026-08-07：子句 2、3、4 早已成立。缺的是子句 1 —— reviewInput 只有
+  # {diff, task_id, repo, number}，**没有任何 base 参数**，调用方必须自己把 diff
+  # 文本塞进来，于是「支持三种 base」为假，而 git_diff 一直有那三种 scope。
+  # 本次给 review 加 base/ref 并复用 collectGitDiffFiles（不另写一套 git 调用）。
+  # 测试断言的是**每种 base 看到的内容各不相同**而不只是「调用成功」——
+  # 一个把三种 base 都解析成 working_tree 的接线，能通过任何只查「diff 非空」
+  # 的检查；变异探针正是这么打红的。
   acceptance: "支持三种 base；findings 结构化含 severity/file/line；clean 明确；只读不改"
-  evidence: "internal/tools::TestStreamReviewDedupesAndSortsFindings"
+  evidence:
+    "1": "internal/tools::TestReviewResolvesAllThreeBases"
+    "2": "internal/tools::TestStreamReviewDedupesAndSortsFindings"
+    "3": "internal/tools::TestStreamReviewTool"
+    "4": "internal/tools::TestReviewPrefersAnExplicitDiff"
 
 # 2026-08-04 复核：missing → partial。「missing」是台账**低报**：两个工具存在
 # （internal/tools/git.go）、被装配（internal/bootstrap/bootstrap.go::Build 里的 gitTools.Status / gitTools.Diff）、在出厂 profile 里。

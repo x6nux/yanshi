@@ -150,6 +150,7 @@ func TestStreamReviewDecodeError(t *testing.T) {
 	}
 }
 
+// ledger: B3/V13#2 findings 结构化含 severity/file/line
 func TestStreamReviewDedupesAndSortsFindings(t *testing.T) {
 	calls := 0
 	inject := func(ctx context.Context, prompt string, allowedTools []string, instructionOverride string) (string, error) {

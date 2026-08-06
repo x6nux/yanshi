@@ -8,6 +8,7 @@ import (
 	"github.com/x6nux/yanshi/internal/guard"
 )
 
+// ledger: B3/V13#3 clean 明确
 func TestStreamReviewTool(t *testing.T) {
 	runner := SubAgentRunner(func(ctx context.Context, prompt string, allowed []string, instr string) (string, error) {
 		return `{"findings":[{"file":"test.go","line":1,"severity":"high","message":"bug","rule":"test"}]}`, nil

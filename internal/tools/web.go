@@ -50,6 +50,9 @@ func NewWebTools(maxBytes int, timeout time.Duration) *WebTools {
 		params(map[string]*schema.ParameterInfo{
 			"query":       {Type: schema.String, Required: true, Desc: "Search query"},
 			"max_results": {Type: schema.Integer, Desc: "Max results (default 10)"},
+			"site":        {Type: schema.String, Desc: "Restrict results to one domain, e.g. go.dev"},
+			"freshness": {Type: schema.String,
+				Desc: "Restrict results by age: day | week | month | year"},
 		}),
 		SyncStream(w.runSearch),
 	)
@@ -171,6 +174,31 @@ func (w *WebTools) runFetch(ctx context.Context, argsJSON string) (string, error
 type webSearchArgs struct {
 	Query      string `json:"query"`
 	MaxResults int    `json:"max_results"`
+	Site       string `json:"site"`
+	Freshness  string `json:"freshness"`
+}
+
+// freshnessCodes maps the tool's vocabulary onto DuckDuckGo's df parameter.
+//
+// The tool takes words rather than passing df through: a caller that guesses
+// "1d" or "past_week" would otherwise get an unfiltered search that looks
+// filtered, and an unknown value is rejected below rather than dropped.
+var freshnessCodes = map[string]string{
+	"day": "d", "week": "w", "month": "m", "year": "y",
+}
+
+// searchQuery folds the site restriction into the query string.
+//
+// site: is a query operator, not a form field — the endpoint has no separate
+// domain parameter — so the restriction has to travel inside q. A caller that
+// already wrote "site:" in the query keeps theirs; adding a second one returns
+// nothing at all.
+func searchQuery(query, site string) string {
+	site = strings.TrimSpace(site)
+	if site == "" || strings.Contains(strings.ToLower(query), "site:") {
+		return query
+	}
+	return strings.TrimSpace(query) + " site:" + site
 }
 
 type searchResult struct {
@@ -206,7 +234,14 @@ func (w *WebTools) runSearch(ctx context.Context, argsJSON string) (string, erro
 	// this used to query became an anti-bot page that returns no results at
 	// all, and the html endpoint answers a GET the same way; the POST form is
 	// the shape it actually serves results to.
-	form := url.Values{"q": {a.Query}}
+	form := url.Values{"q": {searchQuery(a.Query, a.Site)}}
+	if f := strings.ToLower(strings.TrimSpace(a.Freshness)); f != "" {
+		code, ok := freshnessCodes[f]
+		if !ok {
+			return "", fmt.Errorf("web.search: unknown freshness %q (want day, week, month or year)", a.Freshness)
+		}
+		form.Set("df", code)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.searchBase, strings.NewReader(form.Encode()))
 	if req != nil {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
