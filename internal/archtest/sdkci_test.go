@@ -1,6 +1,8 @@
 package archtest
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -14,6 +16,8 @@ import (
 // and `pytest` had zero hits across every workflow file, so 60-odd contract
 // assertions ran on developer machines only. Nothing was red; the axis simply
 // was not covered.
+//
+// ledger: H2/APIREF1#2 SDK 用法有示例
 func TestSDKContractSuitesRunInCI(t *testing.T) {
 	ci := readWorkflow(t, "ci.yml")
 	body, ok := workflowJobBody(ci, "sdk-contract")
@@ -88,6 +92,8 @@ func TestDocsWorkflowFiltersCoverWhatItReads(t *testing.T) {
 // Counting "done" records specifically matters: one turn already emits three
 // output lines, so a laxer `grep -c '"type"'` passes on the very bug this
 // guards.
+//
+// ledger: D1/V12#4 CI 可脚本化
 func TestHeadlessSmokeAssertsTurnCount(t *testing.T) {
 	docs := readWorkflow(t, "docs.yml")
 	body, ok := workflowJobBody(docs, "docs-gate")
@@ -105,5 +111,46 @@ func TestHeadlessSmokeAssertsTurnCount(t *testing.T) {
 	if !strings.Contains(smoke, `grep -c '"type":"done"'`) {
 		t.Error("the --file smoke does not count completed turns; without that it " +
 			"passes when the whole file collapses into a single turn")
+	}
+}
+
+// TestSDKSnippetsAreExecutablyChecked closes the loop on the shipped examples.
+//
+// docs/api/sdk-python.md and examples/sdk-python/main.py both read
+// `item.toolName` in the one line each used to show how to consume the item
+// stream. toolName is a pydantic wire ALIAS; the attribute is tool_name, so
+// both raised AttributeError on the first item. CI ran `py_compile` and
+// `import yanshi_sdk` — both pass on code that raises the moment it executes,
+// because neither executes it.
+//
+// The guard is sdk/python/tests/test_alias_attributes.py, which pulls the
+// alias set out of model_fields and scans both snippets. This asserts it still
+// exists and still names both files; TestSDKContractSuitesRunInCI asserts CI
+// runs it. Without this half, deleting the scan or narrowing it to one file
+// leaves the pytest job green and the examples unchecked.
+//
+// ledger: H2/APIREF1#2 SDK 用法有示例
+func TestSDKSnippetsAreExecutablyChecked(t *testing.T) {
+	guard, err := os.ReadFile(abs(filepath.Join("sdk", "python", "tests", "test_alias_attributes.py")))
+	if err != nil {
+		t.Fatalf("the snippet guard is gone: %v", err)
+	}
+	for _, want := range []string{
+		`"docs" / "api" / "sdk-python.md"`,
+		`"examples" / "sdk-python" / "main.py"`,
+		"model_fields",
+	} {
+		if !strings.Contains(string(guard), want) {
+			t.Errorf("the snippet guard no longer references %s", want)
+		}
+	}
+	// Both snippets must exist, or the guard scans nothing and reports clean.
+	for _, p := range []string{
+		filepath.Join("docs", "api", "sdk-python.md"),
+		filepath.Join("examples", "sdk-python", "main.py"),
+	} {
+		if _, err := os.Stat(abs(p)); err != nil {
+			t.Errorf("%s is missing; the guard has nothing to scan: %v", p, err)
+		}
 	}
 }

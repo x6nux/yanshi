@@ -123,6 +123,8 @@ func TestExec_JSONLMode_OneJSONLinePerEvent(t *testing.T) {
 
 // TestExec_ResumeSendsRestoreBeforeUserMessage proves --resume sends
 // restore_session FIRST and the user turn SECOND.
+//
+// ledger: D1/V12#3 可 resume
 func TestExec_ResumeSendsRestoreBeforeUserMessage(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	b := &fakeExecBackend{mode: "ws", sendText: "ok", statusID: "sess-r"}

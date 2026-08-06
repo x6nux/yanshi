@@ -97,6 +97,8 @@ func TestAgentV1TurnStreamUsesItemEvents(t *testing.T) {
 // and malformed JSON (rejected with 400). Every successful response must be
 // JSON-decodable into a value whose keys are all camelCase (no underscores).
 // This is the forward-compat guarantee for v1 clients.
+//
+// ledger: D1/V14#3 兼容测试完善
 func TestV1CompatibilityMatrix(t *testing.T) {
 	model := einollm.NewFakeModel([]string{"answer"}, nil)
 	svc, err := v1.NewService(v1.Config{DefaultModel: model})
@@ -146,6 +148,8 @@ func TestV1CompatibilityMatrix(t *testing.T) {
 // and asserts every SSE item carries version/sequence/threadId/turnId — the
 // wire contract every client depends on. It complements the per-response
 // matrix above by walking the streaming payload.
+//
+// ledger: D1/V14#1 start/resume/interrupt + 流式 item 可用
 func TestV1TurnStreamItemsAreVersionedAndOrdered(t *testing.T) {
 	model := einollm.NewFakeModel([]string{"answer"}, nil)
 	svc, err := v1.NewService(v1.Config{DefaultModel: model})
@@ -201,6 +205,8 @@ func TestV1TurnStreamItemsAreVersionedAndOrdered(t *testing.T) {
 // TestAgentV1ResumeEndpoint proves thread/resume returns a thread snapshot.
 // It tests the happy path (known thread) and two error paths: missing thread
 // (404) and an empty thread id payload.
+//
+// ledger: D1/V14#1 start/resume/interrupt + 流式 item 可用
 func TestAgentV1ResumeEndpoint(t *testing.T) {
 	model := einollm.NewFakeModel([]string{"answer"}, nil)
 	svc, err := v1.NewService(v1.Config{DefaultModel: model})
@@ -254,6 +260,8 @@ func TestAgentV1ResumeEndpoint(t *testing.T) {
 
 // TestAgentV1InterruptEndpoint proves thread/interrupt cancels an active turn
 // and returns the correct status codes for known/missing threads.
+//
+// ledger: D1/V14#1 start/resume/interrupt + 流式 item 可用
 func TestAgentV1InterruptEndpoint(t *testing.T) {
 	model := einollm.NewFakeModel([]string{"answer"}, nil)
 	svc, err := v1.NewService(v1.Config{DefaultModel: model})

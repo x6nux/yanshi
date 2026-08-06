@@ -15,6 +15,7 @@ func TestReadHeadlessInputs_Text(t *testing.T) {
 	}
 }
 
+// ledger: D1/V12#1 stdin/JSONL 可用
 func TestReadHeadlessInputs_LinesSkipsBlankLines(t *testing.T) {
 	got, err := ReadHeadlessInputs(strings.NewReader("one\n\n two \n"), HeadlessInputLines)
 	if err != nil {
@@ -25,6 +26,7 @@ func TestReadHeadlessInputs_LinesSkipsBlankLines(t *testing.T) {
 	}
 }
 
+// ledger: D1/V12#1 stdin/JSONL 可用
 func TestReadHeadlessInputs_JSONL(t *testing.T) {
 	input := "{\"prompt\":\"one\"}\n\n{\"prompt\":\"two\",\"resume\":\"sess-2\"}\n"
 	got, err := ReadHeadlessInputs(strings.NewReader(input), HeadlessInputJSONL)

@@ -47,6 +47,10 @@ func defsOf(t *testing.T, raw []byte) []string {
 // Asserting equality of the $defs SET rather than of the bytes is deliberate:
 // the point is that they are one document, and byte equality is what
 // TestSchemaBytesAreStableForContractReview already covers.
+//
+// ledger: D1/V14#2 单一 schema 真相源且 parity 守门
+//
+// ledger: H2/APIREF1#3 与 schema 一致
 func TestRuntimeSchemaIsTheSDKSchema(t *testing.T) {
 	onDisk, err := os.ReadFile(sdkSchemaPath(t, filepath.Join("v1", "agent-api.schema.json")))
 	if err != nil {

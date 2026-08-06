@@ -667,28 +667,51 @@
 
 - id: "D1/APS1"
   package: "W9"
-  verdict: partial
+  verdict: done
   title: "app-server (JSON-RPC)"
-  acceptance: "JSON-RPC thread/turn 可用;TS 类型可生成;与 HTTP 行为一致"
-  evidence: ""
+  # 2026-08-06 W9：三条子句各自的缺口都闭合了，但子句 2 是**改写**而不是补足 ——
+  # 原文「TS 类型可生成」在 W9 被判定为不该做的事：cmd/api-schema 那半自称生成器
+  # 而实为手抄字面量，删掉比修好省，守门人换成四路 parity 测试。
+  # 子句 3 原本连测试都没有（两条传输共用 *v1.Service 这一点为真，但无人对照），
+  # 且 config/read|write 根本不落盘。
+  acceptance: "JSON-RPC thread/turn 可用;TS/Python 类型与 Go 契约逐字段对账;与 HTTP 行为一致"
+  evidence:
+    "1": "internal/appserver::TestDispatchThreadResume; internal/appserver::TestDispatchInterrupt; internal/appserver::TestDispatchTurnStartErrors"
+    "2": "internal/api/v1::TestContractParityAcrossFourSources"
+    "3": "internal/api/http::TestThreadStartAgreesAcrossTransports; internal/api/http::TestThreadResumeAgreesAcrossTransports; internal/api/http::TestInterruptAgreesAcrossTransports; cmd/yanshi::TestConfigWriteSurvivesRestart"
 
 - id: "D1/V12"
   package: "W9"
-  verdict: partial
+  verdict: done
   title: "headless exec 增强"
+  # 2026-08-06 W9：子句 1 此前只对 stdin 成立 —— --file 分支绕过 cfg.Input，
+  # `--input jsonl --file <3 行>` 跑出一个 turn。子句 4 的 CI smoke 跑的正是这条
+  # 命令，输出丢给 /dev/null、零断言，**掩盖了它**。两条一起修。
   acceptance: "stdin/JSONL 可用;退出码稳定;可 resume;CI 可脚本化"
-  evidence: ""
+  evidence:
+    "1": "internal/cli::TestReadHeadlessInputs_JSONL; internal/cli::TestReadHeadlessInputs_LinesSkipsBlankLines; cmd/yanshi::TestFileInputHonoursTheInputMode"
+    "2": "cmd/yanshi::TestHeadlessExitCode"
+    "3": "internal/cli::TestExec_ResumeSendsRestoreBeforeUserMessage"
+    "4": "internal/archtest::TestHeadlessSmokeAssertsTurnCount"
 
 - id: "D1/V14"
   package: "W9"
-  verdict: divergent
+  verdict: done
   title: "版本化 Agent API v1"
   # 2026-08-06 W9-T1：子句 2 的前半（有 Schema，且只有一份）已闭合 —— 运行时端点
   # 曾吐一份 3-$defs 的 Go 字面量、$id 与 SDK 那份 21-$defs 的文档不同，两者互不
   # 知情。现在 sdk/schema 用 embed 暴露那一个物理文件，SchemaBytes 原样返回它。
   # 保持 divergent 到 parity 测试（W9-T2）落地。
-  acceptance: "start/resume/interrupt + 流式 item 可用;有版本+Schema;兼容测试完善"
-  evidence: "internal/api/v1::TestRuntimeSchemaIsTheSDKSchema"
+  # 2026-08-06 W9：divergent → done。三份文档各自称 v1 schema（运行时 3 个 $defs、
+  # SDK 21 个且 $id 不同、v1.1 覆盖层），唯一暴露的端点吐最贫瘠的那份。
+  # 现在 sdk/schema 用 embed 暴露那一个物理文件，SchemaBytes 原样返回。
+  # 子句 2 已按此改写（原文「有版本+Schema」不足以区分「有一份」与「有三份」）。
+  # 子句 3 的 v1.1 delta 曾是死的：Ajv 实测 reasoningTokens: -5 验证通过。
+  acceptance: "start/resume/interrupt + 流式 item 可用;单一 schema 真相源且 parity 守门;兼容测试完善"
+  evidence:
+    "1": "internal/api/http::TestAgentV1ResumeEndpoint; internal/api/http::TestAgentV1InterruptEndpoint; internal/api/http::TestV1TurnStreamItemsAreVersionedAndOrdered"
+    "2": "internal/api/v1::TestRuntimeSchemaIsTheSDKSchema; internal/api/v1::TestContractParityAcrossFourSources"
+    "3": "internal/api/v1::TestV11OverlayIsReachable; internal/api/http::TestV1CompatibilityMatrix"
 
 # 2026-08-04 复核：保持 removed，但第 2 条此前**实测为假** —— evidence 只覆盖第 1 条，
 # 而 docs/feature-status-audit.md 仍写着「check-d2.sh…接上即可」（一条会被后来者照做
@@ -745,8 +768,16 @@
   package: "W9"
   verdict: partial
   title: "TS / Python SDK"
-  acceptance: "start/resume/run/stream/cancel 可用；类型生成；契约测试"
-  evidence: ""
+  # 2026-08-06 W9：**保持 partial，卡在子句 1 的 stream，不是记账问题。**
+  # 子句 2 已改写并闭合：W9 判定「类型生成」是不该做的事 —— cmd/api-schema 那半
+  # 自称生成器而实为手抄字面量（跑它再对拍恒等，因为生成器与产物是同一段字面量），
+  # 删掉比修好省，守门人换成四路 parity。子句 3 也已闭合：那两套契约测试此前
+  # **没有任何 workflow 在跑**（.github 全仓 vitest/pytest 零命中），现在有硬门禁。
+  # 子句 1 的 start/resume/run/cancel 实跑为真，**stream 不是**：D1 未提供
+  # /api/v1/threads/{id}/stream，Python 客户端在 transport="ws" 时直接 raise。
+  # 那是 D1 的端点缺口，不属于 W9 的对外契约范围。
+  acceptance: "start/resume/run/stream/cancel 可用；类型与 Go 契约对账；契约测试在 CI 真跑"
+  evidence: "internal/api/v1::TestContractParityAcrossFourSources"
 
 - id: "D3/C15"
   package: "W8"
@@ -1030,10 +1061,21 @@
 
 - id: "H2/APIREF1"
   package: "W9"
-  verdict: partial
+  verdict: done
   title: "v1 API/协议参考"
+  # 2026-08-06 W9：三条各有实打实的缺口。子句 1 的生成区块为真，但
+  # paramResponseDefs() 是**第二张手工表**，层叠在 schema 渲染之上且写在后面所以
+  # 赢 —— resources.md 里 TurnStartParams.images 那行就是它印的（TS/Python 都没有
+  # 这个字段），它还在继续印 W9-T3 已从四路契约删掉的 ThreadResumeResponse.items。
+  # 子句 2 的 Python 示例两处都写 item.toolName（wire alias，属性是 tool_name），
+  # 实测 AttributeError；CI 的 py_compile + import 在「一执行就抛」的代码上通过。
+  # 子句 3 的 schema.md 头部曾同时自称是 sdk/schema/v1 的完整 schema 和从一个
+  # 3-$defs 文档生成 —— W9-T1 统一真相源后这两句才同时为真。
   acceptance: "v1 API 有参考；SDK 用法有示例；与 schema 一致"
-  evidence: ""
+  evidence:
+    "1": "cmd/api-schema::TestRenderMarkdownContainsDefsBlocks; cmd/api-schema::TestRenderMarkdownParamsIncludeImages"
+    "2": "internal/archtest::TestSDKSnippetsAreExecutablyChecked; internal/archtest::TestSDKContractSuitesRunInCI"
+    "3": "internal/api/v1::TestContractParityAcrossFourSources; internal/api/v1::TestRuntimeSchemaIsTheSDKSchema"
 
 - id: "H2/CONTRIB1"
   package: "W10"

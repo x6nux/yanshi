@@ -120,6 +120,7 @@ func TestRenderMarkdownContainsSchemaFull(t *testing.T) {
 	}
 }
 
+// ledger: H2/APIREF1#1 v1 API 有参考
 func TestRenderMarkdownContainsDefsBlocks(t *testing.T) {
 	out := RenderMarkdown(v1.SchemaBytes())
 	// Each $defs entry produces its own generated block table.
@@ -137,6 +138,7 @@ func TestRenderMarkdownContainsDefsBlocks(t *testing.T) {
 	}
 }
 
+// ledger: H2/APIREF1#1 v1 API 有参考
 func TestRenderMarkdownParamsIncludeImages(t *testing.T) {
 	// G (multimodal) landed: TurnStartParams must surface the images field so
 	// resources.md stays in sync with types.go.

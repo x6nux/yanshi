@@ -137,6 +137,8 @@ func describe(v any) string {
 }
 
 // TestThreadStartAgreesAcrossTransports compares thread/start over both doors.
+//
+// ledger: D1/APS1#3 与 HTTP 行为一致
 func TestThreadStartAgreesAcrossTransports(t *testing.T) {
 	ts, rpc := crossFixture(t)
 	body := `{"title":"cross","model":"fake","thinking":"low"}`
@@ -155,6 +157,8 @@ func TestThreadStartAgreesAcrossTransports(t *testing.T) {
 // TestThreadResumeAgreesAcrossTransports is the operation that was wrong in
 // both transports at once: each forwarded snapshot.Items, and each forwarded
 // a field the service never set.
+//
+// ledger: D1/APS1#3 与 HTTP 行为一致
 func TestThreadResumeAgreesAcrossTransports(t *testing.T) {
 	ts, rpc := crossFixture(t)
 	// Both transports must resume a thread the OTHER one created, which is the
@@ -181,6 +185,8 @@ func TestThreadResumeAgreesAcrossTransports(t *testing.T) {
 
 // TestInterruptAgreesAcrossTransports covers the idempotent path: interrupting
 // a thread with no active turn must look the same either way.
+//
+// ledger: D1/APS1#3 与 HTTP 行为一致
 func TestInterruptAgreesAcrossTransports(t *testing.T) {
 	ts, rpc := crossFixture(t)
 	started := postJSON(t, ts, "/api/v1/thread/start", `{}`)

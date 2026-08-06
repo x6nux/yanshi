@@ -200,6 +200,12 @@ func blockAfter(src, header, terminator string) (string, bool) {
 
 // TestContractParityAcrossFourSources compares every contract type's field set
 // across Go, the JSON Schema, the TypeScript client and the Python client.
+//
+// ledger: D1/APS1#2 TS/Python 类型与 Go 契约逐字段对账
+//
+// ledger: D1/V14#2 单一 schema 真相源且 parity 守门
+//
+// ledger: H2/APIREF1#3 与 schema 一致
 func TestContractParityAcrossFourSources(t *testing.T) {
 	tsSrc := readSDK(t, "ts", "v1.ts")
 	pySrc := readSDK(t, "python", "src", "yanshi_sdk", "generated.py")

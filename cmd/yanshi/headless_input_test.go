@@ -18,6 +18,8 @@ import (
 // docs.yml's CI smoke ran exactly this command with output redirected to
 // /dev/null and no assertion, so the one thing that exercised the path could
 // not observe it.
+//
+// ledger: D1/V12#1 stdin/JSONL 可用
 func TestFileInputHonoursTheInputMode(t *testing.T) {
 	dir := t.TempDir()
 

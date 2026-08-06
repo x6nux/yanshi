@@ -62,6 +62,8 @@ func rpcExchange(t *testing.T, cfgPath string, requests ...string) map[float64]m
 //
 // Two separate runApp lifetimes, not one: a single-process test passes against
 // the in-memory backend too, which is exactly why nothing caught this.
+//
+// ledger: D1/APS1#3 与 HTTP 行为一致
 func TestConfigWriteSurvivesRestart(t *testing.T) {
 	cfgPath := appConfigFixture(t)
 

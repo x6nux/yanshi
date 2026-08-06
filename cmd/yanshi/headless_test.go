@@ -65,6 +65,8 @@ func TestParseHeadlessArgsRejectsUnknownPositional(t *testing.T) {
 // TestHeadlessExitCode proves the stable exit code contract: nil -> 0, generic
 // error -> 1, DeadlineExceeded -> 124 (coreutils timeout), Canceled -> 130
 // (128+SIGINT). The mapping is the headless runner's contract with scripts.
+//
+// ledger: D1/V12#2 退出码稳定
 func TestHeadlessExitCode(t *testing.T) {
 	cases := []struct {
 		name string

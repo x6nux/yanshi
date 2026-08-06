@@ -51,6 +51,8 @@ func collectRefs(node any, out map[string]bool) {
 // whose $defs and $refs are two disjoint sets, so both directions are checked:
 // every local $defs must be referenced, and every local #/$defs/ ref must
 // resolve.
+//
+// ledger: D1/V14#3 兼容测试完善
 func TestV11OverlayIsReachable(t *testing.T) {
 	var doc map[string]any
 	if err := json.Unmarshal(sdkschema.V11(), &doc); err != nil {
