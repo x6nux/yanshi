@@ -138,7 +138,23 @@ func ghFailure(res commandResult, err error) string {
 	if res.ExitCode == 0 {
 		return ""
 	}
-	return errorResult(fmt.Sprintf("gh: exited %d: %s", res.ExitCode, commandFailureTail(res)))
+	tail := commandFailureTail(res)
+	// An unauthenticated gh exits 1, the same code it uses for "PR not found"
+	// and "no such repository". Folding them all into "gh: exited 1" leaves the
+	// model to retry a call that will never succeed until a human runs
+	// `gh auth login` — the one failure where retrying is exactly wrong.
+	if ghIsAuthFailure(tail) {
+		return toJSON(struct {
+			Error  string `json:"error"`
+			Status string `json:"status"`
+			Hint   string `json:"hint"`
+		}{
+			Error:  fmt.Sprintf("gh: exited %d: %s", res.ExitCode, tail),
+			Status: "unauthenticated",
+			Hint:   "the operator must run `gh auth login` or set GH_TOKEN; retrying will not help",
+		})
+	}
+	return errorResult(fmt.Sprintf("gh: exited %d: %s", res.ExitCode, tail))
 }
 
 func runGitHubPRContext(ctx context.Context, argsJSON string) (string, error) {
@@ -158,7 +174,46 @@ func runGitHubPRContext(ctx context.Context, argsJSON string) (string, error) {
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
-	return toJSON(ghCtx), nil
+	return toJSON(quarantinePRContext(ctx, ghCtx)), nil
+}
+
+// untrustedPRContext is what the TOOL returns, as opposed to what
+// FetchGitHubContext parses. The two differ on purpose: the parser is also used
+// by `yanshi pr`, where the output goes to a human terminal and delimiters are
+// noise, while here it goes into a model'"'"'s context window alongside yanshi'"'"'s
+// own text.
+type untrustedPRContext struct {
+	GitHubContext
+	// BodyArtifactRef is set when the PR body was too large to inline. The
+	// Body field then holds the truncated head.
+	BodyArtifactRef string `json:"body_artifact_ref,omitempty"`
+	// BodyDegraded reports that the body was truncated and could not be
+	// written to an artifact either.
+	BodyDegraded bool `json:"body_degraded,omitempty"`
+}
+
+// quarantinePRContext prepares a parsed PR for a model: it delimits the two
+// attacker-controlled prose fields and moves an oversized body out of line.
+//
+// Spilling the BODY specifically, rather than relying on GuardedTool'"'"'s
+// whole-result spill, is the point: once the envelope as a whole is replaced by
+// a reference, the model cannot see the PR number, the branch names or the file
+// list either — a 200 KiB description would make the entire tool useless rather
+// than just its prose. Here the structured fields always survive.
+func quarantinePRContext(ctx context.Context, in GitHubContext) untrustedPRContext {
+	out := untrustedPRContext{GitHubContext: in}
+	if len(out.Body) > SpillThreshold {
+		art := writeArtifactOrSpill(ctx, "github-pr-body", sanitizeLabel(fmt.Sprintf("%d", in.Number)), out.Body)
+		out.Body = art.Summary
+		out.BodyArtifactRef = art.ArtifactRef
+		out.BodyDegraded = art.Degraded
+	}
+	// Delimit AFTER spilling so the markers wrap what the model will actually
+	// read. Wrapping first would put the opening marker inside the artifact and
+	// leave the summary unbalanced.
+	out.Body = untrustedBlock("PR_BODY", out.Body)
+	out.Title = untrustedBlock("PR_TITLE", in.Title)
+	return out
 }
 
 func runGitHubComment(ctx context.Context, argsJSON string) (string, error) {

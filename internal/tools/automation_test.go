@@ -86,6 +86,8 @@ func TestAutomationToolsAllEightPresent(t *testing.T) {
 //
 // 这是「approval 门禁」这条验收的主证据：它遍历全部 9 个工具，并用
 // assert.Equal(len(all), checked) 保证没有一个被静默跳过。
+//
+// ledger: B3/GH1#2 写操作需审批且需证据
 func TestApprovalPromisedInDescriptionIsEnforced(t *testing.T) {
 	set, _ := setupAutomation(t)
 	batchSet, _ := newBatchTools(t)

@@ -371,12 +371,40 @@
   #  ::TestEveryGHSpecCallSiteNamesARegisteredTool）。退出码那半此前已由 ghFailure 修过。
   # ⚠️ 残留依赖（裁定 3，不得藏起来）：真实出网此前受阻于 bootstrap 发布的死端口
   # 代理；W5 已起真代理，该阻塞解除，但**尚未做真实出网的端到端验证**。
+  # 2026-08-07：partial → done。五条子句里三条**没有实现**，不只是没有测试。
+  #   1 既有证据 TestGitHubPRContextParsesGHJSON 直接调 FetchGitHubContext ——
+  #     一个纯解析器，而且 `yanshi pr` 也用它。它对工具本身一言不发：argv 没验、
+  #     --json 字段清单没验（漏一个字段对应的 struct 字段就静默为零，读起来像
+  #     「这个 PR 没有描述」而不是「没请求这个字段」）。补全链测试。
+  #   2 「需证据」这半句落在**审批载荷**上而不是新参数上：AuthorizeApprovalRequired
+  #     已经把完整 argsJSON 放进 PermissionRequest.Args，缺的是钉住它的断言 ——
+  #     一个只报工具名不报内容的弹窗是盲签。
+  #   3 【新实现】GitHub 工具此前连 spill 分支都没有。刻意**只 spill body** 而不是
+  #     靠 GuardedTool 的整体溢出：整个信封变成一条引用之后，模型连 PR 编号、
+  #     分支名、文件清单都看不到了 —— 一个 200 KiB 的描述会让整个工具失效，而不
+  #     只是它的正文部分。带负对照（小 body 不得 spill）。
+  #   4 【新实现】gh 未认证时退出码是 1，与「PR 不存在」「仓库不存在」同码。
+  #     统一折成 "gh: exited 1" 之后模型无法区分，于是重试一个在有人跑
+  #     `gh auth login` 之前永远不会成功的调用 —— 这恰恰是最不该重试的那一类。
+  #     按 gh 自己的 stderr 措辞识别，带负对照（普通失败不得被贴上未认证标签）。
+  #   5 【新实现】PR 标题与正文由开 PR 的人书写，和 yanshi 自己产出的字段装在同一个
+  #     JSON 信封里；一旦模型开始读散文，两者无从区分。用**带 nonce 的定界**包住：
+  #     固定标记是可伪造的（攻击者知道那个串就能提前闭合，让后半段被当可信上下文
+  #     读），nonce 每次现取且与正文冲突时重取。刻意**不**改写/转义正文 ——
+  #     审阅者要读到原文；拆解点名的陷阱正是「断言正文原样返回」，那条断言在有漏洞
+  #     的实现上照样通过。
+  # 三条实现各自的变异探针都验过。
 - id: "B3/GH1"
   package: "W6"
-  verdict: partial
+  verdict: done
   title: "GitHub 工具集 (issue/PR context, comment, close)"
   acceptance: "只读 context 可用；写操作需审批且需证据；大 body 成 artifact；未认证明确降级；注入内容不被当指令执行"
-  evidence: ""
+  evidence:
+    "1": "internal/tools::TestGitHubPRContextRoundTripsThroughTheGHProcess"
+    "2": "internal/tools::TestGitHubApprovalCarriesTheExactBody; internal/tools::TestApprovalPromisedInDescriptionIsEnforced"
+    "3": "internal/tools::TestGitHubLargeBodySpillsButKeepsTheStructuredFields"
+    "4": "internal/tools::TestGitHubUnauthenticatedIsNamedNotGeneric"
+    "5": "internal/tools::TestGitHubPRBodyIsDelimitedAsUntrusted; internal/tools::TestGitHubPRBodyNoncesDifferPerCall"
 
 # 2026-08-04 复核：保持 missing，但要点明「不是没有代码」——
 # web_search 已注册（internal/tools/web.go::NewWebTools）、已装配（internal/bootstrap/bootstrap.go::Build 里的 webTools.Search）、在出厂 profile 里。

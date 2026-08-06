@@ -31,7 +31,12 @@ func TestRunGitHubPRContext_SuccessWithFactory(t *testing.T) {
 	ctx := WithSecureProcessFactory(WithProfile(context.Background(), allowAllProfile()), factory)
 	out, err := runGitHubPRContext(ctx, `{"repo":"owner/repo","number":1}`)
 	require.NoError(t, err)
-	assert.Contains(t, out, `"title":"T"`)
+	// The title is no longer returned bare: it is prose written by whoever
+	// opened the PR, so quarantinePRContext wraps it in nonce-carrying
+	// untrusted delimiters. The text still has to be there — only the framing
+	// changed. author is a login, not prose, and stays unwrapped.
+	assert.Contains(t, out, "UNTRUSTED_PR_TITLE")
+	assert.Contains(t, out, `T\n`)
 	assert.Contains(t, out, `"author":"u"`)
 }
 
