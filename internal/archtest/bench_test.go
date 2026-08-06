@@ -113,16 +113,48 @@ func TestBenchCIGateRunsEveryBenchmarkPackageAboveOneIteration(t *testing.T) {
 			t.Errorf("the ci.yml bench command does not cover ./%s: %q", pkg, line)
 		}
 	}
-	if strings.Contains(ci, "continue-on-error") {
-		// Not a blanket ban -- but the bench job specifically must not carry it,
-		// and this file is where that would be noticed.
-		idx := strings.Index(ci, "bench-compiles")
-		soft := strings.Index(ci, "continue-on-error")
-		if idx >= 0 && soft > idx && soft-idx < 600 {
-			t.Error("the bench job is continue-on-error again: that is exactly the state " +
-				"in which a broken benchmark stayed green")
+	// The job must be HARD. This is checked inside the job's own block, with
+	// comment lines stripped: the first attempt searched the whole file for
+	// "continue-on-error" and compared byte offsets against "bench-compiles",
+	// which found the phrase in a COMMENT above the job (explaining the very
+	// state being guarded against) and concluded everything was fine. Probing
+	// it -- adding continue-on-error: true to the job -- left the gate green.
+	if body, ok := workflowJobBody(ci, "bench-compiles"); !ok {
+		t.Error("no bench-compiles job in ci.yml")
+	} else if strings.Contains(body, "continue-on-error") {
+		t.Error("the bench job is continue-on-error again: that is exactly the state " +
+			"in which a broken benchmark stayed green for an unknown length of time")
+	}
+}
+
+// workflowJobBody returns the YAML block of one job with comment lines
+// removed, so a phrase that appears only in prose cannot be mistaken for
+// configuration. Jobs are the 2-space-indented keys under "jobs:"; the block
+// runs to the next such key.
+func workflowJobBody(workflow, job string) (string, bool) {
+	lines := strings.Split(workflow, "\n")
+	start := -1
+	for i, l := range lines {
+		if l == "  "+job+":" {
+			start = i + 1
+			break
 		}
 	}
+	if start < 0 {
+		return "", false
+	}
+	var out []string
+	for _, l := range lines[start:] {
+		if strings.HasPrefix(l, "  ") && !strings.HasPrefix(l, "   ") &&
+			strings.HasSuffix(strings.TrimSpace(l), ":") && !strings.HasPrefix(strings.TrimSpace(l), "#") {
+			break // next job at the same indent
+		}
+		if strings.HasPrefix(strings.TrimSpace(l), "#") {
+			continue // prose, not configuration
+		}
+		out = append(out, l)
+	}
+	return strings.Join(out, "\n"), true
 }
 
 // TestNightlyRecordsTheBenchmarkTrend covers the other half: the numbers.
