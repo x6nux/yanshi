@@ -143,6 +143,12 @@
   acceptance: "plan 模式禁编辑类工具；计划可流式更新；确认后切执行且历史连续；checklist 状态持久"
   evidence: "internal/guard::TestPlanToolAllowed; internal/tools::TestAuthorize_PlanMode_DeniesWriteTools; internal/api/http::TestChatWS_ModePlan_ProducesReadOnlyTurn; internal/task/work::TestManagerChecklistAPIs"
 
+  # W6/Task 11：删掉了 mcp_list 帧 —— 它有构造器、往返测试、SSE golden 条目，
+  # 却没有任何服务端会构造它，所以没有客户端收得到；三样东西让它看起来是被维护的
+  # 契约，而 NewListMCP 的 doc 还明写"服务端回 NewMCPList(names)"，照着接 handler
+  # 的人会等一个永远不来的帧（真正的回复是 mcp_status）。
+  # ⚠️ 仍缺：五子命令渲染 resolved 配置路径 / command|URL / timeout / prompts；
+  # enable/disable/reload 只改内存不回写 config.yaml。
 - id: "A3/C13"
   package: "W6"
   verdict: partial
@@ -150,6 +156,13 @@
   acceptance: "展示 server/tool/status/error；enable/disable 生效；状态与 client 实际连接一致"
   evidence: ""
 
+  # W6/Task 11：分组头永远被滤掉 —— 过滤器把分组头也当匹配候选跑
+  # HasPrefix(name, prefix)，而 "── files ──" 不可能以用户键入的前缀开头，于是
+  # MCP 工具排成无分组的平铺列表（internal/cli/tui::TestPaletteKeepsMCPGroupHeaders）。
+  # 更根本的是数据源从不被触发：paletteMCPServers 只由 /mcp 的回复填充，而如果
+  # palette 正是发现工具的地方，用户就没有理由去敲 /mcp。已改为启动时请求。
+  # 两条缺陷叠加时单独修任一条都测不出效果。
+  # ⚠️ 仍需 disabled/failed 标灰的渲染证据。
 - id: "A3/MCP1"
   package: "W6"
   verdict: partial
@@ -157,6 +170,17 @@
   acceptance: "palette 含 MCP 工具分组；disabled/failed 可见标灰；命名与模型可见一致"
   evidence: ""
 
+  # W6/Task 9（强制重验关卡）实测：与 W07/DT4/DT5/GH1 相反，本项审计判定全部属实。
+  # internal/mcp/health.go 写完、有测试、零个非测试调用点 —— SetHealthConfig /
+  # StartHealthLoop / CallToolRetry 三个导出符号全未接线，于是 StartAll 之后死掉的
+  # server 永远停在 Ready，工具继续通告给模型，每次调用都失败且不重连。
+  # ⚠️ GOV4 抓不到这个形状：它查的是 bootstrap 里导出 Build* 的可达性，而
+  # buildMCPManager 是可达的 —— 没接上的是组合根已持有组件上的**方法**，比门禁
+  # 看的那一层低一层。已接线并由 internal/bootstrap::TestMCPHealthLoopIsStarted 守住。
+  # ListResources 此前同样零调用点（ServerStatus.Resources 恒 nil），已聚合
+  # （internal/mcp::TestSnapshotReportsResources）。
+  # ⚠️ 仍缺 prompts（零实现）与 OAuth 收口。
+  # 重验记录：docs/superpowers/notes/2026-08-06-w6-task9-reverification.md
 - id: "A3/V16"
   package: "W6"
   verdict: partial
@@ -216,6 +240,13 @@
   title: "子代理 7 角色"
   acceptance: "7 角色可选；权限矩阵符合；越权拒绝；别名大小写不敏感；未知值返回可接受集"
   evidence: "internal/tools::TestRoleCatalogCoversSevenRoles; internal/tools::TestRoleAllowlistOnlyTightensParent; internal/tools::TestSpawnIntersectsRoleWithCallerTools; internal/tools::TestSpawnRoleNameIsCaseInsensitive; internal/tools::TestSpawnRejectsUnknownRoleAndListsValidOnes"
+  # W6/Task 10：detectLanguage 认 12 种扩展名 6 种语言，DefaultLanguages 只有
+  # 2 个 server —— 编辑 .ts/.rs/.c 时语言解析得出、server 查不到，DidChange 静默
+  # 无操作，诊断永远为空且与"这个文件没问题"无法区分
+  # （internal/lsp::TestEveryDetectedLanguageHasAServer 两个方向都钉）。
+  # 同时加了工作区标志文件闸门（::TestMarkerFilesGateSpawning）：此前无 go.mod 的
+  # 目录也会拉起 gopls，而 gopls 在那种目录里对每个请求都报错。
+  # ⚠️ 仍需为「编辑后模型收到诊断」一句找端到端证据。
 - id: "B2/LSP1"
   package: "W6"
   verdict: partial
@@ -240,6 +271,10 @@
 # 第 1、2 条已覆盖（TestParseGoJSONCountsPassFailSkip /
 # TestRunTestsExecutesGoTestJSONWithWorkspaceWriteTier /
 # TestRunTestsReportsRunnerFailureInsteadOfPass 等）。补测归 W6。
+  # W6/Task 4：包级事件（Test 字段为空）被当用例计数，虚高数正好等于包数
+  # （internal/tools::TestParseGoJSONCountsTestsNotPackages）。退出码那半此前已由
+  # reconcileExitCode 修过。
+  # ⚠️ 翻牌前需为"超时/取消干净"一句找到具名证据。
 - id: "B3/DT4"
   package: "W6"
   verdict: partial
@@ -275,6 +310,10 @@
 #     不可用只降级自己那一行）。
 #   · 3 toolchain 版本准确 —— 成立，且是本仓 fake 设计的范本：fake 对错误 argv
 #     返回 exit 2，堵住了「fake 太宽」。
+  # W6/Task 5：open_diagnostics_count 结构性恒 0（文件列表来自恒返回 nil 的桩，
+  # 字段在从未查看的情况下报"无问题"），五个探针串行。前者由
+  # internal/lsp::TestOpenDocumentsTracksDidChange 守住数据源。
+  # sandbox 硬编码与 go --version 两条此前已修（实测确认，非采信审计）。
 - id: "B3/DT5"
   package: "W6"
   verdict: partial
@@ -282,6 +321,12 @@
   acceptance: "一次调用聚合；各子项可独立失败不拖垮；toolchain 版本准确"
   evidence: "internal/tools::TestDiagnosticsGitFailureDoesNotHideOthers; internal/tools::TestDiagnosticsLSPUnavailableIsLocalDegradation; internal/tools::TestDiagnosticsProbesEachToolchainWithItsOwnVersionArgv"
 
+  # W6/Task 6：ghSpec 把 Tool 写死成 "github"，而注册的是四个真名 —— 出厂
+  # profile 下四个工具全被 guard 拒绝，且错误信息指向注册表里不存在的名字
+  # （internal/tools::TestGHSpecCarriesTheRealToolName、
+  #  ::TestEveryGHSpecCallSiteNamesARegisteredTool）。退出码那半此前已由 ghFailure 修过。
+  # ⚠️ 残留依赖（裁定 3，不得藏起来）：真实出网此前受阻于 bootstrap 发布的死端口
+  # 代理；W5 已起真代理，该阻塞解除，但**尚未做真实出网的端到端验证**。
 - id: "B3/GH1"
   package: "W6"
   verdict: partial
@@ -301,6 +346,13 @@
 #     现有 4 个重定向测试全部针对 web_fetch。
 #   4 后端不可用降级 —— 唯一成立的一条（TestWebSearchReturnsEmptyOnUnreachable）。
 # 4 条里 3 条无实现，故不升 partial。
+  # W6/Task 7 修好了子句 1：换数据源到 html.duckduckgo.com + 真解析
+  # （internal/tools::TestParseDuckDuckGoHTML 断言标题/URL/摘要三者非空）。
+  # 此前三条独立的"返回空"路径叠在一起：端点变反爬页、提取器找的 class
+  # (result-link) 在 DuckDuckGo 任何响应里都不存在、即使命中也把整行 <a> 当标题
+  # 且 Snippet 全文件从未赋值。原测试喂的正是那个杜撰的 class，所以它证明的是
+  # "解析器能读懂只有它自己产出的 HTML"。
+  # ⚠️ 仍卡在子句 2「域名/时间过滤生效」——未实现，不是未接线。
 - id: "B3/T11"
   package: "W6"
   verdict: missing
@@ -315,6 +367,11 @@
 # （reviewFinding 含 File/Line/Severity、TestStreamReviewDedupesAndSortsFindings、
 # 工具不写文件）。评审曾建议据此降 missing —— **不该降**：partial 的语义就是
 # 「部分实现」，4 条里 3 条成立，降 missing 反而是另一个方向的失真。
+  # W6/Task 8：yanshi pr 传裸 ctx，review 工具的 SubAgentRunner 恒 nil ——
+  # 该子命令每次都返回 "review requires a bound sub-agent runner" 并 exitOK，
+  # 从未真正工作过。其测试的 doc 注释把这个失败写成了预期路径。
+  # 已加 Orchestrator.BindHeadlessContext + cmd/yanshi::TestRunPRBindsASubAgentRunner。
+  # ⚠️ 仍卡在「支持三种 base」与「findings 含 severity 分级判据」两句。
 - id: "B3/V13"
   package: "W6"
   verdict: partial
@@ -337,6 +394,12 @@
 #     TestGitDiffReturnsOneRecordPerFileWithBinaryMarker
 #   2 不修改用户配置 —— TestGitToolsDoNotWriteGitConfig
 #   4 边界清晰 —— TestGitDiffRejectsPathEscape / TestGitDiffScopesBaseRefAndCommit
+  # W6/Task 3 修了三条（internal/tools::TestParseGitStatusZHandlesTrackedRecords、
+  # ::TestMergeNumstatByPathDeduplicates）：已跟踪的含空格路径被截断成最后一个词、
+  # rename 的原路径字段被当独立记录产生幽灵条目、staged+unstaged 同一文件出两条
+  # 各带半个 diff、untracked 文本文件被判 binary。
+  # 这些全在"已跟踪"分支，而原测试只 os.WriteFile 不 git add，从未进过那条分支。
+  # ⚠️ 翻牌前需逐句核对"大 diff 成 artifact"与"边界清晰"两句的证据。
 - id: "B3/W07"
   package: "W6"
   verdict: partial
@@ -934,6 +997,13 @@
   acceptance: "检查 config/DB/provider/ACP CLI/端口/lockfile/目录/sandbox；人类可读 + --json；退出码 0/1/2；不打印 secret；不完整环境不 panic"
   evidence: ""
 
+  # W6/Task 1：八个 agent_* 的 DefaultTimeout 全为 0，而 WithTimeout(ctx,0) 给的是
+  # 已过期 context —— 工具第一行就失败，且 GuardedTool 把失败当**工具结果**回喂模型，
+  # 于是模型重试、再失败，不崩不报只烧 token。NewGuardedTool 现在构造期 panic，
+  # 无界必须显式写 NoTimeout（Stream 里单独分支，因为 WithTimeout 对任何非正数都
+  # 当场过期，换个常量值解决不了问题）。装配侧由 App.ToolTimeouts +
+  # internal/bootstrap::TestNoRegisteredToolHasAZeroTimeout 二次把关。
+  # ⚠️ 仍需逐句核对"废弃 JSON 包装与 ToolProgressCallback"等几句。
 - id: "M1/SPEC-TOOLIF"
   package: "W6"
   verdict: partial
