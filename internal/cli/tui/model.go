@@ -90,6 +90,16 @@ type model struct {
 	effective EffectivePreferences
 	prefsPath string
 	keys      *keymap.Map
+	// themeOverride is a session-only /theme choice. It exists because
+	// remerge() recomputes theme from the persisted cascade, and without this
+	// "/theme muted" followed by any preference command would silently revert
+	// the colours — a cross-command interference with no visible cause.
+	// /theme is documented as session-only, so the override is deliberately
+	// NOT written to prefs.json.
+	themeOverride ThemeName
+	// vim is the modal state machine, non-nil exactly when vim mode is on.
+	// Nil is the normal editing path, byte-identical to pre-C15.
+	vim *keymap.VimMachine
 
 	// Live activity status line (shown while m.streamCh != nil). activity is the
 	// current step ("Thinking…" / "Running <tool>…"); turnStart is when the turn
@@ -386,6 +396,9 @@ func newModelWithPrefs(sess tuiSession, root string, project Preferences) model 
 	}
 	m.effective.UILocale = eff.UILocale
 	m.keys = buildKeymap(eff, project)
+	if eff.Vim {
+		m.vim = keymap.NewVimMachine()
+	}
 	m.input.Placeholder = bundle.Get("tui.input.placeholder")
 	// Startup banner: header (OS/Shell/Go/Date) renders instantly; tool rows
 	// are appended asynchronously by probeStartupTools (see Init/Update) so the

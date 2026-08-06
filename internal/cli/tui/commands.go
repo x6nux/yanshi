@@ -885,7 +885,11 @@ func cmdTheme(m model, args []string) (tea.Model, tea.Cmd) {
 		m.refresh()
 		return m, nil
 	}
+	// Session-only, and recorded as such: remerge() rebuilds theme from the
+	// persisted cascade, so without themeOverride the next /vim or /contrast
+	// would quietly put the old colours back.
 	m.theme = tn
+	m.themeOverride = tn
 	m.entries = append(m.entries, errorEntry{text: okStyle.Render("✓ theme: " + string(tn))})
 	m.refresh()
 	m.viewport.GotoBottom()

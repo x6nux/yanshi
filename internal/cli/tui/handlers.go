@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/x6nux/yanshi/internal/guard"
+	"github.com/x6nux/yanshi/internal/keymap"
 	"github.com/x6nux/yanshi/internal/proto"
 )
 
@@ -233,6 +234,19 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 
 	if m.yoloConfirm > 0 && msg.Type != tea.KeyEnter && msg.Type != tea.KeyShiftTab {
 		m.yoloConfirm = 0
+		return m, nil, true
+	}
+
+	// C15: vim modal editing, ahead of everything else — it owns raw
+	// keystrokes when on, and nil (the default) makes this a single nil check.
+	if action, consumed := m.vimKey(msg); consumed {
+		if action != keymap.ActionNone {
+			if mm, cmd, handled := m.runKeyAction(action); handled {
+				return mm.(model), cmd, true
+			}
+		}
+		// Consumed with no action is a mode transition (i/a/o/v/Esc). Swallow
+		// it: letting it fall through types the letter into the textarea.
 		return m, nil, true
 	}
 

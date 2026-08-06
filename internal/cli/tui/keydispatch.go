@@ -22,6 +22,61 @@ var builtinKeys = map[tea.KeyType]bool{
 	tea.KeyF1:     true,
 }
 
+// vimKey routes a keystroke through the modal state machine when vim mode is
+// on, and reports whether the key was consumed there.
+//
+// This is what makes /vim on mean something. keymap.VimMachine was a complete,
+// tested state machine with ZERO production consumers, so before this the
+// command persisted a preference, printed "vim mode enabled", and changed
+// nothing about editing — the product told the user a thing that was not true.
+//
+// Consumed-with-no-action is load-bearing: i/a/o/v/Esc are transitions, and
+// letting them through would type the letter into the textarea instead of
+// switching mode.
+//
+// Popups own keystrokes ahead of this. A modal picker, the help panel and the
+// action palette all read raw keys, and routing j/k to viewport scrolling
+// while a list is open would make the list unusable.
+func (m *model) vimKey(msg tea.KeyMsg) (keymap.Action, bool) {
+	if m.vim == nil {
+		return keymap.ActionNone, false
+	}
+	if m.paletteOpen() || m.helpVisible || m.action != nil ||
+		m.pickerKind != "" || len(m.restoreSessions) > 0 || len(m.pendingPermissions) > 0 {
+		return keymap.ActionNone, false
+	}
+	key, ok := keymap.NormalizeKey(msg)
+	if !ok {
+		return keymap.ActionNone, false
+	}
+	var configured keymap.Action
+	if m.keys != nil {
+		configured = m.keys.Lookup(msg)
+	}
+	res := m.vim.HandleKey(key, configured)
+	if !res.Consumed {
+		return keymap.ActionNone, false
+	}
+	return res.Action, true
+}
+
+// VimModeLabel returns the localized modal indicator, or "" when vim mode is
+// off. The footer renders it so the mode is visible — a modal editor whose
+// current mode you cannot see is worse than no modal editor.
+func (m model) VimModeLabel() string {
+	if m.vim == nil {
+		return ""
+	}
+	switch m.vim.Mode() {
+	case keymap.VimModeNormal:
+		return m.bundle.Get("vim.mode.normal")
+	case keymap.VimModeVisual:
+		return m.bundle.Get("vim.mode.visual")
+	default:
+		return m.bundle.Get("vim.mode.insert")
+	}
+}
+
 // remappedKey reports the action a user-configured binding assigns to msg.
 //
 // It returns false for keys that carry their default binding, so the built-in

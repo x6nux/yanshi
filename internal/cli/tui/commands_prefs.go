@@ -55,7 +55,25 @@ func (m model) remerge() model {
 	env, _ := PreferencesFromEnv(os.Getenv)
 	m.effective = mergeTUIPrefs(Preferences{}, env, m.prefs, m.project)
 	m.theme = themeForPrefs(m.effective)
+	// A session /theme wins over the cascade until the session ends. Without
+	// this, running any preference command after /theme silently reverted the
+	// colours, with nothing on screen connecting the two.
+	//
+	// /contrast is the one exception: it is an accessibility switch, and
+	// turning it on has to beat a theme choice or it does not work.
+	if m.themeOverride != "" && !m.effective.HighContrast {
+		m.theme = m.themeOverride
+	}
 	m.keys = buildKeymap(m.effective, m.project)
+	// Vim mode is a live state machine, not a flag someone reads later: it
+	// owns keystrokes. Constructed on transition to on, dropped on transition
+	// to off so the normal editing path is byte-identical when it is off.
+	switch {
+	case m.effective.Vim && m.vim == nil:
+		m.vim = keymap.NewVimMachine()
+	case !m.effective.Vim:
+		m.vim = nil
+	}
 	return m
 }
 

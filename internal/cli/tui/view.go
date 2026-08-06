@@ -694,6 +694,15 @@ func (m model) statusHeader() string {
 		segs = append(segs, segmentDef{text: " " + m.workDir + " ", fg: c.fg, bg: c.bg, bold: c.bold})
 	}
 
+	// 3b. Vim modal indicator. Empty when vim mode is off, so the footer is
+	// byte-identical on the default path. A modal editor whose current mode is
+	// invisible is worse than no modal editor: every keystroke becomes a
+	// guess.
+	if label := m.VimModeLabel(); label != "" {
+		c = tc("mode")
+		segs = append(segs, segmentDef{text: " " + label + " ", fg: c.fg, bg: c.bg, bold: c.bold})
+	}
+
 	// 4. Git branch.
 	if m.gitBranch != "" {
 		c = tc("git")
