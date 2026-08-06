@@ -48,6 +48,15 @@ func (q *fakeQueue) SubmitRun(_ context.Context, p automation.RunPayload) (autom
 	return automation.RunReceipt{WorkTaskID: id, BrokerTaskID: "broker-" + p.IdempotencyKey}, nil
 }
 
+// enqueued reads the SubmitRun count under the lock. The field is fine to read
+// directly from a test that drives Tick itself, but the Scheduler writes it
+// from its own goroutine — see TestSchedulerEnqueuesWithoutAnyoneCallingTick.
+func (q *fakeQueue) enqueued() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.calls
+}
+
 func (q *fakeQueue) Lookup(_ context.Context, workTaskID string) (automation.RunStatus, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()

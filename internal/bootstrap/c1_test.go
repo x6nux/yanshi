@@ -3,7 +3,6 @@ package bootstrap_test
 import (
 	"context"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -171,24 +170,18 @@ func TestBuildAutomationSchedulerGoroutineExitsOnCancel(t *testing.T) {
 	c1, err := bootstrap.BuildAutomation(parent, cfg, s, adapter)
 	require.NoError(t, err)
 
-	// 让 scheduler 跑几个 tick。
-	var ticks int32
-	deadline := time.After(2 * time.Second)
-	for atomic.LoadInt32(&ticks) < 1 {
-		_, err := c1.Manager.Create(automation.CreateInput{
-			Name: "x", Prompt: "p",
-			Schedule: automation.Schedule{Kind: "interval", IntervalSec: 1},
-		})
-		if err == nil {
-			atomic.AddInt32(&ticks, 1)
-		}
-		time.Sleep(20 * time.Millisecond)
-		select {
-		case <-deadline:
-			t.Fatal("no tick observed")
-		default:
-		}
-	}
+	// 给 scheduler 一个真实的待办，让它的循环有事可做 —— 本测试的主体是
+	// 「cancel 后 goroutine 退出」，而不是它退出前做了什么。
+	//
+	// 这里原先有一个 `for atomic.LoadInt32(&ticks) < 1` 的循环，配着
+	// `t.Fatal("no tick observed")`：它计的是 Create 的成功次数，与 tick 无关，
+	// 第一次 Create 成功就退出，那句 Fatal 永远打不出来。真正观测 tick 的断言在
+	// internal/agent/automation::TestSchedulerEnqueuesWithoutAnyoneCallingTick。
+	_, err = c1.Manager.Create(automation.CreateInput{
+		Name: "x", Prompt: "p",
+		Schedule: automation.Schedule{Kind: "interval", IntervalSec: 1},
+	})
+	require.NoError(t, err)
 
 	cancel()
 	done := make(chan struct{})

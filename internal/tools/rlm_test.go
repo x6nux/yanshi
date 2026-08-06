@@ -54,6 +54,51 @@ func TestRLMQueryMetadataAndGenerateOnly(t *testing.T) {
 	assert.Equal(t, 0, fake.StreamCalls, "StreamCalls")
 }
 
+// TestRLMQueryAcceptsBothEndsOfTheRange is the accept direction of the range.
+//
+// The rejection test below is the only thing that used to carry this clause,
+// and a rejection test alone says nothing about what the tool ACCEPTS.
+// Measured: narrowing the gate to `len(prompts) >= 1` — a tool that refuses
+// every non-empty batch — leaves TestRLMQueryRejectsMoreThanSixteen green.
+// The clause names an interval, so both its ends have to be walked.
+//
+// The result count is asserted, not just the absence of an error: a gate that
+// silently truncated to a smaller batch would also return successfully.
+//
+// ledger: C1/RLM1#1 1-16 并发
+func TestRLMQueryAcceptsBothEndsOfTheRange(t *testing.T) {
+	for _, n := range []int{1, 16} {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			replies := make([]string, n)
+			for i := range replies {
+				replies[i] = "ok"
+			}
+			fake := einollm.NewFakeModel(replies, nil)
+			set := tools.NewRLMTools(rlm.Runner{Model: fake, MaxConcurrency: 16})
+			ctx := tools.WithProfile(context.Background(), allowProfile("rlm_query"))
+
+			prompts := make([]string, n)
+			for i := range prompts {
+				prompts[i] = fmt.Sprintf("classify %d", i)
+			}
+			encoded, err := json.Marshal(prompts)
+			require.NoError(t, err)
+			result, err := set.Query.InvokableRun(ctx,
+				fmt.Sprintf(`{"prompts":%s}`, strconv.Quote(string(encoded))))
+			require.NoError(t, err)
+			require.NotContains(t, result, "1 to 16",
+				"a batch of %d was rejected as out of range", n)
+
+			assert.Equal(t, n, fake.GenerateCalls,
+				"the tool accepted %d prompts but made %d model calls", n, fake.GenerateCalls)
+			for i := 0; i < n; i++ {
+				assert.Contains(t, result, fmt.Sprintf(`"index":%d`, i),
+					"result %d is missing: the batch was silently truncated", i)
+			}
+		})
+	}
+}
+
 // ledger: C1/RLM1#1 1-16 并发
 func TestRLMQueryRejectsMoreThanSixteen(t *testing.T) {
 	fake := einollm.NewFakeModel([]string{"ok"}, nil)

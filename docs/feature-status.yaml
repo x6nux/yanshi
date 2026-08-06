@@ -308,7 +308,7 @@
   evidence:
     "1": "internal/agent/registry::TestASecondManagerOverTheSameFileSeesAndResumesWhatTheFirstWrote; internal/agent/registry::TestResumeRestoresSavedConstraintsAndEmitsEvent"
     "2": "internal/agent/registry::TestTerminalAgentReleasesItsConcurrencySlot; internal/agent/registry::TestSpawnRespectsCapAndReturnsSpawnErrCap"
-    "3": "internal/tools::TestParseResultSectionsReturnsAllFive; internal/tools::TestParseResultSectionsNamesWhatIsMissing; internal/tools::TestAgentStartAsksForTheOutputContract"
+    "3": "internal/tools::TestParseResultSectionsReturnsAllFive; internal/tools::TestParseResultSectionsNamesWhatIsMissing; internal/tools::TestParentHintReportsAPartialContract; internal/tools::TestAgentStartAsksForTheOutputContract"
     "4": "internal/tools::TestAgentStart_AppendsParentWorkingSetHint; internal/tools::TestAnalysis_AppendsParentWorkingSetHint; internal/tools::TestAgentStart_NoEvidenceIsPassedThroughVerbatim"
 
 # W1/Task 9：role 此前只用于「空则回落 general」，RoleDef.AllowedTools 从不参与任何
@@ -666,7 +666,7 @@
   acceptance: "可创建计划任务；按时触发入队；生命周期可控；持久化；approval 门禁"
   evidence:
     "1": "internal/agent/automation::TestManagerCreateAssignsIDAndNextRun"
-    "2": "internal/agent/automation::TestManagerTickEnqueuesDueSlotOnce"
+    "2": "internal/agent/automation::TestSchedulerEnqueuesWithoutAnyoneCallingTick; internal/agent/automation::TestManagerTickEnqueuesDueSlotOnce"
     "3": "internal/tools::TestAutomationLifecycleIsObservedNotJustInvoked"
     "4": "internal/tools::TestAutomationsSurviveReopeningTheDatabase"
     "5": "internal/tools::TestApprovalPromisedInDescriptionIsEnforced"
@@ -748,7 +748,7 @@
   title: "rlm_query 批量并行 LLM"
   acceptance: "1-16 并发；顺序对应；cap 生效；成本显著低于 sub-agent"
   evidence:
-    "1": "internal/tools::TestRLMQueryRejectsMoreThanSixteen"
+    "1": "internal/tools::TestRLMQueryAcceptsBothEndsOfTheRange; internal/tools::TestRLMQueryRejectsMoreThanSixteen"
     "2": "internal/agent/rlm::TestRunUsesGenerateAndPreservesOrder"
     "3": "internal/agent/rlm::TestRunCapsConcurrencyAtSixteen"
     "4": "internal/agent/rlm::TestRLMSendsFarLessThanTheSubAgentPathForTheSameBatch"

@@ -381,12 +381,32 @@ var knownResultSections = []string{"SUMMARY", "CHANGES", "EVIDENCE", "RISKS", "B
 
 // ParentWorkingSetHint extracts the EVIDENCE section from a sub-agent's
 // five-section result and appends it as a hint.
+//
+// It parses all five sections rather than reaching for EVIDENCE alone, which
+// is what makes the contract observable in production: a sub-agent that
+// answered in the five-section format but skipped sections gets that reported
+// back to the parent, so the parent can ask again instead of silently
+// inheriting a partial answer. Before this, four of the five sections had no
+// reader anywhere and a result missing all of them was indistinguishable from
+// a complete one.
+//
+// A result with NO sections at all is passed through byte-for-byte. Not every
+// sub-agent result is contract-shaped — analysis in free-form mode is not —
+// and appending a complaint to free-form tool output would corrupt it.
 func ParentWorkingSetHint(result string) string {
-	evidence := extractResultSection(result, "EVIDENCE")
-	if strings.TrimSpace(evidence) == "" {
+	sections := ParseResultSections(result)
+	if len(sections.Missing) == len(knownResultSections) {
 		return result
 	}
-	return result + "\n\n[parent working-set hint — EVIDENCE]\n" + evidence
+	out := result
+	if sections.Evidence != "" {
+		out += "\n\n[parent working-set hint — EVIDENCE]\n" + sections.Evidence
+	}
+	if !sections.Complete() {
+		out += "\n\n[contract note] the sub-agent omitted: " +
+			strings.Join(sections.Missing, ", ")
+	}
+	return out
 }
 
 func extractResultSection(result, section string) string {

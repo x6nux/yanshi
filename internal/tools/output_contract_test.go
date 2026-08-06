@@ -96,6 +96,45 @@ func TestParseResultSectionsNamesWhatIsMissing(t *testing.T) {
 	assert.Equal(t, "s", out.Summary)
 }
 
+// TestParentHintReportsAPartialContract is the production consumer of the
+// parse.
+//
+// A five-section parser with no caller is the same defect it was written to
+// fix, one level up: knownResultSections had exactly one consumer, and adding
+// ParseResultSections without wiring it would have left the new four sections
+// just as unread as the old ones. ParentWorkingSetHint is the call site — it
+// runs on both terminal paths (agent_start and analysis), so a sub-agent that
+// answered in the contract format but skipped sections now says so to the
+// parent rather than passing off a partial answer as a whole one.
+//
+// The pass-through case is the boundary: free-form results have no sections at
+// all, and appending a complaint to those would corrupt ordinary tool output.
+//
+// ledger: B1/M04b#3 输出 5 段可解析
+func TestParentHintReportsAPartialContract(t *testing.T) {
+	partial := "SUMMARY:\nDid the thing.\n\nEVIDENCE:\nfile.go:1\n"
+	got := tools.ParentWorkingSetHint(partial)
+
+	assert.Contains(t, got, "file.go:1", "the EVIDENCE hint is gone")
+	assert.Contains(t, got, "CHANGES", "the parent is not told which sections are missing")
+	assert.Contains(t, got, "RISKS")
+	assert.Contains(t, got, "BLOCKERS")
+	assert.NotContains(t, got, "omitted: SUMMARY",
+		"a section that WAS supplied is reported as missing")
+
+	// Complete results carry no complaint: a note on every result is a note
+	// the parent learns to ignore.
+	full := tools.ParentWorkingSetHint(fullFiveSectionResult)
+	assert.NotContains(t, full, "contract note",
+		"a complete five-section result was reported as incomplete")
+	assert.Contains(t, full, "lexer_test.go:40")
+
+	// No sections at all — free-form output — is passed through untouched.
+	freeform := "just some prose about what happened, no headers anywhere"
+	assert.Equal(t, freeform, tools.ParentWorkingSetHint(freeform),
+		"free-form tool output was rewritten")
+}
+
 // TestAgentStartAsksForTheOutputContract closes the seam.
 //
 // The five-section contract lives in RoleDef.PromptPrefix, and the prefix was
