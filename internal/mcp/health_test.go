@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+// ledger: A3/V16#3 启动超时/重连/权限检查有测试
 func TestManager_StartupTimeout(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -87,6 +88,7 @@ func TestManager_HealthLoop_MarksFailed(t *testing.T) {
 	}
 }
 
+// ledger: A3/V16#3 启动超时/重连/权限检查有测试
 func TestManager_CallToolRetry_Reconnects(t *testing.T) {
 	var callAttempts, inits atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

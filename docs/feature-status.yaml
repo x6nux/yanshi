@@ -216,14 +216,33 @@
   # 看的那一层低一层。已接线并由 internal/bootstrap::TestMCPHealthLoopIsStarted 守住。
   # ListResources 此前同样零调用点（ServerStatus.Resources 恒 nil），已聚合
   # （internal/mcp::TestSnapshotReportsResources）。
-  # ⚠️ 仍缺 prompts（零实现）与 OAuth 收口。
+  # ⚠️ prompts（零实现）与 OAuth 收口**不在本条 acceptance 的四句里**，是产品
+  # 改进项而非本条验收内容；按 GOV8 的逐句口径不构成阻塞。
   # 重验记录：docs/superpowers/notes/2026-08-06-w6-task9-reverification.md
+  # 2026-08-07：partial → done。
+  #   1 两种传输此前都只有 **client 级**测试（StdioClient 走 io.Pipe、HTTPClient
+  #     打 httptest），Manager 那一层 —— 配置到连接、子进程 spawn、随后的工具枚举
+  #     —— 一条都没走过。stdio 侧让测试二进制自我重入当真 server（正对照验过：
+  #     摘掉那个环境变量后子进程回的是 "PASS" 文本，initialize 当场解析失败）。
+  #   3 三项逐项核实：启动超时有 internal/mcp::TestManager_StartupTimeout、重连有
+  #     internal/mcp::TestManager_CallToolRetry_Reconnects（两条都是真断言），
+  #     缺的是**权限那一段与 manager 端到端**。guard 的 mcp 维度和 manager 各有
+  #     单测，中间夹着 NewMCPTools —— 决定注册名是 mcp_<server>_<tool> 的正是它，
+  #     而 checkMCPTools 就按这个前缀分派。改任一侧的命名约定，两边单测都照绿，
+  #     每次 MCP 调用却静默跳过该维度：**不带前缀不是拒绝，是豁免**。
+  #   4 冲突走的是拆解允许的第一条分支（命名空间化共存）。真正要挡的是**覆盖**：
+  #     它不可见（两个 server 都报 ready、各自工具数看着都对），却把调用路由到
+  #     错误的 server，而那个 server 恰好也实现了同名工具，于是答得很像回事。
 - id: "A3/V16"
   package: "W6"
-  verdict: partial
+  verdict: done
   title: "通用 MCP Client"
   acceptance: "stdio/HTTP server 可配可连；tools/resources 可用；启动超时/重连/权限检查有测试；命名冲突可诊断"
-  evidence: ""
+  evidence:
+    "1": "internal/mcp::TestManagerConnectsOverBothTransports"
+    "2": "internal/mcp::TestHTTPClientResourcesAndClose; internal/mcp::TestSnapshotReportsResources"
+    "3": "internal/mcp::TestManager_StartupTimeout; internal/mcp::TestManager_CallToolRetry_Reconnects; internal/tools::TestMCPToolCallIsGatedEndToEnd"
+    "4": "internal/mcp::TestSameToolNameOnTwoServersCoexists"
 
 # 2026-08-05 W2 复核：代码侧缺口已清 —— Budget.SpentTokens（原缺口本身）已删除，
 # spent() 只剩 Sink 一条路径，四个预算测试改由 Sink 驱动且变异全红。

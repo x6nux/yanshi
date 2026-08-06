@@ -442,6 +442,7 @@ func fakeHTTPServerWithResources(t *testing.T, statusOnRead int) *httptest.Serve
 	}))
 }
 
+// ledger: A3/V16#2 tools/resources 可用
 func TestHTTPClientResourcesAndClose(t *testing.T) {
 	ts := fakeHTTPServerWithResources(t, 0)
 	defer ts.Close()
@@ -697,6 +698,8 @@ var _ sync.Mutex
 // only ever report that a server exposes no resources, whatever it actually
 // advertised. The gap is invisible from either side alone -- the clients
 // implement the call correctly, and the status struct has the field.
+//
+// ledger: A3/V16#2 tools/resources 可用
 func TestSnapshotReportsResources(t *testing.T) {
 	m := NewManager(map[string]*ServerConfig{
 		"srv": {Name: "srv", Enabled: true, Transport: TransportStdio, Timeout: time.Second},

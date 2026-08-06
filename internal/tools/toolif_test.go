@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/x6nux/yanshi/internal/guard"
+	"github.com/x6nux/yanshi/internal/mcp"
 )
 
 // TestModelSeesOnlyResultAndTUISeesEveryField pins the field ownership rule that
@@ -168,5 +171,87 @@ func TestEmptyDisplayNamePanicsAtConstruction(t *testing.T) {
 			}()
 			tc.ctor()
 		})
+	}
+}
+
+// TestMCPToolCallIsGatedEndToEnd wires the guard's MCP dimension to a real
+// manager-constructed tool.
+//
+// The guard's mcp dimension has its own unit tests, and the manager has its
+// own. Between them sits NewMCPTools, which is what decides that a registered
+// MCP tool is named "mcp_<server>_<tool>" — the very prefix checkMCPTools keys
+// on. A change to either naming convention alone would leave both sets of unit
+// tests green while every MCP call silently skipped the dimension: checkMCPTools
+// returns Allow for anything not prefixed "mcp_", so a rename does not deny, it
+// EXEMPTS.
+//
+// The empty-allowlist case is the fail-closed one, and the reason has to be
+// legible: "no tools permitted" and "no MCP tools permitted" send the operator
+// to different config sections.
+//
+// ledger: A3/V16#3 启动超时/重连/权限检查有测试
+func TestMCPToolCallIsGatedEndToEnd(t *testing.T) {
+	srv, _ := mcp.NewFakeHTTPServer([]mcp.ToolDescriptor{{ToolName: "search"}})
+	defer srv.Close()
+
+	mgr := mcp.NewManager(map[string]*mcp.ServerConfig{
+		"srv": {Enabled: true, Transport: mcp.TransportHTTP, URL: srv.URL},
+	})
+	ctx := context.Background()
+	for _, st := range mgr.StartAll(ctx) {
+		if st.Error != "" {
+			t.Fatalf("fake server failed to start: %s", st.Error)
+		}
+	}
+	defer mgr.Shutdown()
+
+	mcpTools := NewMCPTools(mgr)
+	if len(mcpTools) != 1 {
+		t.Fatalf("got %d MCP tools, want 1", len(mcpTools))
+	}
+	tl := mcpTools[0]
+	info, err := tl.Info(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(info.Name, "mcp_") {
+		t.Fatalf("registered name %q lacks the mcp_ prefix checkMCPTools keys on: "+
+			"the dimension would return Allow for every call", info.Name)
+	}
+
+	// Tools.Allow is wide open on purpose: this must be the MCP dimension
+	// denying, not the tools one. checkMCPTools runs FIRST for exactly this
+	// reason — a broad Tools.Allow must not silently authorise a newly
+	// configured MCP server.
+	denied := WithMCP(WithProfile(ctx, guard.PermissionProfile{
+		Tools: guard.ToolsPerm{Allow: []string{"*"}},
+		Net:   guard.NetPerm{Allow: true},
+	}), mgr)
+	out, err := tl.InvokableRun(denied, `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "permission denied") {
+		t.Errorf("an empty MCP allowlist did not deny the call: %s", out)
+	}
+	if !strings.Contains(strings.ToLower(out), "mcp") {
+		t.Errorf("the denial does not say it was the MCP dimension: %s\n"+
+			"  the operator cannot tell which config section to edit", out)
+	}
+
+	// Positive control: with the tool allowed, the guard lets it through. The
+	// call itself may still fail against the fake server — what must change is
+	// that it is no longer a permission denial.
+	allowed := WithMCP(WithProfile(ctx, guard.PermissionProfile{
+		Tools: guard.ToolsPerm{Allow: []string{"*"}},
+		MCP:   guard.ToolsPerm{Allow: []string{"mcp_*"}},
+		Net:   guard.NetPerm{Allow: true},
+	}), mgr)
+	aout, err := tl.InvokableRun(allowed, `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(aout, "permission denied") {
+		t.Errorf("an explicit allowlist entry still got denied: %s", aout)
 	}
 }
