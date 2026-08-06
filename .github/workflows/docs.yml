@@ -18,6 +18,13 @@ on:
       - 'internal/docgen/**'
       - 'internal/config/**'
       - 'internal/api/v1/**'
+      # sdk/** and cmd/yanshi/** are here because steps in this workflow read
+      # them: the TS typecheck and `pip install -e sdk/python` compile the SDK
+      # sources, and the headless smoke runs the binary built from cmd/yanshi.
+      # Without these, an sdk-only or headless-only change skipped the very
+      # steps that exercise it — the gate was filtered out of its own subject.
+      - 'sdk/**'
+      - 'cmd/yanshi/**'
       - '.github/workflows/docs.yml'
   pull_request:
     paths:
@@ -28,6 +35,13 @@ on:
       - 'internal/docgen/**'
       - 'internal/config/**'
       - 'internal/api/v1/**'
+      # sdk/** and cmd/yanshi/** are here because steps in this workflow read
+      # them: the TS typecheck and `pip install -e sdk/python` compile the SDK
+      # sources, and the headless smoke runs the binary built from cmd/yanshi.
+      # Without these, an sdk-only or headless-only change skipped the very
+      # steps that exercise it — the gate was filtered out of its own subject.
+      - 'sdk/**'
+      - 'cmd/yanshi/**'
       - '.github/workflows/docs.yml'
 
 jobs:
@@ -91,7 +105,19 @@ jobs:
         run: |
           printf 'server:\n  http_addr: "127.0.0.1:0"\nstorage:\n  sqlite_path: ":memory:"\n' > config.yaml
           out=$(./yanshi exec --fake-model -p "hi"); [ -n "$out" ]
-          ./yanshi exec --fake-model --input jsonl --file examples/headless-batch/sample.jsonl >/dev/null
+          # --file must honour --input. This line used to redirect to /dev/null
+          # with no assertion, and the --file branch made the whole file ONE
+          # prompt regardless of --input — so the only thing exercising that
+          # path could not observe that it ran 1 turn instead of 3.
+          lines=$(wc -l < examples/headless-batch/sample.jsonl)
+          turns=$(./yanshi exec --fake-model --input jsonl --output jsonl \
+            --file examples/headless-batch/sample.jsonl | grep -c '"type":"done"')
+          # Counting "done" records, not all records: one turn already emits
+          # three lines, so a laxer grep passes on the 1-turn bug it guards.
+          if [ "$turns" -ne "$lines" ]; then
+            echo "--input jsonl --file produced $turns output records for $lines input objects" >&2
+            exit 1
+          fi
 
       - name: TS typecheck (SDK + example)
         run: |

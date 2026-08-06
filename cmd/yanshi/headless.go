@@ -89,29 +89,45 @@ func parseHeadlessArgs(args []string, command string) (headlessConfig, error) {
 // stdin is the reader for the stdin-by-mode input path (os.Stdin in production;
 // tests inject a bytes.Buffer/strings.Reader so the stdin branches are
 // exercisable without replacing the process's real stdin).
+// headlessInputs resolves the prompts for one headless run from --file,
+// --prompt, or stdin.
+//
+// All three go through cli.ReadHeadlessInputs. The --file branch used to read
+// the whole file and hand it back as ONE prompt without ever calling it, so
+// `--input jsonl --file <3-line file>` ran a single turn whose prompt was
+// three lines of raw JSON: the modes the flag advertises (text/lines/jsonl,
+// 1MiB line cap, per-line error reporting for jsonl) applied to stdin only.
+// A file is just another reader; there was never a reason for it to have its
+// own parser.
+//
+// --prompt stays a single text prompt regardless of --input, and
+// parseHeadlessArgs already refuses --prompt with a non-text mode, so the two
+// cannot disagree.
+func headlessInputs(cfg headlessConfig, stdin io.Reader) ([]cli.HeadlessInput, error) {
+	if cfg.File != "" {
+		f, err := os.Open(cfg.File)
+		if err != nil {
+			return nil, fmt.Errorf("read file: %w", err)
+		}
+		defer f.Close()
+		return cli.ReadHeadlessInputs(f, cli.HeadlessInputMode(cfg.Input))
+	}
+	if cfg.Prompt != "" {
+		return []cli.HeadlessInput{{Prompt: strings.TrimSpace(cfg.Prompt)}}, nil
+	}
+	return cli.ReadHeadlessInputs(stdin, cli.HeadlessInputMode(cfg.Input))
+}
+
 func runHeadlessCommand(args []string, command string, stdin io.Reader) int {
 	cfg, err := parseHeadlessArgs(args, command)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "yanshi %s: %v\n", command, err)
 		return exitUsage
 	}
-	inputs := []cli.HeadlessInput(nil)
-	if cfg.File != "" {
-		data, rerr := os.ReadFile(cfg.File)
-		if rerr != nil {
-			fmt.Fprintf(os.Stderr, "yanshi %s: read file: %v\n", command, rerr)
-			return exitUsage
-		}
-		inputs = []cli.HeadlessInput{{Prompt: strings.TrimSpace(string(data))}}
-	} else if cfg.Prompt != "" {
-		inputs = []cli.HeadlessInput{{Prompt: strings.TrimSpace(cfg.Prompt)}}
-	} else {
-		mode := cli.HeadlessInputMode(cfg.Input)
-		inputs, err = cli.ReadHeadlessInputs(stdin, mode)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "yanshi %s: %v\n", command, err)
-			return exitUsage
-		}
+	inputs, err := headlessInputs(cfg, stdin)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "yanshi %s: %v\n", command, err)
+		return exitUsage
 	}
 	if cfg.Resume != "" {
 		inputs[0].Resume = cfg.Resume

@@ -205,3 +205,32 @@ jobs:
           # release.yml so `check` validates the version release actually uses.
           version: "~> v2.7"
           args: check
+
+  # Hard gate. sdk/ts and sdk/python carry the client half of the wire
+  # contract, and until this job existed NO workflow ran either suite: the only
+  # mention of them anywhere in .github/ was docs.yml doing `tsc --noEmit` and
+  # `import yanshi_sdk` — a typecheck and an import smoke. `vitest` and
+  # `pytest` had zero hits across every workflow file, so 60-odd contract
+  # assertions were running on developer machines only.
+  #
+  # It lives here rather than in docs.yml because docs.yml is paths-filtered:
+  # an sdk-only change would skip the job that tests it.
+  sdk-contract:
+    name: sdk-contract (vitest + pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: TypeScript contract tests
+        run: |
+          npm --prefix sdk/ts install --no-audit --no-fund
+          ( cd sdk/ts && npx vitest run )
+      - name: Python contract tests
+        run: |
+          pip install -e 'sdk/python[test]'
+          pytest sdk/python -q
