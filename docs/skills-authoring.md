@@ -68,6 +68,41 @@ A plugin directory is only treated as a skill root if it contains a
 `skills/` subdirectory. Plugin discovery is non-fatal: a corrupt plugin root
 logs a warning to stderr and the rest of the skills still load.
 
+### Name collisions across roots
+
+Roots are scanned in order and the **first** one to provide a given name wins.
+A skill that loses is not silently discarded: `/skills` lists it under the
+winner as
+
+```
+  - review (project) [enabled, trusted]
+      shadowed: user copy at /home/u/.yanshi/skills/review is ignored
+```
+
+The ignored **directory** is printed, not just the source label, because
+"which file is being ignored" is the question you are actually asking — and a
+label does not answer it when several roots share one. Resolution order itself
+is unchanged by this reporting; renaming one of the two copies is the fix.
+
+### Re-validating an installed skill
+
+`/skill validate [name]` re-runs the checks that gate an install — frontmatter
+parses, `name` is 1–64 characters of letters/digits/dashes, `description` is
+1–1024 characters, no symlinks anywhere in the directory, and the directory
+name matches the frontmatter name. With no argument it validates every
+installed skill.
+
+This exists because those rules used to live only inside `Install`, so a skill
+edited by hand after installation — the normal way people iterate on one — could
+not be checked by anything. The symlink ban is re-checked rather than assumed:
+a directory can acquire one after it is in place, and a symlink can read outside
+the skill directory or smuggle in a `.trusted` marker.
+
+There is deliberately **no `/skill update`**. `uninstall` followed by `install`
+already composes, shares one validation path, and cannot leave a half-updated
+directory behind; a dedicated verb would buy one less command and add that
+failure mode.
+
 ## How invocation works
 
 Two paths, both ending with the skill body entering the turn as guidance:
