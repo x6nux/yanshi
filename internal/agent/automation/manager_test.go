@@ -72,6 +72,8 @@ func newManagerWithFakeQueue(t *testing.T) (*automation.Manager, *fakeQueue) {
 
 // TestManagerCreateAssignsIDAndNextRun covers automation creation: Create
 // assigns an id and schedules the first run.
+//
+// ledger: C1/AU1#1 可创建计划任务
 func TestManagerCreateAssignsIDAndNextRun(t *testing.T) {
 	m, _ := newManagerWithFakeQueue(t)
 	item, err := m.Create(automation.CreateInput{
@@ -142,6 +144,8 @@ func TestManagerRunNowEnqueuesAndFillsTaskID(t *testing.T) {
 // (Renamed 2026-08-04 from TestManagerRunNowIdempotentPerKey, which named a
 // method this test never calls — the ledger cited it for "按时触发入队" and the
 // name argued against the citation.)
+//
+// ledger: C1/AU1#2 按时触发入队
 func TestManagerTickEnqueuesDueSlotOnce(t *testing.T) {
 	// 使用固定时钟，使 NextRunAt（= now+60s）在 slotA 之前。
 	now := time.Date(2026, 7, 21, 11, 58, 0, 0, time.UTC)

@@ -53,6 +53,7 @@ func newRegistryManager(t *testing.T, max int) *registry.Manager {
 	return m
 }
 
+// ledger: C1/M07#3 逐项结果+汇总可查
 func TestRunnerSpawnsPerRowAndPreservesIndex(t *testing.T) {
 	rec := &recordingSpawn{failOn: -1}
 	runner := batch.Runner{
@@ -77,6 +78,7 @@ func TestRunnerSpawnsPerRowAndPreservesIndex(t *testing.T) {
 	assert.Equal(t, 3, report.Success)
 }
 
+// ledger: C1/M07#3 逐项结果+汇总可查
 func TestRunnerPerItemErrorRetention(t *testing.T) {
 	rec := &recordingSpawn{failOn: -1, failRow: "row_index=1", failWith: errors.New("row-1-boom")}
 	runner := batch.Runner{

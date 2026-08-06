@@ -36,6 +36,7 @@ func TestAgentBatchMetadataMentionsB1AndApproval(t *testing.T) {
 	}
 }
 
+// ledger: C1/M07#1 可提交批量任务
 func TestAgentBatchCSVInputEndToEnd(t *testing.T) {
 	set, _ := newBatchTools(t)
 	echo := func(_ context.Context, prompt string, _ []string, _ string) (string, error) {

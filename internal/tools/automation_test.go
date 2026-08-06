@@ -88,6 +88,8 @@ func TestAutomationToolsAllEightPresent(t *testing.T) {
 // assert.Equal(len(all), checked) 保证没有一个被静默跳过。
 //
 // ledger: B3/GH1#2 写操作需审批且需证据
+//
+// ledger: C1/AU1#5 approval 门禁
 func TestApprovalPromisedInDescriptionIsEnforced(t *testing.T) {
 	set, _ := setupAutomation(t)
 	batchSet, _ := newBatchTools(t)

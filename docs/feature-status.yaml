@@ -618,12 +618,27 @@
 #     需要：写入 → Close DB 句柄 → 用同一文件路径重开 → 断言读得回来且
 #     NextRunAt/status 未丢。
 #   · 5 approval 门禁 —— 成立（遍历全部 9 个受管工具 + 防漏计数）。
+  # 2026-08-07：partial → done。上面记的两条缺口逐条补上，且**变异对照**做完：
+  #   · 3 生命周期可控 —— 老测试对失败结构上是盲的（四步都是裸 require.NoError +
+  #     丢弃返回值，而 GuardedTool 把拒绝写进 result 串、err 恒 nil）。新测试每一步
+  #     读回状态断言变化真的落了地。**同一份变异（掏空 Manager.Update/Delete）实测：
+  #     新测试红，老测试仍 `ok`** —— 台账当初的判定原样复现。
+  #   · 4 持久化 —— 老测试在同一个 :memory: store、同一个 Repository 实例上
+  #     Save→Load，证明的是编解码自洽，分不出「写进了数据库」与「留在字段里」；
+  #     :memory: 本身在句柄关闭时就丢，它连重启都观察不到。新测试写一个句柄、
+  #     **关掉**、按同一文件路径重开。断言不止定义还有**调度状态**：NextRunAt 丢了
+  #     的 automation 要么再也不触发、要么下一 tick 立刻触发，两者都比丢掉它更糟。
 - id: "C1/AU1"
   package: "W1"
-  verdict: partial
+  verdict: done
   title: "Automations（计划任务）"
   acceptance: "可创建计划任务；按时触发入队；生命周期可控；持久化；approval 门禁"
-  evidence: "internal/agent/automation::TestManagerCreateAssignsIDAndNextRun; internal/agent/automation::TestManagerTickEnqueuesDueSlotOnce; internal/tools::TestApprovalPromisedInDescriptionIsEnforced"
+  evidence:
+    "1": "internal/agent/automation::TestManagerCreateAssignsIDAndNextRun"
+    "2": "internal/agent/automation::TestManagerTickEnqueuesDueSlotOnce"
+    "3": "internal/tools::TestAutomationLifecycleIsObservedNotJustInvoked"
+    "4": "internal/tools::TestAutomationsSurviveReopeningTheDatabase"
+    "5": "internal/tools::TestApprovalPromisedInDescriptionIsEnforced"
 
 # W1/Task 4 Step 7：agent_batch 与 automation_* 同一次装配接入；同样只在 WS 上可用
 # （见上条 C1/AU1 的 approval 说明）。
@@ -645,12 +660,29 @@
 # 副实（3 行 / cap 4，从不触发上限），同样不能当第 2 条的证据。
 # ⚠️ 修复归 W3（= W3 计划里的 F2/LEAK2「槽位泄漏」），本条只做台账诚实性，不在
 #    W1 的工作面上动 registry。
+  # 2026-08-07：partial → done。上面那段「槽位泄漏 → 限并发不成立」的诊断**已经
+  # 过时** —— W3 修掉了它：finishTerminal 现在在同一个临界区里调 detachRuntime
+  # （internal/agent/registry/manager.go），完成路径确实 delete 了 runtime 条目。
+  # 缺的只剩一条**正面**证据，而既有两条都给不出：
+  #   · TestRunnerCapsAtRegistryMaxConcurrent —— 3 行 / cap 4，**从不触及上限**，
+  #     名字描述了一件它的 body 产生不出来的事。
+  #   · TestRunnerSpawnCapExhausted —— 反过来：占位者永不返回，钉住的是「行被拒」，
+  #     不是「行被**暂时**拒」。
+  # 这个区分就是整条子句：一个从不释放槽位的 cap 是**终身 spawn 预算**，也正是
+  # 泄漏修好之前的样子（长于 cap 的批任务逐行耗尽重试后失败）。新证据两半同时钉：
+  # 并发峰值不超过 cap（否则没有 cap），且每一行最终都完成（否则 cap 是预算）。
+  # 峰值在 spawn 函数**内部**采样 —— 事后数 spawn 次数分不出顺序执行与并发执行；
+  # 并带正对照（峰值必须 > 1，否则「没超过 cap」对一个完全串行的 runner 也成立）。
+  # 双向变异都验过：摘掉 detachRuntime → 行失败；runningLocked 恒 0 → 峰值 6。
 - id: "C1/M07"
   package: "W1"
-  verdict: partial
+  verdict: done
   title: "CSV 批量 agent jobs"
   acceptance: "可提交批量任务；限并发；逐项结果+汇总可查"
-  evidence: ""
+  evidence:
+    "1": "internal/tools::TestAgentBatchCSVInputEndToEnd"
+    "2": "internal/agent/batch::TestRunnerHoldsTheCapAndStillFinishesEveryRow"
+    "3": "internal/agent/batch::TestRunnerPerItemErrorRetention; internal/agent/batch::TestRunnerSpawnsPerRowAndPreservesIndex"
 
 # W1/Task 2：BuildRLM 失败曾让整个 BuildC1 返回 error，于是没配 batch.rlm_model 的
 # 部署连带丢掉八个 automation 工具与 agent_batch。改为软降级（RLM 置 nil + Warnings），
