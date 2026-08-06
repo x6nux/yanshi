@@ -136,32 +136,33 @@
 #     plan→执行 切换后 connSession.history 连续。
 #   4 checklist 状态持久 —— 覆盖到 store/manager 层（SQLite 往返），但 update_plan
 #     工具层测试全部走 work.NewFakeManager()，工具→持久层这一段未接通验证。
+  # 2026-08-07：partial → done。三条缺口逐条补上，变异全验。
+  #   2 【实现缺口】TUI 的帧 switch **没有** plan_update / checklist_update 分支：
+  #     update_plan 写了 store、工具发了 work.Event、WS 层转成帧、proto 能往返
+  #     —— 每一跳都有测试，而最后一跳把帧丢在地上。一套逐跳测试如果从不检查最后
+  #     一跳，会为一个用户看不见的功能报告满覆盖。新增 checklistEntry 渲染器，
+  #     状态标记用纯文本（去样式后仍可辨），未知状态**不得**退化成「已完成」。
+  #   3 既有的只有 TUI 侧「模式翻回来了」。子句问的是**同一段会话**是否延续 ——
+  #     若切模式重置了 cs.history，模型会带着「刚写完的计划」的失忆开始执行，
+  #     而所有症状都在下游且无声（答得更差，不是报错）。两个方向都钉：计划轮的
+  #     文本必须出现在执行轮模型收到的历史里，且**只出现一次**（靠重放transcript
+  #     达成的「连续」会让上下文每轮翻倍）。
+  #   4 store/manager 层有 SQLite 往返测试，工具层测试**全部**跑
+  #     work.NewFakeManager()。于是「清单能持久化」证的是 store，「工具会写清单」
+  #     证的是一个 fake，中间没接上：一个只写进 manager 缓存、没到数据库的工具
+  #     两边都能过。新测试让工具跑在真 Manager + 真 SQLite 文件上，再用**第二个**
+  #     Manager 打开同一文件读回；状态单独断言（只存文本不存状态的 store 会留下
+  #     一份永远显示「未开始」的计划）。
 - id: "A2/G05"
   package: "W1"
-  verdict: partial
+  verdict: done
   title: "Plan mode + update_plan/checklist 工具"
   acceptance: "plan 模式禁编辑类工具；计划可流式更新；确认后切执行且历史连续；checklist 状态持久"
-  evidence: "internal/guard::TestPlanToolAllowed; internal/tools::TestAuthorize_PlanMode_DeniesWriteTools; internal/api/http::TestChatWS_ModePlan_ProducesReadOnlyTurn; internal/task/work::TestManagerChecklistAPIs"
-
-  # W6/Task 11：删掉了 mcp_list 帧 —— 它有构造器、往返测试、SSE golden 条目，
-  # 却没有任何服务端会构造它，所以没有客户端收得到；三样东西让它看起来是被维护的
-  # 契约，而 NewListMCP 的 doc 还明写"服务端回 NewMCPList(names)"，照着接 handler
-  # 的人会等一个永远不来的帧（真正的回复是 mcp_status）。
-  # 2026-08-07：partial → done。三条子句逐条对账，各自变异红。
-  #   1 既有 TUI 断言查的是模板自己的 label（"MCP"、"status"），把渲染函数换成
-  #     硬编码常量照样绿。改成断言**manager 自己的数据**：一段任何模板都不可能
-  #     预置的失败原因（URL 里的 marker），以及等于 fake server 实际提供数量的
-  #     工具计数。
-  #   2 拆解点名的廉价版是「断言复选框位翻转」。「生效」的含义是**模型不再被
-  #     提供这些工具**，UI 状态是它的下游而不是它的证据 —— 所以断言的是构造出来
-  #     的工具注册表（正是交给编排器的那份）的前后 diff。
-  #   3 一个只在启动时写一次的 status 字段，会为一小时前就死掉的 server 报 ready，
-  #     而它的工具还在继续通告。断言下一次 Snapshot **不需要额外刷新动作**就反映
-  #     client 已关闭。
-  # ⚠️ 本条 acceptance 三句都已闭合；此前记在这里的「五子命令渲染 resolved 配置
-  # 路径 / command|URL / timeout / prompts」与「enable/disable/reload 回写
-  # config.yaml」**不在这三句里** —— 它们是产品改进项，不是本条的验收内容，
-  # 按 GOV8 的逐句口径不构成阻塞。prompts 那半仍挂在 A3/V16 名下。
+  evidence:
+    "1": "internal/guard::TestPlanToolAllowed; internal/tools::TestAuthorize_PlanMode_DeniesWriteTools; internal/api/http::TestChatWS_ModePlan_ProducesReadOnlyTurn"
+    "2": "internal/cli/tui::TestPlanUpdateFrameReachesTheTranscript; internal/cli/tui::TestChecklistRenderDistinguishesReplaceFromPatch"
+    "3": "internal/api/http::TestPlanThenExecuteKeepsTheHistory; internal/api/http::TestPlanModeSwitchDoesNotReplayAsANewSession"
+    "4": "internal/tools::TestUpdatePlanReachesTheDatabase; internal/task/work::TestManagerChecklistAPIs"
 - id: "A3/C13"
   package: "W6"
   verdict: done

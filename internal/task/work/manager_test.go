@@ -187,6 +187,7 @@ func TestManagerCancelInvokesBroker(t *testing.T) {
 	assert.Equal(t, task.BrokerTaskID, disp.cancels[0])
 }
 
+// ledger: A2/G05#4 checklist 状态持久
 func TestManagerChecklistAPIs(t *testing.T) {
 	ctx := context.Background()
 	mgr, _, _ := newManagerWithFakeDispatcher(t)

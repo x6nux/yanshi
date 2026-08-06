@@ -987,3 +987,56 @@ func (e skillsEntry) render(_ int, _ spinner.Model) string {
 	b.WriteString("\n")
 	return b.String()
 }
+
+// checklistEntry renders a plan checklist as the model updates it.
+//
+// Both plan_update and checklist_update land here: the server sends the whole
+// list either way, and the only difference the operator cares about is whether
+// the plan was rewritten or extended, which the header states.
+type checklistEntry struct {
+	taskID   string
+	list     work.Checklist
+	replaced bool // plan_update (replace) vs checklist_update (patch)
+}
+
+// checklistGlyphs maps each status to a marker that survives having styling
+// stripped — a non-TTY, a screenshot and a pasted transcript all lose colour,
+// and "which step is running" is the one thing this block exists to show.
+var checklistGlyphs = map[work.ChecklistItemStatus]string{
+	work.ChecklistPending:    "[ ]",
+	work.ChecklistInProgress: "[~]",
+	work.ChecklistDone:       "[x]",
+}
+
+func (e checklistEntry) render(_ int, _ spinner.Model) string {
+	title := "plan updated"
+	if !e.replaced {
+		title = "checklist updated"
+	}
+	var b strings.Builder
+	b.WriteString("  " + toolName.Render(title))
+	if n := len(e.list.Items); n > 0 {
+		b.WriteString(" " + toolMeta.Render(fmt.Sprintf("(%d%%, %d steps)",
+			e.list.CompletionPct(), n)))
+	}
+	b.WriteString("\n")
+	if len(e.list.Items) == 0 {
+		b.WriteString("    " + warnStyle.Render("(empty)") + "\n\n")
+		return b.String()
+	}
+	for _, it := range e.list.Items {
+		glyph, ok := checklistGlyphs[it.Status]
+		if !ok {
+			// An unknown status must not render as done. Showing the raw value
+			// is how the operator finds out the vocabulary drifted.
+			glyph = "[" + string(it.Status) + "]"
+		}
+		line := fmt.Sprintf("    %s %s", glyph, it.Content)
+		if it.Status == work.ChecklistInProgress {
+			line = toolName.Render(line)
+		}
+		b.WriteString(line + "\n")
+	}
+	b.WriteString("\n")
+	return b.String()
+}

@@ -174,6 +174,8 @@ func TestAuthorize_ForcePrompt_NoCallbackRejects(t *testing.T) {
 
 // TestAuthorize_PlanMode_DeniesWriteTools: Plan mode 下 fs_write/shell_run/task_gate_run
 // 等写工具被 PlanToolAllowed 直接拒绝（不进 force-prompt / approval.Manager 分支）。
+//
+// ledger: A2/G05#1 plan 模式禁编辑类工具
 func TestAuthorize_PlanMode_DeniesWriteTools(t *testing.T) {
 	ctx := WithPlanMode(WithProfile(context.Background(), wildcardProfile()), true)
 	for _, tool := range []string{"fs_write", "fs_edit", "shell_run", "task_gate_run", "task_cancel", "vcs_commit"} {

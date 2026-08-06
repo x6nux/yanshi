@@ -89,6 +89,8 @@ func TestNormalizeMode_Plan(t *testing.T) {
 }
 
 // TestPlanToolAllowed: 白名单核心工具放行；写工具拒绝。
+//
+// ledger: A2/G05#1 plan 模式禁编辑类工具
 func TestPlanToolAllowed(t *testing.T) {
 	allowed := []string{
 		"fs_read", "fs_list", "memory_search", "memory_recall",

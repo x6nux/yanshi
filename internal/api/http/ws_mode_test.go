@@ -165,6 +165,8 @@ func TestResolvePermissionMode_DestructiveGate(t *testing.T) {
 // therefore pins the tool-set filtering, not just the absent file: the
 // permission callback is a SECOND line of defense that already denies writes in
 // plan mode and would otherwise mask the missing TurnOpts field entirely.
+//
+// ledger: A2/G05#1 plan 模式禁编辑类工具
 func TestChatWS_ModePlan_ProducesReadOnlyTurn(t *testing.T) {
 	url, workdir := newPermWSServer(t)
 	c := dial(t, url)

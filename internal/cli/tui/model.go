@@ -1066,6 +1066,23 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 			text += " — " + ev.Text
 		}
 		m.entries = append(m.entries, summaryEntry{text: text})
+	case "plan_update", "checklist_update":
+		// A2: the plan tools stream their checklist as it changes. Both frame
+		// types carry the same payload — plan_update REPLACES the list,
+		// checklist_update patches it — and the server sends the whole list
+		// either way, so the renderer is the same.
+		//
+		// This branch was missing for the whole of A2: update_plan wrote to the
+		// store, the tool emitted a work.Event, the WS layer turned it into a
+		// frame, and the TUI dropped it on the floor. Every hop had a test; the
+		// frame still never reached a user.
+		if ev.Checklist == nil {
+			break
+		}
+		m.flushAssistant()
+		m.entries = append(m.entries, checklistEntry{
+			taskID: ev.ID, list: *ev.Checklist, replaced: ev.Kind == "plan_update",
+		})
 	case "status":
 		// Reply to get_status / set_model / set_thinking / clear / compact.
 		// Always update header fields; fill a pending status block (/cost,
