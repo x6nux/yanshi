@@ -30,12 +30,17 @@ import (
 // zero mentions anywhere is the goal state, not a stale entry. The one dead
 // direction that does apply is a name graduating into commandTable — if the
 // command gets implemented it is no longer a phantom, and the entry must go.
-var phantomSlashCommands = map[string]string{
-	"keymap":   "config.example.yaml advertised `/keymap reset` writing a KeymapReset tombstone; no such command is registered and no preferences file is loaded",
-	"vim":      "docs/user-guide/configuration.md advertised runtime `/vim`; internal/cli/tui/model.go records that it was never registered",
-	"contrast": "docs/user-guide/configuration.md advertised runtime `/contrast`; use /theme high-contrast, which does exist",
-	"locale":   "advertised alongside /vim and /contrast as a runtime preference toggle; never registered",
-}
+// All four original entries GRADUATED in W8: /keymap, /vim, /contrast and
+// /locale are now registered in commandTable, the preference cascade they
+// mutate is wired, and the documentation that advertised them is finally
+// telling the truth. The graduation direction below is what forced this map to
+// be emptied in the same change — an implemented command left listed here
+// would make the gate forbid documenting a real feature.
+//
+// The map stays, with the mechanism intact, because it is a permanent denylist
+// and not a debt table: the next phantom gets added here rather than
+// rediscovered across four carriers a fourth time.
+var phantomSlashCommands = map[string]string{}
 
 // phantomDenialMarkers are the phrases that mark a mention as a DENIAL ("this
 // command does not exist") rather than an advertisement. A mention sitting next

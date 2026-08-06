@@ -111,7 +111,11 @@ I18N1 国际化：`ui_locale`=`auto`（默认，每次启动按 LC_ALL > LANG �
 
 C15 TUI 偏好：`keymap`（默认 default）、`theme`（默认 default）、`vim`（*bool）、`high_contrast`（*bool）、`bindings`（key:action 映射，方向固定）。
 
-⚠️ **本块目前只被 `yanshi doctor` 读来做校验，不影响 TUI 运行时**：`internal/cli/tui/model.go::newModel` 把主题与键位写死为 `default`，而 `internal/cli/tui/preferences.go` 的分层合并（`mergeTUIPrefs` 及其 `preferences.json` 读写）**生产调用点为零**。台账 `D3/C15` 记为 `partial` 就是这条接线断点。运行时唯一可改的是配色：TUI 里用 `/theme`（`/theme high-contrast` 即高对比度），仅当前会话有效、不落盘。此处以前写着「也可运行时 `/keymap`、`/vim`、`/contrast` 改」，那三个命令从未注册过。
+本块是**项目层**偏好，W8 起真正影响 TUI 运行时（`internal/cli/tui::newModelWithPrefs` 读它，`internal/cli/tui::NewProgram` 接收它）。
+
+优先级自低而高：内置默认 < 本块 < `prefs.json`（用户层）< 环境变量。运行时用 `/keymap`、`/vim`、`/contrast`、`/locale` 改，改动写进用户层并落盘；`/theme` 仍是仅当前会话的配色切换。
+
+`tui.bindings` 里写坏的键位不会让启动失败 —— TUI 正是你用来修它的东西。`yanshi doctor` 报告问题，`/keymap diagnostics` 在 TUI 里打印同一份诊断，`/keymap reset` 让内置默认盖过本块。
 
 ## 配置字段骨架（由 gendocs 生成）
 

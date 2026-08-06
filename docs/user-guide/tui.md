@@ -26,7 +26,22 @@ yanshi 的默认入口是一个 Bubble Tea 全屏 TUI（alt-screen）。它是�
 - `/skill`：调用一个技能。
 - `/theme`：列出 / 切换配色主题。高对比度用 `/theme high-contrast`；不带参数会弹出选择器。**只影响当前会话，不落盘。**
 
-> **键位方案与 Vim 模式当前没有运行时开关。** `internal/cli/tui/preferences.go` 里的分层合并（`Preferences` / `EffectivePreferences` / `mergeTUIPrefs`）已经写好但**生产调用点为零** —— `preferences.json` 既不被读也不被写，`config.yaml` 的 `tui.*` 只被 `yanshi doctor` 读来做校验。台账把 `D3/C15` 记为 `partial` 正是这个原因。本行以前宣传过三个不存在的命令（用 `/help` 或输入 `/` 看真实命令表，查不到的名字会得到 `unknown command`）。
+> **键位方案、Vim 模式、高对比与界面语言都有运行时开关**（W8 接通）：
+>
+> | 命令 | 作用 |
+> |---|---|
+> | `/keymap` | 查看当前方案；`/keymap reset` 恢复内置默认并写下 tombstone（项目 `tui.bindings` 从此不再覆盖）；`/keymap diagnostics` 打印键位诊断 |
+> | `/vim on\|off` | 开关 vim 模式编辑 |
+> | `/contrast on\|off` | 开关高对比主题 |
+> | `/locale auto\|en\|zh-Hans` | 切换界面语言 |
+>
+> 四个命令都**落盘**到 `os.UserConfigDir()/yanshi/prefs.json`（用户层），下次启动仍然生效。
+> 优先级自低而高：内置默认 < `config.yaml` 的 `tui.*` / `i18n.ui_locale` < `prefs.json` < 环境变量
+> （`YANSHI_THEME` / `YANSHI_KEYMAP` / `YANSHI_HIGH_CONTRAST` / `YANSHI_VIM` / `YANSHI_UI_LOCALE`）。
+> 写盘只写用户层：来自项目配置的值不会被复制进 `prefs.json`，否则项目改了它也改不动。
+>
+> `/locale auto` 写下的是 `auto` 而**不是**当次解析出的语言 —— auto 的语义是「每次启动重新看 `LC_ALL`/`LANG`」，
+> 把解析结果写死会让它安静地不再跟随系统。
 
 ## 交互式权限
 

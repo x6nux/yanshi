@@ -222,6 +222,24 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		m.yoloConfirm = 0
 		return m, nil, true
 	}
+
+	// C15: user keybindings, consulted before the built-in switch below.
+	//
+	// Only keys the user REBOUND are routed here. keymap's built-in defaults
+	// deliberately mirror what the switch already does (enter/ctrl+enter/
+	// ctrl+c/pgup/pgdown/f1), so letting defaults through would change nothing
+	// while duplicating five branches; letting them through and then getting
+	// one of them subtly wrong is the realistic failure. remappedKey therefore
+	// returns an action only when this key is NOT one the switch already owns.
+	//
+	// Without this the whole keymap package is inert: tui.bindings parses,
+	// validates, produces diagnostics, and never affects a single keystroke.
+	if action, ok := m.remappedKey(msg); ok {
+		if mm, cmd, handled := m.runKeyAction(action); handled {
+			return mm.(model), cmd, true
+		}
+	}
+
 	switch msg.Type {
 	case tea.KeyEscape:
 		// C2 — UX7: dismiss the most-recent error toast (if any) on Esc.

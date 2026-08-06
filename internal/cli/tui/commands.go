@@ -83,6 +83,12 @@ var commandTable = []command{
 	{name: "skills", help: "list installed skills", run: cmdSkills},
 	{name: "skill", help: "manage: /skill install|uninstall|trust|untrust|enable|disable", run: cmdSkill},
 	{name: "review", help: "run code review on a PR diff: /review <diff text or PR URL>", run: cmdReview},
+	// C15 + I18N1 preference commands. Handlers live in commands_prefs.go so
+	// this file stays under the GOV2 cap; only the rows belong here.
+	{name: "keymap", help: "show / reset keymap, or print binding diagnostics", helpKey: "tui.command.help.keymap", run: cmdKeymap},
+	{name: "vim", help: "toggle vim-style modal editing: /vim on|off", helpKey: "tui.command.help.vim", run: cmdVim},
+	{name: "contrast", help: "toggle the high-contrast theme: /contrast on|off", helpKey: "tui.command.help.contrast", run: cmdContrast},
+	{name: "locale", help: "show / switch UI language: /locale auto|en|zh-Hans", helpKey: "tui.command.help.locale", run: cmdLocale},
 }
 
 // lookupCommand finds a command by name (the first token after "/").

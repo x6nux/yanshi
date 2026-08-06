@@ -76,6 +76,22 @@ var requiredCatalogKeys = []string{
 	"vim.mode.visual",
 	"contrast.enabled",
 	"contrast.disabled",
+	// C15 + I18N1: the four preference commands. Added with the commands
+	// themselves — the catalog carried none of these before, despite the plan
+	// recording them as already present.
+	"tui.command.contrast.usage",
+	"tui.command.help.contrast",
+	"tui.command.help.keymap",
+	"tui.command.help.locale",
+	"tui.command.help.vim",
+	"tui.command.keymap.current",
+	"tui.command.keymap.none",
+	"tui.command.locale.changed",
+	"tui.command.locale.current",
+	"tui.command.locale.usage",
+	"tui.command.vim.disabled",
+	"tui.command.vim.enabled",
+	"tui.command.vim.usage",
 }
 
 // Bundle is a locale catalog. Persistent is the user's configured value

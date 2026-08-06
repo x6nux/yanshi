@@ -143,14 +143,18 @@ func mergeTUIPrefs(flags, env, user, project Preferences) EffectivePreferences {
 	return out
 }
 
+// preferencesPathFn is the seam tests point at a temp dir. Production uses
+// preferencesPath; a test that swapped os.UserConfigDir instead would race
+// every other test in the package that reads the same directory.
+var preferencesPathFn = preferencesPath
+
 // preferencesPath mirrors permModeFile: os.UserConfigDir()/yanshi/prefs.json.
-// Tests override via t.TempDir + direct call to loadPreferences/persistPreferences.
 //
-// NOT WIRED: loadPreferences, persistPreferences and mergeTUIPrefs have no
-// production call site, and model.prefsPath is never assigned, so no prefs.json
-// is read or written by a running TUI. The cascade is implemented and tested
-// but inert; treat everything in this file as pending assembly rather than as
-// live behaviour, and do not document it as persistence that happens.
+// WIRED as of W8: newModelWithPrefs reads the user layer through
+// preferencesPathFn, merges it with the env and project layers via
+// mergeTUIPrefs, and the /keymap, /vim, /contrast and /locale commands write
+// it back. Before that the whole cascade was implemented, tested, and had no
+// production caller — typing /vim produced "unknown command".
 func preferencesPath() string {
 	dir, err := os.UserConfigDir()
 	if err != nil {

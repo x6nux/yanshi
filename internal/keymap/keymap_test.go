@@ -72,11 +72,17 @@ func TestBuild_DefaultLookupUsesRealKeyMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := m.Lookup(tea.KeyMsg{Type: tea.KeyCtrlK}); got != ActionScrollUp {
-		t.Fatalf("ctrl+k -> %v want %v", got, ActionScrollUp)
+	if got := m.Lookup(tea.KeyMsg{Type: tea.KeyPgUp}); got != ActionScrollUp {
+		t.Fatalf("pgup -> %v want %v", got, ActionScrollUp)
 	}
-	if got := m.Lookup(tea.KeyMsg{Type: tea.KeyCtrlJ}); got != ActionScrollDown {
-		t.Fatalf("ctrl+j -> %v want %v", got, ActionScrollDown)
+	if got := m.Lookup(tea.KeyMsg{Type: tea.KeyPgDown}); got != ActionScrollDown {
+		t.Fatalf("pgdown -> %v want %v", got, ActionScrollDown)
+	}
+	// ctrl+k must NOT be scroll_up: the TUI opens its action palette with it,
+	// and the default table used to claim otherwise. Since the TUI now
+	// dispatches through this map, that claim would have moved the palette.
+	if got := m.Lookup(tea.KeyMsg{Type: tea.KeyCtrlK}); got != ActionNone {
+		t.Fatalf("ctrl+k -> %v: the action palette lives on this key", got)
 	}
 	if got := m.Lookup(tea.KeyMsg{Type: tea.KeyCtrlZ}); got != ActionNone {
 		t.Fatalf("unbound key -> %v want ActionNone", got)

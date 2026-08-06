@@ -65,11 +65,24 @@ func NewBuilder() *Builder { return &Builder{} }
 // CTRL+K versus ctrl+k and make duplicate diagnostics nondeterministic.
 // overrides may be nil — the common TUI path uses built-in defaults only.
 func NewDefaultBuilder(overrides map[string]string) *Builder {
+	// These must describe the keys the shipped TUI actually uses, because the
+	// TUI dispatches through this map. The original table did not: it bound
+	// ctrl+k to scroll_up, ctrl+j to scroll_down, ctrl+l to clear and ctrl+q
+	// to quit, none of which the TUI has ever done -- ctrl+k opens the action
+	// palette, scrolling is pgup/pgdown, and ctrl+q is not a key at all. That
+	// went unnoticed for as long as nothing consulted the map; the first
+	// attempt to wire it would have silently rebound the action palette.
+	//
+	// clear, quit and command_mode intentionally have no default key. clear is
+	// the /clear command, quit is folded into ctrl+c's second press, and
+	// command_mode is entering "/" in an empty prompt -- none of them is a
+	// standalone binding today, and inventing one here is what produced the
+	// mismatch above. They stay in knownActions so a user CAN bind them.
 	defaults := map[string]Action{
 		"enter": ActionSend, "ctrl+enter": ActionNewline,
-		"ctrl+c": ActionCancel, "ctrl+k": ActionScrollUp,
-		"ctrl+j": ActionScrollDown, "ctrl+l": ActionClear,
-		"f1": ActionHelp, "ctrl+q": ActionQuit,
+		"ctrl+c": ActionCancel,
+		"pgup":   ActionScrollUp, "pgdown": ActionScrollDown,
+		"f1": ActionHelp,
 	}
 	defaultKeys := make([]string, 0, len(defaults))
 	for key := range defaults {

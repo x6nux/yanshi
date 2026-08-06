@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/x6nux/yanshi/internal/ctxcompact"
 	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/i18n"
+	"github.com/x6nux/yanshi/internal/keymap"
 	"github.com/x6nux/yanshi/internal/proto"
 )
 
@@ -63,20 +65,27 @@ type model struct {
 	toolsRun              int
 	status                string
 
-	// I18N1 (Task 11) + C15 (Task 13): bundle localizes the visible TUI
-	// surfaces; prefs + effective would hold the preference-cascade result
-	// and prefsPath the file it came from.
+	// I18N1 + C15: bundle localizes the visible TUI surfaces; prefs is the
+	// USER layer as read from disk (what /vim and friends mutate and write
+	// back), project is the layer that came from config.yaml, effective is the
+	// merged result, and prefsPath is the file prefs came from.
 	//
-	// The cascade is NOT wired. prefsPath has no production assignment, so it
-	// is always empty and nothing is ever loaded from or persisted to disk;
-	// newModel hardcodes the theme and keymap names instead. No slash command
-	// mutates any of this either — /locale, /vim, /contrast and /keymap are
-	// not registered in commandTable. See internal/cli/tui/preferences.go for
-	// the unwired half.
+	// Keeping prefs and project separate is load-bearing for persistence: only
+	// the user layer may be written back, so a preference that arrived from
+	// project config must not be re-persisted as if the user had chosen it —
+	// that would silently pin a value the project could otherwise change.
+	//
+	// keys is the resolved keymap. It dispatches BEFORE the hardcoded key
+	// switch in handlers.go, so a user override in tui.bindings actually takes
+	// effect; the built-in defaults deliberately mirror what that switch
+	// already does, or wiring the map would have moved keys nobody asked to
+	// move (see keymap.NewDefaultBuilder).
 	bundle    *i18n.Bundle
 	prefs     Preferences
+	project   Preferences
 	effective EffectivePreferences
 	prefsPath string
+	keys      *keymap.Map
 
 	// Live activity status line (shown while m.streamCh != nil). activity is the
 	// current step ("Thinking…" / "Running <tool>…"); turnStart is when the turn
@@ -300,11 +309,39 @@ type model struct {
 	clipImage     clipImageFunc
 }
 
+// newModel builds a model with no project preference layer. Kept as the
+// package's default constructor because almost every test wants exactly that.
 func newModel(sess tuiSession, root string) model {
+	return newModelWithPrefs(sess, root, Preferences{})
+}
+
+// newModelWithPrefs resolves the four-layer preference cascade and builds the
+// model from the result.
+//
+// The layers are defaults < project config < user prefs.json < env < flags
+// (flags is empty: the TUI has no preference flags today). Everything the
+// cascade decides — UI locale, theme, high contrast, vim, keymap — was
+// previously hardcoded here: prefs was literally Preferences{}, prefsPath was
+// "", and defaultBundle pinned English, so neither cfg.I18N.UILocale nor
+// YANSHI_UI_LOCALE could change a single string on screen.
+//
+// A malformed prefs.json or a bad env boolean degrades to the lower layers
+// rather than refusing to start: the TUI is the thing you would use to FIX a
+// broken preference, so failing to open it is the worst available outcome.
+func newModelWithPrefs(sess tuiSession, root string, project Preferences) model {
 	vp := viewport.New(80, 10)
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	bundle := defaultBundle()
+
+	prefsPath := preferencesPathFn()
+	user, _ := loadPreferences(prefsPath)
+	env, _ := PreferencesFromEnv(os.Getenv)
+	eff := mergeTUIPrefs(Preferences{}, env, user, project)
+
+	bundle, err := i18n.NewBundle(eff.UILocale)
+	if err != nil {
+		bundle = defaultBundle()
+	}
 	m := model{
 		sess:          sess,
 		input:         newInput(),
@@ -317,13 +354,15 @@ func newModel(sess tuiSession, root string) model {
 		permMode:      loadSavedMode(),
 		autoThreshold: loadSavedThreshold(),
 		queueMode:     QueueModeQueue,
-		theme:         ThemeDefault,
+		theme:         themeForPrefs(eff),
 		bundle:        bundle,
-		prefs:         Preferences{},
-		effective: EffectivePreferences{
-			UILocale: bundle.Effective(), ThemeName: "default", KeymapName: "default",
-		},
+		prefs:         user,
+		prefsPath:     prefsPath,
+		project:       project,
+		effective:     eff,
 	}
+	m.effective.UILocale = eff.UILocale
+	m.keys = buildKeymap(eff, project)
 	m.input.Placeholder = bundle.Get("tui.input.placeholder")
 	// Startup banner: header (OS/Shell/Go/Date) renders instantly; tool rows
 	// are appended asynchronously by probeStartupTools (see Init/Update) so the
@@ -349,8 +388,13 @@ func newModel(sess tuiSession, root string) model {
 //     release copies the selected text to the system clipboard via OSC 52).
 //
 // Keyboard scrolling (PgUp/PgDn) is unaffected.
-func NewProgram(sess *cli.Session, root string) *tea.Program {
-	m := newModel(sess, root)
+// project is the preference layer read from config.yaml (tui.* and
+// i18n.ui_locale). It is the LOWEST layer above built-in defaults: prefs.json,
+// the environment and flags all override it. Passing it explicitly rather than
+// having the TUI load config itself keeps package tui free of internal/config,
+// which is what lets cmd/yanshi stay the only place that knows both halves.
+func NewProgram(sess *cli.Session, root string, project Preferences) *tea.Program {
+	m := newModelWithPrefs(sess, root, project)
 	return tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 }
 

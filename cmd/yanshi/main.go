@@ -591,7 +591,23 @@ func runTUI(ctx context.Context, opts cli.Options) error {
 	}
 	defer sess.Close()
 
-	prog := tui.NewProgram(sess, sess.Root())
+	// C15 + I18N1: the project preference layer. config.Load failing is not
+	// fatal here — the TUI is the thing an operator would use to diagnose a
+	// broken config, so it starts on built-in defaults and the doctor
+	// subcommand reports the parse error.
+	var project tui.Preferences
+	if cfg, err := config.Load(opts.ConfigPath); err == nil {
+		project = tui.Preferences{
+			UILocale:     cfg.I18N.UILocale,
+			ThemeName:    cfg.TUI.Theme,
+			KeymapName:   cfg.TUI.KeymapName,
+			HighContrast: cfg.TUI.HighContrast,
+			Vim:          cfg.TUI.Vim,
+		}
+		tui.SetProjectBindings(cfg.TUI.Bindings)
+	}
+
+	prog := tui.NewProgram(sess, sess.Root(), project)
 
 	// Wire the signal ctx (SIGINT/SIGTERM) to prog.Quit so that SIGTERM
 	// triggers a graceful exit — bubbletea only handles Ctrl-C internally.

@@ -66,7 +66,7 @@ func TestCov_ApplyEvent_NestedResultSegments(t *testing.T) {
 // constructs the program (it starts on Run), so a zero-value *cli.Session is
 // sufficient to exercise the entry.
 func TestCov_NewProgram(t *testing.T) {
-	p := NewProgram(&cli.Session{}, "/proj")
+	p := NewProgram(&cli.Session{}, "/proj", Preferences{})
 	assert.NotNil(t, p)
 }
 
