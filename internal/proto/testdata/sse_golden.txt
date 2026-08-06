@@ -55,9 +55,6 @@ data: {"type":"structured_result","structured_result":{}}
 event: subagent_event
 data: {"type":"subagent_event","text":"x","agent_id":"ag-1","agent_role":"explore","event":"started","agent_status":"running"}
 
-event: mcp_list
-data: {"type":"mcp_list","servers":["s"]}
-
 event: mcp_status
 data: {"type":"mcp_status"}
 

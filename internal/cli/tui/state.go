@@ -201,6 +201,31 @@ func (m model) fetchInitialStatus() tea.Cmd {
 	}
 }
 
+// fetchInitialMCP asks for the MCP server snapshot at launch.
+//
+// Nothing did. mcp_status is only sent in reply to list_mcp or mcp_action,
+// and the only sender of list_mcp was the /mcp command -- so
+// paletteMCPServers stayed empty until the user happened to type /mcp, and
+// until then the palette offered no MCP tools at all. A user who never runs
+// /mcp (there is no reason to, if the palette is where you discover tools)
+// would conclude the servers they configured do nothing.
+//
+// A nil reply is fine and expected: SSE installs no control-frame path, and a
+// build with no MCP servers answers with an empty list.
+func (m model) fetchInitialMCP() tea.Cmd {
+	ch := m.sess.SendFrame(proto.NewListMCP())
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ev, ok := <-ch
+		if !ok || ev.Kind != "mcp_status" {
+			return nil
+		}
+		return streamMsg{ev: ev}
+	}
+}
+
 // syncSavedMode applies the locally persisted permission mode to the server
 // when a new TUI connection is opened. Without this, the footer can show the
 // saved mode while the server still evaluates permission requests as default.

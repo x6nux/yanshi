@@ -102,7 +102,7 @@ func TestClientFrame_ParityRoundTrip(t *testing.T) {
 }
 
 // TestServerFrame_ParityRoundTrip verifies the Phase-10 server frames (models/
-// status/permission_request/mcp_list) round-trip with all their fields.
+// status/permission_request) round-trip with all their fields.
 func TestServerFrame_ParityRoundTrip(t *testing.T) {
 	t.Run("models", func(t *testing.T) {
 		in := NewModels([]string{"a", "b", "c"})
@@ -143,16 +143,6 @@ func TestServerFrame_ParityRoundTrip(t *testing.T) {
 		assert.True(t, got.ForcePrompt, "force_prompt must round-trip on the wire")
 	})
 
-	t.Run("mcp_list", func(t *testing.T) {
-		in := NewMCPList([]string{"filesystem", "github"})
-		data, err := json.Marshal(in)
-		require.NoError(t, err)
-		var got ServerFrame
-		require.NoError(t, json.Unmarshal(data, &got))
-		assert.Equal(t, "mcp_list", got.Type)
-		assert.Equal(t, []string{"filesystem", "github"}, got.Servers)
-	})
-
 	t.Run("compact_chunk", func(t *testing.T) {
 		in := NewCompactChunk("summary delta …")
 		data, err := json.Marshal(in)
@@ -166,13 +156,12 @@ func TestServerFrame_ParityRoundTrip(t *testing.T) {
 
 // TestServerFrame_SSEEvent_ParityFrames confirms the SSE wire encoding (event
 // name = Type, data = JSON) holds for the new parity frames too, so SSE and WS
-// share one event vocabulary for models/status/permission_request/mcp_list.
+// share one event vocabulary for models/status/permission_request.
 func TestServerFrame_SSEEvent_ParityFrames(t *testing.T) {
 	for _, in := range []ServerFrame{
 		NewModels([]string{"x"}),
 		NewStatus("m", "low", 1, 2, 3, 0),
 		NewPermissionRequest("id", "t", "{}", "r", false, false),
-		NewMCPList([]string{"s"}),
 	} {
 		event, data := in.SSEEvent()
 		assert.Equal(t, in.Type, event)
@@ -434,7 +423,6 @@ func goldenFrames() []ServerFrame {
 		NewSessionForked("fork-id-123"),
 		NewStructuredResult(json.RawMessage(`{}`)),
 		NewSubagentEvent("ag-1", "explore", "started", "running", "x"),
-		NewMCPList([]string{"s"}),
 		NewMCPStatusFrame(nil),
 		NewSkillsList(nil),
 		NewSkillAck("installed", &SkillInfo{Name: "hi"}, ""),

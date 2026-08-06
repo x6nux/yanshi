@@ -368,6 +368,7 @@ func (m model) Init() tea.Cmd {
 		textarea.Blink,
 		m.spinner.Tick,
 		m.fetchInitialStatus(),
+		m.fetchInitialMCP(),
 		m.syncSavedMode(),
 		repaintTick(),
 		watchGitHead(m.rootPath),

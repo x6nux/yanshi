@@ -156,9 +156,15 @@ func NewPermissionResponse(id, decision string) ClientFrame {
 // NewCompact requests context compaction of the current history.
 func NewCompact() ClientFrame { return ClientFrame{Type: "compact"} }
 
-// NewListMCP requests the configured MCP server names (reply: mcp_list). Used by
-// the TUI /mcp command; the server replies with NewMCPList(names) (empty when no
-// MCP servers are configured for the session).
+// NewListMCP requests the MCP server snapshot. The reply is mcp_status
+// (NewMCPStatusFrame) -- rich per-server state including tools and resources.
+//
+// It is NOT mcp_list. That frame type had a constructor and a round-trip test
+// and no server ever built one, so no client could receive it; the doc here
+// promised it anyway, which is how a reader would have wired a handler for a
+// frame that never arrives. Both the constructor and the promise are gone.
+//
+// Sent by the TUI at launch and by the /mcp command.
 func NewListMCP() ClientFrame { return ClientFrame{Type: "list_mcp"} }
 
 // NewSessionList requests the list of stored sessions (reply: sessions).
@@ -572,9 +578,6 @@ func NewStatusWithMode(model, thinking string, in, out, turns, contextWindow int
 func NewPermissionRequest(id, tool, args, reason string, approvalRequired, forcePrompt bool) ServerFrame {
 	return ServerFrame{Type: "permission_request", ID: id, ToolName: tool, ToolArgs: args, Reason: reason, ApprovalRequired: approvalRequired, ForcePrompt: forcePrompt}
 }
-
-// NewMCPList builds an mcp_list frame listing the configured MCP server names.
-func NewMCPList(servers []string) ServerFrame { return ServerFrame{Type: "mcp_list", Servers: servers} }
 
 // NewCompactChunk builds a compact_chunk frame carrying one delta of an
 // in-progress compaction summary (streamed by the server during auto-compaction,
