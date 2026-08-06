@@ -97,14 +97,49 @@ func TestBuild_AssemblyOrder(t *testing.T) {
 	assert.NotEmpty(t, prof.Tools.Allow)
 }
 
-// TestBuild_VCSSoftDegrade proves that when VCS InitRepo cannot produce a repo
-// (memory store + empty workroot has nothing to scan), Build does NOT fail and
-// App.VCS is still non-nil; VCSRepoID may be empty. Callers gate tracking on
-// VCSRepoID != "" (CLAUDE.md).
+// TestBuild_VCSSoftDegrade drives the degraded path instead of asserting a
+// property that holds on the healthy one.
+//
+// The previous version called buildMinimalApp and checked App.VCS != nil.
+// InitRepo SUCCEEDS there — the process cwd is a real directory — so the
+// branch the test names had never executed, and the assertion held for a boot
+// where nothing degraded at all. Options.WorkRoot exists so a test can point
+// the scan at a directory that does not exist, which is what makes
+// canonicalRepoRoot's EvalSymlinks fail, reliably, on every platform.
+//
+// Both halves are asserted: Build must not fail, AND VCSRepoID must be empty.
+// Without the second, a boot that quietly succeeded would still pass.
 func TestBuild_VCSSoftDegrade(t *testing.T) {
-	app := buildMinimalApp(t)
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
+	require.NoError(t, os.WriteFile(cfgPath, []byte(`
+server:
+  http_addr: "127.0.0.1:0"
+storage:
+  sqlite_path: "`+dbPath+`"
+token: "test-token"
+`), 0o644))
+
+	app, err := bootstrap.Build(bootstrap.Options{
+		ConfigPath: cfgPath,
+		FakeModel:  true,
+		WorkRoot:   filepath.Join(dir, "does-not-exist"),
+	})
+	require.NoError(t, err, "a VCS init failure must not abort the boot")
+	require.NotNil(t, app)
+	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
+
 	require.NotNil(t, app.VCS, "VCS instance must exist even if InitRepo failed")
-	// VCSRepoID may be "" (soft-degrade) — the only hard requirement is no panic.
+	require.Empty(t, app.VCSRepoID,
+		"InitRepo was pointed at a non-existent directory and still reported a repo: "+
+			"the soft-degrade branch did not run, so this test proves nothing")
+
+	// The healthy control. Without it, an InitRepo that failed for EVERY root
+	// would satisfy the assertions above.
+	healthy := buildMinimalApp(t)
+	require.NotEmpty(t, healthy.VCSRepoID,
+		"a normal boot produced no repo id; the degraded assertion above is vacuous")
 }
 
 // TestBuild_PluginDiscoverySoftDegrade proves a non-existent builtin_dir does

@@ -216,6 +216,19 @@ type Options struct {
 	// render. Headless modes leave this false and keep stderr.
 	TUIMode bool
 
+	// WorkRoot overrides the directory autoVCS scans into its initial main
+	// commit. Production leaves it empty and Build uses os.Getwd().
+	//
+	// It exists because that Getwd call made the soft-degrade branch below
+	// unreachable from a test: InitRepo only fails on a root it cannot
+	// canonicalise, and a test cannot make the process's own cwd invalid.
+	// TestBuild_VCSSoftDegrade therefore asserted only that App.VCS was
+	// non-nil after a NORMAL boot — the degraded path it names had never
+	// executed. Pointing this at a non-existent directory makes
+	// canonicalRepoRoot's EvalSymlinks fail, which is reliable on every
+	// platform.
+	WorkRoot string
+
 	// Cfg is a pre-loaded config used as a test seam. Production leaves it
 	// nil and Build uses ConfigPath. When non-nil, ConfigPath is ignored and
 	// the caller is responsible for cfg.applyDefaults (LoadBytes does this;
@@ -548,7 +561,10 @@ func Build(opts Options) (*App, error) {
 	// directory into an initial main commit. A failure here is non-fatal — the
 	// app still boots with tracking disabled (VCSRepoID stays empty) — so we
 	// log to stderr and continue rather than rejecting the whole boot.
-	workRoot, _ := os.Getwd()
+	workRoot := opts.WorkRoot
+	if workRoot == "" {
+		workRoot, _ = os.Getwd()
+	}
 	worktreeDir := expandHome(firstNonEmpty(cfg.VCS.WorktreeDir, "~/.yanshi/worktrees"))
 	vcsInstance := vcs.New(
 		st,

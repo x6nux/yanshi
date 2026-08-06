@@ -12,6 +12,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/x6nux/yanshi/internal/task/work"
 )
 
 var updateGolden = flag.Bool("update", false, "regenerate SSE golden file")
@@ -430,7 +432,17 @@ func goldenFrames() []ServerFrame {
 		NewJobEvent(JobInfo{ID: "j1", State: "running", Output: "data"}),
 		NewPlanUpdate("wt-1", nil),
 		NewChecklistUpdate("wt-1", nil),
-		NewTaskUpdate(nil),
+		// A real task, not nil: NewTaskUpdate(nil) short-circuits to a ZERO
+		// ServerFrame, so this row used to freeze `event: ` (empty) and
+		// `data: {"type":""}` — the task_update wire shape was never frozen at
+		// all, and the corpus documented an empty type no constructor emits.
+		// Zero timestamps keep the golden deterministic.
+		NewTaskUpdate(&work.WorkTask{
+			ID: "wt-1", Title: "golden", Status: work.StatusRunning,
+			Checklist: work.Checklist{Items: []work.ChecklistItem{}},
+			Gates:     []work.Evidence{}, Artifacts: []work.Artifact{},
+			Timeline: []work.TimelineEntry{},
+		}),
 		NewSideState(1),
 		NewSeams(nil, "", ""),
 		NewSeamRestored("s1", "abc123", "fullhead", "reverted"),
@@ -482,17 +494,33 @@ func TestUnknownField_Compatibility(t *testing.T) {
 	assert.Equal(t, "hi", got.Text)
 }
 
-// TestVocabulary_Symmetry proves every ServerFrame Type produced by a
-// constructor has a corresponding SSEEvent() emission (event name == Type) —
-// i.e. the WS and SSE vocabularies share one frame set. It collects the Type
-// of every frame in goldenFrames() and asserts SSEEvent returns that same Type
-// as the event name, with non-empty data.
+// TestVocabulary_Symmetry proves the SSE event name a frame emits is the type
+// an INDEPENDENT source says it should be — the golden corpus on disk, which
+// is the artifact clients are written against.
+//
+// It used to assert `f.Type == event` where event came from f.SSEEvent(), and
+// SSEEvent's first line is `event = f.Type`. That assertion could not fail:
+// rewrite SSEEvent to emit any string at all and it stays green, because it
+// compares the function's output against the value the function just copied.
+// Checking against the frozen file instead means a change to either side has
+// to be justified against the other.
 func TestVocabulary_Symmetry(t *testing.T) {
+	frozen, err := os.ReadFile(filepath.Join("testdata", "sse_golden.txt"))
+	require.NoError(t, err, "golden missing — run: go test -run TestSSEEvent_Golden -update ./internal/proto/")
+	frozenEvents := map[string]bool{}
+	for _, line := range strings.Split(string(frozen), "\n") {
+		if name, ok := strings.CutPrefix(line, "event: "); ok {
+			frozenEvents[strings.TrimSpace(name)] = true
+		}
+	}
+	require.NotEmpty(t, frozenEvents, "the golden file declares no events")
+
 	seen := map[string]bool{}
 	for _, f := range goldenFrames() {
 		seen[f.Type] = true
 		event, data := f.SSEEvent()
-		assert.Equal(t, f.Type, event, "SSE event name must equal frame Type")
+		assert.True(t, frozenEvents[event],
+			"SSEEvent emits %q, which the frozen corpus does not declare", event)
 		assert.NotEmpty(t, data, "SSE data must be non-empty for %s", f.Type)
 	}
 	// Every Type is unique (no two constructors emit the same Type unless
