@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/x6nux/yanshi/internal/agent/registry"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 )
 
@@ -94,4 +95,29 @@ func TestAgentStart_NoEvidenceIsPassedThroughVerbatim(t *testing.T) {
 	got := drainResult(at.streamStartAgent(ctx, `{"prompt":"answer briefly"}`))
 
 	require.Equal(t, freeform, got, "a result without EVIDENCE must pass through unchanged")
+}
+
+// TestRegistryAndToolsAgreeOnMaxDepth reconciles the two depth constants.
+//
+// registry cannot import tools — tools imports registry, so the edge would be
+// a cycle — which is why registry.MaxDepth is a second constant rather than a
+// reference. That leaves nothing structural to keep them equal: the value was
+// an inline `depth > 3` with the name in a comment, and raising
+// MaxSubAgentDepth would have left registry stopping at the old number with
+// every test still green. This package can see both, so the reconciliation
+// lives here.
+//
+// The comparison is on the value AND on the boundary: registry rejects at
+// `depth >= MaxDepth` and orchestrator.runSubAgentTurn at
+// `depth >= tools.MaxSubAgentDepth`, so equal constants now mean equal
+// deepest legal chains. They did not before — registry used `>`, admitting one
+// level more than the orchestrator did on the same nominal limit.
+//
+// ledger: F2/LEAK2#4 与深度上限交互文档化
+func TestRegistryAndToolsAgreeOnMaxDepth(t *testing.T) {
+	require.Equal(t, MaxSubAgentDepth, registry.MaxDepth,
+		"the two nesting limits disagree: a sub-agent chain would be cut at one depth by "+
+			"the registry and at another by the orchestrator, and which one wins depends on "+
+			"whether a Manager is bound to the turn")
+	require.Positive(t, registry.MaxDepth, "a limit of zero forbids every sub-agent")
 }

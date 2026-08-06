@@ -119,6 +119,7 @@ func TestSpawnRejectsNilRunner(t *testing.T) {
 	assert.Contains(t, err.Error(), "runner is required")
 }
 
+// ledger: F2/LEAK2#4 与深度上限交互文档化
 func TestSpawnRejectsTooDeep(t *testing.T) {
 	m := NewManager(NewManagerOpts{
 		RootContext:   context.Background(),
@@ -127,7 +128,19 @@ func TestSpawnRejectsTooDeep(t *testing.T) {
 	})
 	t.Cleanup(m.Close)
 
-	// Build a 4-level chain (depth 0..3) so the 5th (depth 4) exceeds MaxSubAgentDepth=3.
+	// TestSpawn_DepthOverflow in coverage_test.go was a second copy of this
+	// test and was deleted rather than re-pinned. It used a runner that returns
+	// immediately, so each parent could reach a terminal status — and therefore
+	// leave m.runtime — before its child spawned. Spawn reads the parent's
+	// depth from the runtime map, so a detached parent yields depth 0 and the
+	// gate never fires: the assertion held only while the chain outran the
+	// runners. The blocking runner below is what makes the depth real.
+	//
+	// Build a chain of depth 0..2 so the next one (depth 3) reaches MaxDepth.
+	//
+	// The chain used to run one level deeper, matching the old inline `depth > 3`
+	// gate — which admitted one more level than orchestrator.runSubAgentTurn's
+	// `depth >= tools.MaxSubAgentDepth` did. Both gates now stop at MaxDepth.
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 
@@ -147,14 +160,11 @@ func TestSpawnRejectsTooDeep(t *testing.T) {
 	d3, err := m.Spawn(WithCurrentAgentID(context.Background(), d2), SpawnRequest{Role: "d3", Prompt: "p3", Runner: mkRunner()})
 	require.NoError(t, err)
 
-	d4, err := m.Spawn(WithCurrentAgentID(context.Background(), d3), SpawnRequest{Role: "d4", Prompt: "p4", Runner: mkRunner()})
-	require.NoError(t, err)
-
-	// Attempt d5 at depth 4 -> ErrTooDeep.
-	_, err = m.Spawn(WithCurrentAgentID(context.Background(), d4), SpawnRequest{
-		Role: "d5", Prompt: "p5",
+	// Attempt d4 at depth 3 -> ErrTooDeep.
+	_, err = m.Spawn(WithCurrentAgentID(context.Background(), d3), SpawnRequest{
+		Role: "d4", Prompt: "p4",
 		Runner: RunnerFunc(func(context.Context, string, string) (string, error) {
-			return "d5", nil
+			return "d4", nil
 		}),
 	})
 	require.ErrorIs(t, err, ErrTooDeep)
@@ -545,6 +555,7 @@ func TestResumeRejectsAlreadyRunning(t *testing.T) {
 	_, _ = m.Wait(context.Background(), id, WaitOpts{Timeout: 2 * time.Second})
 }
 
+// ledger: F2/LEAK2#2 满则拒绝
 func TestResumeRejectsConcurrencyCap(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.json")
 	// Seed a terminal record.

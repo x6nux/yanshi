@@ -1243,10 +1243,14 @@
 # 子句级握手无从落笔（同 B0/TD1）。要终结须先改写 acceptance 并显式改写 acceptancePins。
 - id: "F2/LEAK2"
   package: "W3"
-  verdict: partial
+  verdict: done
   title: "子代理并发上限"
   acceptance: "并发上限生效；满则拒绝；计数准确；与深度上限交互文档化"
-  evidence: ""
+  evidence:
+    "1": "internal/agent/registry::TestCapLimitsConcurrencyNotLifetimeSpawns; internal/agent/registry::TestTerminalAgentReleasesItsConcurrencySlot"
+    "2": "internal/agent/registry::TestSpawnRespectsCapAndReturnsSpawnErrCap; internal/agent/registry::TestResumeRejectsConcurrencyCap"
+    "3": "internal/agent/registry::TestListRunningAgreesWithTheSpawnGate"
+    "4": "internal/agent/registry::TestDepthWinsWhenBothLimitsAreExceeded; internal/tools::TestRegistryAndToolsAgreeOnMaxDepth; internal/agent/registry::TestSpawnRejectsTooDeep"
 
 # 2026-08-05 W2：partial → done。三条子句此前都虚，根因是同一个：客户端监听的
 # "usage_report" 在 ACP 协议里不存在（本地克隆 zed-industries/agent-client-protocol

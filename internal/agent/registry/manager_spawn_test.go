@@ -52,6 +52,7 @@ func TestSpawnReturnsIDAndPersistsRunning(t *testing.T) {
 // direction; the clause needs both.
 //
 // ledger: B1/M04b#2 并发上限生效
+// ledger: F2/LEAK2#2 满则拒绝
 func TestSpawnRespectsCapAndReturnsSpawnErrCap(t *testing.T) {
 	m, _ := newManager(t)
 	block := make(chan struct{})

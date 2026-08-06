@@ -13,6 +13,24 @@ import (
 // NewManagerOpts
 // ---------------------------------------------------------------------------
 
+// MaxDepth is the vertical nesting limit enforced at Spawn: a sub-agent whose
+// depth would reach it is refused with ErrTooDeep. Root turns are depth 0, so
+// MaxDepth=3 permits a chain of three sub-agents below the root.
+//
+// It MUST equal tools.MaxSubAgentDepth. registry cannot import tools (tools
+// imports registry, so the edge would be a cycle), so the two constants are
+// reconciled by assertion instead of by reference:
+// internal/tools::TestRegistryAndToolsAgreeOnMaxDepth compares them from the
+// one package that can see both.
+//
+// The predecessor was an inline `depth > 3` with the constant name in a
+// comment, which was wrong in two ways at once. It was invisible to any
+// consistency check — changing tools.MaxSubAgentDepth left registry at 3 and
+// nothing reddened — and `>` admitted one level MORE than
+// orchestrator.runSubAgentTurn's `depth >= tools.MaxSubAgentDepth` did, so the
+// two gates on the same nominal limit disagreed about the deepest legal chain.
+const MaxDepth = 3
+
 // NewManagerOpts configures a Manager.
 type NewManagerOpts struct {
 	RootContext   context.Context
@@ -133,17 +151,14 @@ func (m *Manager) Spawn(ctx context.Context, req SpawnRequest) (string, error) {
 			parentRT = rt
 			depth = m.records[parentID].Depth + 1
 			// --- depth vs concurrency: two orthogonal dimensions ---
-			// Depth (vertical, tools.MaxSubAgentDepth=3, declared in
-			// internal/tools/subagent.go — cited by symbol, not by line,
-			// because line numbers drift silently) is
-			// checked FIRST. When both depth and concurrency are exceeded,
-			// ErrTooDeep wins — a deeper agent will never starve a shallower
-			// slot (the concurrency limit governs independently). Both
-			// dimensions are in effect simultaneously: an agent at max depth
-			// may still spawn its own sub-agent if the concurrency budget
-			// permits, and a sub-agent at the concurrency limit cannot spawn
-			// another even if the depth budget is available.
-			if depth > 3 { // MaxSubAgentDepth
+			// Depth (vertical, MaxDepth) is checked FIRST. When both depth and
+			// concurrency are exceeded, ErrTooDeep wins — a deeper agent will
+			// never starve a shallower slot (the concurrency limit governs
+			// independently). Both dimensions are in effect simultaneously: an
+			// agent below max depth may still spawn its own sub-agent if the
+			// concurrency budget permits, and a sub-agent at the concurrency
+			// limit cannot spawn another even if the depth budget is available.
+			if depth >= MaxDepth {
 				m.mtx.Unlock()
 				m.persistMu.Unlock()
 				return "", ErrTooDeep

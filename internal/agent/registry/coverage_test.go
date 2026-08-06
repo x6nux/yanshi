@@ -298,38 +298,6 @@ func newTestManager(t *testing.T, max int) *Manager {
 // manager.go: Spawn with depth overflow
 // ---------------------------------------------------------------------------
 
-func TestSpawn_DepthOverflow(t *testing.T) {
-	m := newTestManager(t, 10)
-	t.Cleanup(m.Close)
-
-	// Create a chain of 4 agents: each spawn nests under the previous.
-	// Depth starts at 0, increments by 1 per parent-child level.
-	id0, err := m.Spawn(context.Background(), SpawnRequest{
-		Runner:   simpleRunner(t, "ok"),
-		ParentID: CurrentAgentID(context.Background()),
-	})
-	require.NoError(t, err)
-
-	// Spawn with AgentID context so parent depth is used.
-	ctx1 := WithCurrentAgentID(context.Background(), id0)
-	id1, err := m.Spawn(ctx1, SpawnRequest{Runner: simpleRunner(t, "ok")})
-	require.NoError(t, err)
-
-	ctx2 := WithCurrentAgentID(context.Background(), id1)
-	id2, err := m.Spawn(ctx2, SpawnRequest{Runner: simpleRunner(t, "ok")})
-	require.NoError(t, err)
-
-	ctx3 := WithCurrentAgentID(context.Background(), id2)
-	id3, err := m.Spawn(ctx3, SpawnRequest{Runner: simpleRunner(t, "ok")})
-	require.NoError(t, err)
-
-	// Depth 3 is max (b/c depth overflow check is depth > 3).
-	// This spawn should now exceed the depth limit.
-	ctx4 := WithCurrentAgentID(context.Background(), id3)
-	_, err = m.Spawn(ctx4, SpawnRequest{Runner: simpleRunner(t, "ok")})
-	require.ErrorIs(t, err, ErrTooDeep)
-}
-
 // ---------------------------------------------------------------------------
 // manager.go: Resume edge cases
 // ---------------------------------------------------------------------------
