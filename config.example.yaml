@@ -231,6 +231,26 @@ observability:
 
 # OBS3 特性注册表。Strict=true 时未知 flag 名直接 error(防拼写);overrides
 # 是 operator 种子值,覆盖 registry 内置 default。
+#
+# 内置的三个 flag（权威定义在 internal/features/features.go 的 DefaultSpecs；
+# 名字与这里的对账由 internal/features::TestExampleConfigNamesEveryFlag 守住，
+# 加了新 flag 而没写进这里会让测试变红):
+#
+#   observe.slog_trace_id   stable, 默认 true
+#     日志与 OTel span 上的关联 ID(trace_id / session_id / turn_id)。
+#     关掉是**整轮**关掉:编排器本来会给缺 ID 的一轮补铸一套,所以关闭走的是
+#     单向抑制,下游工具审计以外的地方都不会再冒出 ID。
+#     注意 tools.ThreadLink 是另一条通道,喂的是工具审计记录,不受此开关影响 ——
+#     把一个日志偏好变成问责缺口不是这个开关该干的事。
+#
+#   observe.otel_export     experimental, 默认 false
+#     与上面 observability.otel.enabled 取**与**:两个都为真才导出。
+#
+#   observe.cost_in_status  beta, 默认 true
+#     status 帧、会话列表(/stats 渲染它)与 session_restored 上的 USD 成本字段。
+#     关掉只影响**显示**:入库的账本照记,开回来能看到完整历史。
+#
+# 运行时还能用 TUI 的 /features 临时切换(不落盘)。
 features:
   strict: false
   overrides: {}

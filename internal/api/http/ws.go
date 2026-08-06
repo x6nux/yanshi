@@ -516,14 +516,24 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 			// without seeing content.
 			//
 			// observe.slog_trace_id gates the binding itself, which is the only
-			// place it CAN be gated: the ids are read straight off the context
+			// place it CAN be gated: obslog.IDs is read straight off the context
 			// by the redacting handler (internal/observe/log) and by StartTurn,
 			// and neither of those may import features without inverting the
-			// dependency direction. Off therefore means no correlation ids
-			// anywhere for the turn -- logs AND the span -- because there is
-			// one set of ids, not two. EnabledOrDefault (not Enabled): this
-			// flag is Stable with Default true, and a nil registry must not
-			// silently turn it off.
+			// dependency direction. Off therefore means no obslog.IDs anywhere
+			// for the turn -- logs AND spans read the same values.
+			//
+			// SCOPE: obslog.IDs only. tools.ThreadLink is a SEPARATE correlation
+			// channel bound a few lines below (TurnOpts.ThreadID/TurnID → the
+			// orchestrator's WithThreadLink) and consumed by the tool-audit
+			// records, not by any log line or span attribute. It is deliberately
+			// NOT suppressed: this flag governs observability output, and
+			// silently dropping the link on an audit record would turn a logging
+			// preference into an accountability gap. An earlier draft of this
+			// comment claimed "there is one set of ids, not two", which is simply
+			// untrue and would have sent the next reader looking for a bug.
+			//
+			// EnabledOrDefault (not Enabled): this flag is Stable with Default
+			// true, and a nil registry must not silently turn it off.
 			if s.featuresReg.EnabledOrDefault("observe.slog_trace_id") {
 				turnCtx = obslog.WithIDs(turnCtx, obslog.IDs{
 					TraceID:   obslog.NewTraceID(),

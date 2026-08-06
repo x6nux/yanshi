@@ -1,6 +1,8 @@
 package features
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -66,5 +68,34 @@ func TestRegistrySetAlwaysRejectsUnknown(t *testing.T) {
 	r := NewRegistry(false)
 	if err := r.Set("missing", true); err == nil || !strings.Contains(err.Error(), "missing") {
 		t.Fatalf("runtime set must reject unknown key: %v", err)
+	}
+}
+
+// TestExampleConfigNamesEveryFlag keeps the operator-facing surface honest.
+//
+// config.example.yaml is what people copy to make their config.yaml, so it is
+// the layer closest to the user. It carried `overrides: {}` and never named a
+// single flag, which meant the only way to discover what could go in there was
+// to read DefaultSpecs in Go source. That gap was harmless while the flags did
+// nothing; it stopped being harmless the moment two of them acquired real
+// consumption points.
+//
+// Reading the file rather than asserting a hand-written list is the point: a
+// fourth flag added to DefaultSpecs and forgotten here fails immediately.
+func TestExampleConfigNamesEveryFlag(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "config.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+	specs := DefaultSpecs()
+	if len(specs) == 0 {
+		t.Fatal("no specs: the assertion below would be vacuous")
+	}
+	for _, spec := range specs {
+		if !strings.Contains(body, spec.Key) {
+			t.Errorf("config.example.yaml never mentions %q: an operator filling in "+
+				"features.overrides has no way to learn the name exists", spec.Key)
+		}
 	}
 }
