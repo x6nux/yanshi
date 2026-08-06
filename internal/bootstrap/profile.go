@@ -107,6 +107,12 @@ func DefaultOrchestratorProfile() guard.PermissionProfile {
 			"fs_read", "fs_list", "fs_search", "fs_glob", "fs_write", "fs_edit",
 			"shell_run", "shell_start", "shell_read", "shell_write_stdin", "shell_wait", "shell_cancel",
 			"task_shell_start", "task_shell_wait", "task_shell_stdin", "task_shell_cancel",
+			// A2 durable tasks. These were registered but never allowed, so the
+			// model saw four tools it could call and the guard refused each one:
+			// Prompt on WS (a dialog per call) and fail-closed on SSE, which has
+			// no callback. task_cancel additionally carries ForcePrompt, so
+			// listing it here authorizes discovery, not unattended cancellation.
+			"task_create", "task_list", "task_read", "task_cancel",
 			"memory_search", "memory_recall", "memory_write",
 			"web_fetch", "web_search", "time_now", "skill_use", "vcs_*",
 			"agent_start", "workflow_start", "analysis", "summarize",

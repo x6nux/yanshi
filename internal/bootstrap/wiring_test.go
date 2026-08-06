@@ -1033,3 +1033,28 @@ func TestOrchestrationToolNamesAreRegistered(t *testing.T) {
 				"name, or register the tool it was written for.", name)
 	}
 }
+
+// TestDurableTaskToolsAreAllowedOutOfTheBox is the reachability half of the
+// create/list/read/cancel clause.
+//
+// All four tools were registered and none was in DefaultOrchestratorProfile.
+// GOV5 only checks that every ALLOWED name is registered, never the reverse, so
+// the gap was structurally invisible: the model saw four tools it could call
+// and the guard refused each one — Prompt on WS (a dialog per call) and
+// fail-closed on SSE, which has no permission callback at all. A tool that
+// takes a dialog every time is a tool the model learns not to use.
+//
+// task_cancel keeps its ForcePrompt at call time; being on the allow list
+// authorizes discovery, not unattended cancellation.
+//
+// ledger: A2/DT1#1 可创建/列出/读取/取消
+func TestDurableTaskToolsAreAllowedOutOfTheBox(t *testing.T) {
+	p := bootstrap.DefaultOrchestratorProfile()
+	g := guard.New()
+	for _, name := range []string{"task_create", "task_list", "task_read", "task_cancel"} {
+		d := g.Check(p, guard.Action{Tool: name})
+		require.Equalf(t, guard.Allow, d.Verdict,
+			"%s is not allowed by the factory profile (%s); durable tasks are unusable "+
+				"on SSE and take a permission dialog per call on WS", name, d.Reason)
+	}
+}

@@ -857,6 +857,25 @@ func Build(opts Options) (*App, error) {
 	}()
 	// A2: bind the work dispatcher to the broker.
 	dispRef.Bind(work.BrokerAdapter{Broker: broker})
+	// …and the return path. Without it the broker moves its own row through
+	// pending → running → completed while the durable task_work row stays at
+	// pending forever: work.Manager.Start and work.Manager.Finish had no
+	// production caller at all, so task_read reported "pending" for a task
+	// that had already finished.
+	mirror := work.NewLifecycleMirror(workMgr)
+	mirror.OnError = func(workTaskID string, err error) {
+		slog.Warn("durable task status update failed", "task_id", workTaskID, "err", err)
+	}
+	broker.Work = mirror
+	// Restart recovery, before the sweeper starts: a row still marked running
+	// after a restart describes a worker that no longer exists, and nothing
+	// else would ever move it. Non-fatal — a store that cannot be recovered
+	// still serves new tasks.
+	if n, rerr := workMgr.RecoverInterrupted(ctx); rerr != nil {
+		slog.Warn("durable task recovery failed", "err", rerr)
+	} else if n > 0 {
+		slog.Info("returned interrupted durable tasks to the queue", "count", n)
+	}
 
 	for _, t := range tools.NewTaskTools().Tools() {
 		allTools = append(allTools, t)

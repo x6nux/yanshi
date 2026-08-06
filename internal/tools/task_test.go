@@ -78,6 +78,8 @@ func TestTaskCreateReadListCancel(t *testing.T) {
 
 // TestTaskCreate_ReadsThreadLinkFromContext: when args omit thread/turn,
 // the kernel reads them from the context's ThreadLink.
+//
+// ledger: A2/DT1#3 thread/turn 关联准确
 func TestTaskCreate_ReadsThreadLinkFromContext(t *testing.T) {
 	manager := work.NewFakeManager()
 	ctx := WithProfile(WithTaskManager(context.Background(), manager), wildcardProfile())

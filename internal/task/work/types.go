@@ -7,6 +7,7 @@ package work
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -28,18 +29,71 @@ func (s Status) IsTerminal() bool {
 	return s == StatusCompleted || s == StatusFailed || s == StatusCancelled
 }
 
-// CanTransitionTo 报告从 s 转移到 next 是否合法。
-// 终态拒绝一切转移；非终态只允许向已知 Status 转移。
+// legalTransitions is the state machine, written out edge by edge.
+//
+// The predecessor accepted ANY known status from any non-terminal one, which
+// made "状态机正确" a claim about the enum rather than about the machine:
+// pending→completed was legal, so a task could report success without ever
+// having run. Enumerating the edges is what makes the name true.
+//
+// running→pending is deliberately IN the set: it is how an interrupted task is
+// returned to the queue, both by the broker's retry path and by
+// Manager.RecoverInterrupted after a restart. pending→completed and
+// pending→failed are OUT — a task that was never dispatched has nothing to
+// report — with one consequence worth stating: a dispatch failure leaves the
+// task pending and records the reason on the timeline (Manager.Create already
+// does exactly that) rather than moving it to failed.
+var legalTransitions = map[Status]map[Status]bool{
+	StatusPending: {
+		StatusRunning:   true,
+		StatusCancelled: true,
+	},
+	StatusRunning: {
+		StatusCompleted: true,
+		StatusFailed:    true,
+		StatusCancelled: true,
+		StatusPending:   true,
+	},
+}
+
+// KnownStatuses returns every legal Status value. It exists so tests can walk
+// the whole matrix instead of listing the values a second time — a second list
+// drifts, and the drift is silent in the direction that matters (a status added
+// to the enum but not to legalTransitions would simply never be reachable).
+func KnownStatuses() []Status {
+	return []Status{StatusPending, StatusRunning, StatusCompleted, StatusFailed, StatusCancelled}
+}
+
+func (s Status) isKnown() bool {
+	for _, k := range KnownStatuses() {
+		if s == k {
+			return true
+		}
+	}
+	return false
+}
+
+// ErrIllegalTransition wraps every rejection from CanTransitionTo, so callers
+// can tell "the state machine said no" from "the database said no".
+//
+// The distinction is load-bearing for the broker mirror: a durable task
+// cancelled from the work side while its broker row is still finishing will
+// reject the incoming terminal transition, and that is the correct outcome
+// rather than a fault to log.
+var ErrIllegalTransition = errors.New("work: illegal status transition")
+
+// CanTransitionTo reports whether s may move to next, per legalTransitions.
+// Every non-nil return wraps ErrIllegalTransition.
 func (s Status) CanTransitionTo(next Status) error {
-	if s.IsTerminal() {
-		return fmt.Errorf("work: terminal status %q cannot transition to %q", s, next)
+	switch {
+	case !next.isKnown():
+		return fmt.Errorf("%w: unknown target status %q", ErrIllegalTransition, next)
+	case s.IsTerminal():
+		return fmt.Errorf("%w: terminal status %q cannot move to %q", ErrIllegalTransition, s, next)
+	case !legalTransitions[s][next]:
+		return fmt.Errorf("%w: %q -> %q", ErrIllegalTransition, s, next)
 	}
-	switch next {
-	case StatusPending, StatusRunning, StatusCompleted, StatusFailed, StatusCancelled:
-		return nil
-	default:
-		return fmt.Errorf("work: unknown target status %q", next)
-	}
+	return nil
 }
 
 // ChecklistItemStatus 是 ChecklistItem 的状态枚举。

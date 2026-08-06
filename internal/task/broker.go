@@ -43,6 +43,50 @@ type Broker struct {
 	//   non-terminal requeue → KEEP worktree (reusable by re-claim)
 	createdWT   map[string]string
 	createdWTMu sync.Mutex
+	// Work, when set, mirrors durable-task lifecycle transitions into the work
+	// layer. Optional: a broker with no durable tasks behind it (the plain
+	// task API, the agent-worker CLI) leaves it nil.
+	Work WorkLifecycle
+}
+
+// DurableTaskType is the broker task type Manager.Create submits for a durable
+// work task. The broker mirrors lifecycle transitions back to the work layer
+// for tasks of this type only — other task types have no durable row to update.
+const DurableTaskType = "work_task"
+
+// WorkLifecycle receives the lifecycle transitions of a durable work task so
+// the work layer's own status column tracks reality.
+//
+// It exists because those two layers had no channel between them: broker tasks
+// moved pending → running → completed while the corresponding task_work row
+// stayed at pending forever. work.Manager.Start and work.Manager.Finish had
+// ZERO production call sites, so running/completed/failed were unreachable at
+// runtime and task_read always reported pending no matter what the task did.
+//
+// The interface is stated in strings rather than in work.Status so the broker
+// does not import its own sub-package (work imports internal/store, and the
+// bootstrap adapter is where the two vocabularies meet). Implementations must
+// be safe to call from the broker's goroutines and must not block: failures
+// are the implementation's to absorb, since a durable-row update that fails
+// cannot be allowed to undo a broker transition that already committed.
+type WorkLifecycle interface {
+	// OnRunning is called after a durable task's broker row is claimed.
+	OnRunning(workTaskID string)
+	// OnTerminal is called after a durable task's broker row reaches a final
+	// status. status is one of "completed", "failed", "timeout".
+	OnTerminal(workTaskID, status, note string)
+	// OnRequeued is called when a failed attempt is put back in the queue
+	// rather than finalised, so the durable row leaves running.
+	OnRequeued(workTaskID string)
+}
+
+// notifyWork forwards a transition when the task is a durable one and a sink is
+// wired. Both conditions are checked here so call sites stay single-line.
+func (b *Broker) notifyWork(t store.Task, fn func(WorkLifecycle, string)) {
+	if b.Work == nil || t.Type != DurableTaskType || t.ParentTask == "" {
+		return
+	}
+	fn(b.Work, t.ParentTask)
 }
 
 // NewBroker creates a Broker backed by the given store.
@@ -122,6 +166,7 @@ func (b *Broker) Claim(worker string) (*store.Task, error) {
 			}
 		}
 	}
+	b.notifyWork(got, func(w WorkLifecycle, id string) { w.OnRunning(id) })
 	return &got, nil
 }
 
@@ -154,6 +199,7 @@ func (b *Broker) RecordResult(id, worker, status, result string) error {
 			}
 			return err
 		}
+		b.notifyWork(t, func(w WorkLifecycle, wid string) { w.OnRequeued(wid) })
 		return nil
 	}
 	if err := b.store.FinalizeTask(id, worker, status, result); err != nil {
@@ -162,6 +208,7 @@ func (b *Broker) RecordResult(id, worker, status, result string) error {
 		}
 		return err
 	}
+	b.notifyWork(t, func(w WorkLifecycle, wid string) { w.OnTerminal(wid, status, result) })
 	// Terminal transition succeeded: reclaim any worktree the broker itself
 	// created for this task.
 	b.reclaimWorktree(id)
@@ -249,6 +296,11 @@ func (b *Broker) RequeueStale(ctx context.Context) error {
 		}
 		if t2.Status == "failed" {
 			b.reclaimWorktree(t.ID)
+			b.notifyWork(t2, func(w WorkLifecycle, wid string) {
+				w.OnTerminal(wid, "failed", "worker stopped heartbeating")
+			})
+		} else {
+			b.notifyWork(t2, func(w WorkLifecycle, wid string) { w.OnRequeued(wid) })
 		}
 		// Signal that a task is available for claiming
 		select {
