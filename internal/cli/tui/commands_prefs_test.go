@@ -46,27 +46,56 @@ func TestPreferenceCommandsAreRegistered(t *testing.T) {
 }
 
 // TestKeymapDiagnosticsRendersTheConflictReport drives the subcommand doctor
-// promises. Map.Diagnostics reports four kinds; an empty override set has none,
-// and a conflicting one must be named rather than silently dropped.
+// promises, against a keymap that actually has something to report.
+//
+// The first version of this test asserted only that the output was non-empty
+// and did not say "unknown command". Both hold when the handler emits an empty
+// string (ackEntry decorates it) and when the keymap is the default one, which
+// has no diagnostics at all — so it passed without ever rendering a single
+// diagnostic. A mutation probe replacing the whole call with "" left it green.
+//
+// Map.Diagnostics reports four kinds; a conflict is the one an operator hits,
+// and it is what checkKeymapConfig sends them here to see.
 //
 // ledger: D3/C15#4 冲突可诊断
 func TestKeymapDiagnosticsRendersTheConflictReport(t *testing.T) {
 	withTempPrefs(t)
-	rec := &recordingSession{}
-	m := newModel(rec, "/proj")
+	prev := projectBindings
+	// Two spellings of the same key: keymap reports a normalized_duplicate,
+	// which is exactly the state config validation refuses to start on.
+	SetProjectBindings(map[string]string{"CTRL+G": "scroll_up", "ctrl+g": "scroll_down"})
+	t.Cleanup(func() { SetProjectBindings(prev) })
+
+	m := newModel(&recordingSession{}, "/proj")
+	if len(m.keys.Diagnostics()) == 0 {
+		t.Fatal("the fixture produced no diagnostics, so this test cannot observe " +
+			"whether they are rendered")
+	}
 
 	mm, _ := m.runCommand("/keymap diagnostics")
 	m = mm.(model)
 	if len(m.entries) == 0 {
 		t.Fatal("/keymap diagnostics rendered nothing")
 	}
-	last := m.entries[len(m.entries)-1]
-	out := stripANSI(last.render(120, newSpinner()))
-	if out == "" {
-		t.Fatal("/keymap diagnostics rendered an empty entry")
-	}
+	out := stripANSI(m.entries[len(m.entries)-1].render(120, newSpinner()))
 	if strings.Contains(strings.ToLower(out), "unknown command") {
 		t.Fatalf("/keymap diagnostics is not routed: %q", out)
+	}
+	if !strings.Contains(out, "ctrl+g") {
+		t.Errorf("the report does not name the offending key: %q", out)
+	}
+	if strings.Contains(out, "no keymap diagnostics") {
+		t.Errorf("a keymap WITH diagnostics reported none: %q", out)
+	}
+
+	// And the clean case says so rather than printing an empty block.
+	SetProjectBindings(nil)
+	clean := newModel(&recordingSession{}, "/proj")
+	cm, _ := clean.runCommand("/keymap diagnostics")
+	clean = cm.(model)
+	cleanOut := stripANSI(clean.entries[len(clean.entries)-1].render(120, newSpinner()))
+	if !strings.Contains(cleanOut, "no keymap diagnostics") {
+		t.Errorf("a clean keymap should say so explicitly: %q", cleanOut)
 	}
 }
 
