@@ -248,6 +248,14 @@ func parseTestResult(framework string, res commandResult) testResult {
 
 func parseGoJSON(stdout string) testResult {
 	result := testResult{Framework: "go"}
+	// Packages that reported a failure, and packages where some test named
+	// itself as failing. The difference is what a compile error looks like.
+	// Both are collected across the whole stream and reconciled at the end,
+	// because the package event arrives AFTER its tests -- subtracting as we
+	// go would let the trailing package event re-add what a test just
+	// explained.
+	pkgFailures := map[string]bool{}
+	pkgHadNamedFailure := map[string]bool{}
 	scanner := bufio.NewScanner(strings.NewReader(stdout))
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
@@ -257,15 +265,42 @@ func parseGoJSON(stdout string) testResult {
 		if json.Unmarshal(scanner.Bytes(), &ev) != nil {
 			continue
 		}
+		// go test -json emits an event per TEST and, separately, one per
+		// PACKAGE with an empty Test field. Counting both inflated every
+		// tally by exactly the number of packages, so `go test ./...` claimed
+		// dozens of tests that do not exist and drifted further the more
+		// packages ran.
+		if ev.Test == "" {
+			// The one thing a package event says that no test event does: the
+			// package failed with no tests in it, which is what a COMPILE
+			// error looks like. Recording only those keeps a build break from
+			// coming back as a clean run of zero tests, without letting the
+			// ordinary package summary double-count anything.
+			if ev.Action == "fail" {
+				pkgFailures[ev.Package] = true
+			}
+			continue
+		}
 		switch ev.Action {
 		case "pass":
 			result.Passed++
 		case "fail":
 			result.Failed++
 			result.Failures = append(result.Failures, testFailure{Package: ev.Package, Test: ev.Test})
+			pkgHadNamedFailure[ev.Package] = true
 		case "skip":
 			result.Skipped++
 		}
+	}
+	// A package failure that no test explained: a build break, a panic in
+	// TestMain, a timeout that killed the binary. Reported so it cannot read
+	// as a clean run of zero tests.
+	for pkg := range pkgFailures {
+		if pkgHadNamedFailure[pkg] {
+			continue
+		}
+		result.Failed++
+		result.Failures = append(result.Failures, testFailure{Package: pkg})
 	}
 	result.Status = "pass"
 	if result.Failed > 0 {
