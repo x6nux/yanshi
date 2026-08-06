@@ -130,9 +130,16 @@ var acceptancePins = map[string]acceptancePin{
 	// 验收（doctor 报告 journal_mode 与 -wal/-shm 大小）在台账里读不到。补回 spec
 	// §12 第 9、10 条原文；子句数不变（补入部分以「、」续在第 5 句内），Digest 变。
 	// 这是扩回一条被截断的承诺，不是缩减。
-	"F1/WAL1":        {Clauses: 5, Digest: "1951ee94792cfbfc"},
-	"F2/BENCH1":      {Clauses: 3, Digest: "cd9e51a95c693492"},
-	"F2/CCL1":        {Clauses: 3, Digest: "544655c9557a227a"},
+	"F1/WAL1":   {Clauses: 5, Digest: "1951ee94792cfbfc"},
+	"F2/BENCH1": {Clauses: 3, Digest: "cd9e51a95c693492"},
+	// 2026-08-07: acceptance rewritten. Clause 3 was "keepRecent 文档清晰" — a
+	// claim about documentation, which no test can carry, so GOV8's
+	// clause-level handshake had nowhere to land and the entry could never
+	// leave partial no matter how good the code was. It now asks for the two
+	// KeepRecent semantics to AGREE (messages on CompactingModel, pairs in
+	// ctxcompact.PlanOpts), which is checkable and is what the documentation
+	// was trying to convey. Same clause count, new digest.
+	"F2/CCL1":        {Clauses: 3, Digest: "978f05dc6402bc45"},
 	"F2/LEAK2":       {Clauses: 4, Digest: "44613157096273c2"},
 	"F2/LEAK3":       {Clauses: 3, Digest: "750bfb5174956085"},
 	"G/VISION":       {Clauses: 3, Digest: "95261e23de252f63"},

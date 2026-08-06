@@ -65,7 +65,8 @@ type CompactingModel struct {
 	ContextWindow int
 	// KeepRecent is the number of TRAILING MESSAGES kept verbatim (a raw message
 	// count, NOT a pair count — legacy bridge: it is halved when passed to
-	// ctxcompact.PlanOpts.KeepRecent which expects a pair count; see :104 below).
+	// ctxcompact.PlanOpts.KeepRecent which expects a pair count — the conversion is
+	// planKeepRecent, cited by symbol because line numbers drift silently).
 	KeepRecent int
 
 	// CooldownTokens is the minimum token growth since the last successful
@@ -140,7 +141,7 @@ func (c *CompactingModel) maybeCompact(ctx context.Context, msgs []*schema.Messa
 	}
 	cb := compactCallback(ctx)
 	res, err := ctxcompact.Run(ctx, msgs,
-		ctxcompact.PlanOpts{KeepRecent: c.KeepRecent / 2}, // msgs → pairs
+		ctxcompact.PlanOpts{KeepRecent: c.planKeepRecent()},
 		ctxcompact.RunOpts{ModelWindow: c.ContextWindow, ChunkThreshold: 0.9},
 		c.Inner, cb)
 	if err != nil || res.TokensAfter >= res.TokensBefore {
@@ -156,6 +157,16 @@ func (c *CompactingModel) maybeCompact(ctx context.Context, msgs []*schema.Messa
 	c.cmMu.Unlock()
 	return res.Messages, true
 }
+
+// planKeepRecent converts this model's KeepRecent — a count of MESSAGES — into
+// ctxcompact.PlanOpts.KeepRecent, which counts PAIRS.
+//
+// It is a named method rather than an inline `/ 2` so the conversion has
+// somewhere to be asserted. The two fields share a name and mean different
+// things; a drift in either direction changes how much tail survives a
+// compaction, and does so silently — no error, no missing event, just a
+// different amount of history than the configuration asks for.
+func (c *CompactingModel) planKeepRecent() int { return c.KeepRecent / 2 }
 
 // shouldCompact reports whether the threshold gate fires for msgs, taking
 // the cooldown and hard-force fraction into account.

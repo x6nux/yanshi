@@ -1266,10 +1266,13 @@
 # TestCompactingModel_HardForceOverridesCooldown（逼近 HardForceFraction 仍触发）。
 - id: "F2/CCL1"
   package: "W4"
-  verdict: partial
+  verdict: done
   title: "mid-turn 压缩 cooldown"
-  acceptance: "同 turn 不重复压缩；逼近上限仍触发；keepRecent 文档清晰"
-  evidence: "internal/llm/eino::TestCompactingModel_CooldownDefersReCompact; internal/llm/eino::TestCompactingModel_HardForceBeatsCooldown"
+  acceptance: "同 turn 不重复压缩；逼近上限仍触发；keepRecent 两处语义一致（消息数 ↔ 对数）"
+  evidence:
+    "1": "internal/llm/eino::TestCooldownIsArmedByARealCompaction; internal/llm/eino::TestCompactingModel_CooldownDefersReCompact"
+    "2": "internal/llm/eino::TestHardForceFiresInsideAnArmedCooldown; internal/llm/eino::TestCompactingModel_HardForceBeatsCooldown"
+    "3": "internal/llm/eino::TestKeepRecentBridgeHalvesTheMessageCount"
 
 # 2026-08-05 W4：子句 1「同 turn 不重复压缩」此前由一条断言人造状态的测试守着 ——
 # 测试自己把 cm.lastCompactTokens 塞成 180 再断言它，等于断言自己种下的值。删掉那两行

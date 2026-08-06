@@ -307,6 +307,8 @@ func TestWithCompactCallback_NilIsNoop(t *testing.T) {
 // succeeds, a second shouldCompact call with moderate growth (still over threshold
 // but within token-growth cooldown) does NOT compress again. The hard-force
 // fraction of 0.95 provides a safety override for extreme growth.
+//
+// ledger: F2/CCL1#1 同 turn 不重复压缩
 func TestCompactingModel_CooldownDefersReCompact(t *testing.T) {
 	inner := &recordingModel{summary: "summarized", reply: "done", streamOK: true}
 	cm := &CompactingModel{
@@ -493,6 +495,8 @@ func TestCompactingModel_KeepRecentBridgesMessagesToPairs(t *testing.T) {
 // keeps growing, and the next inner call is handed a history that no longer
 // fits the window. W4 review round 5 measured the gap -- replacing the branch
 // with a constant false left the whole package green.
+//
+// ledger: F2/CCL1#2 逼近上限仍触发
 func TestCompactingModel_HardForceBeatsCooldown(t *testing.T) {
 	cm := &CompactingModel{
 		Threshold:         0.5,
