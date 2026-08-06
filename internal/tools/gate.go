@@ -13,6 +13,7 @@ package tools
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -102,6 +103,20 @@ func (g *GateTools) runGate(ctx context.Context, argsJSON string) (string, error
 	manager, err := requireTaskManager(ctx)
 	if err != nil {
 		return "", err
+	}
+	// The task has to exist BEFORE the command runs. task_id was never checked:
+	// the schema declares FOREIGN KEY(task_id) REFERENCES task_work(id), but
+	// internal/store never sets PRAGMA foreign_keys=ON and SQLite leaves it off,
+	// so a gate for a mistyped or hallucinated id was written and silently
+	// orphaned — the evidence existed, attached to nothing, and no task ever
+	// showed it. work.FakeManager DID reject unknown ids, so the tool tests
+	// (all of which use it) painted the opposite picture.
+	//
+	// Checked before execution rather than at RecordGate time so a typo costs
+	// nothing: running a two-minute test suite and then discarding its evidence
+	// is the worse failure.
+	if _, err := manager.Read(ctx, args.TaskID); err != nil {
+		return "", fmt.Errorf("task_gate_run: task %q: %w", args.TaskID, err)
 	}
 	timeout := 120 * time.Second
 	if args.Timeout > 0 {

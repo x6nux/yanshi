@@ -59,6 +59,7 @@ func gateCtx(t *testing.T, manager work.ManagerLike, root string) context.Contex
 	return ctx
 }
 
+// ledger: A2/DT2#1 gate 证据结构完整
 func TestTaskGateRun_PassEvidence(t *testing.T) {
 	manager := work.NewFakeManager()
 	task, err := manager.Create(context.Background(), work.CreateReq{Title: "x", Prompt: "p"})
@@ -80,6 +81,7 @@ func TestTaskGateRun_PassEvidence(t *testing.T) {
 	assert.Equal(t, command, payload.Evidence.Command)
 }
 
+// ledger: A2/DT2#4 退出码/duration 准确
 func TestTaskGateRun_NonZeroExitRecordsFailClassification(t *testing.T) {
 	manager := work.NewFakeManager()
 	task, err := manager.Create(context.Background(), work.CreateReq{Title: "x", Prompt: "p"})
@@ -186,36 +188,15 @@ func TestTaskGateRun_UsesShellCommandHelper(t *testing.T) {
 	assert.NotEmpty(t, cmd.Path)
 }
 
-func TestTaskGateRun_SpillToArtifact(t *testing.T) {
-	// 这个测试用真实 Manager + tmp root 验证 spill 路径。
-	// 但我们没法轻易产生 > SpillThreshold 的 stdout（输出受 shell 限制），
-	// 所以这里只验证 summarizeGateOutput 在小输出时不 spill、走 summary 路径。
-	manager := work.NewFakeManager()
-	task, err := manager.Create(context.Background(), work.CreateReq{Title: "x", Prompt: "p"})
-	require.NoError(t, err)
-	root := t.TempDir()
-	ctx := gateCtx(t, manager, root)
-	env, command := gatePrintCmd()
-	gt := NewGateTools()
-	argsJSON, err := json.Marshal(map[string]string{
-		"task_id": task.ID,
-		"gate":    "print",
-		"command": command,
-		"env":     env,
-	})
-	require.NoError(t, err)
-	out, err := runTool(ctx, gt.Run, string(argsJSON))
-	require.NoError(t, err)
-	var payload struct {
-		Evidence work.Evidence `json:"evidence"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(out), &payload))
-	// 没溢出，LogArtifactID 为空，summary 包含 echo 输出
-	assert.Empty(t, payload.Evidence.LogArtifactID)
-	// echo 输出在 Windows 是 "hello\r\n"，在 Unix 是 "hello\n"，trim 后都是 "hello"
-	// 但 summarizeGateOutput 取尾部 N 行：单行就是 "hello" 或 "hello\r"
-	assert.Contains(t, payload.Evidence.Summary, "hello")
-}
+// TestTaskGateRun_SpillToArtifact was deleted. It asserted the OPPOSITE of its
+// name: its own comment said output larger than SpillThreshold was hard to
+// produce, so it ran a small command and checked assert.Empty(LogArtifactID) —
+// a test named "spill to artifact" whose passing condition was that no
+// artifact appeared. Deleting the whole WriteArtifact branch left it green.
+//
+// gate_evidence_test.go::TestGateSpillsLargeOutputToAnArtifact produces the
+// large output (write a file, then cat it — a pipe is what the guard refuses,
+// not a file) and checks the artifact resolves and holds every byte.
 
 func TestTaskGateRun_NoManager(t *testing.T) {
 	ctx := WithProfile(context.Background(), guard.PermissionProfile{

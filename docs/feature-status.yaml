@@ -151,10 +151,25 @@
 # 先补这条证据。
 - id: "A2/DT2"
   package: "W3"
-  verdict: divergent
+  verdict: done
   title: "验证门 (task_gate_run + evidence)"
   acceptance: "gate 证据结构完整；大输出成 artifact；挂到正确 task；退出码/duration 准确"
-  evidence: ""
+  evidence:
+    "1": "internal/tools::TestGateEvidenceIsCompleteInTheDatabase; internal/tools::TestTaskGateRun_PassEvidence"
+    "2": "internal/tools::TestGateSpillsLargeOutputToAnArtifact"
+    "3": "internal/tools::TestGateAttachesToTheNamedTaskOnly"
+    "4": "internal/tools::TestGateRecordsRealDuration; internal/tools::TestGateClassifiesAFailedLaunchAsError; internal/tools::TestTaskGateRun_NonZeroExitRecordsFailClassification"
+# 2026-08-07：divergent → done。三条实测缺陷已修，不是补测试了事：
+#   3「挂到正确 task」是承重缺陷 —— runGate 从不校验 task_id，schema 虽有
+#     FOREIGN KEY(task_id) 但 internal/store 从不开 PRAGMA foreign_keys=ON，
+#     SQLite 默认关闭，于是给拼错的 id 写证据在真实 Store 里静默成功、证据孤儿化。
+#     更糟的是 work.FakeManager **会**拒未知 id，而全部 gate 工具测试都用它 ——
+#     fake 比真实实现更严格，造出「挂错会被拒」的反向安全假象。现在 runGate 在
+#     **执行命令之前**显式 Read 校验（跑完两分钟测试套件再丢弃证据是更差的失败）。
+#   2「大输出成 artifact」原测试 TestTaskGateRun_SpillToArtifact 断言方向相反 ——
+#     名叫 SpillToArtifact，断的是 assert.Empty(LogArtifactID)。已删，见 gate_test.go
+#     那段墓碑。大输出是能造的：先写文件再 cat（guard 拦的是管道，不是文件）。
+#   4「duration 准确」全仓零断言，DurationMs 只作为构造 Evidence 字面量的输入出现。
 
 # W1/Task 11：WS turn 从未设置 TurnOpts.PlanMode，plan 模式只改了权限回调措辞，
 # 模型仍拿到可写工具集。测试断言 tool_result 而非「文件不存在」—— 修复前后文件都不

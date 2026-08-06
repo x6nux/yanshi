@@ -464,7 +464,7 @@
 - 证据形状：真实 gate 跑完后从 SQLite **读回**，逐字段非零/相等（ID 非空、Cwd == 解析后的 cwd、RecordedAt 落在 [before, after] 区间）。**骗过去**：只断言输入里手填的那几个字段。
 
 **2. 大输出成 artifact** — 未兑现（**虚报**）
-- 依据：实现有（`gate.go::GateTools.runGate`，`SpillThreshold` = 64 KiB，`spillover.go`）。唯一沾边的 `internal/tools::TestTaskGateRun_SpillToArtifact` 是**恒真空壳且断言方向相反** —— 注释自陈「我们没法轻易产生 > SpillThreshold 的 stdout……所以这里只验证小输出时不 spill」，然后 `assert.Empty(payload.Evidence.LogArtifactID)`。一个名叫 SpillToArtifact 的测试断言的是**没有产生 artifact**；把 `>` 写成 `<`、或把 `WriteArtifact` 整段删掉，它都不会红。
+- 依据：实现有（`gate.go::GateTools.runGate`，`SpillThreshold` = 64 KiB，`spillover.go`）。唯一沾边的 `TestTaskGateRun_SpillToArtifact`（2026-08-07 已删除，故此处刻意不带包路径 —— GOV9 对解析不出的路径放行，这正是记录幻影用的逃生门）是**恒真空壳且断言方向相反** —— 注释自陈「我们没法轻易产生 > SpillThreshold 的 stdout……所以这里只验证小输出时不 spill」，然后 `assert.Empty(payload.Evidence.LogArtifactID)`。一个名叫 SpillToArtifact 的测试断言的是**没有产生 artifact**；把 `>` 写成 `<`、或把 `WriteArtifact` 整段删掉，它都不会红。
 - 证据形状：让 gate 跑一条产出 > 64 KiB 的命令（注意 `sh -c "yes | head -c"` 会被 metachar HardDeny 拦，需先写大文件再 `cat`），断言 `Evidence.LogArtifactID != ""` 且 `artifact_read` 能取回全部字节。**骗过去**：现状这条。
 
 **3. 挂到正确 task** — 未兑现（**虚报 + 承重缺陷**）
