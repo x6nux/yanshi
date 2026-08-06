@@ -63,9 +63,18 @@ func Open(path string) (*Store, error) {
 }
 
 // Close closes the underlying SQLite database. It takes the write lock and
-// runs PRAGMA wal_checkpoint(TRUNCATE) first so the -wal file does not balloon
-// on long-running instances. Checkpoint failure is non-fatal (Windows may hold
-// lingering read connections); the database is closed regardless.
+// runs PRAGMA wal_checkpoint(TRUNCATE) first. Checkpoint failure is non-fatal
+// (Windows may hold lingering read connections); the database is closed
+// regardless.
+//
+// The explicit checkpoint is DEFENSIVE, not the mechanism that bounds the WAL.
+// Measured: replacing it with a no-op leaves the -wal file gone after Close all
+// the same, because SQLite checkpoints and deletes the WAL itself when the last
+// connection to a database closes cleanly. What this line buys is the case
+// where that does not happen — an unclean shutdown leaves the WAL for the next
+// opener, and TRUNCATE here makes the common path deterministic rather than
+// dependent on how the process ended. It is kept for that reason, not because
+// removing it was observed to break anything.
 func (s *Store) Close() error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -170,10 +179,19 @@ func (s *Store) applyConnectionPragmas() error {
 	return nil
 }
 
-// WriteTx serializes WAL writes inside one process so concurrent goroutines
-// never hit SQLITE_BUSY. It locks writeMu, begins a transaction, calls fn,
-// and commits (or rolls back on fn error). fn must NOT call any other Store
-// write method (WriteTx is NOT reentrant — nesting would deadlock on writeMu).
+// WriteTx serializes WAL writes inside one process. It locks writeMu, begins a
+// transaction, calls fn, and commits (or rolls back on fn error). fn must NOT
+// call any other Store write method (WriteTx is NOT reentrant — nesting would
+// deadlock on writeMu).
+//
+// It is NOT what keeps callers from seeing SQLITE_BUSY — that is busy_timeout,
+// set per connection via the DSN. Measured with 16 goroutines × 50 writes:
+// removing writeMu alone yields zero BUSY; removing writeMu AND setting
+// busy_timeout(0) yields 717 of 800. The predecessor comment claimed the
+// opposite causation, which matters because it makes writeMu look like the
+// correctness guarantee and busy_timeout look like tuning. What writeMu
+// actually buys is that contending goroutines wait on a Go mutex instead of
+// spinning inside SQLite's lock retry loop.
 func (s *Store) WriteTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()

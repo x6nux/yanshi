@@ -4,10 +4,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/x6nux/yanshi/internal/config"
+	"github.com/x6nux/yanshi/internal/store"
 )
 
 // writeDoctorCfg writes a minimal config body to a temp file and returns its
@@ -108,4 +112,34 @@ func TestCheckSandboxNeverClaimsEnforcement(t *testing.T) {
 		assert.NotEqual(t, StatusFail, c.Status,
 			"the documented Phase-0 posture is a warning, not a failure: %q", c.Message)
 	}
+}
+
+// TestDoctorWALCheckReportsSidecarSizes covers the sidecar half of the WAL
+// report.
+//
+// checkWAL answered "is WAL on" and stopped there. The failure an operator
+// needs to catch is a WAL that never checkpoints: the database is in WAL mode,
+// every other check is green, and the -wal file grows without bound. Reporting
+// journal_mode alone cannot distinguish that from a healthy store.
+//
+// ledger: F1/WAL1#5 WAL 文件有界（roadmap:295）。plan 另有 10 条细化验收：每条池连接 PRAGMA 生效、MaxOpenConns 按配置且 :memory: 强制 1、16×50 零 BUSY、读不阻塞写、双 Open 跨进程 busy_timeout、rollback→WAL 幂等零丢失、Close 执行 wal_checkpoint(TRUNCATE)、work/vcs/auth/bootstrap 现有测试全绿、Windows CI 下并发/升级测试全绿、doctor 报告 journal_mode 与 -wal/-shm 大小
+func TestDoctorWALCheckReportsSidecarSizes(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "yanshi.db")
+	st, err := store.Open(dbPath)
+	require.NoError(t, err)
+	sid, err := st.CreateSession("t")
+	require.NoError(t, err)
+	for i := 0; i < 20; i++ {
+		require.NoError(t, st.AppendMessage(sid, i, "user", strings.Repeat("z", 2048)))
+	}
+	require.NoError(t, st.Close())
+
+	c := checkWAL(&config.Config{Storage: config.StorageConfig{SQLitePath: dbPath}}, nil)
+	require.Equal(t, StatusOK, c.Status, "message: %s", c.Message)
+	assert.Contains(t, c.Message, "journal_mode=wal")
+	assert.Contains(t, c.Message, "-wal=",
+		"the wal check does not report the -wal file size, so a WAL that never "+
+			"checkpoints looks identical to a healthy one: %q", c.Message)
+	assert.Contains(t, c.Message, "-shm=", "message: %q", c.Message)
 }

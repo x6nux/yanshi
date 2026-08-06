@@ -47,6 +47,7 @@ func TestMigrate_AddsWorktreeColumn(t *testing.T) {
 	}
 }
 
+// ledger: F1/WAL1#1 WAL 启用
 func TestOpen_AppliesWALPragmas(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "yanshi.db")
@@ -95,6 +96,7 @@ func TestOpen_PragmasOnEveryPoolConn(t *testing.T) {
 	}
 }
 
+// ledger: F1/WAL1#5 WAL 文件有界（roadmap:295）。plan 另有 10 条细化验收：每条池连接 PRAGMA 生效、MaxOpenConns 按配置且 :memory: 强制 1、16×50 零 BUSY、读不阻塞写、双 Open 跨进程 busy_timeout、rollback→WAL 幂等零丢失、Close 执行 wal_checkpoint(TRUNCATE)、work/vcs/auth/bootstrap 现有测试全绿、Windows CI 下并发/升级测试全绿、doctor 报告 journal_mode 与 -wal/-shm 大小
 func TestOpen_MemoryForcesSingleConn(t *testing.T) {
 	st, err := Open(":memory:")
 	require.NoError(t, err)

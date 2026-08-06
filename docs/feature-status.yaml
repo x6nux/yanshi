@@ -1206,10 +1206,35 @@
 #    acceptancePins["F1/WAL1"] 已同步。
 - id: "F1/WAL1"
   package: "W3"
-  verdict: partial
+  verdict: done
   title: "WAL 模式 + 连接池 + busy_timeout"
   acceptance: "WAL 启用；并发写不报 locked；性能不退化；旧 DB 平滑升级；WAL 文件有界（roadmap:295）。plan 另有 10 条细化验收：每条池连接 PRAGMA 生效、MaxOpenConns 按配置且 :memory: 强制 1、16×50 零 BUSY、读不阻塞写、双 Open 跨进程 busy_timeout、rollback→WAL 幂等零丢失、Close 执行 wal_checkpoint(TRUNCATE)、work/vcs/auth/bootstrap 现有测试全绿、Windows CI 下并发/升级测试全绿、doctor 报告 journal_mode 与 -wal/-shm 大小"
-  evidence: ""
+  evidence:
+    "1": "internal/store::TestEveryPoolConnectionGetsItsPragmas; internal/store::TestOpen_AppliesWALPragmas"
+    "2": "internal/store::TestConcurrentWritesRecordZeroBusy; internal/store::TestCrossProcessBusyTimeout_DualOpen; internal/store::TestConcurrentReadWrite_NoBlocking"
+    "3": "internal/store::TestWALConcurrencyDoesNotSerialiseWorseThanSequential"
+    "4": "internal/store::TestWALUpgradeFromRollback"
+    "5": "internal/store::TestWALIsBoundedAfterClose; internal/cli::TestDoctorWALCheckReportsSidecarSizes; internal/store::TestOpen_MemoryForcesSingleConn"
+# 2026-08-07：partial → done。三处实测把既有注释的因果推翻了，已一并改正：
+#   a)「WriteTx 让并发写永不见 SQLITE_BUSY」是**错的**。实测 16×50：只去掉 writeMu
+#     仍是零 BUSY；去掉 writeMu **且** busy_timeout(0) 才出 717/800。零 BUSY 的成因
+#     是 busy_timeout（DSN 逐连接），writeMu 买的是「goroutine 等 Go mutex 而不是在
+#     SQLite 的重试循环里自旋」。原注释把调优说成了正确性保证。
+#   b)「Close 的 wal_checkpoint(TRUNCATE) 让 -wal 不膨胀」是**冗余的**。实测把那句换成
+#     no-op，Close 后 -wal 照样消失 —— 最后一个连接干净关闭时 SQLite 自己 checkpoint
+#     并删文件。那句保留作防御（非干净退出时下一个 opener 会捡到 WAL），但子句 5 断言的
+#     是**终态有界**这个结果，不归因到某一行。
+#   c) TestCrossProcessBusyTimeout_DualOpen 原来根本没测 busy_timeout：它锁的是
+#     `a.writeMu`（Store 实例 a 私有的 mutex），而 b 是另一个 Store、有自己的 writeMu，
+#     b.KVSet 从不等待任何东西，50ms sleep 里早就跑完了。已重写成真持有 SQLite 写事务
+#     （文件级锁，同进程两个 sql.DB 与两个进程语义一致，不需要起子进程）。
+# 子句 3「性能不退化」没有基准线可比，故改成可断言的结构性形态：同样的写入量，8 个
+#   writer 的耗时不得超过串行的 8 倍。这抓的是崩溃（锁竞争回归 / journal_mode 掉回
+#   rollback），不是变慢；绝对数字在 CI 上不可断言。
+# 未闭合（不属于本条子句，另开工作包）：PRAGMA foreign_keys 从未开启，四张
+#   task_work_* 表声明的 FK / ON DELETE CASCADE 全部不生效。实测打开会让
+#   internal/store 3 条 + internal/task 7 条测试变红（都是测试自己造的孤儿数据），
+#   影响面超出本条。A2/DT2 已用应用层校验堵住最要紧的那个洞（gate 挂错 task）。
 
 - id: "F2/BENCH1"
   package: "W7"

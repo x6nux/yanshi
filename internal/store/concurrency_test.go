@@ -62,6 +62,8 @@ func TestConcurrentMixedWrite_NoBusy(t *testing.T) {
 }
 
 // TestConcurrentReadWrite_NoBlocking: concurrent reads while writes are happening.
+//
+// ledger: F1/WAL1#2 并发写不报 locked
 func TestConcurrentReadWrite_NoBlocking(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "yanshi.db"))
 	require.NoError(t, err)

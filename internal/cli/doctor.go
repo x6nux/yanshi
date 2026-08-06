@@ -272,10 +272,41 @@ func checkWAL(cfg *config.Config, cfgErr error) CheckResult {
 	_ = st.DB.QueryRow("PRAGMA journal_mode").Scan(&mode)
 	_ = st.Close()
 	if mode == "wal" {
-		return CheckResult{Name: "wal", Status: StatusOK, Message: "journal_mode=wal"}
+		return CheckResult{Name: "wal", Status: StatusOK,
+			Message: "journal_mode=wal" + sidecarSizes(path)}
 	}
 	return CheckResult{Name: "wal", Status: StatusWarn,
 		Message: fmt.Sprintf("journal_mode=%q (WAL not active; expected wal on F1 builds)", mode)}
+}
+
+// sidecarSizes reports the size of the -wal and -shm files next to the database,
+// as a suffix for the wal check's message.
+//
+// journal_mode alone answers "is WAL on"; it does not answer "is the WAL under
+// control", which is the failure an operator actually needs to see. A WAL that
+// never checkpoints grows without bound and the database looks healthy by every
+// other measure. Reported after Close, so the numbers reflect the steady state
+// rather than this probe's own transaction.
+//
+// Missing files are normal — SQLite removes both on a clean close — and are
+// reported as absent rather than as an error.
+func sidecarSizes(dbPath string) string {
+	if dbPath == "" {
+		return ""
+	}
+	var parts []string
+	for _, suffix := range []string{"-wal", "-shm"} {
+		fi, err := os.Stat(dbPath + suffix)
+		switch {
+		case err == nil:
+			parts = append(parts, fmt.Sprintf("%s=%dB", suffix, fi.Size()))
+		case os.IsNotExist(err):
+			parts = append(parts, suffix+"=absent")
+		default:
+			parts = append(parts, suffix+"=?")
+		}
+	}
+	return ", " + strings.Join(parts, ", ")
 }
 
 // checkKeyringAvailability probes the OS keyring via Available() (a sentinel

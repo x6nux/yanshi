@@ -12,6 +12,8 @@ import (
 
 // TestWALUpgradeFromRollback verifies that opening a non-WAL database with the
 // new Open/OpenWith upgrades it to WAL mode in place, with zero data loss.
+//
+// ledger: F1/WAL1#4 旧 DB 平滑升级
 func TestWALUpgradeFromRollback(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "upgrade_test.db")
 
