@@ -11,22 +11,29 @@ no golangci-lint config).
 | prefix | meaning | CHANGELOG group |
 |---|---|---|
 | `feat` | new user-facing capability | Features |
-| `feat!` / `fix!` | breaking change (or footer `BREAKING CHANGE:`) | ⚠ Breaking Changes |
+| any type + `!` (`feat!`, `fix(api)!`, …) | breaking change (or footer `BREAKING CHANGE:`) | ⚠ Breaking Changes |
 | `fix` | bug fix | Bug Fixes |
 | `perf` | performance improvement | Performance |
 | `refactor` | code restructure, no behavior change | Refactor |
 | `docs` | documentation only | Documentation |
 | `test` | test-only change | Tests |
-| `chore` / `ci` / `build` | tooling, CI, build | Maintenance |
+| `chore` / `ci` / `build` / `style` | tooling, CI, build, formatting | Maintenance |
 | `revert` | revert a prior commit | Reverted |
 
 `chore(release): ...` is skipped by git-cliff (release commits don't clutter the log).
+
+This table is the contract `cliff.toml` implements; when they disagree, the
+config has been the one that drifted. Two examples, both found in W10: the
+breaking-change rule was `^feat!`, so `fix(api)!: drop ThreadSnapshot.Items`
+shipped as an ordinary bug fix; and `style` had no rule at all, so
+`style: gofmt the whole tree` landed in a free-floating section outside the
+ordering every other group declares.
 
 ## Scope
 
 Use a domain code matching the area of the codebase, consistent with existing
 history: `doctor`, `config`, `auth`, `secrets`, `orchestrator`, `vcs`, `version`,
-`bootstrap`, `ide-vscode`, `tui`, `guard`, etc.
+`bootstrap`, `tui`, `guard`, `api`, `appserver`, `cli`, etc.
 
 ## Examples
 

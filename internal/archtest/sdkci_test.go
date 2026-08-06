@@ -287,3 +287,124 @@ func TestReleaseSnapshotIsVerifiedNightly(t *testing.T) {
 			"would report green until the day someone pushes a tag")
 	}
 }
+
+// TestChangelogGenerationKeepsHistory pins the two release.yml defects that
+// had never fired, because this repository has no tags and release.yml has
+// never run.
+//
+//  1. CHANGELOG.md was generated with --latest, which emits only the newest
+//     tag's section, while --output OVERWRITES. The first release would have
+//     looked fine — no previous tag means the range is all of history — and the
+//     SECOND would have replaced the file with just v2's section, dropping v1.
+//     RELEASE_NOTES.md keeps --latest on purpose: those notes describe exactly
+//     one release.
+//
+//  2. The write-back ran BEFORE goreleaser and pushed to main. A tag build
+//     checks out a detached HEAD, so the push is a non-fast-forward the moment
+//     main has moved on — the step fails and the entire Release never goes out.
+func TestChangelogGenerationKeepsHistory(t *testing.T) {
+	body, ok := workflowJobBody(readWorkflow(t, "release.yml"), "release")
+	if !ok {
+		t.Fatal("release.yml has no release job")
+	}
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, "CHANGELOG.md") && strings.Contains(line, "git-cliff") {
+			if strings.Contains(line, "--latest") {
+				t.Errorf("CHANGELOG.md is generated with --latest and --output overwrites: "+
+					"the second release drops every earlier version from the file.\n  %s",
+					strings.TrimSpace(line))
+			}
+		}
+		if strings.Contains(line, "RELEASE_NOTES.md") && strings.Contains(line, "git-cliff") {
+			if !strings.Contains(line, "--latest") {
+				t.Errorf("RELEASE_NOTES.md lost --latest; the notes for one release would "+
+					"become the whole history.\n  %s", strings.TrimSpace(line))
+			}
+		}
+	}
+
+	// Ordering: the changelog write-back must come after goreleaser, or a
+	// failed push takes the release with it.
+	gorel := strings.Index(body, "goreleaser-action")
+	changelog := strings.Index(body, "update CHANGELOG.md")
+	if gorel < 0 || changelog < 0 {
+		t.Fatalf("release.yml lost a step (goreleaser=%d changelog=%d)", gorel, changelog)
+	}
+	if changelog < gorel {
+		t.Error("the changelog write-back runs before goreleaser: a non-fast-forward " +
+			"push on a detached HEAD would block artifact publication")
+	}
+}
+
+// withoutComments drops whole-line comments so an assertion cannot match the
+// prose that explains the state it guards against.
+//
+// This is the third time in this repo that a gate read its own explanation as
+// configuration: W7's bench hard-gate check found "continue-on-error" in a
+// comment above the job, and the first version of
+// TestCliffParsersCoverTheDocumentedPrefixes flagged `"^feat!"` because the
+// comment right below the fixed rule quotes the broken one.
+func withoutComments(src, marker string) string {
+	var out []string
+	for line := range strings.SplitSeq(src, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), marker) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
+// TestCliffParsersCoverTheDocumentedPrefixes reconciles cliff.toml with
+// docs/commit-convention.md.
+//
+// The doc has always been the contract; the config is the side that drifted,
+// twice, both found in W10. The breaking-change rule was "^feat!", so
+// `fix(api)!: drop ThreadSnapshot.Items` — a removal from the wire contract —
+// shipped as an ordinary bug fix, while the doc already said any type plus "!"
+// is breaking. And `style` had no rule at all, so `style: gofmt the whole
+// tree` landed in a section git-cliff derived on its own, outside the ordering
+// every other group declares.
+//
+// Only the parser SIDE is checked. Asserting the rendered group names would
+// mean re-deriving git-cliff's template behaviour in Go, and the probe that
+// found the style defect showed how easily an assumption about that goes
+// wrong: the plan predicted the commit would vanish silently; it did not.
+func TestCliffParsersCoverTheDocumentedPrefixes(t *testing.T) {
+	cliff, err := os.ReadFile(abs("cliff.toml"))
+	if err != nil {
+		t.Fatalf("read cliff.toml: %v", err)
+	}
+	src := withoutComments(string(cliff), "#")
+
+	// Every type the convention doc lists must have a parser.
+	for _, prefix := range []string{
+		"feat", "fix", "perf", "refactor", "docs", "test", "chore", "ci", "build",
+		"style", "revert",
+	} {
+		if !strings.Contains(src, "^"+prefix) {
+			t.Errorf("cliff.toml has no parser for %q; an unmatched type lands in a "+
+				"section git-cliff names itself, outside this file's ordering", prefix)
+		}
+	}
+
+	// The breaking rule must not be tied to one type.
+	if strings.Contains(src, `"^feat!"`) {
+		t.Error(`cliff.toml's breaking rule is "^feat!": a breaking fix, refactor or ` +
+			`perf commit is reported as an ordinary change of its own type`)
+	}
+	if !strings.Contains(src, `!:`) {
+		t.Error("cliff.toml has no rule matching the Conventional Commits `!` marker " +
+			"on an arbitrary type")
+	}
+
+	// And the doc must not go back to naming only two types.
+	doc, err := os.ReadFile(abs(filepath.Join("docs", "commit-convention.md")))
+	if err != nil {
+		t.Fatalf("read commit-convention.md: %v", err)
+	}
+	if strings.Contains(string(doc), "| `feat!` / `fix!` |") {
+		t.Error("commit-convention.md lists only feat!/fix! as breaking; the rule " +
+			"applies to any type")
+	}
+}

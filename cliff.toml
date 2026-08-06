@@ -36,7 +36,11 @@ filter_commits = false
 tag_pattern = "v[0-9]*"
 commit_preprocessors = []
 commit_parsers = [
-    { message = "^feat!", group = "⚠ Breaking Changes" },
+    # Any type may be breaking, not just feat. The rule used to be "^feat!",
+    # so `fix(api)!: drop ThreadSnapshot.Items` — a removal from the wire
+    # contract — fell through to ^fix and shipped as an ordinary bug fix.
+    # Conventional Commits puts the ! on the type/scope of ANY type.
+    { message = "^[a-z]+(\\(.+\\))?!:", group = "⚠ Breaking Changes" },
     { body = ".*BREAKING CHANGE.*", group = "⚠ Breaking Changes" },
     { message = "^feat", group = "Features" },
     { message = "^fix", group = "Bug Fixes" },
@@ -44,6 +48,18 @@ commit_parsers = [
     { message = "^refactor", group = "Refactor" },
     { message = "^docs", group = "Documentation" },
     { message = "^test", group = "Tests" },
+    # style is a standard Conventional Commits type and the history already has
+    # one (`style: gofmt the whole tree`).
+    #
+    # Measured with git-cliff 2.6.1 rather than assumed: without this rule the
+    # commit does NOT vanish — cliff derives a group name from the type and
+    # emits a free-floating "### Style" section. The plan for this task
+    # predicted silent disappearance; a probe (drop the rule, regenerate, diff)
+    # showed otherwise. The real defect is milder and still worth fixing: that
+    # section escapes the ordering and naming every other group here declares,
+    # so where it lands is whatever cliff decides. Grouped with chore/ci/build,
+    # which is what a tree-wide gofmt is.
+    { message = "^style", group = "Maintenance" },
     { message = "^chore\\(release\\)", skip = true },
     { message = "^chore|^ci|^build", group = "Maintenance" },
     { message = "^revert", group = "Reverted" },
