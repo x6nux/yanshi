@@ -24,6 +24,7 @@ import (
 	"github.com/x6nux/yanshi/internal/ctxcompact"
 	"github.com/x6nux/yanshi/internal/features"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
+	otelinstr "github.com/x6nux/yanshi/internal/observe/otel"
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/store"
 )
@@ -86,12 +87,22 @@ func usageForPricing(u orchestrator.TurnUsage) einollm.Usage {
 // plan): every provider usage is billed exactly once; the streaming-chunk
 // running total is only ever read once (here, from onUsage) so we never double
 // count the "API reports cumulative" totals.
-func (cs *connSession) addProviderUsage(_ context.Context, s *Server, u orchestrator.TurnUsage) {
+func (cs *connSession) addProviderUsage(ctx context.Context, s *Server, u orchestrator.TurnUsage) {
 	priced := usageForPricing(u)
 	if priced.Prompt <= 0 && priced.Cached <= 0 && priced.Completion <= 0 {
 		return
 	}
 	cs.billing.Add(priced)
+	// The ctx parameter existed and was discarded (`_ context.Context`), which
+	// is why otel.RecordUsage had zero production callers and the
+	// yanshi.llm.tokens counter never emitted: "tokens are observable" was
+	// true of the instrument and false of the system.
+	//
+	// Here specifically, because this is the one place with the
+	// exactly-once guarantee. Recording at the streaming callback instead
+	// would double-count providers that report cumulative totals per chunk --
+	// the same constraint this function's doc already states for billing.
+	usageRecorder(ctx, cs.displayModel(), priced.Prompt, priced.Cached, priced.Completion, u.ReasoningTokens)
 	cost, known := einollm.CostOK(s.priceTab, cs.displayModel(), priced)
 	if !cs.hasBilledUsage {
 		// Seed the known state from the first usage (don't AND-fold against
@@ -444,4 +455,21 @@ func keepRecentOrDefault(k int) int {
 		return 4
 	}
 	return k
+}
+
+// usageRecorder is the seam the OTel counter is emitted through.
+//
+// A package-level var rather than a direct call because the gap this closed
+// was a WIRING gap: otel.RecordUsage worked fine and had no callers, so a
+// test that called it directly would have passed throughout. The only useful
+// assertion is that addProviderUsage reaches it, and that needs an
+// observation point.
+var usageRecorder = otelinstr.RecordUsage
+
+// swapUsageRecorder replaces the recorder for a test and returns a restore
+// func.
+func swapUsageRecorder(f func(ctx context.Context, model string, prompt, cached, completion, reasoning int)) func() {
+	prev := usageRecorder
+	usageRecorder = f
+	return func() { usageRecorder = prev }
 }
