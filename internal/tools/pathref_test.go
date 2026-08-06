@@ -41,6 +41,10 @@ func pathrefCtx(root string) context.Context {
 // Assertion 1: an @path pointing at an image inside the work root becomes a
 // real image attachment (bytes carried, format detected), and the "@" token is
 // expanded out of the text.
+//
+// ledger: G/VISION-TOOL#1 五入口各自可产生图像附件
+//
+// ledger: G/VISION-TOOL#2 image_describe/id-ref+path-ref 走通
 func TestResolveImagePathRefs_AttachesImageInsideRoot(t *testing.T) {
 	root := t.TempDir()
 	want := writePNG(t, filepath.Join(root, "screenshots", "a.png"))
@@ -61,6 +65,8 @@ func TestResolveImagePathRefs_AttachesImageInsideRoot(t *testing.T) {
 // Assertion 2: model-influenced text must not turn into an arbitrary file read.
 // Every @path goes through the SAME door as the vision tool: the pathjail
 // root-jail (withinRootAbs) and the FS guard.
+//
+// ledger: G/VISION-TOOL#3 超限/越权被拒
 func TestResolveImagePathRefs_RejectsEscapingRef(t *testing.T) {
 	parent := t.TempDir()
 	root := filepath.Join(parent, "work")

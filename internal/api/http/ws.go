@@ -16,6 +16,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/x6nux/yanshi/internal/agent/orchestrator"
+	agentregistry "github.com/x6nux/yanshi/internal/agent/registry"
 	"github.com/x6nux/yanshi/internal/approval"
 	"github.com/x6nux/yanshi/internal/guard"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
@@ -726,18 +727,26 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 			// needs it to decide between a native image part and a stored
 			// placeholder. Both fields are read here, once per turn, for the same
 			// reason PlanMode is: TurnOpts is the single entry point.
+			// Auxiliary model spend for this turn, filled by the usage sink
+			// the orchestrator binds from opts.AuxUsage.
+			var auxUsage agentregistry.Usage
+
 			opts := orchestrator.TurnOpts{
 				// Correlation IDs. Empty here means WithThreadLink binds two
 				// empty strings, and every log line and tool audit record for
 				// the turn loses its way back to the conversation.
 				// TurnID stays empty on purpose: ensureTurnIDs mints one, and
 				// this path has no id of its own that outlives a single turn.
-				ThreadID:            cs.sessionID,
-				Model:               cs.selectModel(models),
-				ModelID:             cs.displayModel(),
-				ThinkingEffort:      cs.thinking,
-				OutputSchema:        cf.OutputSchema,
-				Images:              cf.Images,
+				ThreadID:       cs.sessionID,
+				Model:          cs.selectModel(models),
+				ModelID:        cs.displayModel(),
+				ThinkingEffort: cs.thinking,
+				OutputSchema:   cf.OutputSchema,
+				Images:         cf.Images,
+				// Auxiliary model spend (image_describe's vision model) does
+				// not pass through the turn's event stream, so it needs a
+				// place to land. Billed once after the turn, below.
+				AuxUsage:            &auxUsage,
 				PlanMode:            turnMode == guard.ModePlan,
 				ConnectionSessionID: connectionSessionID,
 			}
@@ -1005,6 +1014,18 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 				cs.tokensIn = judgeUsage.PromptTokens
 				cs.cachedTokens = judgeUsage.CachedTokens
 				cs.reasoningTokens = judgeUsage.ReasoningTokens
+			}
+			// Auxiliary model spend is billed once, after the turn, rather
+			// than through onUsage: onUsage overwrites the context-size fields
+			// from each call's cumulative report, and an auxiliary call's
+			// prompt size is not this turn's context. Billing is additive, so
+			// routing it through addProviderUsage alone keeps the cost right
+			// without disturbing the context bar.
+			if auxUsage.TotalTokens > 0 || auxUsage.PromptTokens > 0 || auxUsage.CompletionTokens > 0 {
+				cs.addProviderUsage(turnCtx, s, orchestrator.TurnUsage{
+					PromptTokens:     int(auxUsage.PromptTokens),
+					CompletionTokens: int(auxUsage.CompletionTokens),
+				})
 			}
 			cs.turns++
 

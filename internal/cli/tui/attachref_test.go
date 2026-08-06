@@ -14,6 +14,8 @@ import (
 // caller and the feature exists only in tests.
 //
 // ledger: C2/UX3#1 `@` 触发补全
+//
+// ledger: G/VISION-TOOL#1 五入口各自可产生图像附件
 func TestAtPathBecomesAnAttachmentOnTheWire(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "notes.md"), []byte("x"), 0o644); err != nil {

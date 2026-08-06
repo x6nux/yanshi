@@ -96,6 +96,8 @@ func TestNoVisionPathIsAnErrorNotAPlaceholder(t *testing.T) {
 // neither of them notices.
 //
 // ledger: G/VISION#2 主非多模态+有辅助：占位+image_describe 走通
+//
+// ledger: G/VISION-TOOL#2 image_describe/id-ref+path-ref 走通
 func TestPlaceholderResolvesThroughImageDescribe(t *testing.T) {
 	store := imagestore.New(imagestore.Config{MaxItems: 20, MaxBytes: 100 << 20})
 

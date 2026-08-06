@@ -599,11 +599,36 @@ type TurnOpts struct {
 	// an in-place fan-out would append another copy of every image to the
 	// persistent session history on each retry.
 	Images []proto.ImageAttach
+
+	// AuxUsage, when non-nil, accumulates token usage from AUXILIARY model
+	// calls made during this turn — currently image_describe's vision model.
+	//
+	// Those tokens are spent on the caller's behalf and cost money, but they
+	// never pass through the turn's own event stream, so the transport cannot
+	// see them without being handed a place to collect them. Same shape as
+	// Images: a per-turn field the transport owns, rather than a process-wide
+	// counter (which is what the previous sink was, and why it could never
+	// reach a per-session cost).
+	AuxUsage *registry.Usage
 }
 
 // EventsWithHistoryOpts runs one turn with full history and per-turn opts.
 func (o *Orchestrator) EventsWithHistoryOpts(ctx context.Context, messages []*schema.Message, opts TurnOpts) *adk.AsyncIterator[*adk.AgentEvent] {
 	ctx = o.withTurnContext(ctx, opts)
+
+	// Auxiliary model spend (image_describe) reports through the usage sink,
+	// the same channel sub-agent spend uses. Bound here so a tool called on
+	// the MAIN turn has somewhere to report; managedTurnRunner binds its own
+	// for nested turns, and the inner binding wins there.
+	if opts.AuxUsage != nil {
+		var mu sync.Mutex
+		acc := opts.AuxUsage
+		ctx = tools.WithUsageSink(ctx, tools.UsageSink(func(u registry.Usage) {
+			mu.Lock()
+			defer mu.Unlock()
+			*acc = acc.Add(u)
+		}))
+	}
 
 	// Tier G entry B: "@path" references in the trailing user message become
 	// attachments and join TurnOpts.Images before the fan-out below.

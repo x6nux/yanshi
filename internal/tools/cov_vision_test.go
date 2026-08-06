@@ -38,7 +38,7 @@ func TestRecordUsage_WithUsage(t *testing.T) {
 			},
 		},
 	}
-	s.recordUsage(msg)
+	s.recordUsage(context.Background(), msg)
 	assert.Equal(t, 100, pi)
 	assert.Equal(t, 200, ci)
 	assert.Equal(t, 300, ti)
@@ -52,7 +52,7 @@ func TestRecordUsage_NilUsage(t *testing.T) {
 	msg := &schema.Message{
 		ResponseMeta: &schema.ResponseMeta{},
 	}
-	s.recordUsage(msg)
+	s.recordUsage(context.Background(), msg)
 	assert.False(t, called)
 }
 
@@ -62,7 +62,7 @@ func TestRecordUsage_NilResponseMeta(t *testing.T) {
 		usage: func(_, _, _ int) { called = true },
 	}
 	msg := &schema.Message{}
-	s.recordUsage(msg)
+	s.recordUsage(context.Background(), msg)
 	assert.False(t, called)
 }
 

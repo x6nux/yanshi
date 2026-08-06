@@ -52,6 +52,7 @@ func TestPutRejectsUnsupportedFormat(t *testing.T) {
 	}
 }
 
+// ledger: G/VISION-TOOL#3 超限/越权被拒
 func TestPutRejectsOversized(t *testing.T) {
 	s := New(Config{MaxItems: 20, MaxBytes: 100 << 20, MaxImageBytes: 100})
 	if _, err := s.Put(make([]byte, 101), "paste", "png"); err == nil {

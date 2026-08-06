@@ -1256,13 +1256,37 @@
     "1": "internal/agent/orchestrator::TestE2E_MultimodalMainDirectlyUnderstandsImage"
     "2": "internal/agent/orchestrator::TestPlaceholderResolvesThroughImageDescribe; internal/agent/orchestrator::TestE2E_NonMultimodalMainUsesPlaceholderAndStore"
     "3": "internal/agent/orchestrator::TestNoVisionPathIsAnErrorNotAPlaceholder"
+  # 2026-08-07：partial → done。
+  #   1 五入口：WS / SSE / v1 三条传输 + path-ref 展开 + TUI 的 @path 触发面
+  #     （W8 落地）各有端到端断言。
+  #   3 两半都有实现与测试：超限走 imagestore 的 MaxImageBytes（明确 error 而不是
+  #     截断或静默跳过），越权走 pathRefGuardTool = "fs_read" 的鉴权。
+  #   4 【实现缺口，两半都缺】
+  #     · 主模型那半：图像 token 被 provider 折进 PromptTokens，与主账同源 ——
+  #       台账当初记的「构造上成立」是对的，而这恰恰是台账要拒绝的那类论断：
+  #       「按理应该成立」不是证据，任何会打断它的回归（图像路径丢 ResponseMeta、
+  #       每 turn 重置计费、status 帧读别的字段）都能让推理照旧成立而数字归零。
+  #       断言写成**等于期望值**而不是「> 0」——价格表没配时也是 0。
+  #     · 辅助模型那半是真缺口：VisionUsageFunc 一直在收集，而
+  #       visionUsageAccumulator **零读取方**（全仓只有类型、App 字段、装配点，
+  #       外加两个「累加器自证」的测试）。它还是**进程级**的，而成本是**按会话**
+  #       记的 —— 就算补一个读取方也到不了 /cost。改走子代理花费走的同一条路：
+  #       turn 的 usage sink（TurnOpts.AuxUsage，形状与 TurnOpts.Images 一致）。
+  #       在 turn 结束后一次性入账而不是走 onUsage —— onUsage 会用每次调用的
+  #       累计报告覆盖上下文尺寸字段，而辅助调用的 prompt 不是本轮的上下文。
+  #     ⚠️ 结算目前只接在 WS 上（与 C1/AU1 的 approval 同类）。SSE / v1 的
+  #       辅助模型花费仍不入账 —— 那两条传输本来也没有 per-session 成本台账。
+  # 两条变异都验过：image_describe 不报 sink → 红；WS 不结算 aux → 红。
 - id: "G/VISION-TOOL"
   package: "W1"
-  verdict: partial
+  verdict: done
   title: "image_describe + image store + 五入口"
   acceptance: "五入口各自可产生图像附件；image_describe/id-ref+path-ref 走通；超限/越权被拒；费用纳入 /cost"
-  evidence: ""
-
+  evidence:
+    "1": "internal/api/http::TestChatWS_UserMessageImagesReachTheModel; internal/api/http::TestChat_SSE_ImagesReachTheModel; internal/api/v1::TestServiceTurnCarriesImagesToTheOrchestrator; internal/cli/tui::TestAtPathBecomesAnAttachmentOnTheWire; internal/tools::TestResolveImagePathRefs_AttachesImageInsideRoot"
+    "2": "internal/agent/orchestrator::TestPlaceholderResolvesThroughImageDescribe; internal/tools::TestResolveImagePathRefs_AttachesImageInsideRoot"
+    "3": "internal/imagestore::TestPutRejectsOversized; internal/tools::TestResolveImagePathRefs_RejectsEscapingRef"
+    "4": "internal/api/http::TestVisionTurnCostReachesTheStatusFrame; internal/api/http::TestAuxVisionModelTokensReachTheStatusFrame"
 - id: "H1/PKG1"
   package: "W10"
   verdict: done

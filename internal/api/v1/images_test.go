@@ -42,6 +42,8 @@ func visionPNGB64(t *testing.T) string {
 // leaves Model empty, so a "1 image" reply also proves the ModelID fallback:
 // without a model id the orchestrator would treat the turn as non-multimodal and
 // substitute a text placeholder, yielding zero image parts.
+//
+// ledger: G/VISION-TOOL#1 五入口各自可产生图像附件
 func TestServiceTurnCarriesImagesToTheOrchestrator(t *testing.T) {
 	fm := einollm.NewFakeModel(nil, nil)
 	fm.Vision = true

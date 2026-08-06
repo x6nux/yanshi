@@ -33,14 +33,14 @@ func TestHostOnlyInvalidURL(t *testing.T) {
 func TestRecordUsageNilSafe(t *testing.T) {
 	s := &imageDescribeState{usage: nil}
 	// Should not panic when usage is nil.
-	s.recordUsage(nil)
+	s.recordUsage(context.Background(), nil)
 }
 
 func TestRecordUsageNoMeta(t *testing.T) {
 	var called bool
 	s := &imageDescribeState{usage: func(_, _, _ int) { called = true }}
 	// Passing a message without ResponseMeta should not call usage.
-	s.recordUsage(nil)
+	s.recordUsage(context.Background(), nil)
 	if called {
 		t.Fatal("recordUsage should not call usage when message is nil")
 	}

@@ -61,6 +61,8 @@ func newVisionServer(t *testing.T) (*Server, map[string]model.BaseChatModel, *or
 // user_message frame's attachments to the orchestrator. Before this task the
 // handler read only cf.Text: cf.Images existed on the wire, was decoded, and was
 // then silently dropped, so a pasted screenshot never reached the model at all.
+//
+// ledger: G/VISION-TOOL#1 五入口各自可产生图像附件
 func TestChatWS_UserMessageImagesReachTheModel(t *testing.T) {
 	s, models, o := newVisionServer(t)
 	s.ChatWS(o, models, nil)
@@ -91,6 +93,8 @@ func TestChatWS_UserMessageImagesReachTheModel(t *testing.T) {
 // attachments. SSE was the path both the spec and the audit missed: its request
 // struct had no image field at all, so a POST carrying images was accepted
 // without even a parse error and the attachments vanished.
+//
+// ledger: G/VISION-TOOL#1 五入口各自可产生图像附件
 func TestChat_SSE_ImagesReachTheModel(t *testing.T) {
 	s, models, o := newVisionServer(t)
 	s.Chat(o, models, nil)

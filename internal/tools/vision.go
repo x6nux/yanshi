@@ -12,6 +12,7 @@ import (
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"github.com/x6nux/yanshi/internal/agent/registry"
 	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/imagestore"
 )
@@ -81,7 +82,7 @@ func (t *imageDescribeState) run(ctx context.Context, argsJSON string) (string, 
 	if err != nil {
 		return errorResult("辅助模型调用失败：" + err.Error()), nil
 	}
-	t.recordUsage(resp)
+	t.recordUsage(ctx, resp)
 	if resp == nil || strings.TrimSpace(resp.Content) == "" {
 		return errorResult("辅助模型未返回描述"), nil
 	}
@@ -123,12 +124,30 @@ func (t *imageDescribeState) resolveRef(ctx context.Context, ref, argsJSON strin
 	return data, detectFmt(ref), nil
 }
 
-func (t *imageDescribeState) recordUsage(resp *schema.Message) {
-	if t.usage == nil || resp == nil || resp.ResponseMeta == nil || resp.ResponseMeta.Usage == nil {
+func (t *imageDescribeState) recordUsage(ctx context.Context, resp *schema.Message) {
+	if resp == nil || resp.ResponseMeta == nil || resp.ResponseMeta.Usage == nil {
 		return
 	}
 	u := resp.ResponseMeta.Usage
-	t.usage(int(u.PromptTokens), int(u.CompletionTokens), int(u.TotalTokens))
+	if t.usage != nil {
+		t.usage(int(u.PromptTokens), int(u.CompletionTokens), int(u.TotalTokens))
+	}
+	// The auxiliary model's tokens are spent on the caller's behalf and have to
+	// land in the caller's ledger, which is what the turn's usage sink is.
+	//
+	// VisionUsageFunc above accumulates them too, but that accumulator has no
+	// reader: it is a process-wide counter, while cost is tracked per session,
+	// so it could never have reached /cost. Sub-agent spend already travels
+	// this way (see the sink call in runSubAgentTurn) for the same reason —
+	// work delegated to another model is still the caller's bill.
+	if sink := UsageSinkFrom(ctx); sink != nil {
+		sink(registry.Usage{
+			PromptTokens:     int64(u.PromptTokens),
+			CompletionTokens: int64(u.CompletionTokens),
+			TotalTokens:      int64(u.TotalTokens),
+			ModelCalls:       1,
+		})
+	}
 }
 
 // buildVisionMessage assembles a single user message with [image part + question].

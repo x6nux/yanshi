@@ -72,6 +72,19 @@ type FakeModel struct {
 	RecordImages   bool
 	LastImageCount int
 
+	// Usage, when non-nil, is attached as ResponseMeta.Usage to every response
+	// EXCEPT a judge probe, matching the existing rule that a probe consumes
+	// neither a scripted response nor the usage it carries. A probe that billed
+	// would double every turn's cost in tests that measure it, for a call the
+	// user never made.
+	//
+	// Real providers report token counts and the billing path reads them off
+	// ResponseMeta; without this the fake produced messages with no usage at
+	// all, so any test driving a turn end to end saw a cost of exactly zero and
+	// could not distinguish "billed nothing" from "the billing path is not
+	// wired". Set it to make a turn cost something observable.
+	Usage *schema.TokenUsage
+
 	optsMu sync.Mutex
 }
 
@@ -95,7 +108,30 @@ func NewFakeModelWithMessages(msgs []*schema.Message, err error) *FakeModel {
 // Generate returns the next scripted response (or err, or an empty assistant message).
 // When Echo is set, it instead echoes the concatenation of every input message's content.
 // When Repeat is set, it instead returns responses[0] on every call.
-func (m *FakeModel) Generate(_ context.Context, messages []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+func (m *FakeModel) Generate(ctx context.Context, messages []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+	msg, err := m.generate(ctx, messages, opts...)
+	if isJudgeProbe(messages) {
+		return msg, err // judge probes carry no usage — see Usage's doc
+	}
+	return m.withUsage(msg), err
+}
+
+// withUsage attaches the configured token usage, if any, without disturbing a
+// ResponseMeta a scripted response already carries.
+func (m *FakeModel) withUsage(msg *schema.Message) *schema.Message {
+	if msg == nil || m.Usage == nil {
+		return msg
+	}
+	if msg.ResponseMeta == nil {
+		msg.ResponseMeta = &schema.ResponseMeta{}
+	}
+	if msg.ResponseMeta.Usage == nil {
+		msg.ResponseMeta.Usage = m.Usage
+	}
+	return msg
+}
+
+func (m *FakeModel) generate(_ context.Context, messages []*schema.Message, opts ...model.Option) (*schema.Message, error) {
 	m.optsMu.Lock()
 	m.GenerateCalls++
 	m.optsMu.Unlock()
@@ -158,6 +194,9 @@ func (m *FakeModel) Stream(_ context.Context, messages []*schema.Message, opts .
 		m.calls++
 	} else {
 		msg = schema.AssistantMessage("", nil)
+	}
+	if !isJudgeProbe(messages) {
+		msg = m.withUsage(msg)
 	}
 	return schema.StreamReaderFromArray[*schema.Message]([]*schema.Message{msg}), nil
 }

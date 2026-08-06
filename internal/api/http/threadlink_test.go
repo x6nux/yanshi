@@ -2,6 +2,7 @@ package http
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -22,7 +23,12 @@ func TestWSTurnCarriesThreadID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read ws.go: %v", err)
 	}
-	if !strings.Contains(string(src), "ThreadID:            cs.sessionID,") {
+	// Whitespace-insensitive. The first version matched the field with its
+	// gofmt alignment baked in ("ThreadID:            cs.sessionID,"), so
+	// adding ANY longer field name to the same struct literal re-aligned the
+	// block and broke this gate for a change that did not touch ThreadID at
+	// all. A gate that fails on formatting teaches people to edit the gate.
+	if !regexp.MustCompile(`ThreadID:\s*cs\.sessionID\s*,`).Match(src) {
 		t.Error("the WS turn no longer passes ThreadID: its logs and audit records " +
 			"lose the link to the conversation that produced them")
 	}
