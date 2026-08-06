@@ -264,12 +264,17 @@ func (p *Proxy) serveConnect(w http.ResponseWriter, r *http.Request) {
 	if host == "" {
 		host = r.URL.Hostname()
 	}
-	if d := p.policy.CheckHost(host); !d.Allowed {
-		p.audit("connect", host, d)
+	// Audit the decision the policy actually returned, on BOTH branches. An
+	// allow carries a Reason too (which rule admitted the host), and
+	// fabricating a bare Decision{Allowed: true} here would drop it -- the
+	// same shape of loss as execpolicy's Justification dying at the tool
+	// boundary. "决策入审计" means the decision, not a re-derived verdict.
+	d := p.policy.CheckHost(host)
+	p.audit("connect", host, d)
+	if !d.Allowed {
 		http.Error(w, d.Reason, http.StatusForbidden)
 		return
 	}
-	p.audit("connect", host, Decision{Allowed: true})
 
 	target := r.Host
 	if _, _, err := net.SplitHostPort(target); err != nil {
