@@ -61,8 +61,12 @@ Before cutting a release:
 2. **Tag a semver release.** `git tag v1.0.0 && git push origin HEAD:main --tags`.
    The tag must match `v[0-9]*` (the `v` prefix + digits) so the
    version-injection path (`git describe --match 'v[0-9]*'`) and git-cliff
-   (`tag_pattern = "v[0-9]*"` in `cliff.toml`) pick it up. Milestone tags
-   (`m1`..`m9`) are deliberately skipped.
+   (`tag_pattern = "v[0-9]*"` in `cliff.toml`) pick it up.
+
+   > This paragraph used to add that "milestone tags (`m1`..`m9`) are
+   > deliberately skipped". **那些 tag 不存在** —— 本仓库一个 tag 都没有，
+   > `v1.0.0` 会是第一个。`--match` 仍然是对的（它挡住未来的非 semver tag），
+   > 但它挡的不是任何既有对象。
 
 3. **The `release.yml` workflow fires on the tag push.** It:
    - runs git-cliff to generate release notes from Conventional Commits,

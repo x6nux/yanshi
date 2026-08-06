@@ -37,6 +37,14 @@ import (
 // Raise a number when coverage rises durably; lowering one is a decision that
 // belongs in review, not in a red-build fix. The spec floors these sit above
 // are proto 80 / store 75 / bootstrap 50.
+//
+// ⚠️ Measured on darwin/arm64 (proto 97.8, store 95.5, bootstrap 94.2). The CI
+// job runs ubuntu, and internal/bootstrap has platform-conditional branches —
+// the sandbox degradation path is Seatbelt-specific — so its 3.2pp of headroom
+// is the one number here that has NOT been checked on the platform that will
+// enforce it. If the first CI run goes red on bootstrap, lower THAT floor to
+// the measured Linux value minus 3pp and say so in the commit message. Do not
+// delete the job: a gate that has never run is what this replaced.
 var thresholds = map[string]float64{
 	"github.com/x6nux/yanshi/internal/proto":     94.0,
 	"github.com/x6nux/yanshi/internal/store":     92.0,

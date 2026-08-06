@@ -150,10 +150,14 @@ func TestLicenseShipsWithTheBinary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read .goreleaser.yaml: %v", err)
 	}
-	files, _, found := strings.Cut(string(data), "checksum:")
+	files, _, found := strings.Cut(withoutComments(string(data), "#"), "checksum:")
 	if !found {
 		t.Fatal(".goreleaser.yaml has no checksum block; the file shape changed")
 	}
+	// Comments stripped first. The row is accompanied by a comment saying why
+	// LICENSE ships, and the first version of this check matched THAT — delete
+	// the actual entry and it stayed green. Same shape as W7's bench gate and
+	// W10's cliff parser check: a gate reading its own explanation as config.
 	if !strings.Contains(files, "LICENSE") {
 		t.Error("archives.files does not include LICENSE: downloaded copies would " +
 			"ship without the notice")

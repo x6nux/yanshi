@@ -15,7 +15,13 @@ ldflags="-X github.com/x6nux/yanshi/internal/version.BuildStamp=${stamp}"
 out=yanshi.exe
 
 if [[ "${1:-}" == "release" || "${RELEASE:-}" == "1" ]]; then
-  # --match 'v[0-9]*' skips the m1..m9 milestone tag namespace.
+  # --match 'v[0-9]*' restricts version injection to semver tags.
+  #
+  # It used to say this "skips the m1..m9 milestone tag namespace" — those tags
+  # do not exist. This repository has NO tags at all (`git tag | wc -l` = 0),
+  # so the fallback branch below is the only path this script has ever taken.
+  # The match pattern is still right: it is what keeps a future non-semver tag
+  # out of the version string, and it mirrors cliff.toml's tag_pattern.
   if ver=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null); then
     ver=${ver#v}
     ldflags="${ldflags} -X github.com/x6nux/yanshi/internal/version.Version=${ver}"

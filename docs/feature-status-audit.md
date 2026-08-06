@@ -226,7 +226,7 @@ WS 的 `runUserTurn`（`ws.go:461`）与 v1 的 `runTurn`（`api/v1/service.go:2
 
 **后果**：`release.yml` 一旦被 `v*` tag 触发，goreleaser 步骤直接解析失败，四个平台的 archive 与 `checksums.txt` 一个都发不出来。
 
-**为什么至今没暴露**：仓库当前**没有任何 `v*` semver tag**（只有 m1..m9 里程碑 tag），`release.yml` 从未被触发过；CI 里也没有任何 `goreleaser check` 步骤。
+**为什么至今没暴露**：仓库当前**一个 tag 都没有**（`git tag | wc -l` = 0 —— 本文原写「只有 m1..m9 里程碑 tag」，那批 tag 从不存在，W10 复核时改正），`release.yml` 从未被触发过；CI 里也没有任何 `goreleaser check` 步骤。
 
 **修法**：删掉整个 `changelog:` 段。（不要简单改成 `disable: true`——`release.yml:55` 靠 `--release-notes RELEASE_NOTES.md` 喂 git-cliff 产物，而 goreleaser 的 changelog pipe 本就会在 `ReleaseNotesFile` 非空时提前 return，不会重复。）建议同时在 `ci.yml` 加一个 `goreleaser check` job 把这类配置错误左移。
 
@@ -791,7 +791,7 @@ t.chatModelOptions = opts   // 第二次调用覆盖第一次
 
 - **优先级** P1 ｜ **路线图原状态** 缺失 ｜ **接进运行时** 是 ｜ **有针对性测试** 是
 - **验收标准**：版本号来自 git tag；CHANGELOG 可生成；发布流程文档化
-- **实测缺口**：无差异。const→var 的硬内部依赖（plan 文档 :30 标注的 VER1→PKG1 前置）已落实并实测生效。唯一的现实状态说明：仓库当前无任何 `v*` semver tag（`git tag -l 'v[0-9]*'` 为空，只有 m1..m9 里程碑 tag），所以“版本号来自 git tag”这条目前只在机制层面成立，尚未有真实 tag 触发过一次；build.sh 的无 tag 回落分支正是为此设计。git-cliff 是 CI-only 外部二进制（本地 `which git-cliff` 未安装），符合设计而非缺陷。
+- **实测缺口**：无差异。const→var 的硬内部依赖（plan 文档 :30 标注的 VER1→PKG1 前置）已落实并实测生效。唯一的现实状态说明：仓库当前一个 tag 都没有（`git tag | wc -l` = 0 —— 本文原写「只有 m1..m9 里程碑 tag」，那批 tag 从不存在），所以“版本号来自 git tag”这条目前只在机制层面成立，尚未有真实 tag 触发过一次；build.sh 的无 tag 回落分支正是为此设计。git-cliff 是 CI-only 外部二进制（本地 `which git-cliff` 未安装），符合设计而非缺陷。
 - **二审改判理由**：核心机制真实非占位，但一审漏掉三处实质缺陷，且证据本身有事实错误，故降级为"部分实现"。 【确认为真的部分】internal/version/version.go:21 `var Version = "0.4.0"` 确为 var；Parse(:83)/parseNum(:127)/String(:147) 是真实实现（拆 build → prerelease → major.minor.patch，拒前导零）。我实测 `go build -ldflags "-X github.com/x6nux/yanshi/internal/version.Version=9.9.9" ./cmd/yanshi` → `--version` 输出 `yanshi 9.9.9`，注入闭环成立。docs/upgrade-guide.md:47-92「Release runbook」四步（doctor --release / git tag v1.0.0 / release.yml / 校验产物）内容详实，`yanshi doctor --release` 也真实存在（cmd/yanshi/main.go:978 `fs.Bool("release", ...)`，internal/cli/doctor.go:453 实现，doctor_release_test.go 通过）。故验收标准第 3 条「发布流程文档化」满足。 【缺陷一：ver…
 - **证据**：/Users/ll/code/yanshi/internal/version/version.go:21 — `var Version = "0.4.0"`（已从 const 改为 var，注释明确说明 -X 只能 patch string var） ； /Users/ll/code/yanshi/internal/version/version.go:83 — `func Parse(v string) (Semver, error)`，真实实现：拆 build metadata(+) → prerelease(-) → major.minor.patch，含 parseNum 拒绝前导零/…
 
