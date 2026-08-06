@@ -33,16 +33,29 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		case tea.KeyEscape:
 			m.helpVisible = false
 			m.helpQuery = ""
+			m.helpCursor = 0
 			m.helpRendered = ""
+			m.reflow()
+			return m, nil, true
+		case tea.KeyDown, tea.KeyUp, tea.KeyPgDown, tea.KeyPgUp:
+			// Scrolling. The panel is modal and absorbs everything, so without
+			// these four the window computed in renderHelp could never move
+			// and clipping alone would just lose the tail instead of the head.
+			m.helpCursor = moveHelpCursor(m.helpCursor, len(m.rankedHelpEntries()), msg.Type)
+			m.helpRendered = m.helpPopup()
 			m.reflow()
 			return m, nil, true
 		case tea.KeyRunes:
 			m.helpQuery += string(msg.Runes)
+			// A new query produces a different list; an old cursor pointing
+			// past its end would render an empty window.
+			m.helpCursor = 0
 			m.helpRendered = m.helpPopup()
 			m.reflow()
 			return m, nil, true
 		case tea.KeyBackspace:
 			m.helpQuery = dropLastRune(m.helpQuery)
+			m.helpCursor = 0
 			m.helpRendered = m.helpPopup()
 			m.reflow()
 			return m, nil, true

@@ -43,11 +43,20 @@ func TestCov_HelpModal(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, "ab", mm.helpQuery)
 
-	// A non-Esc/Runes/Backspace key while help is visible hits the default
-	// branch and falls through (KeyUp with no other modal → not handled).
+	// Up/Down/PgUp/PgDn now SCROLL the panel (W8: it clips to the terminal, so
+	// without them the window could never move). This case previously used
+	// KeyUp to exercise the fall-through branch, which amounted to pinning
+	// "the help panel ignores arrow keys" as intended behaviour.
 	m = newModel(&fakeSession{}, "/proj")
 	m.helpVisible = true
-	_, ok = handleKey(m, tea.KeyMsg{Type: tea.KeyUp})
+	mm, ok = handleKey(m, tea.KeyMsg{Type: tea.KeyDown})
+	assert.True(t, ok, "Down must scroll the help panel")
+	_ = mm
+
+	// A key none of the branches claim still falls through.
+	m = newModel(&fakeSession{}, "/proj")
+	m.helpVisible = true
+	_, ok = handleKey(m, tea.KeyMsg{Type: tea.KeyLeft})
 	assert.False(t, ok, "default help key falls through")
 }
 

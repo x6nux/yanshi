@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"fmt"
 	"sort"
 	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/x6nux/yanshi/internal/guard"
 )
@@ -81,22 +84,104 @@ func (m model) rankedHelpEntries() []helpItem {
 	return out
 }
 
-// renderHelp 渲染帮助面板的全部条目(按 source 分组)。
+// helpChromeLines is what the panel costs before a single entry: the border's
+// two rows and the title. Subtracted from the terminal height so the window
+// below is the number of ENTRY rows that actually fit.
+const helpChromeLines = 3
+
+// helpMinRows keeps the panel usable on an absurdly short terminal. Showing
+// one entry is worse than showing a few and letting the border overflow by a
+// row, which the renderer trims from a place the user can scroll back to.
+const helpMinRows = 5
+
+// helpStart is the single place the visible window is anchored on the cursor.
+//
+// It lives alone because the first draft computed it twice — once when sizing
+// the window and again inside the shrink loop — and the duplication made the
+// scroll behaviour untestable: deleting either copy left the other one
+// covering for it, so a mutation probe that removed the anchoring came back
+// green.
+func helpStart(cursor, rows, total int) int {
+	if rows >= total {
+		return 0
+	}
+	start := 0
+	if cursor >= rows {
+		start = cursor - rows + 1
+	}
+	if start+rows > total {
+		start = total - rows
+	}
+	if start < 0 {
+		start = 0
+	}
+	return start
+}
+
+// renderHelp 渲染帮助面板中当前窗口内的条目(按 source 分组)。
+//
+// helpPopup used to render every entry — 60-odd lines across four sections.
+// view.go accounts for the block's height but does not clip it, so the trim
+// happened in bubbletea's renderer, which keeps the LAST height lines: the
+// title, the "Commands:" header and the first ~35 commands were off the top of
+// the screen with no way to reach them, since the panel absorbs every key
+// except printable search characters.
+//
+// The row count is found by rendering and measuring rather than estimated,
+// because section headers and the blank line between sections consume screen
+// rows too, and how many of those a window contains depends on which entries
+// the current query matched.
 func (m model) renderHelp() string {
 	entries := m.rankedHelpEntries()
+	budget := m.height - helpChromeLines
+	if budget < helpMinRows {
+		budget = helpMinRows
+	}
+	for rows := len(entries); rows > 0; rows-- {
+		start := helpStart(m.helpCursor, rows, len(entries))
+		out, height := renderHelpSlice(entries, start, rows, m.helpCursor)
+		if height <= budget || rows == 1 {
+			return out
+		}
+	}
+	return ""
+}
+
+// renderHelpSlice renders entries[start:start+rows] and reports the number of
+// screen lines it occupies. The cursor row is marked so a user scrolling with
+// the arrow keys can see where they are.
+func renderHelpSlice(entries []helpItem, start, rows, cursor int) (string, int) {
+	end := start + rows
+	if end > len(entries) {
+		end = len(entries)
+	}
 	var b strings.Builder
+	lines := 0
 	currentSrc := ""
-	for _, e := range entries {
+	for i := start; i < end; i++ {
+		e := entries[i]
 		if e.Source != currentSrc {
 			if currentSrc != "" {
 				b.WriteString("\n")
+				lines++
 			}
 			currentSrc = e.Source
 			b.WriteString(sectionHeader(e.Source) + "\n")
+			lines++
 		}
-		b.WriteString("  " + e.Label + " — " + e.Hint + "\n")
+		marker := "  "
+		if i == cursor {
+			marker = "▶ "
+		}
+		b.WriteString(marker + e.Label + " — " + e.Hint + "\n")
+		lines++
 	}
-	return b.String()
+	if start > 0 || end < len(entries) {
+		b.WriteString(toolMeta.Render(fmt.Sprintf("  %d-%d of %d — ↑/↓ to scroll",
+			start+1, end, len(entries))) + "\n")
+		lines++
+	}
+	return b.String(), lines
 }
 
 // helpPopup 给 renderHelp 加可见性、搜索提示、空结果和边框。
@@ -127,4 +212,33 @@ func sectionHeader(src string) string {
 		return "Keys:"
 	}
 	return src + ":"
+}
+
+// helpPageStep is how far PgUp/PgDn move the help cursor. A fixed step rather
+// than "one window" because the window size depends on the rendered section
+// layout, which is only known after rendering — and a page key that sometimes
+// moves 8 rows and sometimes 20 is harder to use than one that always moves 10.
+const helpPageStep = 10
+
+// moveHelpCursor clamps cursor movement to the list. An empty list keeps the
+// cursor at 0 rather than going negative, which would render an empty window
+// and look like the panel had broken.
+func moveHelpCursor(cursor, total int, key tea.KeyType) int {
+	switch key {
+	case tea.KeyDown:
+		cursor++
+	case tea.KeyUp:
+		cursor--
+	case tea.KeyPgDown:
+		cursor += helpPageStep
+	case tea.KeyPgUp:
+		cursor -= helpPageStep
+	}
+	if cursor >= total {
+		cursor = total - 1
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	return cursor
 }

@@ -7,9 +7,23 @@ import (
 	"github.com/x6nux/yanshi/internal/guard"
 )
 
+// helpText renders every help entry, ignoring the visible window.
+//
+// The four anti-drift sentinels below assert that the entry LIST is derived
+// from its sources (guard.Modes, commandTable, themeList, the static key
+// table) and has not drifted. That property is about the list, not about all
+// 60-odd entries being on screen at once — which they no longer are, because
+// helpPopup now clips to the terminal and scrolls (see helpWindow). Asserting
+// on the rendered window would turn every one of these into a test of the
+// window size.
+func helpText(m model) string {
+	out, _ := renderHelpSlice(m.collectHelpEntries(), 0, len(m.collectHelpEntries()), -1)
+	return out
+}
+
 func TestHelp_ModesFromRegistry(t *testing.T) {
 	m := newTestModel(t)
-	help := m.renderHelp()
+	help := helpText(m)
 	for _, mode := range guard.Modes() {
 		if !strings.Contains(help, string(mode)) {
 			t.Errorf("help 应包含 mode %q (来自 guard.Modes() registry),help=%q", mode, help)
@@ -19,7 +33,7 @@ func TestHelp_ModesFromRegistry(t *testing.T) {
 
 func TestHelp_CommandsFromTable(t *testing.T) {
 	m := newTestModel(t)
-	help := m.renderHelp()
+	help := helpText(m)
 	// commandTable.name 不带 "/",help 渲染时统一加 "/" 前缀(与 Task 4 collectActions 一致)
 	for _, cmd := range commandTable {
 		label := "/" + cmd.name
@@ -31,7 +45,7 @@ func TestHelp_CommandsFromTable(t *testing.T) {
 
 func TestHelp_ThemesFromList(t *testing.T) {
 	m := newTestModel(t)
-	help := m.renderHelp()
+	help := helpText(m)
 	for _, th := range themeList {
 		if !strings.Contains(help, string(th.Name)) {
 			t.Errorf("help 应含 theme %q (来自 themeList)", th.Name)
@@ -63,7 +77,7 @@ func TestHelp_FuzzyFilter(t *testing.T) {
 // 本测试仅断言静态表里至少有这些核心键(与 commands_test.go 的 KeyMsg 分支交叉验证)。
 func TestHelp_KeybindingsCoreEntries(t *testing.T) {
 	m := newTestModel(t)
-	help := m.renderHelp()
+	help := helpText(m)
 	core := []string{"Enter", "Ctrl+K", "Ctrl+O", "F1", "Esc"}
 	for _, k := range core {
 		if !strings.Contains(help, k) {

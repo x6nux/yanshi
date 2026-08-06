@@ -288,6 +288,13 @@ type model struct {
 	helpVisible  bool
 	helpQuery    string
 	helpRendered string
+	// helpCursor is the index into the ranked entry list that the visible
+	// window is anchored on. Without it the panel rendered all 60-odd entries
+	// and let bubbletea's renderer keep the LAST terminal-height lines, so the
+	// title and the first ~35 commands were unreachable — the panel absorbs
+	// every key except printable search characters, so there was nothing to
+	// scroll with either.
+	helpCursor int
 
 	// C2 — UX5: draft stash (Ctrl+S / /stash). LIFO stack of multiline
 	// drafts persisted as JSONL via the shared saveQueue (single worker).
