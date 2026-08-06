@@ -56,6 +56,11 @@ func cmdSkill(m model, args []string) (tea.Model, tea.Cmd) {
 		return skillNamed(m, rest, proto.NewEnableSkill)
 	case "disable":
 		return skillNamed(m, rest, proto.NewDisableSkill)
+	case "validate":
+		// The only subcommand whose argument is OPTIONAL: an empty name
+		// re-validates everything, which is the useful default after editing
+		// a skill by hand. skillNamed would reject that.
+		return m.sendControlFrame(proto.NewValidateSkill(strings.Join(rest, " ")))
 	default:
 		m.entries = append(m.entries, errorEntry{text: "unknown /skill subcommand: " + sub})
 		m.refresh()

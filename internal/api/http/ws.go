@@ -1138,6 +1138,8 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 					conn.write(proto.NewSideState(len(cs.sideStack)))
 				case "list_skills":
 					handleListSkills(s, conn)
+				case "validate_skill":
+					handleValidateSkill(s, conn, cf.Name)
 				case "install_skill":
 					handleInstallSkill(s, conn, cf.Source)
 				case "uninstall_skill":

@@ -969,6 +969,20 @@ func (e skillsEntry) render(_ int, _ spinner.Model) string {
 			source = "unknown"
 		}
 		fmt.Fprintf(&b, "  - %s (%s) [%s, %s]\n", sk.Name, source, enabled, trusted)
+		// E03: name collisions. Load resolves them first-seen-wins and used to
+		// drop the loser silently, so a project skill hidden behind a
+		// user-level one of the same name was invisible — the name resolved to
+		// something the user did not write and nothing said so. The DIRECTORY
+		// is printed, not just the source label: "which file is being ignored"
+		// is the question, and a label does not answer it when several roots
+		// share one.
+		for _, sh := range sk.Shadowed {
+			src := sh.Source
+			if src == "" {
+				src = "unknown"
+			}
+			fmt.Fprintf(&b, "      shadowed: %s copy at %s is ignored\n", src, sh.Dir)
+		}
 	}
 	b.WriteString("\n")
 	return b.String()

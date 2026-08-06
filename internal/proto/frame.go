@@ -905,6 +905,21 @@ type SkillInfo struct {
 	Source      string `json:"source,omitempty"`
 	Enabled     bool   `json:"enabled"`
 	Trusted     bool   `json:"trusted"`
+	// Shadowed lists the same-named skills this one won over (E03). Load
+	// resolves duplicates first-seen-wins and used to drop the losers without
+	// a trace, so a project skill hidden by a user-level one of the same name
+	// was invisible: the name resolved to something the user did not write and
+	// nothing in the product could say so. Empty on the common no-conflict
+	// path, and omitempty keeps it off the wire there.
+	Shadowed []ShadowedSkill `json:"shadowed,omitempty"`
+}
+
+// ShadowedSkill is one skill that lost a name collision. The directory is
+// carried because "which file is being ignored" is the actionable question,
+// and a source label alone does not answer it when several roots share one.
+type ShadowedSkill struct {
+	Source string `json:"source,omitempty"`
+	Dir    string `json:"dir,omitempty"`
 }
 
 // Skill-list / mutation frames (E03). These all run on the backend — the TUI
@@ -916,6 +931,13 @@ func NewListSkills() ClientFrame { return ClientFrame{Type: "list_skills"} }
 // NewSkillsList builds a server frame listing installed skills.
 func NewSkillsList(s []SkillInfo) ServerFrame {
 	return ServerFrame{Type: "skills_list", Skills: s}
+}
+
+// NewValidateSkill builds a client frame asking the server to re-run the
+// install-time checks against an already-installed skill. An empty name means
+// "every installed skill".
+func NewValidateSkill(name string) ClientFrame {
+	return ClientFrame{Type: "validate_skill", Name: name}
 }
 
 // NewInstallSkill builds a client frame requesting skill installation.

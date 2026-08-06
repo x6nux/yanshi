@@ -49,6 +49,39 @@ func Plugin(name, dir string) Root { return Root{Dir: dir, Source: "plugin:" + n
 type Registry struct {
 	mu     sync.RWMutex
 	skills map[string]*Skill
+	// conflicts records every name that more than one root provided. The
+	// resolution stays first-seen-wins — changing it would silently swap which
+	// skill runs — but the LOSS is now recorded. It used to be a bare
+	// `continue`, so a project skill shadowed by a user-level one of the same
+	// name left no trace anywhere: /skills showed only the winner, the name
+	// resolved to something the user did not write, and nothing in the product
+	// could say so.
+	conflicts []Conflict
+}
+
+// Conflict is one shadowed skill: the name, who won, and who lost.
+//
+// Both directories are carried because the actionable question is "which file
+// is being ignored", and a source label alone ("user") does not answer it on a
+// machine with several user-level roots.
+type Conflict struct {
+	Name           string
+	WinnerSource   string
+	WinnerDir      string
+	ShadowedSource string
+	ShadowedDir    string
+}
+
+// Conflicts returns the shadowed-skill records from the last Load.
+func (r *Registry) Conflicts() []Conflict {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]Conflict, len(r.conflicts))
+	copy(out, r.conflicts)
+	return out
 }
 
 // Loader scans one or more Roots and builds a Registry.
@@ -184,8 +217,17 @@ func (l *Loader) Load() (*Registry, error) {
 			if err != nil || !validName(name) || !validDesc(desc) {
 				continue
 			}
-			if _, exists := r.skills[name]; exists {
-				continue // first-seen-wins
+			if existing, exists := r.skills[name]; exists {
+				// first-seen-wins, but the loss is recorded rather than
+				// dropped: see Registry.conflicts.
+				r.conflicts = append(r.conflicts, Conflict{
+					Name:           name,
+					WinnerSource:   existing.Source,
+					WinnerDir:      existing.Dir,
+					ShadowedSource: root.Source,
+					ShadowedDir:    dir,
+				})
+				continue
 			}
 			r.skills[name] = &Skill{
 				Name: name, Description: desc, Dir: dir, Source: root.Source,

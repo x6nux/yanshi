@@ -192,6 +192,59 @@ func skillInfo(sk *skills.Skill) *proto.SkillInfo {
 	}
 }
 
+// attachShadowed folds the registry's conflict records into the wire rows.
+//
+// Done here rather than inside skillInfo because a Conflict is a property of
+// the LOAD, not of a Skill: the same skill is unshadowed in a project that has
+// no competing copy. Keeping it out of the struct also means the ack paths,
+// which describe one skill in isolation, do not have to pretend to know.
+func attachShadowed(rows []proto.SkillInfo, conflicts []skills.Conflict) []proto.SkillInfo {
+	if len(conflicts) == 0 {
+		return rows
+	}
+	byName := map[string][]proto.ShadowedSkill{}
+	for _, c := range conflicts {
+		byName[c.Name] = append(byName[c.Name], proto.ShadowedSkill{
+			Source: c.ShadowedSource, Dir: c.ShadowedDir,
+		})
+	}
+	for i := range rows {
+		rows[i].Shadowed = byName[rows[i].Name]
+	}
+	return rows
+}
+
+// handleValidateSkill re-runs the install-time checks against skills already
+// on disk, which nothing could do before: the rules lived inline in Install,
+// so a skill edited by hand after installation was unverifiable.
+func handleValidateSkill(s *Server, conn *wsConn, name string) {
+	if s.skillsRegistry == nil {
+		conn.write(proto.NewSkillAck("validated", nil, "skills are disabled"))
+		return
+	}
+	targets := s.skillsRegistry.List()
+	if name != "" {
+		sk, ok := s.skillsRegistry.Get(name)
+		if !ok {
+			conn.write(proto.NewSkillAck("validated", nil, "no such skill: "+name))
+			return
+		}
+		targets = []*skills.Skill{sk}
+	}
+	var problems []string
+	for _, sk := range targets {
+		if err := skills.ValidateSkillDir(sk.Dir); err != nil {
+			problems = append(problems, sk.Name+": "+err.Error())
+		}
+	}
+	if len(problems) > 0 {
+		conn.write(proto.NewSkillAck("validated", nil, strings.Join(problems, "; ")))
+		return
+	}
+	conn.write(proto.NewSkillAck("validated", nil,
+		fmt.Sprintf("%d skill(s) valid", len(targets))))
+}
+
 // handleListSkills replies with the current registry snapshot (E03).
 func handleListSkills(s *Server, conn *wsConn) {
 	if s.skillsRegistry == nil {
@@ -203,7 +256,7 @@ func handleListSkills(s *Server, conn *wsConn) {
 	for _, sk := range list {
 		out = append(out, *skillInfo(sk))
 	}
-	conn.write(proto.NewSkillsList(out))
+	conn.write(proto.NewSkillsList(attachShadowed(out, s.skillsRegistry.Conflicts())))
 }
 
 // handleInstallSkill publishes into the writable user root, then Reloads via

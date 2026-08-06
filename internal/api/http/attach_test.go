@@ -13,6 +13,7 @@ import (
 	"github.com/x6nux/yanshi/internal/guard"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/proto"
+	"github.com/x6nux/yanshi/internal/skills"
 )
 
 // TestResolveAttachmentsIsFailClosed is written before the resolver, and the
@@ -206,5 +207,58 @@ func TestWSTurnPrependsAttachmentContent(t *testing.T) {
 	}
 	if !strings.Contains(seen, "summarize @notes.md") {
 		t.Error("the user's own text was lost")
+	}
+}
+
+// writeTestSkill drops a minimal valid SKILL.md under dir/name.
+func writeTestSkill(t *testing.T, dir, name, desc string) {
+	t.Helper()
+	sub := filepath.Join(dir, name)
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+	body := "---\nname: " + name + "\ndescription: " + desc + "\n---\n\nbody\n"
+	require.NoError(t, os.WriteFile(filepath.Join(sub, "SKILL.md"), []byte(body), 0o644))
+}
+
+// TestSkillsListCarriesShadowedCopies is the wiring half of E03's conflict
+// diagnostics: the registry records conflicts and the renderer displays them,
+// and neither proves the two are connected.
+func TestSkillsListCarriesShadowedCopies(t *testing.T) {
+	winner, loser := t.TempDir(), t.TempDir()
+	writeTestSkill(t, winner, "review", "the winner")
+	writeTestSkill(t, loser, "review", "the shadowed one")
+
+	loader := skills.NewLoader(
+		skills.Root{Dir: winner, Source: "project"},
+		skills.Root{Dir: loser, Source: "user"},
+	)
+	reg, err := loader.Load()
+	require.NoError(t, err)
+
+	fm := einollm.NewFakeModel([]string{"ok"}, nil)
+	o, err := orchestrator.New(orchestrator.Config{Model: fm})
+	require.NoError(t, err)
+	s := New(Config{Token: "t", SkillsRegistry: reg, SkillsLoader: loader})
+	s.ChatWS(o, nil, nil)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	c := dial(t, "ws"+strings.TrimPrefix(ts.URL, "http")+"/api/v1/chat/ws")
+	defer c.Close()
+	require.NoError(t, c.WriteJSON(proto.NewListSkills()))
+	f := recvFrame(t, c)
+	if f.Type != "skills_list" {
+		t.Fatalf("frame = %q", f.Type)
+	}
+	var found bool
+	for _, sk := range f.Skills {
+		if sk.Name == "review" && len(sk.Shadowed) == 1 {
+			found = true
+			if sk.Shadowed[0].Dir == "" {
+				t.Error("the shadowed entry carries no directory")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("skills_list does not report the collision: %+v", f.Skills)
 	}
 }

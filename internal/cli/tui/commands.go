@@ -82,7 +82,7 @@ var commandTable = []command{
 	{name: "btw", help: "alias for /side", run: cmdSide},
 	{name: "main", help: "exit current side conversation (discard; keep is future polish)", run: cmdMain},
 	{name: "skills", help: "list installed skills", run: cmdSkills},
-	{name: "skill", help: "manage: /skill install|uninstall|trust|untrust|enable|disable", run: cmdSkill},
+	{name: "skill", help: "manage: /skill install|uninstall|trust|untrust|enable|disable|validate", run: cmdSkill},
 	{name: "review", help: "run code review on a PR diff: /review <diff text or PR URL>", run: cmdReview},
 	// C15 + I18N1 preference commands. Handlers live in commands_prefs.go so
 	// this file stays under the GOV2 cap; only the rows belong here.
