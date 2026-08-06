@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -132,5 +133,50 @@ func runFakeGopls(t *testing.T, srv net.Conn) {
 				},
 			})
 		}
+	}
+}
+
+// TestOpenDocumentsTracksDidChange pins the source that made
+// open_diagnostics_count meaningful.
+//
+// The diagnostics tool asks the manager which files to query. That list used
+// to come from a stub returning nil, so the count was structurally 0: the
+// field said "no problems" while never having looked at anything. DidChange
+// already sees every file the agent edits, which is precisely the LSP notion
+// of an open document -- this process has no editor, so "open" can only mean
+// "notified the server about".
+func TestOpenDocumentsTracksDidChange(t *testing.T) {
+	m := &Manager{enabled: true, clients: map[string]*Client{}, cmds: map[string]*exec.Cmd{}}
+
+	if got := m.OpenDocuments(); len(got) != 0 {
+		t.Fatalf("a fresh manager has no open documents, got %v", got)
+	}
+
+	m.rememberOpen("/w/a.go")
+	m.rememberOpen("/w/b.go")
+	m.rememberOpen("/w/a.go") // touched again
+
+	got := m.OpenDocuments()
+	if len(got) != 2 {
+		t.Fatalf("re-touching a file must not duplicate it: %v", got)
+	}
+	if got[0] != "/w/a.go" {
+		t.Fatalf("most recent must come first, got %v", got)
+	}
+
+	// The cap exists because diagnostics does one LSP round trip per file on
+	// a shared budget: an unbounded list makes the tool slower the longer the
+	// session runs.
+	for i := 0; i < openDocsLimit*2; i++ {
+		m.rememberOpen("/w/f" + strconv.Itoa(i) + ".go")
+	}
+	if got := m.OpenDocuments(); len(got) > openDocsLimit {
+		t.Fatalf("open document list is unbounded: %d entries", len(got))
+	}
+
+	// A disabled manager reports nothing rather than a stale list.
+	m.enabled = false
+	if got := m.OpenDocuments(); got != nil {
+		t.Fatalf("disabled manager returned %v", got)
 	}
 }

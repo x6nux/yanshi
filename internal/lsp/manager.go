@@ -48,7 +48,18 @@ type Manager struct {
 	cmds    map[string]*exec.Cmd // exec 路径的进程句柄(Kill+Wait 用)
 	closers []func() error       // Dial 路径的资源 closer
 	enabled bool
+
+	// openDocs 是本进程通过 DidChange 告知过 server 的文件,按最近优先排序,
+	// 上限 openDocsLimit。这就是 LSP 语义下的"打开的文档":didOpen/didChange
+	// 通知过的那批,而不是编辑器窗口里的那批(本进程没有编辑器)。
+	// diagnostics 工具据此计算 open_diagnostics_count——在它存在之前那个字段
+	// 恒为 0,因为文件列表来自一个恒返回 nil 的桩。
+	openDocs []string
 }
+
+// openDocsLimit 给最近文档列表封顶。诊断查询是每文件一次 LSP 往返,共享一个
+// 总预算,所以无界列表会让 diagnostics 随会话长度线性变慢。
+const openDocsLimit = 32
 
 // New 构造 Manager。剔除命令不在 PATH 上的语言(Dial 非空时跳过此剪枝——测试
 // 用 fake 命令名);若剔除后无可用语言,返回 disabled Manager。不在此处 spawn——
@@ -115,11 +126,45 @@ func (m *Manager) DidChange(path, content string) {
 	if lang == "" {
 		return
 	}
+	m.rememberOpen(path)
 	c, err := m.clientFor(lang)
 	if err != nil || c == nil {
 		return
 	}
 	_ = c.notifyChange(pathToURL(path), content)
+}
+
+// rememberOpen 把 path 移到最近文档列表首位(已存在则去重后前移)。
+func (m *Manager) rememberOpen(path string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	kept := make([]string, 0, len(m.openDocs)+1)
+	kept = append(kept, path)
+	for _, p := range m.openDocs {
+		if p == path {
+			continue
+		}
+		if len(kept) == openDocsLimit {
+			break
+		}
+		kept = append(kept, p)
+	}
+	m.openDocs = kept
+}
+
+// OpenDocuments 返回本会话通知过 server 的文件,最近的在前。
+//
+// 返回副本:调用方(diagnostics 工具)会在不持锁的情况下遍历它并对每一项做一次
+// LSP 往返,而 DidChange 可能在此期间并发改写这个切片。
+func (m *Manager) OpenDocuments() []string {
+	if !m.Enabled() {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.openDocs))
+	copy(out, m.openDocs)
+	return out
 }
 
 // Diagnostics 返回 path 的最新诊断;disabled/无语言/超时 → nil。锁内仅取 client

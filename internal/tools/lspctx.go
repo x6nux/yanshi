@@ -15,6 +15,10 @@ type LSPManager interface {
 	Enabled() bool
 	DidChange(path, content string)
 	Diagnostics(path string, timeout time.Duration) []lsp.Diagnostic
+	// OpenDocuments lists the files this session has notified the server
+	// about, most recent first. diagnostics uses it to decide what to ask
+	// about; without it open_diagnostics_count could only ever be 0.
+	OpenDocuments() []string
 }
 
 type lspKey struct{}

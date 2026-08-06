@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +24,18 @@ type stubLSPManager struct {
 func (s stubLSPManager) Enabled() bool { return s.enabled }
 func (s stubLSPManager) Diagnostics(path string, _ time.Duration) []lsp.Diagnostic {
 	return s.byPath[path]
+}
+
+// OpenDocuments reports every path the stub was seeded with, so the count
+// under test comes from a real file list rather than from a nil stub -- the
+// shape that kept open_diagnostics_count at 0 in production.
+func (s stubLSPManager) OpenDocuments() []string {
+	out := make([]string, 0, len(s.byPath))
+	for p := range s.byPath {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
 }
 func (s stubLSPManager) DidChange(path, content string) {}
 

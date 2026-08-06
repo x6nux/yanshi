@@ -29,7 +29,8 @@ type fakeLSPManager struct {
 	diags       []lsp.Diagnostic
 }
 
-func (f *fakeLSPManager) Enabled() bool { return true }
+func (f *fakeLSPManager) Enabled() bool           { return true }
+func (f *fakeLSPManager) OpenDocuments() []string { return nil }
 func (f *fakeLSPManager) DidChange(path, content string) {
 	f.changedPath = path
 	f.changedText = content

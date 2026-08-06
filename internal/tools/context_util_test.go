@@ -297,6 +297,7 @@ type stubLSP struct{}
 func (s *stubLSP) Enabled() bool                                             { return false }
 func (s *stubLSP) DidChange(path, content string)                            {}
 func (s *stubLSP) Diagnostics(path string, _ time.Duration) []lsp.Diagnostic { return nil }
+func (s *stubLSP) OpenDocuments() []string                                   { return nil }
 
 func TestWithLSP_Value(t *testing.T) {
 	mgr := &stubLSP{}

@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/x6nux/yanshi/internal/lsp"
@@ -13,6 +14,12 @@ import (
 type lspSource interface {
 	Enabled() bool
 	Diagnostics(path string, timeout time.Duration) []lsp.Diagnostic
+	// OpenDocuments returns the files this session has notified the language
+	// server about, most recent first. Before it existed the file list came
+	// from a stub that always returned nil, so open_diagnostics_count was
+	// permanently 0 -- a field reporting "no problems" while never having
+	// looked.
+	OpenDocuments() []string
 }
 
 type diagFileLister interface {
@@ -42,6 +49,29 @@ func NewDiagnosticsTool(probe diagFileLister) *GuardedTool {
 
 func runDiagnostics(ctx context.Context, argsJSON string) (string, error) {
 	root := WorkRootFromContext(ctx)
+
+	// The probes are independent and three of them spawn subprocesses (git,
+	// and one per toolchain) or make LSP round trips, so running them in
+	// sequence made the tool's latency the SUM of five waits when it is
+	// bounded below by the slowest. Nothing here shares mutable state; each
+	// goroutine writes one field.
+	var (
+		wg        sync.WaitGroup
+		gitD      probeDiag
+		sandboxD  sandboxDiag
+		toolchain toolchainDiag
+		lspD      lspDiag
+	)
+	run := func(f func()) {
+		wg.Add(1)
+		go func() { defer wg.Done(); f() }()
+	}
+	run(func() { gitD = runGitProbe(ctx, root) })
+	run(func() { sandboxD = sandboxProbe(ctx) })
+	run(func() { toolchain = runToolchainProbes(ctx) })
+	run(func() { lspD = runLSPProbe(ctx, root) })
+	wg.Wait()
+
 	return toJSON(struct {
 		Workspace map[string]any `json:"workspace"`
 		Git       probeDiag      `json:"git"`
@@ -50,10 +80,10 @@ func runDiagnostics(ctx context.Context, argsJSON string) (string, error) {
 		LSP       lspDiag        `json:"lsp"`
 	}{
 		Workspace: workspaceSummary(root),
-		Git:       runGitProbe(ctx, root),
-		Sandbox:   sandboxProbe(ctx),
-		Toolchain: runToolchainProbes(ctx),
-		LSP:       runLSPProbe(ctx, root),
+		Git:       gitD,
+		Sandbox:   sandboxD,
+		Toolchain: toolchain,
+		LSP:       lspD,
 	}), nil
 }
 
@@ -169,7 +199,13 @@ func runLSPProbe(ctx context.Context, root string) lspDiag {
 	if source == nil || !source.Enabled() {
 		return lspDiag{}
 	}
-	files := diagFileListerOverride.recentFiles(ctx, root)
+	files := source.OpenDocuments()
+	// The lister seam stays as an override for tests that want to drive a
+	// specific file set without standing up a manager; production leaves it
+	// returning nil and falls through to the server's own view.
+	if extra := diagFileListerOverride.recentFiles(ctx, root); len(extra) > 0 {
+		files = extra
+	}
 	count := 0
 	for _, path := range files {
 		count += len(source.Diagnostics(path, 2*time.Second))
