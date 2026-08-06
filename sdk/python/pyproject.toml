@@ -20,8 +20,15 @@ test = [
   "jsonschema>=4.23,<5",
   "websockets>=13,<16"
 ]
-generate = [
-  "datamodel-code-generator>=0.25,<1",
+# Packaging tools for `python -m build` / `python -m twine check`.
+#
+# Renamed from "generate", which also pinned datamodel-code-generator — a code
+# generator no script ever invoked. The models in generated.py are, and have
+# always said they are, a hand-maintained mirror; internal/api/v1's parity test
+# is what compares them to the other three statements of the contract. A pinned
+# dependency for a generator that does not run reads like the models are
+# generated.
+publish = [
   "build>=1.2,<2",
   "twine>=5.1,<6"
 ]

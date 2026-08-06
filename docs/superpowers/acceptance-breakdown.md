@@ -1343,13 +1343,14 @@ PY
 - 依据：`internal/appserver/server.go`（dispatch 覆盖 initialize / capabilities / thread.start|resume|interrupt / turn.start|interrupt / config.read|write / shutdown）、`rpc.go`（标准错误码），已接线于 `cmd/yanshi/app.go::runApp`。测试 `TestJSONRPCStreamNotificationIsVersionedItem`（真跑一个 turn，断言通知是 versioned item）、`TestDispatchThreadResume`、`TestDispatchInterrupt`、`TestJSONRPCErrorCodes`、`TestJSONRPCNotificationHasNoResponseID` —— 断言的是 wire 上的具体字段与错误码，不是「调用发生了」。
 - 证据形状：wire 字段 + 错误码逐个断言（现状即是）。
 
-**2. TS 类型可生成** — 未兑现（**虚报**，见本包开头）
-- 依据：见上。`cmd/api-schema::TestCov_Run_OutFile` / `TestCov_Run_Stdout` 是**恒真空壳 + 循环自证**：只断言 `run()` 返回 0、文件被写出。**另注**：`sdk/ts/v1.ts` 本身也没有任何 diff-gate —— `docs.yml` 的 `git diff --exit-code` 只覆盖 `docs/api/` 与 `docs/user-guide/`。
-- 证据形状：断言必须是「**改 `internal/api/v1/types.go` 的一个 struct tag ⇒ 生成的 TS 输出随之改变**」，即生成器必须真的 reflect/parse Go 类型或 `SchemaBytes()`。**骗过去**：任何只跑生成器再和被 checked-in 的产物对拍的 diff-gate —— 那只证明有人跑过生成器。
+**2. TS 类型可生成** — **已作废**（W9 决定不生成，改为具名守门的手工镜像）
+- 处置：伪生成器那一半**已删除**。`cmd/api-schema` 现在只有 `-markdown` 一个职责（它那半是真解析）；`sdk/ts/v1.ts` 头部改成「手工维护」，与 `sdk/python` 的模型一直以来的自述一致。
+- 守门人换成 `internal/api/v1::TestContractParityAcrossFourSources`：比较 Go struct / JSON Schema / TS / pydantic 四路的字段集合，每条差异必须在 `intentionalDifferences` 里具名带理由，死条目判失败。这正是被丢弃的那个 `_ = v1.SchemaBytes()` 假装在做的事。
+- 为什么不做真生成：真生成的额外收益只剩「注释与类型细节也不漂」，而代价是一个 Go→TS 类型映射器；且 TS 侧有 `ItemUpdatedNotification` 这类没有 Go 对应物的传输类型，生成器要么丢掉要么需要额外配置。**一段自称生成器的手抄字面量，不如没有。**
 
-**3. 与 HTTP 行为一致** — 未兑现
-- 依据：架构上共享同一个 `*v1.Service`（`cmd/yanshi/app.go::runApp` 传入 `app.AgentAPI`），这一点为真。但**无任何测试** —— `internal/appserver/*_test.go` 里 `httptest` 零命中；`internal/api/http/agent_v1_test.go` 也从不触碰 appserver。两条传输的错误映射差异（HTTP 404 vs JSON-RPC -32602/-32603）无人对照。**额外具体缺口**：`cmd/yanshi/app.go::runApp` **无条件** `appserver.NewMemoryConfig()`（传了 `-config` 也一样），而 `docs/api/jsonrpc.md:15-16` 把 `config/read|write` 描述为「读/写运行时配置」—— JSON-RPC 有一对 HTTP 侧根本不存在的方法，且它们不落盘。
-- 证据形状：一张**跨传输对照表** —— 同一组输入（未知 threadId、空 input、并发 turn、中断已完成 turn）分别打 HTTP 与 JSON-RPC，断言**语义等价类相同**（成功/失败方向 + 同一个错误分类）且 item 序列逐条相等。**骗过去**：只断言两边都「返回了非空结果」，或只测 happy path。
+**3. 与 HTTP 行为一致** — 已兑现（W9）
+- `internal/api/http::TestThreadStartAgreesAcrossTransports` / `TestThreadResumeAgreesAcrossTransports` / `TestInterruptAgreesAcrossTransports`：同一个 `*v1.Service`，同一组输入分别走两条门，比较解码后的 JSON。id/时间戳按值忽略但**按存在性检查**（丢字段是真分岔，换 id 不是）；resume 那条还让一条传输去 resume 另一条创建的 thread。双向变异探针（多一个字段 / 少一个字段）各自命中。
+- `config/read|write` 的落盘缺口一并修掉：`cmd/yanshi/app.go::runApp` 现在按 `-config` 构造 `internal/appserver::FileConfig`（sidecar JSON，不写 YAML 本身），回归测试跑**两次 runApp 生命周期** —— 单进程测试对内存后端同样通过，这正是从来没有测试发现它的原因。
 
 ---
 
