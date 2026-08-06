@@ -529,6 +529,21 @@ func TestDoctorNeverEchoesACredential(t *testing.T) {
 
 	var text bytes.Buffer
 	rep.RenderText(&text)
+
+	// Self-check first. "the canary is absent" is trivially true of a report
+	// that never read the config, so prove the report is about THIS one before
+	// its silence means anything: doctor echoes the provider count and the
+	// path, and a failed read shows neither.
+	//
+	// This guard is here because a probe run during W7 review showed the
+	// obvious mutation -- making a check echo cfgErr -- leaks nothing:
+	// gopkg.in/yaml.v3 reports "line N: <syntax problem>" and never quotes
+	// content, so the parse-error carrier the plan assumed does not exist for
+	// this library. Without the self-check that left an assertion no realistic
+	// mutation could falsify. Both probes go red now.
+	if !strings.Contains(text.String(), "1 provider") {
+		t.Fatalf("doctor did not read the canary config, so its absence proves nothing:\n%s", text.String())
+	}
 	if strings.Contains(text.String(), canary) {
 		t.Errorf("RenderText leaked the credential:\n%s", text.String())
 	}
