@@ -2,8 +2,9 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
-	"strconv"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
@@ -316,6 +317,16 @@ func (s *Server) handleSSEInternal(w http.ResponseWriter, r *http.Request,
 		// already been emitted above; the post-loop path still emits status
 		// + done.
 		if hadError || r.Context().Err() != nil {
+			// Attribute the failure to the turn span. Without this every SSE
+			// turn ends with a nil error and reports success, so a model
+			// failure or a client disconnect is indistinguishable from a
+			// clean run in any tracing backend -- the one question a turn
+			// span exists to answer.
+			if hadError {
+				turnErr = errors.New("turn emitted an error frame")
+			} else {
+				turnErr = r.Context().Err()
+			}
 			break
 		}
 		if !hasSchema {
@@ -332,9 +343,9 @@ func (s *Server) handleSSEInternal(w http.ResponseWriter, r *http.Request,
 		}
 		lastVErr = verr
 		if attempt == retryCap {
-			schemaErrText := "output did not match the required schema after " +
-				strconv.Itoa(attempt+1) + " attempt(s): " + verr.Error()
-			writeSSEFrame(w, fl, proto.NewError(schemaErrText), s.redactor)
+			turnErr = fmt.Errorf("output did not match the required schema after %d attempt(s): %w",
+				attempt+1, verr)
+			writeSSEFrame(w, fl, proto.NewError(turnErr.Error()), s.redactor)
 			break
 		}
 		prevAssistantText = assistantText

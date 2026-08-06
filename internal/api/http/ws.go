@@ -907,9 +907,16 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 				// The error frame has already been emitted upstream; the
 				// post-loop path still persists state and emits done.
 				if hadError {
+					// Attribute it to the turn span too. Without this a model
+					// failure ends the span with a nil error and reports
+					// success, which makes a broken turn and a clean one
+					// identical in any tracing backend -- the one question a
+					// turn span exists to answer.
+					turnErr = errors.New("turn emitted an error frame")
 					break
 				}
 				if turnCtx.Err() != nil {
+					turnErr = turnCtx.Err()
 					break // user cancelled (A3 userCancelCtx) — don't retry
 				}
 
