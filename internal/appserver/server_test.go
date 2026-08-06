@@ -17,6 +17,8 @@ import (
 // setup+thread on the same agent first to resolve the thread id, then drives
 // the turn and parses stdout line by line. The WaitGroup on the server
 // guarantees all notifications are flushed before Serve returns.
+//
+// ledger: D1/APS1#1 JSON-RPC thread/turn 可用
 func TestJSONRPCStreamNotificationIsVersionedItem(t *testing.T) {
 	model := einollm.NewFakeModel([]string{"answer"}, nil)
 	agent, err := v1.NewService(v1.Config{DefaultModel: model})

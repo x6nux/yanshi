@@ -138,7 +138,10 @@ func TestRenderMarkdownContainsDefsBlocks(t *testing.T) {
 	}
 }
 
-// ledger: H2/APIREF1#1 v1 API 有参考
+// TestRenderMarkdownParamsIncludeImages pins that TurnStartParams.images
+// survives generation. It was cited for「v1 API 有参考」and does not show it:
+// the generator producing a block in memory says nothing about whether the
+// committed reference page has one.
 func TestRenderMarkdownParamsIncludeImages(t *testing.T) {
 	// G (multimodal) landed: TurnStartParams must surface the images field so
 	// resources.md stays in sync with types.go.

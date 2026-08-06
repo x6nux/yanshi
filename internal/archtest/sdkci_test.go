@@ -154,3 +154,42 @@ func TestSDKSnippetsAreExecutablyChecked(t *testing.T) {
 		}
 	}
 }
+
+// TestAPIReferenceDocsCarryTheGeneratedBlocks asserts the reference pages
+// exist on disk with generated content in them.
+//
+// The ledger cited cmd/api-schema's render tests for this. Those are necessary
+// and not sufficient: they prove the generator PRODUCES those blocks, in
+// memory, from a schema handed to them. They hold just as well if
+// docs/api/resources.md was never written, or was written once and later
+// emptied — nothing in Go read the files. The only thing that did was
+// docs.yml's `git diff --exit-code`, which is a workflow step, not a test, and
+// which docs.yml's paths filter could skip.
+//
+// ledger: H2/APIREF1#1 v1 API 有参考
+func TestAPIReferenceDocsCarryTheGeneratedBlocks(t *testing.T) {
+	want := map[string][]string{
+		filepath.Join("docs", "api", "schema.md"): {
+			"<!-- BEGIN GENERATED: api-schema-full -->",
+			`"$defs"`,
+		},
+		filepath.Join("docs", "api", "resources.md"): {
+			"<!-- BEGIN GENERATED: api-defs:Thread -->",
+			"<!-- BEGIN GENERATED: api-defs:Item -->",
+			"<!-- BEGIN GENERATED: api-defs:TurnStartParams -->",
+		},
+	}
+	for path, markers := range want {
+		data, err := os.ReadFile(abs(path))
+		if err != nil {
+			t.Errorf("%s is missing: %v", path, err)
+			continue
+		}
+		for _, m := range markers {
+			if !strings.Contains(string(data), m) {
+				t.Errorf("%s does not contain %s — the generator can emit it, but the "+
+					"committed reference page does not have it", path, m)
+			}
+		}
+	}
+}

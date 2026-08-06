@@ -676,7 +676,7 @@
   # 且 config/read|write 根本不落盘。
   acceptance: "JSON-RPC thread/turn 可用;TS/Python 类型与 Go 契约逐字段对账;与 HTTP 行为一致"
   evidence:
-    "1": "internal/appserver::TestDispatchThreadResume; internal/appserver::TestDispatchInterrupt; internal/appserver::TestDispatchTurnStartErrors"
+    "1": "internal/appserver::TestJSONRPCStreamNotificationIsVersionedItem; internal/appserver::TestDispatchThreadResume; internal/appserver::TestDispatchInterrupt"
     "2": "internal/api/v1::TestContractParityAcrossFourSources"
     "3": "internal/api/http::TestThreadStartAgreesAcrossTransports; internal/api/http::TestThreadResumeAgreesAcrossTransports; internal/api/http::TestInterruptAgreesAcrossTransports; cmd/yanshi::TestConfigWriteSurvivesRestart"
 
@@ -1073,7 +1073,7 @@
   # 3-$defs 文档生成 —— W9-T1 统一真相源后这两句才同时为真。
   acceptance: "v1 API 有参考；SDK 用法有示例；与 schema 一致"
   evidence:
-    "1": "cmd/api-schema::TestRenderMarkdownContainsDefsBlocks; cmd/api-schema::TestRenderMarkdownParamsIncludeImages"
+    "1": "internal/archtest::TestAPIReferenceDocsCarryTheGeneratedBlocks; cmd/api-schema::TestRenderMarkdownContainsDefsBlocks"
     "2": "internal/archtest::TestSDKSnippetsAreExecutablyChecked; internal/archtest::TestSDKContractSuitesRunInCI"
     "3": "internal/api/v1::TestContractParityAcrossFourSources; internal/api/v1::TestRuntimeSchemaIsTheSDKSchema"
 

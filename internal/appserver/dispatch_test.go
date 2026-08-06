@@ -152,8 +152,6 @@ func TestDispatchInterrupt(t *testing.T) {
 // TestDispatchTurnStartErrors covers the turn/start error branches that do not
 // require a long-running turn: ErrThreadNotFound (unknown thread → -32602) and
 // the generic internal error (empty input → "input is required" → -32603).
-//
-// ledger: D1/APS1#1 JSON-RPC thread/turn 可用
 func TestDispatchTurnStartErrors(t *testing.T) {
 	agent := newTestService(t)
 	srv := New(agent, nil)
