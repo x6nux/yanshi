@@ -689,3 +689,43 @@ func TestReadMessageContentLengthBadBody(t *testing.T) {
 // silence unused warnings for helpers retained for future tests
 var _ = atomic.AddInt64
 var _ sync.Mutex
+
+// TestSnapshotReportsResources pins the aggregation that never happened.
+//
+// ListResources had an interface entry and two implementations (HTTP, stdio)
+// and ZERO callers, so ServerStatus.Resources was permanently nil: /mcp could
+// only ever report that a server exposes no resources, whatever it actually
+// advertised. The gap is invisible from either side alone -- the clients
+// implement the call correctly, and the status struct has the field.
+func TestSnapshotReportsResources(t *testing.T) {
+	m := NewManager(map[string]*ServerConfig{
+		"srv": {Name: "srv", Enabled: true, Transport: TransportStdio, Timeout: time.Second},
+	})
+	m.resourceMap = map[string][]ResourceDescriptor{
+		"srv": {{URI: "file:///a", Name: "a"}, {URI: "file:///b", Name: "b"}},
+	}
+	got := m.Snapshot(context.Background())
+	if len(got) != 1 {
+		t.Fatalf("want 1 server, got %d", len(got))
+	}
+	if len(got[0].Resources) != 2 {
+		t.Fatalf("resources not aggregated into the status: %+v", got[0])
+	}
+	if got[0].Resources[0].URI != "file:///a" {
+		t.Fatalf("resource order/content changed: %+v", got[0].Resources)
+	}
+}
+
+// TestShutdownClearsResources: a stopped server must not keep advertising
+// resources it can no longer serve. toolMap was already cleared here;
+// resourceMap was added alongside it for the same reason.
+func TestShutdownClearsResources(t *testing.T) {
+	m := NewManager(map[string]*ServerConfig{
+		"srv": {Name: "srv", Enabled: true, Transport: TransportStdio, Timeout: time.Second},
+	})
+	m.resourceMap = map[string][]ResourceDescriptor{"srv": {{URI: "file:///a"}}}
+	m.Shutdown()
+	if got := m.Snapshot(context.Background()); len(got) > 0 && len(got[0].Resources) != 0 {
+		t.Fatalf("a stopped server still advertises resources: %+v", got[0].Resources)
+	}
+}

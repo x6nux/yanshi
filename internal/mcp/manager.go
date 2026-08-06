@@ -12,10 +12,15 @@ import (
 
 // Manager 管理 MCP server 的连接生命周期。
 type Manager struct {
-	mu                sync.Mutex
-	servers           map[string]*ServerConfig
-	clients           map[string]Client
-	toolMap           map[string]ToolDescriptor
+	mu      sync.Mutex
+	servers map[string]*ServerConfig
+	clients map[string]Client
+	toolMap map[string]ToolDescriptor
+	// resourceMap caches each server's advertised resources, keyed by server
+	// name. Collected once at start rather than on every Snapshot: Snapshot is
+	// called from the status frame path and a per-call resources/list round
+	// trip would put N network waits on a UI refresh.
+	resourceMap       map[string][]ResourceDescriptor
 	status            map[string]ConnectionStatus
 	errs              map[string]string
 	health            HealthConfig
@@ -143,6 +148,23 @@ func (m *Manager) startOne(ctx context.Context, cfg *ServerConfig) (Client, erro
 		m.toolMap[k] = v
 	}
 	m.mu.Unlock()
+
+	// Resources are advertised alongside tools but were never collected:
+	// ListResources had an interface entry and two implementations and ZERO
+	// callers, so ServerStatus.Resources was permanently nil and /mcp could
+	// only ever report that a server exposes none.
+	//
+	// A failure here is NOT fatal. resources/list is optional in MCP and a
+	// server that only exposes tools answers with an error; refusing to start
+	// it would turn a missing optional capability into an unusable server.
+	if resources, rerr := cli.ListResources(startCtx); rerr == nil && len(resources) > 0 {
+		m.mu.Lock()
+		if m.resourceMap == nil {
+			m.resourceMap = map[string][]ResourceDescriptor{}
+		}
+		m.resourceMap[cfg.Name] = resources
+		m.mu.Unlock()
+	}
 	return cli, nil
 }
 
@@ -285,6 +307,7 @@ func (m *Manager) Snapshot(context.Context) []ServerStatus {
 				st.Tools = append(st.Tools, td)
 			}
 		}
+		st.Resources = m.resourceMap[name]
 		out = append(out, st)
 	}
 	return out
@@ -302,4 +325,5 @@ func (m *Manager) Shutdown() {
 		m.status[n] = StatusStopped
 	}
 	m.toolMap = map[string]ToolDescriptor{}
+	m.resourceMap = map[string][]ResourceDescriptor{}
 }

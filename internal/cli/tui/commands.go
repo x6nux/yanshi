@@ -145,14 +145,7 @@ func (m *model) updatePalette() {
 			items = append(items, c)
 		}
 	}
-	// Append MCP tools when the prefix matches "mcp" or the palette is empty.
-	if len(m.paletteMCPServers) > 0 {
-		for _, c := range m.paletteMCPItems() {
-			if strings.HasPrefix(c.name, prefix) {
-				items = append(items, c)
-			}
-		}
-	}
+	items = append(items, m.matchingMCPItems(prefix)...)
 	m.paletteItems = items
 	if m.paletteSel >= len(items) || m.paletteSel < 0 {
 		m.paletteSel = 0
@@ -302,14 +295,52 @@ func (m model) sendControlFrame(f proto.ClientFrame) (tea.Model, tea.Cmd) {
 }
 
 // paletteMCPItems returns command entries for MCP tools grouped by server.
+// matchingMCPItems returns the MCP entries matching prefix, each server's
+// surviving tools preceded by that server's group header.
+//
+// The header is not a match candidate, and treating it as one is what broke
+// this: the previous code ran every entry -- headers included -- through
+// HasPrefix(name, prefix), and a header spelled "── files ──" can never start
+// with what the user typed. Every header was dropped and the tools arrived as
+// one flat list, which is exactly the ambiguity the headers exist to remove
+// (MCP tool names are long, and two servers can expose similar ones).
+//
+// A group with no surviving tools contributes nothing: an empty header is
+// worse than no header, because it claims a server matched when none of its
+// tools did.
+func (m *model) matchingMCPItems(prefix string) []command {
+	var out []command
+	for _, srv := range m.paletteMCPServers {
+		var tools []command
+		for _, tool := range srv.Tools {
+			if strings.HasPrefix(tool.Name, prefix) {
+				tools = append(tools, command{name: tool.Name, help: tool.Description, kind: cmdMCPTool})
+			}
+		}
+		if len(tools) == 0 {
+			continue
+		}
+		out = append(out, command{name: mcpGroupLabel(srv), kind: cmdMCPGroup})
+		out = append(out, tools...)
+	}
+	return out
+}
+
+// mcpGroupLabel renders one server's palette header, appending the status when
+// it is anything other than ready so a disabled or failed server is visible
+// rather than silently absent.
+func mcpGroupLabel(srv proto.MCPServerStatus) string {
+	label := "── " + srv.Name + " ──"
+	if srv.Status != "ready" {
+		label += " [" + srv.Status + "]"
+	}
+	return label
+}
+
 func (m *model) paletteMCPItems() []command {
 	var items []command
 	for _, srv := range m.paletteMCPServers {
-		label := "── " + srv.Name + " ──"
-		if srv.Status != "ready" {
-			label += " [" + srv.Status + "]"
-		}
-		items = append(items, command{name: label, kind: cmdMCPGroup})
+		items = append(items, command{name: mcpGroupLabel(srv), kind: cmdMCPGroup})
 		for _, tool := range srv.Tools {
 			items = append(items, command{name: tool.Name, help: tool.Description, kind: cmdMCPTool})
 		}
