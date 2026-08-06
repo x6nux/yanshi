@@ -565,10 +565,7 @@ func Build(opts Options) (*App, error) {
 	if terr != nil {
 		lspTimeout = 800 * time.Millisecond
 	}
-	langServers := lsp.DefaultLanguages()
-	for lang, spec := range cfg.LSP.Override {
-		langServers[lang] = lsp.LanguageServer{Command: spec.Command, Args: spec.Args}
-	}
+	langServers := lspLanguages(cfg.LSP.Override)
 	lspMgr := lsp.New(lsp.Config{
 		WorkRoot:  workRoot,
 		Languages: langServers,
@@ -1548,6 +1545,39 @@ func homeDirOrDefault() string {
 		return ""
 	}
 	return home
+}
+
+// lspLanguages applies the operator's per-language overrides on top of the
+// built-in table.
+//
+// Split out so the mapping can be asserted without standing up a Manager:
+// lsp.New prunes by PATH, so a test that went through Build would skip on
+// every machine that lacks the configured binary, and a permanently skipped
+// test asserts nothing.
+func lspLanguages(overrides map[string]config.LanguageServerSpec) map[string]lsp.LanguageServer {
+	langServers := lsp.DefaultLanguages()
+	for lang, spec := range overrides {
+		// Preserve the default workspace markers. The config key is named
+		// Override and its fields are command/args: an operator pointing
+		// yanshi at their own gopls build is overriding the COMMAND, not
+		// asking to stop checking whether this is a Go workspace. Rebuilding
+		// the entry from scratch dropped the markers, so overriding one
+		// language silently gave it different gating from every other -- a
+		// server that spawns in directories it has no business in, and no
+		// diagnostic anywhere tying that back to the override.
+		entry := langServers[lang] // zero value for a language with no default
+		entry.Command = spec.Command
+		entry.Args = spec.Args
+		langServers[lang] = entry
+	}
+	return langServers
+}
+
+// LSPLanguagesForTest exposes lspLanguages to the external bootstrap_test
+// package. Named ForTest because nothing in production should re-derive this
+// table -- Build already holds the one that matters.
+func LSPLanguagesForTest(overrides map[string]config.LanguageServerSpec) map[string]lsp.LanguageServer {
+	return lspLanguages(overrides)
 }
 
 func buildMCPManager(cfg *config.Config) *mcp.Manager {

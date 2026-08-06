@@ -131,6 +131,19 @@ func commandAvailable(cmd string) bool {
 	return err == nil
 }
 
+// Languages 返回剪枝后仍可用的语言表副本。用于装配断言:配置覆盖会不会把
+// 默认的 Markers 一起丢掉,除了在这里读出来别无观察点。
+func (m *Manager) Languages() map[string]LanguageServer {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]LanguageServer, len(m.cfg.Languages))
+	for k, v := range m.cfg.Languages {
+		out[k] = v
+	}
+	return out
+}
+
 // Enabled 报告是否有至少一个可用语言 server。false 时 Manager 是 no-op。
 func (m *Manager) Enabled() bool { return m != nil && m.enabled }
 

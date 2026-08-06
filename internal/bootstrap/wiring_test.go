@@ -19,6 +19,7 @@ import (
 
 	"github.com/x6nux/yanshi/internal/agent/orchestrator"
 	"github.com/x6nux/yanshi/internal/bootstrap"
+	"github.com/x6nux/yanshi/internal/config"
 	"github.com/x6nux/yanshi/internal/guard"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/shell"
@@ -882,5 +883,45 @@ func TestMCPHealthLoopIsStarted(t *testing.T) {
 	if !app.MCPHealthRunning() {
 		t.Fatal("the MCP health loop was never started: a dead server stays Ready " +
 			"and its tools keep being offered to the model")
+	}
+}
+
+// TestLSPOverrideKeepsWorkspaceMarkers pins a configuration seam.
+//
+// cfg.LSP.Override lets an operator point yanshi at their own language-server
+// binary. Building the entry from scratch dropped the default workspace
+// markers, so overriding one language silently gave it different SPAWN GATING
+// from every other: gopls would start in a directory with no go.mod, error on
+// every request, and nothing would connect that back to the override.
+//
+// The field is named Override and carries command/args. Overriding the command
+// is not a request to stop checking whether this is a Go workspace.
+//
+// The assertion drives the mapping directly rather than a built App: lsp.New
+// prunes by PATH, so a test that went through Build would SKIP on every
+// machine without the fake binary installed -- and a permanently skipped test
+// asserts nothing at all.
+func TestLSPOverrideKeepsWorkspaceMarkers(t *testing.T) {
+	langs := bootstrap.LSPLanguagesForTest(map[string]config.LanguageServerSpec{
+		"go": {Command: "my-gopls"},
+	})
+	entry, ok := langs["go"]
+	if !ok {
+		t.Fatal("go dropped from the language table entirely")
+	}
+	if entry.Command != "my-gopls" {
+		t.Fatalf("override did not take effect: %+v", entry)
+	}
+	if len(entry.Markers) == 0 {
+		t.Fatal("overriding the command dropped the workspace markers: this server " +
+			"would now spawn in directories that are not Go workspaces")
+	}
+	// A language with no default entry still works, carrying no markers --
+	// yanshi has no opinion about what confirms an unknown language's workspace.
+	langs2 := bootstrap.LSPLanguagesForTest(map[string]config.LanguageServerSpec{
+		"zig": {Command: "zls"},
+	})
+	if langs2["zig"].Command != "zls" {
+		t.Fatalf("a language with no default was dropped: %+v", langs2)
 	}
 }
