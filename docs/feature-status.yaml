@@ -147,14 +147,30 @@
   # 却没有任何服务端会构造它，所以没有客户端收得到；三样东西让它看起来是被维护的
   # 契约，而 NewListMCP 的 doc 还明写"服务端回 NewMCPList(names)"，照着接 handler
   # 的人会等一个永远不来的帧（真正的回复是 mcp_status）。
-  # ⚠️ 仍缺：五子命令渲染 resolved 配置路径 / command|URL / timeout / prompts；
-  # enable/disable/reload 只改内存不回写 config.yaml。
+  # 2026-08-07：partial → done。三条子句逐条对账，各自变异红。
+  #   1 既有 TUI 断言查的是模板自己的 label（"MCP"、"status"），把渲染函数换成
+  #     硬编码常量照样绿。改成断言**manager 自己的数据**：一段任何模板都不可能
+  #     预置的失败原因（URL 里的 marker），以及等于 fake server 实际提供数量的
+  #     工具计数。
+  #   2 拆解点名的廉价版是「断言复选框位翻转」。「生效」的含义是**模型不再被
+  #     提供这些工具**，UI 状态是它的下游而不是它的证据 —— 所以断言的是构造出来
+  #     的工具注册表（正是交给编排器的那份）的前后 diff。
+  #   3 一个只在启动时写一次的 status 字段，会为一小时前就死掉的 server 报 ready，
+  #     而它的工具还在继续通告。断言下一次 Snapshot **不需要额外刷新动作**就反映
+  #     client 已关闭。
+  # ⚠️ 本条 acceptance 三句都已闭合；此前记在这里的「五子命令渲染 resolved 配置
+  # 路径 / command|URL / timeout / prompts」与「enable/disable/reload 回写
+  # config.yaml」**不在这三句里** —— 它们是产品改进项，不是本条的验收内容，
+  # 按 GOV8 的逐句口径不构成阻塞。prompts 那半仍挂在 A3/V16 名下。
 - id: "A3/C13"
   package: "W6"
-  verdict: partial
+  verdict: done
   title: "`/mcp` 实化管理界面"
   acceptance: "展示 server/tool/status/error；enable/disable 生效；状态与 client 实际连接一致"
-  evidence: ""
+  evidence:
+    "1": "internal/api/http::TestMCPStatusCarriesTheManagersOwnErrorText"
+    "2": "internal/api/http::TestMCPDisableRemovesToolsFromTheModelsView"
+    "3": "internal/api/http::TestMCPStatusFollowsTheClientNotACachedFlag"
 
   # W6/Task 11：分组头永远被滤掉 —— 过滤器把分组头也当匹配候选跑
   # HasPrefix(name, prefix)，而 "── files ──" 不可能以用户键入的前缀开头，于是
