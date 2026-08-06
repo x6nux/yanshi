@@ -23,6 +23,9 @@
 
 # --- 配置与密钥 (跟踪 config.example.yaml, 忽略真实配置) ---
 config.yaml
+# Runtime key/value store written by `yanshi app` config/write, named after
+# whatever -config points at (internal/appserver::SidecarPath).
+*.appstate.json
 config.local.yaml
 *.local.yaml
 .env

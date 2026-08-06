@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 )
 
@@ -32,9 +31,16 @@ type FileConfig struct {
 // SidecarPath returns the runtime-config file that accompanies a YAML config
 // path. Exported so operators and tests can name the same file the server
 // writes rather than re-deriving the suffix.
+//
+// The whole filename is kept and the suffix appended, rather than replacing
+// the extension. Replacing it collapsed distinct configs onto one store:
+// config.yaml and config.yml both trimmed to "config", and every
+// extension-less dotfile trimmed to nothing (filepath.Ext(".hidden") is the
+// WHOLE name — there is no stem) and hit the fallback. Two `yanshi app`
+// processes with different -config values then read and wrote the same runtime
+// store, each silently overwriting the other.
 func SidecarPath(configPath string) string {
 	dir, base := filepath.Split(configPath)
-	base = strings.TrimSuffix(base, filepath.Ext(base))
 	if base == "" {
 		base = "config"
 	}
