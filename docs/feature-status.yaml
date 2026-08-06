@@ -162,13 +162,34 @@
   # 更根本的是数据源从不被触发：paletteMCPServers 只由 /mcp 的回复填充，而如果
   # palette 正是发现工具的地方，用户就没有理由去敲 /mcp。已改为启动时请求。
   # 两条缺陷叠加时单独修任一条都测不出效果。
-  # ⚠️ 仍需 disabled/failed 标灰的渲染证据。
+  # 2026-08-07：partial → done。
+  #   1 既有 TestPaletteKeepsMCPGroupHeaders 只证明分组头没被过滤掉，不证明它
+  #     「分组」：每个头后面跟着别的 server 的工具、或者头文本是个常量，它都绿。
+  #     补的判据是**相邻性**（同一 server 的工具连续且在自己的头下面）与**派生性**
+  #     （头带 server 名而不是固定串）。
+  #   2 【新实现】此前 failed server 的工具与正常工具**完全无法区分**：没有标记、
+  #     选中照样把名字贴进输入框，而那次调用会以「unknown tool」回来，操作员无从
+  #     把失败连回那一行。加 command.disabled，渲染带**纯文本**标记（只靠颜色在
+  #     非 TTY、截图、纯文本 transcript 里等于没有），选中被拒。
+  #     刻意**不过滤**：滤掉之后「server 挂了」与「这个 server 没有工具」不可区分。
+  #   3 两端名字同源（都是 td.Qualified）但**走的是两条代码**：palette 侧
+  #     Snapshot → MCPStatusSnapshot → 帧，registry 侧 ListAllTools → NewMCPTools
+  #     → NewGuardedTool → Info()。拆解点名的陷阱是「两边调同一个格式化函数再断言
+  #     相等」的重言式，所以对账放在真 Manager + fake HTTP server 上，一端取 wire
+  #     快照、一端取构造出来的注册表。为此把 briefs 构造从 handler 里抽成
+  #     internal/api/http::MCPStatusSnapshot —— 内联在 handler 里它只能靠 websocket 才测得到。
+  # 顺带修一个**挂死**：paletteMove 跳过分组头用的是无界循环，当 palette 全是头
+  # （每个 server 都零工具 —— 一批 server 全挂就是这个样子）时它永远转下去，UI
+  # 冻死且没有任何日志。
 - id: "A3/MCP1"
   package: "W6"
-  verdict: partial
+  verdict: done
   title: "MCP palette 发现"
   acceptance: "palette 含 MCP 工具分组；disabled/failed 可见标灰；命名与模型可见一致"
-  evidence: ""
+  evidence:
+    "1": "internal/cli/tui::TestPaletteGroupsMCPToolsUnderTheirServer; internal/cli/tui::TestPaletteKeepsMCPGroupHeaders"
+    "2": "internal/cli/tui::TestPaletteShowsFailedServerToolsAsUnavailable"
+    "3": "internal/api/http::TestPaletteNamesMatchTheRegisteredToolNames"
 
   # W6/Task 9（强制重验关卡）实测：与 W07/DT4/DT5/GH1 相反，本项审计判定全部属实。
   # internal/mcp/health.go 写完、有测试、零个非测试调用点 —— SetHealthConfig /

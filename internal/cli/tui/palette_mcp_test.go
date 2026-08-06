@@ -19,6 +19,8 @@ import (
 // A header is not a match candidate; it is a label for the matches under it.
 // So the rule is: keep a header when at least one tool beneath it survived,
 // and drop it when none did -- an empty group is worse than no group.
+//
+// ledger: A3/MCP1#1 palette 含 MCP 工具分组
 func TestPaletteKeepsMCPGroupHeaders(t *testing.T) {
 	m := newTestModel(t)
 	m.paletteMCPServers = []proto.MCPServerStatus{

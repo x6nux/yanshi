@@ -21,6 +21,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
+	"github.com/x6nux/yanshi/internal/mcp"
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/secrets"
 	"github.com/x6nux/yanshi/internal/skills"
@@ -513,8 +514,22 @@ func handleMCPAction(s *Server, conn *wsConn, name, action string) {
 		s.mcp.Validate(ctx)
 	case "list", "":
 	}
-	out := make([]proto.MCPServerStatus, 0, 1)
-	for _, st := range s.mcp.Snapshot(ctx) {
+	conn.write(proto.NewMCPStatusFrame(MCPStatusSnapshot(s.mcp.Snapshot(ctx))))
+}
+
+// MCPStatusSnapshot converts the manager's server statuses into the wire shape
+// the TUI palette renders from.
+//
+// Extracted from handleMCPAction so the mapping can be asserted against the
+// tool registry. The palette shows td.Qualified and the orchestrator registers
+// td.Qualified, but they travel through different code — Snapshot to this
+// function to a frame on one side, ListAllTools to NewGuardedTool on the other
+// — and "the name the operator sees is the name the model was given" only holds
+// while both ends keep agreeing. Inline in a handler it could not be checked
+// without a websocket.
+func MCPStatusSnapshot(snapshot []mcp.ServerStatus) []proto.MCPServerStatus {
+	out := make([]proto.MCPServerStatus, 0, len(snapshot))
+	for _, st := range snapshot {
 		briefs := make([]proto.MCPToolBrief, 0, len(st.Tools))
 		for _, td := range st.Tools {
 			briefs = append(briefs, proto.MCPToolBrief{Name: td.Qualified, Description: td.Description})
@@ -525,5 +540,5 @@ func handleMCPAction(s *Server, conn *wsConn, name, action string) {
 			ToolCount: len(st.Tools), Tools: briefs,
 		})
 	}
-	conn.write(proto.NewMCPStatusFrame(out))
+	return out
 }

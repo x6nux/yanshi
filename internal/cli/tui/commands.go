@@ -36,7 +36,12 @@ type command struct {
 	help    string
 	helpKey string
 	kind    commandKind
-	run     func(m model, args []string) (tea.Model, tea.Cmd)
+	// disabled marks an entry that is shown but cannot be used — currently
+	// MCP tools whose server is not ready. Filtering them out instead would
+	// make a failed server indistinguishable from one that exposes no tools,
+	// which is the opposite of what the operator needs to see.
+	disabled bool
+	run      func(m model, args []string) (tea.Model, tea.Cmd)
 }
 
 // commandTable is the ordered list shown by /help. Order matters for help
@@ -186,7 +191,14 @@ func (m model) paletteBlock() string {
 			if desc == "" {
 				desc = "MCP tool"
 			}
-			line = fmt.Sprintf("    %-7s  %s", c.name, toolMeta.Render(desc))
+			if c.disabled {
+				// Dimmed AND marked. Colour alone is not the signal: it is
+				// absent on a non-TTY, and the row still has to read as
+				// unusable in a plain-text transcript or a screenshot.
+				line = toolMeta.Render(fmt.Sprintf("    %-7s  %s  (unavailable)", c.name, desc))
+			} else {
+				line = fmt.Sprintf("    %-7s  %s", c.name, toolMeta.Render(desc))
+			}
 		case cmdAtPath:
 			line = fmt.Sprintf("  @%-30s %s", c.name, toolMeta.Render(c.help))
 		default:
@@ -209,8 +221,11 @@ func (m *model) paletteMove(delta int) {
 	}
 	n := len(m.paletteItems)
 	m.paletteSel = ((m.paletteSel+delta)%n + n) % n
-	// Skip group headers (cmdMCPGroup).
-	for n > 0 && m.paletteItems[m.paletteSel].kind == cmdMCPGroup {
+	// Skip group headers (cmdMCPGroup). Bounded by n: a palette that is ALL
+	// headers — every configured server exposing zero tools, which is what a
+	// fleet of failed servers looks like — would otherwise spin here forever
+	// with the UI frozen and no error anywhere.
+	for i := 0; i < n && m.paletteItems[m.paletteSel].kind == cmdMCPGroup; i++ {
 		m.paletteSel = ((m.paletteSel+delta)%n + n) % n
 	}
 }
@@ -227,6 +242,12 @@ func (m *model) paletteComplete() {
 		m.completeAtPath(sel)
 		return
 	case cmdMCPTool:
+		if sel.disabled {
+			// Selecting it must not insert the name: the server is not
+			// connected, so the call would fail with an "unknown tool" the
+			// operator has no way to connect back to the palette row.
+			return
+		}
 		// MCP tools insert the qualified name directly (no "/" prefix).
 		m.input.SetValue(sel.name)
 	case cmdMCPGroup:
@@ -330,10 +351,12 @@ func (m model) sendControlFrame(f proto.ClientFrame) (tea.Model, tea.Cmd) {
 func (m *model) matchingMCPItems(prefix string) []command {
 	var out []command
 	for _, srv := range m.paletteMCPServers {
+		down := srv.Status != "ready"
 		var tools []command
 		for _, tool := range srv.Tools {
 			if strings.HasPrefix(tool.Name, prefix) {
-				tools = append(tools, command{name: tool.Name, help: tool.Description, kind: cmdMCPTool})
+				tools = append(tools, command{name: tool.Name, help: tool.Description,
+					kind: cmdMCPTool, disabled: down})
 			}
 		}
 		if len(tools) == 0 {
@@ -359,9 +382,11 @@ func mcpGroupLabel(srv proto.MCPServerStatus) string {
 func (m *model) paletteMCPItems() []command {
 	var items []command
 	for _, srv := range m.paletteMCPServers {
+		down := srv.Status != "ready"
 		items = append(items, command{name: mcpGroupLabel(srv), kind: cmdMCPGroup})
 		for _, tool := range srv.Tools {
-			items = append(items, command{name: tool.Name, help: tool.Description, kind: cmdMCPTool})
+			items = append(items, command{name: tool.Name, help: tool.Description,
+				kind: cmdMCPTool, disabled: down})
 		}
 	}
 	return items
