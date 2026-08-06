@@ -1,8 +1,12 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
+	"github.com/x6nux/yanshi/internal/secproc"
+	"strings"
 	"testing"
+	"time"
 )
 
 // TestParseGitStatusZHandlesTrackedRecords covers the branch that had no test.
@@ -119,5 +123,64 @@ func TestMergeNumstatByPathDeduplicates(t *testing.T) {
 	}
 	if !got[2].Untracked {
 		t.Fatalf("untracked flag lost: %+v", got[2])
+	}
+}
+
+// TestCollectGitDiffFilesDedupesEndToEnd asserts the merge is actually IN the
+// pipeline, not merely available to it.
+//
+// R3 found TestMergeNumstatByPathDeduplicates could not tell: it drives the
+// function directly, so deleting the call from collectGitDiffFiles left it
+// green. The dedup could be silently unwired and every test still passed --
+// the same "built but never assembled" shape this work package kept finding
+// in other people's code, reproduced in the fix for it.
+//
+// So this drives the whole collector with a faked runner: unstaged numstat
+// reports a.go, --cached reports a.go again plus b.go, ls-files reports an
+// untracked c.txt. One entry per path, or the model sees a.go twice with two
+// partial diffs.
+func TestCollectGitDiffFilesDedupesEndToEnd(t *testing.T) {
+	orig := secureCommandRunner
+	t.Cleanup(func() { secureCommandRunner = orig })
+
+	secureCommandRunner = func(_ context.Context, spec secproc.SecureProcessSpec, _ time.Duration) (commandResult, error) {
+		args := strings.Join(spec.Args, " ")
+		switch {
+		case strings.Contains(args, "ls-files"):
+			return commandResult{Stdout: "c.txt\x00"}, nil
+		case strings.Contains(args, "--cached"):
+			return commandResult{Stdout: "10\t2\ta.go\x005\t0\tb.go\x00"}, nil
+		case strings.Contains(args, "--numstat"):
+			return commandResult{Stdout: "3\t1\ta.go\x00"}, nil
+		default: // per-file patch probe
+			return commandResult{Stdout: "@@ -1 +1 @@\n-x\n+y\n"}, nil
+		}
+	}
+
+	var args gitDiffArgs
+	args.Scope.Kind = "working_tree"
+	files, err := collectGitDiffFiles(context.Background(), t.TempDir(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seen := map[string]int{}
+	for _, f := range files {
+		seen[f.Path]++
+	}
+	if seen["a.go"] != 1 {
+		t.Fatalf("a.go appears %d times: staged and unstaged halves were not merged (%+v)",
+			seen["a.go"], files)
+	}
+	if len(files) != 3 {
+		t.Fatalf("want 3 paths (a.go, b.go, c.txt), got %d: %+v", len(files), files)
+	}
+	for _, f := range files {
+		if f.Path == "a.go" && f.Additions != 13 {
+			t.Fatalf("line counts must add across staged and unstaged: %+v", f)
+		}
+		if f.Path == "c.txt" && f.Binary {
+			t.Fatalf("an untracked text file must not be reported as binary: %+v", f)
+		}
 	}
 }
