@@ -231,20 +231,6 @@ func (v *VCS) WorktreePath(wtID string) (string, error) {
 	return w.Path, nil
 }
 
-// writeCommit stores a commit + its full path→hash tree in its own transaction.
-// It is the standalone entry point (used by InitRepo). Commit and MergeToMain use
-// writeCommitInTx directly so they can fold the commit-row + tree-row inserts in
-// with their side-effect updates (clear changeset, advance head) as one atomic tx.
-func (v *VCS) writeCommit(repoID, worktreeID, parentID, mergedFrom, author, message string, tree map[string]string) (string, error) {
-	var id string
-	err := v.store.WriteTx(context.Background(), func(tx *sql.Tx) error {
-		var e error
-		id, e = v.writeCommitInTx(tx, repoID, worktreeID, parentID, mergedFrom, author, message, tree)
-		return e
-	})
-	return id, err
-}
-
 // writeCommitInTx stores a commit + its DELTA vs the parent's tree inside a
 // CALLER-OWNED transaction (it does not Begin/Commit). Returns the commit id.
 //
@@ -688,17 +674,36 @@ func (v *VCS) initNewRepoLocked(canonicalRoot string) (string, error) {
 		tree[rel] = v.putBlob(data)
 		return nil
 	})
-	commitIDVal, err := v.writeCommit(
-		id, "", "", "", "orchestrator", "vcs init", tree,
-	)
-	if err != nil {
-		return "", err
-	}
+	// Repo row first, initial commit second, main_head last — all inside ONE
+	// transaction.
+	//
+	// The row used to be written AFTER the commit, on the reasoning that no
+	// repoID writer could then discover a repo whose initial commit did not
+	// exist yet. That ordering bought the invariant at the cost of a window in
+	// which vcs_commits held a row whose repo_id pointed at nothing — which is
+	// exactly what PRAGMA foreign_keys=ON refuses (the commit INSERT fails
+	// before the repo row is ever reached).
+	//
+	// A single transaction gives the same invariant more cheaply: readers are
+	// atomic with respect to it, so the repo becomes discoverable only once the
+	// commit and main_head are already durable. main_head is set by an UPDATE
+	// rather than carried into the INSERT because the commit id is a content
+	// hash that writeCommitInTx computes — it is not known until the commit
+	// rows are written.
 	if err := v.store.WriteTx(context.Background(), func(tx *sql.Tx) error {
-		_, e := tx.Exec(
-			"INSERT INTO vcs_repos (id, root_path, main_head, created_at) VALUES (?, ?, ?, ?)",
-			id, canonicalRoot, commitIDVal, time.Now().Unix(),
+		if _, e := tx.Exec(
+			"INSERT INTO vcs_repos (id, root_path, main_head, created_at) VALUES (?, ?, '', ?)",
+			id, canonicalRoot, time.Now().Unix(),
+		); e != nil {
+			return e
+		}
+		commitIDVal, e := v.writeCommitInTx(
+			tx, id, "", "", "", "orchestrator", "vcs init", tree,
 		)
+		if e != nil {
+			return e
+		}
+		_, e = tx.Exec("UPDATE vcs_repos SET main_head = ? WHERE id = ?", commitIDVal, id)
 		return e
 	}); err != nil {
 		return "", err

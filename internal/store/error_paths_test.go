@@ -320,17 +320,18 @@ func TestRestoreSessionAfterFailedRevert_SessionMismatch(t *testing.T) {
 
 // TestRestoreSessionAfterFailedRevert_RowsAffectedZero exercises the
 // RowsAffected==0 guard after the UPDATE sessions statement inside WriteTx.
+//
+// The snapshot carries NO messages on purpose. The guard under test sits after
+// the message-insert loop, and since the store began enforcing messages.
+// session_id, a snapshot message naming a session that does not exist fails on
+// the INSERT and never reaches the UPDATE — the test would then assert the
+// right message from the wrong statement.
 func TestRestoreSessionAfterFailedRevert_RowsAffectedZero(t *testing.T) {
 	s, err := Open(":memory:")
 	require.NoError(t, err)
 	defer s.Close()
 
-	snap := SessionRevertSnapshot{
-		Meta: SessionSummary{ID: "different-id", Turns: 1},
-		Messages: []Message{
-			{ID: "m1", SessionID: "different-id", Seq: 0, Role: "user", Content: "hi", CreatedAt: 100},
-		},
-	}
+	snap := SessionRevertSnapshot{Meta: SessionSummary{ID: "different-id", Turns: 1}}
 	err = s.RestoreSessionAfterFailedRevert(snap)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "affected 0 rows")

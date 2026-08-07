@@ -152,26 +152,47 @@ func OpenWith(path string, opts OpenOptions) (*Store, error) {
 
 // buildDSN appends the _pragma query string for per-connection PRAGMAs (modernc
 // DSN format, v1.53.0+). path must not contain '?'.
+//
+// foreign_keys(ON) is here rather than in applyConnectionPragmas because SQLite
+// makes it a PER-CONNECTION setting that defaults to OFF: a single Exec would
+// arm one pooled connection and leave the other three unenforced, which is
+// worse than off (referential bugs would surface nondeterministically depending
+// on which connection served the write). It is not merely defensive — turning
+// it on surfaced a real ordering bug in vcs.initNewRepoLocked, which wrote the
+// initial commit before the vcs_repos row it points at.
+//
 // :memory: databases skip the DSN pragmas because modernc may not recognize
 // :memory:?_pragma=... as in-memory on all platforms (macOS/Windows would
 // create a file-backed database instead), and the single-connection forced by
-// :memory: makes the per-connection pragmas redundant anyway.
+// :memory: makes the WAL/timeout pragmas redundant anyway. foreign_keys is the
+// exception — it changes behaviour rather than performance, so
+// applyConnectionPragmas re-arms it with an Exec for that one case.
 func buildDSN(path string, busyMs, autoCkpt int) string {
 	if path == ":memory:" {
 		return path
 	}
 	return path + "?_pragma=busy_timeout(" + strconv.Itoa(busyMs) + ")" +
 		"&_pragma=synchronous(NORMAL)" +
-		"&_pragma=wal_autocheckpoint(" + strconv.Itoa(autoCkpt) + ")"
+		"&_pragma=wal_autocheckpoint(" + strconv.Itoa(autoCkpt) + ")" +
+		"&_pragma=foreign_keys(ON)"
 }
 
 // applyConnectionPragmas sets the persistent journal_mode=WAL. This runs once
 // per Store (on the first connection) and is idempotent. The per-connection
-// PRAGMAs (synchronous, busy_timeout, wal_autocheckpoint) are handled by DSN
-// _pragma, not here.
+// PRAGMAs (synchronous, busy_timeout, wal_autocheckpoint, foreign_keys) are
+// handled by DSN _pragma, not here — with the single :memory: exception below,
+// which the DSN cannot reach.
 func (s *Store) applyConnectionPragmas() error {
 	if s.inMemory {
-		return nil // WAL is not meaningful for :memory: databases
+		// WAL is not meaningful for :memory:, but foreign_keys is: buildDSN
+		// returns ":memory:" unchanged, so the DSN _pragma list never reaches
+		// an in-memory database. :memory: forces MaxOpenConns=1, so a plain
+		// Exec covers every connection there. Without this an in-memory test
+		// would run with FK enforcement OFF while production has it ON — the
+		// referential bugs this pragma exists to catch would be invisible to
+		// exactly the cheapest tests, which is most of this repo's suite.
+		_, err := s.DB.Exec("PRAGMA foreign_keys=ON")
+		return err
 	}
 	if _, err := s.DB.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		return fmt.Errorf("store: set WAL: %w", err)

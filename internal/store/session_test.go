@@ -123,26 +123,32 @@ func TestSession_MessageCount(t *testing.T) {
 	assert.Equal(t, 2, n)
 }
 
-// TestSession_AppendMessage_MissingSession documents the unenforced-FK
-// behavior: appending to a non-existent session does NOT error (the messages
-// row is orphaned), and Messages returns the orphan because it queries by
-// session_id. This is correct SQLite behavior — the FK constraint is advisory
-// by default. The test guards against a future regression that would either
-// panic on missing sessions or silently drop the orphan.
+// TestSession_AppendMessage_MissingSession pins that appending to a session
+// that does not exist is REFUSED, and that no row is left behind.
+//
+// This inverts what the test asserted before. The old version documented
+// SQLite's default — messages.session_id was declared but unenforced, so the
+// append silently produced an orphan that Messages would happily return. That
+// was recorded as "correct SQLite behavior", which it is, but it made the
+// declared constraint decorative: the schema said one thing and the database
+// did another, and the only way to notice was to go looking.
+//
+// Both production callers (internal/api/http.chatState append path and
+// internal/api/v1.Service) create the session before appending, so nothing
+// legitimate is being rejected here. What is rejected is a transcript that
+// would be invisible in every session listing while still counting toward
+// storage — a failure mode with no error to trace it back to.
 func TestSession_AppendMessage_MissingSession(t *testing.T) {
 	s, err := Open(":memory:")
 	require.NoError(t, err)
 	defer s.Close()
 
-	// messages.session_id FK is unenforced by default → AppendMessage to a
-	// non-existent session does not error; Messages returns the orphan row.
 	err = s.AppendMessage("definitely-not-a-session", 0, "user", "x")
-	require.NoError(t, err, "AppendMessage must not reject a missing session")
+	require.Error(t, err, "an orphan message must not be storable")
 
 	msgs, err := s.Messages("definitely-not-a-session")
 	require.NoError(t, err)
-	require.Len(t, msgs, 1, "orphan row is queryable by session_id")
-	assert.Equal(t, "x", msgs[0].Content)
+	assert.Empty(t, msgs, "the rejected append must not have written a row")
 }
 
 // TestSession_LargeContent proves AppendMessage handles >=1MB content without

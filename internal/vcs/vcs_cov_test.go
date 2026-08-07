@@ -484,6 +484,38 @@ func TestVCS_IsIgnoredSegmentMatch(t *testing.T) {
 // TestVCS_WorktreePathMissing already exists as TestWorktreePath_Missing,
 // so we don't duplicate.
 
+// deleteBypassingForeignKeys runs a DELETE that PRAGMA foreign_keys=ON would
+// otherwise refuse, on a connection pinned with the pragma turned off.
+//
+// The tests below simulate a corrupted database — a vcs_repos or vcs_commits
+// row missing while rows that reference it survive. That state is unreachable
+// through this package's own API, which is the point: the branches they cover
+// are defensive. Since the store began enforcing referential integrity it is
+// also unreachable through a plain Exec, so the corruption has to be staged the
+// way it would really arrive — an external tool writing to the file with
+// enforcement off (the sqlite3 CLI defaults to exactly that).
+//
+// The pragma is per-connection, so it must be set and cleared on ONE pinned
+// *sql.Conn; setting it on s.DB would arm a random member of the pool and hand
+// the rest back to production code still unenforced.
+func deleteBypassingForeignKeys(t *testing.T, s *store.Store, query string, args ...any) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := s.DB.Conn(ctx)
+	require.NoError(t, err)
+	defer func() {
+		// Re-arm before the connection returns to the pool, or the next caller
+		// to draw it silently loses enforcement.
+		_, rearmErr := conn.ExecContext(ctx, "PRAGMA foreign_keys=ON")
+		require.NoError(t, rearmErr)
+		require.NoError(t, conn.Close())
+	}()
+	_, err = conn.ExecContext(ctx, "PRAGMA foreign_keys=OFF")
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, query, args...)
+	require.NoError(t, err)
+}
+
 // ---------- RevertToSeam: getRepo error ----------
 
 // TestVCS_RevertToSeamRepoNotFound covers the getRepo error at
@@ -497,8 +529,7 @@ func TestVCS_RevertToSeamRepoNotFound(t *testing.T) {
 
 	// Delete the repo row from vcs_repos — FindSeam succeeds (seam row
 	// exists) but getRepo fails (no repo row).
-	_, err = v.store.DB.Exec("DELETE FROM vcs_repos WHERE id=?", repoID)
-	require.NoError(t, err)
+	deleteBypassingForeignKeys(t, v.store, "DELETE FROM vcs_repos WHERE id=?", repoID)
 
 	_, err = v.RevertToSeam(repoID, seamID, "missing-repo", 0, 0, nil)
 	require.Error(t, err)
@@ -569,8 +600,7 @@ func TestVCS_RevertToSeamTargetCommitNotFound(t *testing.T) {
 	// Delete the target commit that the seam references.
 	seam, err := v.FindSeam(seamID)
 	require.NoError(t, err)
-	_, err = v.store.DB.Exec("DELETE FROM vcs_commits WHERE id=?", seam.CommitID)
-	require.NoError(t, err)
+	deleteBypassingForeignKeys(t, v.store, "DELETE FROM vcs_commits WHERE id=?", seam.CommitID)
 
 	_, err = v.RevertToSeam(repoID, seamID, "test", 0, 0, nil)
 	require.Error(t, err)
@@ -586,10 +616,9 @@ func TestVCS_ResetMainHeadLockedRepoNotFound(t *testing.T) {
 	head := mustMainHead(t, v, repoID)
 
 	// Delete the repo row so the UPDATE matches 0 rows.
-	_, err := v.store.DB.Exec("DELETE FROM vcs_repos WHERE id=?", repoID)
-	require.NoError(t, err)
+	deleteBypassingForeignKeys(t, v.store, "DELETE FROM vcs_repos WHERE id=?", repoID)
 
-	err = v.resetMainHeadLocked(repoID, head)
+	err := v.resetMainHeadLocked(repoID, head)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -621,8 +650,7 @@ func TestVCS_MergeToMainLockedGetRepoErr(t *testing.T) {
 	require.NoError(t, err)
 
 	// Delete the repo row so getRepo fails.
-	_, err = v.store.DB.Exec("DELETE FROM vcs_repos WHERE id=?", repoID1)
-	require.NoError(t, err)
+	deleteBypassingForeignKeys(t, v.store, "DELETE FROM vcs_repos WHERE id=?", repoID1)
 
 	_, _, err = v.mergeToMainLocked(repoID1, wt.ID, "author", false)
 	require.Error(t, err)

@@ -268,31 +268,38 @@ func TestRestoreSessionAfterFailedRevert_DeleteMessagesFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "injected restore delete failure")
 }
 
-// TestRestoreSessionAfterFailedRevert_SessionsTableDropped 验证 restore 中
-// UPDATE sessions 在 sessions 表不存在时的错误路径（session.go line 354-356）。
-// 先获取有效 snapshot，再 DROP sessions 表，使 UPDATE sessions Exec 失败。
-func TestRestoreSessionAfterFailedRevert_SessionsTableDropped(t *testing.T) {
+// TestRestoreSessionAfterFailedRevert_SessionsTableUnwritable 验证 restore 中
+// UPDATE sessions 自身 Exec 失败时的错误路径（session.go::RestoreSessionAfterFailedRevert
+// 里包 "restore session meta" 的那一段）。
+//
+// 制造失败的手段是一个 BEFORE UPDATE 触发器，而不是原先的 DROP TABLE sessions。
+// messages.session_id 被强制执行之后，父表一旦消失，restore 的**第一条语句**
+// （DELETE FROM messages）就要去查父表，于是先报 "no such table: main.sessions"，
+// UPDATE 那条路径根本走不到 —— 测试仍会红/绿，但描述的已经是另一条语句。
+// 触发器把失败精确地钉在 UPDATE 上，且不动 messages 这一侧。
+func TestRestoreSessionAfterFailedRevert_SessionsTableUnwritable(t *testing.T) {
 	s, err := Open(":memory:")
 	require.NoError(t, err)
 	defer s.Close()
 
 	id, err := s.CreateSession("test-del-sess")
 	require.NoError(t, err)
-	require.NoError(t, s.AppendMessage(id, 0, "user", "hi"))
 
 	// 获取有效 snapshot
 	snap, err := s.SnapshotSessionForRevert(id)
 	require.NoError(t, err)
 	assert.NotEmpty(t, snap.Meta.ID)
 
-	// 删除 sessions 表，使稍后的 UPDATE sessions 失败
-	_, err = s.DB.Exec("DROP TABLE sessions")
+	_, err = s.DB.Exec(`CREATE TRIGGER block_session_update BEFORE UPDATE ON sessions
+	  BEGIN SELECT RAISE(ABORT, 'sessions is unwritable'); END`)
 	require.NoError(t, err)
 
 	// Restore 应该失败于 UPDATE sessions
 	err = s.RestoreSessionAfterFailedRevert(snap)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "restore session meta")
+	assert.Contains(t, err.Error(), "sessions is unwritable",
+		"必须是 UPDATE 自己失败，而不是前面某条语句先报错")
 }
 
 // ---------------------------------------------------------------------------
