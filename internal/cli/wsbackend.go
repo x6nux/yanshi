@@ -365,6 +365,10 @@ func toStreamEvent(f proto.ServerFrame) StreamEvent {
 		Permissions:      f.Permissions,
 		Jobs:             f.Jobs,
 		Task:             f.Task,
+		AgentID:          f.AgentID,
+		AgentRole:        f.AgentRole,
+		AgentEvent:       f.Event,
+		AgentStatus:      f.AgentStatus,
 		TaskID:           f.TaskID,
 		Checklist:        f.Checklist,
 		// B2-RB1: seam fields. seams/head are populated for the seams reply;

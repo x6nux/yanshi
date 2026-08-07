@@ -1083,6 +1083,33 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 		m.entries = append(m.entries, checklistEntry{
 			taskID: ev.ID, list: *ev.Checklist, replaced: ev.Kind == "plan_update",
 		})
+	case "subagent_event":
+		// Sub-agent lifecycle. The server has relayed these since B1 and the
+		// client dropped every one: StreamEvent had no fields for them and
+		// this switch had no branch. A user who ran agent_spawn saw nothing
+		// between the spawn and the parent turn's end — and this session put
+		// agent_spawn/list/result/wait/send_input/assign/cancel/resume into the
+		// factory allow list, so that silence is now the DEFAULT experience
+		// rather than something you had to configure your way into.
+		//
+		// One line per event: a fan-out of sub-agents emits many of these, and
+		// a block each would bury the conversation they annotate.
+		if ev.AgentID == "" {
+			break
+		}
+		m.flushAssistant()
+		text := fmt.Sprintf("subagent %s", ev.AgentID)
+		if ev.AgentRole != "" {
+			text += " (" + ev.AgentRole + ")"
+		}
+		text += ": " + ev.AgentEvent
+		if ev.AgentStatus != "" && ev.AgentStatus != ev.AgentEvent {
+			text += " [" + ev.AgentStatus + "]"
+		}
+		if ev.Text != "" {
+			text += " — " + ev.Text
+		}
+		m.entries = append(m.entries, summaryEntry{text: text})
 	case "task_update":
 		// Durable tasks change state on a broker worker, long after the turn
 		// that created them returned, and the server broadcasts each

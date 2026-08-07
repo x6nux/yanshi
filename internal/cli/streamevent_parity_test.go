@@ -79,6 +79,10 @@ var streamEventFieldMap = map[string]string{
 	"CostUSD":          "CostUSD",
 	"CostKnown":        "CostKnown",
 	"Features":         "Features",
+	"AgentID":          "AgentID",
+	"AgentRole":        "AgentRole",
+	"Event":            "AgentEvent",
+	"AgentStatus":      "AgentStatus",
 }
 
 // streamEventNotCarried lists the proto.ServerFrame fields toStreamEvent
@@ -86,12 +90,24 @@ var streamEventFieldMap = map[string]string{
 // here is a decision, not a default: the parity test fails on any ServerFrame
 // field absent from both tables, so a newly added wire field cannot reach the
 // client half-wired without someone writing a line in one of them.
-var streamEventNotCarried = map[string]string{
-	"AgentID":     "subagent_event: the TUI renders subagent lifecycle from the tool blocks, not these ids",
-	"AgentRole":   "subagent_event: see AgentID",
-	"Event":       "subagent_event: see AgentID",
-	"AgentStatus": "subagent_event: see AgentID",
-}
+// A worked example of how an entry here goes wrong, kept because the failure
+// mode is invisible by construction: the four subagent_event fields used to
+// live in this table, justified as "the TUI renders subagent lifecycle from the
+// tool blocks, not these ids". That claim was never true of the LIFECYCLE — the
+// tool block shows agent_start's final result, while the relay exists precisely
+// for agent_spawn, which is fire-and-forget and returns before anything has
+// happened. It was merely harmless, because agent_spawn was not in the factory
+// allow list, so almost nobody could produce the frames being dropped.
+//
+// The gate below verifies that a not-carried field really is not carried. It
+// cannot verify the REASON, and a reason is what makes this table a decision
+// rather than a list. So the gate enforced a false premise faithfully, and the
+// premise's expiry date — the day the profile widened — passed silently.
+//
+// Before adding an entry: write the reason as a claim about observable
+// behaviour, and go check it. "The TUI shows this another way" means you can
+// name the branch in applyEvent that does it.
+var streamEventNotCarried = map[string]string{}
 
 // TestToStreamEventCarriesEveryServerFrameField is the field-level parity gate
 // for the shared ServerFrame → StreamEvent hop. For every mapped field it sets

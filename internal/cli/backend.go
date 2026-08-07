@@ -90,9 +90,21 @@ type StreamEvent struct {
 	Jobs        []proto.JobInfo
 
 	// A2 task/plan/checklist frames.
-	Task      *work.WorkTask
-	TaskID    string
-	Checklist *work.Checklist
+	Task *work.WorkTask
+
+	// Sub-agent lifecycle (subagent_event frames). The server has relayed
+	// these since B1 — a per-connection relay on WS, the bounded lifecycle
+	// relay on SSE — and toStreamEvent dropped every one of them, because
+	// StreamEvent had nowhere to put them. Both transports had a server-side
+	// test proving the frame goes OUT; nothing checked that anything received
+	// it, so a user who spawned a sub-agent saw no sign of it until the parent
+	// turn ended.
+	AgentID     string
+	AgentRole   string
+	AgentEvent  string
+	AgentStatus string
+	TaskID      string
+	Checklist   *work.Checklist
 
 	// Seam fields (B2-RB1): populated by toStreamEvent for seams /
 	// seam_restored control replies. Seams carries the list payload;
