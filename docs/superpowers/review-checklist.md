@@ -698,10 +698,21 @@ LSP 等价物比 `grep` 准（能区分定义与引用）：对构造函数用 `
 
 ### 真实实例（本仓，第 22 轮实测）
 
-「计划可流式更新」这条能力**两端各自齐全**：`internal/proto/frame.go::NewPlanUpdate` 构造帧，`internal/cli/tui/entries.go::planUpdateEntry` 渲染条目，**两端都有真单测** —— `internal/proto::TestNewPlanUpdateNilRowsIsNonNilEmptyChecklist` 与 `internal/cli/tui::TestPlanAndChecklistUpdateEntry_Render`。链路却断两刀：
+「计划可流式更新」这条能力**两端各自齐全**：`internal/proto/frame.go::NewPlanUpdate` 构造帧，一个专门的渲染器渲染条目（名字已随修复删除，故此处不给可解析路径），**两端都有真单测**。链路却断两刀：
 
 1. `internal/agent/orchestrator/orchestrator.go::TurnOpts` 的 `EmitWorkFrame` 字段**全仓零生产赋值点** —— WS 与 SSE 都没接，`workEventFrame` 造出来的帧发不出去。
 2. `internal/cli/tui/model.go::applyEvent` 的 switch 里**没有 `plan_update` 分支** —— 就算帧发出去了，TUI 也不认。
+
+**⚠️ 这条实例本身有一段后续，比实例更值得记（2026-08-07）：** 第 2 条在 A2 收尾时修了，
+**第 1 条一直没修**，而它就白纸黑字写在这份每轮必读的清单里。四个月后另一轮评审
+把它当作**新发现**重新挖了一遍 —— 同一个字段、同一句「零生产赋值点」。
+
+教训不是「要更仔细读清单」，那是不可执行的。教训是：**清单里的实例段落在描述一个
+未修复的缺陷时，必须同时在台账或工作包里留一个可跟踪的条目**。散文里的缺陷描述会
+被当成历史故事读，不会被当成待办读 —— 而这份清单的每条实例都长得像历史故事。
+
+同一天还抓到同形态的第三跳：`task_update` 帧被广播出去了，`applyEvent` 里没有分支。
+**修一跳只让缺陷往下游挪一格。**
 
 两端单测**全绿**，且它们的绿是货真价实的。A 打不到（掏空任一端，那一端会红，证明测试有效 —— 链路依然是断的）；H 打不到（`plan_update` 不是幻影名，帧类型真实存在、构造函数真实存在）。这个事实早就被记在 `docs/superpowers/acceptance-breakdown.md` 的 A2/G05 条目里，但在本条落地之前，**没有任何一条评审手法会主动去找它** —— 它只能靠有人恰好读到那一段。J 就是为了把「恰好读到」换成「每轮必扫」。
 

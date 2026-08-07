@@ -177,9 +177,13 @@
 - 证据形状：断言 plan turn 的 `tool_result` 里出现「工具不存在/未授权」，且 `filterPlanTools` 后的工具名集合不含 `fs_write`。**骗过去**：断言「目标文件不存在」—— 修复前后文件都不会出现，这是变异盲。
 
 **2. 计划可流式更新** — 未兑现（**实现断在两处**）
-- 依据：工具端齐全（`internal/tools/plan.go::PlanTools.updatePlan/PlanTools.checklistAdd/PlanTools.checklistUpdate` 三处 `EmitWorkEvent`）、帧构造齐全（`internal/proto/frame.go::NewPlanUpdate/NewChecklistUpdate`）。但链路断两刀：(a) `TurnOpts.EmitWorkFrame`（`orchestrator.go`）**全仓零生产赋值点** —— 只命中定义、消费处（`::Orchestrator.withTurnContext`）和计划文档，WS/SSE 都没接；(b) `internal/cli/tui/model.go` 的 `applyEvent` switch 里**没有 `plan_update` / `checklist_update` 分支**，`planUpdateEntry`/`checklistUpdateEntry`（`entries.go`）只在测试里被构造过，是运行时死代码。
-- 现有两个测试都是假证据：`internal/proto::TestNewPlanUpdateNilRowsIsNonNilEmptyChecklist` 与 `internal/cli/tui::TestPlanAndChecklistUpdateEntry_Render` —— 典型的「每一跳有单测但接缝没接」，后者直接 new 一个 entry 调 `render`，把死代码测绿了。
-- 证据形状：端到端 —— WS 连接上发一个触发 `update_plan` 的 turn，**从连接上收到 type=`plan_update` 的帧**，且 TUI `applyEvent` 处理后 `m.entries` 里多出一个 `planUpdateEntry`。**骗过去**：正是现有这两个测试。
+- 依据：工具端齐全（`internal/tools/plan.go::PlanTools.updatePlan/PlanTools.checklistAdd/PlanTools.checklistUpdate` 三处 `EmitWorkEvent`）、帧构造齐全（`internal/proto/frame.go::NewPlanUpdate/NewChecklistUpdate`）。但链路断两刀：(a) `TurnOpts.EmitWorkFrame`（`orchestrator.go`）**全仓零生产赋值点** —— 只命中定义、消费处（`::Orchestrator.withTurnContext`）和计划文档，WS/SSE 都没接；(b) `internal/cli/tui/model.go` 的 `applyEvent` switch 里**没有 `plan_update` / `checklist_update` 分支**，当时那两个渲染器只在测试里被构造过，是运行时死代码（名字已随 2026-08-07 的修复删除，故此处不给可解析路径）。
+- 现有两个测试都是假证据：`internal/proto::TestNewPlanUpdateNilRowsIsNonNilEmptyChecklist` 与那条直接 new 一个 entry 调 `render` 的渲染测试 —— 典型的「每一跳有单测但接缝没接」，把死代码测绿了。
+- 证据形状：端到端 —— WS 连接上发一个触发 `update_plan` 的 turn，**从连接上收到 type=`plan_update` 的帧**，且 TUI `applyEvent` 处理后 `m.entries` 里多出一个条目。**骗过去**：正是现有这两个测试。
+- **2026-08-07 结局**：(b) 在 A2 收尾时修了；(a) 直到今天才修
+  （`internal/api/http/ws.go` 与 `internal/api/http/chat.go` 各接一次 `EmitWorkFrame`，
+  端到端测试 `internal/api/http::TestChatWS_ToolWorkEventReachesTheClient` /
+  `internal/api/http::TestChatSSE_ToolWorkEventReachesTheClient`）。
 
 **3. 确认后切执行且历史连续** — 未兑现
 - 依据：模式切回有（`internal/cli/tui/commands.go::cmdPlan/cmdPlanOff` `prePlanMode` 保存/恢复），但**没有任何测试断言 history 连续**。`internal/cli/tui::TestCmdPlan_EnterAndExitWS` 只测 TUI 侧模式字段来回，不碰 history。
