@@ -107,8 +107,14 @@ cutoff 与 `updated_at` 都是秒粒度 Unix 时间戳，亚秒偏移四舍五�
 
 **未闭合（各有归属）：**
 
-- `LifecycleMirror` 的状态变化不推送到 TUI → 需要 broker → WS 事件通道，新设计
-- `PRAGMA foreign_keys` 从未开启，四张 `task_work_*` 表的 FK / CASCADE 全部不生效 ——
-  实测打开会红 10 条测试（都是测试自己造的孤儿数据），另开工作包
+- ~~`LifecycleMirror` 的状态变化不推送到 TUI~~ → **同日已闭合**：Server 维护 WS 连接
+  注册表，`LifecycleMirror.OnTransition` 经 bootstrap 接到 `srv.Broadcast`；端到端测试
+  跑真 Build + 真 WS 客户端 + 真 Claim，三个探针各一向
+- ~~`PRAGMA foreign_keys` 从未开启~~ → **同日已闭合**：DSN 里开（每条池连接都要，
+  单条 Exec 只武装一条比不开更糟），`:memory:` 走 `applyConnectionPragmas`。
+  实测**并不是**「10 条测试造孤儿数据」——开了之后暴露的是一个**真实的写序 bug**：
+  `vcs.initNewRepoLocked` 先写初始 commit 再插 `vcs_repos` 行。四条 vcs 测试改走
+  「一条 pragma 关掉的固定连接」来伪造腐蚀（外部工具的真实形态），
+  `TestSession_AppendMessage_MissingSession` 反转为「孤儿消息不可存储」
 - ~~出厂权限梯度倒置的另一半~~ → **同日已闭合**（W1 那份记录里有更正与闭合说明）
 - 独立评审为零 → 需要 `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION` 提额

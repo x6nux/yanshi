@@ -88,11 +88,24 @@ W4 的 hard-force 分支在做的时候补了正反双向（在冷却真被武�
 
 **未闭合（各有归属，已在台账逐条记名）：**
 
-- `LLMTierer` 零生产调用点 → `-tier auto` 永远只走 `RuleTierer`，`LLMTierer.Sink`
-  那条 G02 接线因此也不可达。接它需要 model，而 model 在 bootstrap 之后才有，
-  `resolveGoalTier` 却要在 bootstrap 之前决定走哪条路 —— 设计问题，另开工作包
-- `LifecycleMirror` 的状态变化不推送到 TUI → 需要 broker → WS 事件通道
-- `PRAGMA foreign_keys` 从未开启，四张 `task_work_*` 表的 FK / CASCADE 全部不生效
+- ~~`LLMTierer` 零生产调用点~~ → **同日已闭合**：`-tier auto` 在真实路径上
+  bootstrap 之后、`Path()` 分派之前调 `refineTierWithModel`，规则表降级为
+  `LLMTierer.Fallback`。`-tier t0..t4` 由 `!forced` 守住（用户已经推翻分类器，
+  再花一次模型调用去被推翻是纯浪费）。三条测试：模型答案压过关键词表（fixture
+  自断言两者不一致，不能空过）、两个降级方向、以及一条 `go/ast` 的**调用点**断言
+  —— 前两条对「runGoal 从不调用它」是全绿的，而那正是本条要修的形态
+- ~~`LifecycleMirror` 的状态变化不推送到 TUI~~ → **同日已闭合**（见 W3 那份记录）
+- ~~`PRAGMA foreign_keys` 从未开启~~ → **同日已闭合**（见 W3 那份记录；顺带修出
+  一个真实的 vcs 写序 bug）
 - ~~出厂权限梯度倒置的剩余部分~~ → **同日已闭合**（W1 那份记录里有更正与闭合说明；
   记录里的 `shell_list` 是探针手写的幻影名）
 - 独立评审为零 → 需要 `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION` 提额
+
+**收尾时又抓到一条同形态的（第六次）：** `TurnOpts.EmitWorkFrame` **零赋值方**。
+它带 `if != nil` 门禁，读起来像可选特性，实际全仓没有任何生产代码给它赋过值 ——
+于是 `update_plan` / `checklist_*` / `task_create` / `task_cancel` / `task_gate_run`
+的事件在每一次真实运行里都进了废纸篓。两端各有通过的测试
+（工具证明会 emit、`internal/cli/tui::TestPlanUpdateFrameReachesTheTranscript`
+证明帧到了会渲染），而后者的注释里写着「WS 层把它转成了 plan_update 帧」——
+那正是没人测的那一跳。WS 直接写（`wsConn` 自带互斥），SSE 走 lifecycle relay
+（它的响应写入者只能有一个）。**前五次都是缺消费端，这次是缺供给端。**
