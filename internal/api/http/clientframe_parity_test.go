@@ -133,6 +133,16 @@ func checkTarget(t *testing.T, field, transport, target string, have map[string]
 		require.Truef(t, ok,
 			"ClientFrame.%s is declared absent from %s with no reason — add one to "+
 				"clientFieldAbsentReason saying what structurally prevents it", field, transport)
+		// A declared absence that is no longer true is the failure this gate
+		// exists to prevent, so it must not be possible to leave one here.
+		// Found by probe: wiring the field into the target struct while the
+		// table still said "absent" left the gate GREEN and the reason — a
+		// paragraph asserting the field cannot work there — live and wrong.
+		// That is exactly how the subagent_event exemption survived.
+		require.Falsef(t, have[field],
+			"ClientFrame.%s is declared absent from %s, but %s now declares it: "+
+				"delete the clientFieldAbsentReason entry and give the field its target name",
+			field, transport, where)
 		return
 	}
 	require.Truef(t, have[target],
