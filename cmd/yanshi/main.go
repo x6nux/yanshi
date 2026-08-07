@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cloudwego/eino/components/model"
 	"github.com/x6nux/yanshi/internal/agent/goalloop"
 	"github.com/x6nux/yanshi/internal/auth"
 	"github.com/x6nux/yanshi/internal/bootstrap"
@@ -685,7 +686,7 @@ func runGoal(args []string) int {
 	maxIters := fs.Int("max-iters", 5, "maximum goal loop iterations")
 	maxTokens := fs.Int("max-tokens", 0, "token budget for the whole goal run (0 = unlimited)")
 	goalText := fs.String("goal", "", "goal text (alternatively, pass as positional arg)")
-	tierFlag := fs.String("tier", "auto", `difficulty tier: "auto" (RuleTierer) or t0..t4 (quick-fix, standard, designed, team, autonomous)`)
+	tierFlag := fs.String("tier", "auto", `difficulty tier: "auto" (model classifies, keyword table as fallback) or t0..t4 (quick-fix, standard, designed, team, autonomous)`)
 	history := fs.Int("history", 0, "print the last N goal run records and exit (0 = run a goal)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
@@ -716,8 +717,6 @@ func runGoal(args []string) int {
 		fmt.Fprintf(os.Stderr, "yanshi goal: %v\n", err)
 		return exitUsage
 	}
-	_ = forced // kept for the (future) "was the tier explicit?" distinction
-	fmt.Printf("[tier: %s] path: %s\n", resolvedTier, resolvedTier.Path())
 
 	// Budget sources: the goal: config block, overridden by any flag actually
 	// typed. Config is read leniently — the fake path is designed to run with
@@ -749,6 +748,7 @@ func runGoal(args []string) int {
 	)
 
 	if *fakeModel {
+		announceTier(resolvedTier)
 		// Self-contained demo: FakePlanner + FakeImplementer(fail once) +
 		// CounterEvaluator(fail once then pass) + AggregateJudge.
 		// This runs two iterations without any external dependencies.
@@ -789,6 +789,22 @@ func runGoal(args []string) int {
 
 		// Shared token sink (G02): every LLM-calling component adds to it; the
 		// loop drives its budget from it and the persisted record carries it.
+
+		// -tier auto asks the MODEL, not just the keyword table. The rule pass
+		// above already ran (it is what validates the flag and what the fake
+		// path uses), and it stays on as LLMTierer's fallback, so a model error
+		// or an unparseable reply lands exactly where the old behaviour was.
+		//
+		// This has to happen here rather than next to resolveGoalTier: the
+		// classifier needs app.Model, which does not exist until Build, and
+		// Build only runs on this branch. It also has to happen BEFORE the
+		// Path() dispatch below — the tier is what chooses between the
+		// lightweight turn and the full loop, so refining it afterwards would
+		// change the label without changing the execution path.
+		if !forced {
+			resolvedTier = refineTierWithModel(ctx, app.Model, text, resolvedTier, loopSink)
+		}
+		announceTier(resolvedTier)
 
 		if resolvedTier.Path() == "lightweight" {
 			// --- T0-T2: one orchestrator turn with the tier's skill body ---
@@ -875,6 +891,45 @@ func resolveGoalTier(flagValue, text string) (goalloop.Tier, bool, error) {
 		return goalloop.TierStandard, false, err
 	}
 	return tier, forced, nil
+}
+
+// announceTier prints the resolved tier and the execution path it selects.
+// Both goal paths call it once the tier is final — the real path only knows
+// that after refineTierWithModel, and printing earlier would name a tier the
+// run may not use.
+func announceTier(t goalloop.Tier) {
+	fmt.Printf("[tier: %s] path: %s\n", t, t.Path())
+}
+
+// refineTierWithModel upgrades an "auto" tier decision from keyword matching to
+// model classification, returning ruleTier unchanged when no model is wired.
+//
+// The keyword table (goalloop.RuleTierer) reads the goal text for words like
+// "refactor" or "typo". That is a reasonable prior and a poor classifier: it
+// cannot tell "fix the typo in the migration that corrupts every row" from
+// "fix the typo in the README", and the two belong at opposite ends of the
+// range. Since the tier picks the execution path, evaluator set and skill
+// body, a misread here is not cosmetic.
+//
+// sink is threaded through so this classification call counts against the same
+// token budget as the rest of the run — an unmetered call would make the budget
+// under-report by exactly the amount nobody was watching.
+func refineTierWithModel(
+	ctx context.Context, m model.BaseChatModel, text string,
+	ruleTier goalloop.Tier, sink *goalloop.UsageSink,
+) goalloop.Tier {
+	if m == nil {
+		return ruleTier
+	}
+	t, err := goalloop.LLMTierer{
+		Model:    m,
+		Fallback: goalloop.RuleTierer{},
+		Sink:     sink,
+	}.Tier(ctx, text)
+	if err != nil {
+		return ruleTier
+	}
+	return t
 }
 
 // runLightweightGoal executes the T0-T2 lightweight path: one orchestrator

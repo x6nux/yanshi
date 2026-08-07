@@ -138,7 +138,7 @@ Usage of goal:
   -max-tokens int
     	token budget for the whole goal run (0 = unlimited)
   -tier string
-    	difficulty tier: "auto" (RuleTierer) or t0..t4 (quick-fix, standard, designed, team, autonomous) (default "auto")
+    	difficulty tier: "auto" (model classifies, keyword table as fallback) or t0..t4 (quick-fix, standard, designed, team, autonomous) (default "auto")
   -workdir string
     	working directory for implementation (default ".")
 ```
