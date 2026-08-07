@@ -81,7 +81,7 @@ func TestRunGoalCallsTheRefinerOnlyWhenTheTierIsNotForced(t *testing.T) {
 		if !ok {
 			return true
 		}
-		calls := countCallsTo(ifs.Body, "refineTierWithModel")
+		calls := countTierAssignments(ifs.Body)
 		total += calls
 		if calls == 0 {
 			return true
@@ -96,22 +96,38 @@ func TestRunGoalCallsTheRefinerOnlyWhenTheTierIsNotForced(t *testing.T) {
 	})
 
 	require.Equal(t, 1, total,
-		"refineTierWithModel has no call site inside an if statement in main.go — "+
-			"-tier auto is back to running RuleTierer and nothing else")
+		"no `resolvedTier = refineTierWithModel(...)` inside an if statement in "+
+			"main.go — -tier auto is back to running RuleTierer and nothing else")
 	require.Equal(t, 1, guarded,
 		"the call is not guarded by !forced, so an explicit -tier t0..t4 pays for a "+
 			"classification whose answer is discarded")
 }
 
-// countCallsTo reports how many times name is called anywhere inside n.
-func countCallsTo(n ast.Node, name string) int {
+// countTierAssignments reports how many times refineTierWithModel is called
+// inside n AND its result assigned to resolvedTier.
+//
+// Counting mere CALLS is not enough, and this is not hypothetical: the first
+// version of this check did that, and `_ = refineTierWithModel(...)` — the
+// classifier running, costing a model call, and its answer thrown away — passed
+// it. That is the "spy proves the call happened" shape from the review
+// checklist: the call site was the thing being pinned, but the reason the call
+// site matters is that the tier it returns is the one that gets used.
+func countTierAssignments(n ast.Node) int {
 	count := 0
 	ast.Inspect(n, func(x ast.Node) bool {
-		call, ok := x.(*ast.CallExpr)
+		assign, ok := x.(*ast.AssignStmt)
+		if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+			return true
+		}
+		lhs, ok := assign.Lhs[0].(*ast.Ident)
+		if !ok || lhs.Name != "resolvedTier" {
+			return true
+		}
+		call, ok := assign.Rhs[0].(*ast.CallExpr)
 		if !ok {
 			return true
 		}
-		if id, ok := call.Fun.(*ast.Ident); ok && id.Name == name {
+		if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "refineTierWithModel" {
 			count++
 		}
 		return true

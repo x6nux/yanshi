@@ -17,9 +17,15 @@ import (
 // unbounded map on a long-running server. The end-to-end test cannot see this:
 // it only asserts that frames DO arrive.
 //
-// wsConn embeds a nil *websocket.Conn here on purpose. Broadcast must not be
-// reached for an unregistered connection, so if the unregister is broken this
-// test panics on the nil write rather than passing quietly.
+// The count assertion below is what catches a broken unregister; the trailing
+// Broadcast is a SECOND, weaker check that an empty registry is safe to iterate.
+//
+// An earlier version of this comment claimed the nil *websocket.Conn was the
+// mechanism — "if the unregister is broken this test panics on the nil write".
+// It does not: require.Equal aborts the test at the count, so the Broadcast is
+// never reached on that path. Measured, not reasoned about. The nil conn stays
+// because it costs nothing and would catch a Broadcast that somehow retained a
+// reference, but it is not what makes this test work.
 func TestRegisterClientUnregisters(t *testing.T) {
 	s := New(Config{Token: "t"})
 	conn := &wsConn{}
