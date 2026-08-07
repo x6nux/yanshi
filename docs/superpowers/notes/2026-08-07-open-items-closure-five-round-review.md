@@ -154,6 +154,35 @@ R5-1 的教训是「修一跳只让缺陷往下游挪一格」。把它做成系
 `pathspec did not match`，**还原静默失败**，紧接着的反向探针于是红了、读起来像门禁误伤。
 已写进清单 0-ter。
 
+---
+
+## 追加二：请求方向的对账（同日）
+
+J 清扫做完响应方向后，按同一形态查 CLAUDE.md 点名的另一条陷阱：**请求方向不共享词表** ——
+`proto.ClientFrame`（仅 WS）、`chat.go` 里的匿名结构体（SSE）、`v1.TurnStartParams` 三套，
+`json.Decode` 静默忽略未知键，所以往一套里加字段对另两套等于**沉默**。图像附件 POST 给 SSE
+就是这么消失的，CLAUDE.md 写着这条陷阱，**而没有任何机器判据**。
+
+**实测唯一分歧：v1 缺 `Attachments`。判为不阻塞** —— `resolveAttachments` 需要 workRoot 与
+permission profile 才能校验路径，而 `internal/api/v1.Service` 两者都没有；`sdk/` 与 `docs/api/`
+也都没有宣传过它。按清单 J 的分流规则，这类流向后续工作包而不是本轮阻塞。
+
+新增门禁 `internal/api/http::TestEveryClientFrameTurnInputFieldReachesEveryTransport`：
+每个 `ClientFrame` 字段必须被分类为 turn-input（并给出另两套结构体各自的目标字段名）
+或 control-only；缺席必须附**结构性理由**。
+
+**门禁自己的两个探针没红，都是真洞：**
+
+- **P1 无效探针（我自己犯 0-ter 次级规则）：** 第一版探针改名了 `chat.go` 引用着的字段，
+  包直接编译不过。红是红了，红的是编译器不是断言。改成「把声明的目标指向一个结构体里
+  不存在的名字」才拿到真正的断言失败。
+- **P5 真洞（已修）：** 把 `Attachments` 真的加进 `v1.TurnStartParams`、而表里仍写着「缺席」，
+  门禁**保持绿**，那段断言「这个字段在 v1 上不可能工作」的理由继续活着并且是错的。
+  **这正是这道门禁被写出来要防的失效模式，在门禁自己身上复现了一次。**
+  已加断言：声明缺席的字段必须在目标结构体里确实不存在。
+
+同一天第三次撞上同一个道理：**豁免/缺席条目的理由没有任何东西在验，除非你专门写一条断言去验。**
+
 **未闭合：**
 
 - 独立评审为零 → 需要 `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION` 提额。本轮已在会话内
