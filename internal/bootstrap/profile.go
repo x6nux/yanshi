@@ -123,6 +123,21 @@ func DefaultOrchestratorProfile() guard.PermissionProfile {
 			// log that spilled, so withholding it makes the spill a deletion.
 			"task_gate_run", "artifact_read",
 			"memory_search", "memory_recall", "memory_write",
+			// A2 self-management. These let an agent keep its own plan and
+			// todo list; none of them touches anything outside the task row it
+			// already owns. Leaving them out inverted the permission gradient
+			// against the one tool users notice: a dialog every time the agent
+			// updates its own checklist is a feature the model learns not to
+			// use, while shell_run — which executes arbitrary commands — was
+			// already exempt.
+			//
+			// NOT added here, deliberately: "screenshot" (reads the user's
+			// screen, a privacy boundary the model should have to ask for) and
+			// "revert_turn" (discards edits, so a prompt is the point).
+			// "rlm_query" stays in ConditionalProfileTools.
+			"update_plan", "image_describe",
+			"checklist_add", "checklist_list", "checklist_update", "checklist_write",
+			"todo_add", "todo_list", "todo_update", "todo_write",
 			"web_fetch", "web_search", "time_now", "skill_use", "vcs_*",
 			"agent_start", "workflow_start", "analysis", "summarize",
 			// B1 managed sub-agents. Deliberately NOT a widening of what the

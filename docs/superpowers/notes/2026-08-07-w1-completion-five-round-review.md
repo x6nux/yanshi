@@ -40,7 +40,8 @@ denied」。R1-E 对准那道防线后当场变红。教训：探针的红绿要
 
 - **Allow：** `shell_start` `shell_read` `shell_wait` `shell_cancel`
   `shell_write_stdin` `agent_start` `agent_batch` `automation_*`（八个）
-- **Prompt：** `update_plan` `image_describe` `shell_list` `rlm_query`
+- **Prompt：** `update_plan` `image_describe` `rlm_query`（原文还列了 `shell_list`，
+  那是我探针手写出来的幻影名 —— 见下方更正）
 
 零阻塞。两点澄清：
 
@@ -51,11 +52,27 @@ denied」。R1-E 对准那道防线后当场变红。教训：探针的红绿要
    拒绝，用户批准即可用；`B1/M05` 当初被回退是因为 `agent_spawn` 实测
    `not permitted`（allowlist 未命中的**静默**档），与这里不是一回事。
 
-**留给 W5 的观察（不是 W1 阻塞）：** 权限梯度是倒置的 —— `shell_start`（起进程）
-免提示，而 `shell_list`（列出会话）、`update_plan`（改自己的待办）、
-`image_describe`（读一张图）每次弹窗。一个每更新一次清单就要用户点一次批准的
-agent，实用性上等于关掉了这个功能。改出厂 allow 列表是授权面变更，按 CLAUDE.md
-的规矩要走工作包，不在本轮动。
+**留给 W5 的观察（不是 W1 阻塞）：** 权限梯度是倒置的 —— `shell_run`（跑任意命令）
+免提示，而 `update_plan`（改自己的待办）、`image_describe`（读一张用户自己附的图）
+每次弹窗。一个每更新一次清单就要用户点一次批准的 agent，实用性上等于关掉了这个功能。
+
+**⚠️ 更正（2026-08-07，同日）：上面这段原文还列了 `shell_list`，那是错的 —— 本仓
+根本没有叫这个名字的工具。** 我在本轮探针里手写了一串工具名，其中 `shell_list` 是
+凭印象编的（真名是 `shell_start`/`shell_read`/`shell_write_stdin`/`shell_wait`/
+`shell_cancel`）。`guard.Check` 对**任何**未命中 allow 列表的名字都返回 Prompt，
+所以一个**根本不存在**的工具与「注册了但没授权」在探针输出里**完全一样**。
+
+这正是本轮（幻影名那一轮）要抓的形态，出现在我自己的探针里。教训写进清单：
+**探针里的名字必须来自注册表本身**（`app.ToolNames`），不能手写 —— 手写的名字让
+门禁探针变成了一台幻影发生器。正确做法是遍历 `app.ToolNames` 反查哪些不在 allow，
+后来那次盘点就是这么做的，一次列出全部 13 个真实缺口。
+
+**已闭合（2026-08-07）：** 13 个里 10 个已加入 `DefaultOrchestratorProfile`
+（`update_plan`、`image_describe`、`checklist_*`×4、`todo_*`×4），
+`internal/bootstrap::TestSelfManagementToolsAreAllowedAndSensitiveOnesAreNot`
+双向钉住。故意不加的三个：`screenshot`（读用户屏幕，隐私边界）、`revert_turn`
+（丢弃编辑，弹窗正是它的意义）、`rlm_query`（条件工具，由 `ConditionalProfileTools`
+机制处理）。
 
 ## 第 3 轮 · GOV8 正反探针
 
@@ -125,5 +142,5 @@ agent，实用性上等于关掉了这个功能。改出厂 allow 列表是授�
 
 **未闭合（不阻塞 W1，各有归属）：**
 
-- 出厂权限梯度倒置（`shell_start` 免提示 / `shell_list` 弹窗）→ W5 授权面
+- ~~出厂权限梯度倒置~~ → **同日已闭合**：10 个自管理工具进 allow 列表，双向断言钉住
 - 独立评审为零 → 需要 `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION` 提额

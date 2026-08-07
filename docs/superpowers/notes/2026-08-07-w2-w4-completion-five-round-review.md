@@ -93,5 +93,6 @@ W4 的 hard-force 分支在做的时候补了正反双向（在冷却真被武�
   `resolveGoalTier` 却要在 bootstrap 之前决定走哪条路 —— 设计问题，另开工作包
 - `LifecycleMirror` 的状态变化不推送到 TUI → 需要 broker → WS 事件通道
 - `PRAGMA foreign_keys` 从未开启，四张 `task_work_*` 表的 FK / CASCADE 全部不生效
-- 出厂权限梯度倒置的剩余部分（`shell_start` 免提示 / `shell_list` 弹窗）→ W5
+- ~~出厂权限梯度倒置的剩余部分~~ → **同日已闭合**（W1 那份记录里有更正与闭合说明；
+  记录里的 `shell_list` 是探针手写的幻影名）
 - 独立评审为零 → 需要 `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION` 提额

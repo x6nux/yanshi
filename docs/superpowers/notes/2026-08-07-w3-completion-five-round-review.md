@@ -53,8 +53,8 @@ GOV5/GOV7 全绿。实测出厂 profile 对 W3 涉及工具的档位后，发现
 只读，且是 gate 大输出溢写后的唯一取回途径 —— 不给它，spill 就等于删除。两个都已加入
 `DefaultOrchestratorProfile`，理由写在 profile.go 那段注释里。
 
-同一形态在 W1 评审里记过一次（`shell_start` 免提示 / `shell_list` 弹窗），那条仍未
-闭合，归 W5。
+同一形态在 W1 评审里记过一次（记录里的 `shell_list` 是我探针手写的幻影名，已在那份
+记录里更正）。剩余部分已于同日闭合：10 个自管理工具加入出厂 allow 列表。
 
 ## 第 3 轮 · GOV8 正反探针
 
@@ -110,5 +110,5 @@ cutoff 与 `updated_at` 都是秒粒度 Unix 时间戳，亚秒偏移四舍五�
 - `LifecycleMirror` 的状态变化不推送到 TUI → 需要 broker → WS 事件通道，新设计
 - `PRAGMA foreign_keys` 从未开启，四张 `task_work_*` 表的 FK / CASCADE 全部不生效 ——
   实测打开会红 10 条测试（都是测试自己造的孤儿数据），另开工作包
-- 出厂权限梯度倒置的另一半（`shell_start` 免提示 / `shell_list` 弹窗）→ W5
+- ~~出厂权限梯度倒置的另一半~~ → **同日已闭合**（W1 那份记录里有更正与闭合说明）
 - 独立评审为零 → 需要 `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION` 提额

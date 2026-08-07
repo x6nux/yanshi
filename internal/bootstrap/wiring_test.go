@@ -1163,3 +1163,46 @@ token: "test-token"
 		"the task is still marked running after a restart: Build never called "+
 			"RecoverInterrupted, so no worker will ever pick it up again")
 }
+
+// TestSelfManagementToolsAreAllowedAndSensitiveOnesAreNot pins both directions
+// of the permission gradient.
+//
+// The defect this closes is an INVERSION, not a missing entry: shell_run —
+// which executes arbitrary commands — was exempt from prompting, while
+// update_plan (the agent editing its own checklist) and image_describe
+// (reading an image the user attached) each cost a dialog. A tool that prompts
+// on every call is a tool the model stops using, so the effect was to disable
+// self-management while leaving the widest tool wide open.
+//
+// The second half matters more than the first. Widening a profile is easy to
+// do one name too far, and screenshot (reads the user's screen) and
+// revert_turn (discards edits) are exactly the two that must keep asking. If
+// this test only checked the allow direction, adding either of them later
+// would be invisible.
+//
+// Deliberately carries NO ledger: marker. It closes a review finding, not an
+// acceptance clause — A2/G05#2 is "计划可流式更新", which is about the TUI
+// receiving plan frames, not about who may call update_plan. Citing it there
+// would have made the clause-level handshake read as if streaming were proven
+// by a profile assertion.
+func TestSelfManagementToolsAreAllowedAndSensitiveOnesAreNot(t *testing.T) {
+	p := bootstrap.DefaultOrchestratorProfile()
+	g := guard.New()
+
+	for _, name := range []string{
+		"update_plan", "image_describe",
+		"checklist_add", "checklist_list", "checklist_update", "checklist_write",
+		"todo_add", "todo_list", "todo_update", "todo_write",
+	} {
+		require.Equalf(t, guard.Allow, g.Check(p, guard.Action{Tool: name}).Verdict,
+			"%s prompts on every call, so the agent cannot keep its own plan without "+
+				"interrupting the user — while shell_run, which runs arbitrary commands, "+
+				"does not prompt at all", name)
+	}
+
+	for _, name := range []string{"screenshot", "revert_turn"} {
+		require.NotEqualf(t, guard.Allow, g.Check(p, guard.Action{Tool: name}).Verdict,
+			"%s is exempt from prompting in the factory profile; reading the user's screen "+
+				"and discarding their edits are the two things that must be asked for", name)
+	}
+}
