@@ -284,6 +284,14 @@ func (s *Server) handleSSEInternal(w http.ResponseWriter, r *http.Request,
 
 		lifecycleRelay := newSSELifecycleRelay()
 		tc = tools.WithSubAgentEmit(tc, lifecycleRelay.Emit)
+		// Work events (update_plan, checklist_*, task_*) go through the relay
+		// rather than straight to writeSSEFrame: EmitWorkFrame is called from
+		// the ADK's tool goroutine, and the SSE response writer has exactly one
+		// legal writer — the merge loop below. Emit classifies these as
+		// progress (they carry no Event field), so a full buffer drops the
+		// newest rather than blocking a tool call on a slow reader; the task
+		// state itself stays queryable.
+		opts.EmitWorkFrame = lifecycleRelay.Emit
 
 		iter := o.EventsWithHistoryOpts(tc, runMsgs, opts)
 		var hadError bool

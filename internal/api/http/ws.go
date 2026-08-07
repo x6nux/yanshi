@@ -746,7 +746,20 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 				// Auxiliary model spend (image_describe's vision model) does
 				// not pass through the turn's event stream, so it needs a
 				// place to land. Billed once after the turn, below.
-				AuxUsage:            &auxUsage,
+				AuxUsage: &auxUsage,
+				// Work events (update_plan, checklist_*, task_create,
+				// task_cancel, task_gate_run) reach the client only through
+				// this field: tools.EmitWorkEvent is a no-op unless the
+				// orchestrator bound a WorkEventCallback, and it binds one
+				// only when EmitWorkFrame is non-nil. It was nil on every
+				// production path, so those tools emitted into a discard while
+				// both ends of the chain had passing tests.
+				//
+				// conn.write is safe from the ADK's tool goroutine: wsConn
+				// serializes writes under its own mutex, which is what makes
+				// the permission and compaction callbacks safe from the same
+				// goroutine.
+				EmitWorkFrame:       conn.write,
 				PlanMode:            turnMode == guard.ModePlan,
 				ConnectionSessionID: connectionSessionID,
 			}
