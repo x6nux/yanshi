@@ -686,8 +686,13 @@ func runGoal(args []string) int {
 	maxTokens := fs.Int("max-tokens", 0, "token budget for the whole goal run (0 = unlimited)")
 	goalText := fs.String("goal", "", "goal text (alternatively, pass as positional arg)")
 	tierFlag := fs.String("tier", "auto", `difficulty tier: "auto" (RuleTierer) or t0..t4 (quick-fix, standard, designed, team, autonomous)`)
+	history := fs.Int("history", 0, "print the last N goal run records and exit (0 = run a goal)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
+	}
+
+	if *history > 0 {
+		return printGoalHistory(*configPath, *history, os.Stdout)
 	}
 
 	// Goal text: -goal flag takes priority, then first positional arg.
@@ -909,6 +914,67 @@ func runLightweightGoal(ctx context.Context, app *bootstrap.App, tier goalloop.T
 		summary = result + " (" + hint + ")"
 	}
 	return goalloop.Decision{Complete: true, Summary: summary}
+}
+
+// printGoalHistory prints the most recent goal run records, newest first.
+//
+// persistGoalRun has written a RunRecord to kv under "goalrun:<unix>" since
+// G02, and until this existed nothing read them back — a record written for an
+// operator to inspect, with no way for an operator to inspect it. StopReason
+// is the column that matters: "the run stopped" and "the run stopped because
+// it ran out of tokens" are different facts, and only the second tells you
+// whether to raise the budget.
+func printGoalHistory(configPath string, limit int, out io.Writer) int {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "yanshi goal -history: config: %v\n", err)
+		return exitErr
+	}
+	st, err := store.Open(cfg.Storage.SQLitePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "yanshi goal -history: open store: %v\n", err)
+		return exitErr
+	}
+	defer st.Close()
+
+	rows, err := st.DB.Query(
+		`SELECT value FROM kv WHERE key LIKE 'goalrun:%' ORDER BY key DESC LIMIT ?`, limit)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "yanshi goal -history: query: %v\n", err)
+		return exitErr
+	}
+	defer func() { _ = rows.Close() }()
+
+	var n int
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			fmt.Fprintf(os.Stderr, "yanshi goal -history: scan: %v\n", err)
+			return exitErr
+		}
+		var rec goalloop.RunRecord
+		if err := json.Unmarshal([]byte(raw), &rec); err != nil {
+			// A record written by an older schema is worth reporting, not
+			// worth aborting the listing for.
+			fmt.Fprintf(out, "(unreadable record: %v)\n", err)
+			continue
+		}
+		reason := rec.StopReason
+		if reason == "" {
+			reason = "-"
+		}
+		fmt.Fprintf(out, "tier=%s complete=%v stop_reason=%s iterations=%d tokens=%d\n",
+			rec.Tier, rec.Complete, reason, rec.Iterations, rec.Usage.Total())
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "yanshi goal -history: %v\n", err)
+		return exitErr
+	}
+	if n == 0 {
+		fmt.Fprintln(out, "no goal runs recorded yet")
+	}
+	return exitOK
 }
 
 // persistGoalRun writes a RunRecord for the finished goal run into the store's

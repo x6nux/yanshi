@@ -1528,7 +1528,7 @@
   acceptance: "SpentTokens 随 LLM 调用累计；预算耗尽可靠停止并把原因持久化"
   evidence:
     "1": "cmd/yanshi::TestLightweightGoalReportsItsTokensToTheSink; cmd/yanshi::TestLightweightGoalReportsTokensEvenWhenTheTurnFails; internal/agent/goalloop::TestUsageWatchDistinguishesUnmeteredFromFree"
-    "2": "cmd/yanshi::TestPersistedRunRecordCarriesTheStopReason; internal/agent/goalloop::TestLoop_BudgetStopsOnAccumulatedUsage"
+    "2": "cmd/yanshi::TestPersistedRunRecordCarriesTheStopReason; cmd/yanshi::TestGoalHistoryReadsBackWhatWasPersisted; cmd/yanshi::TestGoalHistoryOnAnEmptyStoreSaysSo; internal/agent/goalloop::TestLoop_BudgetStopsOnAccumulatedUsage"
 # 2026-08-07：partial → done。两条子句各有一个真缺口，都不是补测试能了事的：
 #   1 T0-T2 轻量路径**完全不喂 sink** —— runLightweightGoal 调 Orchestrator.Query，
 #     而 Query 把 usage 扔掉，于是每一次 T0-T2 goal 的 run record 都记零 token，

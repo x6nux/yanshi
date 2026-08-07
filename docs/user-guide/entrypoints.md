@@ -131,6 +131,8 @@ Usage of goal:
     	use fake planner/implementer/evaluator (no API keys or CLIs needed)
   -goal string
     	goal text (alternatively, pass as positional arg)
+  -history int
+    	print the last N goal run records and exit (0 = run a goal)
   -max-iters int
     	maximum goal loop iterations (default 5)
   -max-tokens int

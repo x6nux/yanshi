@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -109,4 +111,61 @@ func TestPersistedRunRecordCarriesTheStopReason(t *testing.T) {
 	assert.Equal(t, 1100, rec.Usage.TotalTokens,
 		"the persisted record lost the token count that justified the stop")
 	assert.Equal(t, 3, rec.Iterations)
+}
+
+// TestGoalHistoryReadsBackWhatWasPersisted closes the loop on the record.
+//
+// persistGoalRun has written a RunRecord to kv since G02 and nothing read one
+// back — a record written for an operator with no way for an operator to see
+// it. "把原因持久化" is only worth anything if the reason can be retrieved, and
+// StopReason is the field that decides what to do next: a run that finished
+// and a run that ran out of tokens both "stopped".
+//
+// ledger: M1/G02#2 预算耗尽可靠停止并把原因持久化
+func TestGoalHistoryReadsBackWhatWasPersisted(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "goalrun.db")
+	st, err := store.Open(dbPath)
+	require.NoError(t, err)
+	persistGoalRun(st, goalloop.TierStandard, goalloop.Decision{
+		Complete: false, StopReason: goalloop.StopReasonTokenBudget, Summary: "out of budget",
+	}, goalloop.Usage{TotalTokens: 4242}, 2)
+	require.NoError(t, st.Close())
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte(
+		"storage:\n  sqlite_path: \""+strings.ReplaceAll(dbPath, "\\", "/")+"\"\n"), 0o644))
+
+	var out strings.Builder
+	code := printGoalHistory(cfgPath, 5, &out)
+	require.Equal(t, exitOK, code, "output: %s", out.String())
+
+	got := out.String()
+	assert.Contains(t, got, "stop_reason=token_budget",
+		"the history does not show WHY the run stopped, which is the only reason the "+
+			"record is written: %q", got)
+	assert.Contains(t, got, "tokens=4242", "the history lost the token count: %q", got)
+	assert.Contains(t, got, "complete=false")
+}
+
+// TestGoalHistoryOnAnEmptyStoreSaysSo is the boundary a listing needs.
+//
+// Printing nothing at all reads as a broken command; it has to distinguish
+// "no runs yet" from "something went wrong".
+//
+// ledger: M1/G02#2 预算耗尽可靠停止并把原因持久化
+func TestGoalHistoryOnAnEmptyStoreSaysSo(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "empty.db")
+	st, err := store.Open(dbPath)
+	require.NoError(t, err)
+	require.NoError(t, st.Close())
+
+	cfgPath := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte(
+		"storage:\n  sqlite_path: \""+strings.ReplaceAll(dbPath, "\\", "/")+"\"\n"), 0o644))
+
+	var out strings.Builder
+	require.Equal(t, exitOK, printGoalHistory(cfgPath, 5, &out))
+	assert.Contains(t, out.String(), "no goal runs recorded yet")
 }
