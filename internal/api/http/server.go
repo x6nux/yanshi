@@ -106,6 +106,10 @@ type CompactionConfig struct {
 // Server holds the mux and auth token. Use HandleFunc to register routes
 // with Go 1.22 pattern routing (e.g. "POST /api/v1/chat").
 type Server struct {
+	// clientRegistry holds the open WebSocket connections so background
+	// goroutines can push server-initiated frames. See broadcast.go.
+	clientRegistry
+
 	mux        *http.ServeMux
 	token      string
 	compaction CompactionConfig

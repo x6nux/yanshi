@@ -37,6 +37,19 @@ type LifecycleMirror struct {
 	mgr *Manager
 	// OnError, when set, receives write failures. Optional.
 	OnError func(workTaskID string, err error)
+	// OnTransition, when set, is called after a transition this mirror
+	// SUCCESSFULLY wrote. Optional.
+	//
+	// It exists because the durable row was the only place a transition
+	// landed: a user watching the TUI saw a task go to "pending" and stay
+	// there until they ran task_read again, no matter what the worker did.
+	// The tool-layer event path cannot carry these — it needs a callback bound
+	// into a turn context, and by the time a worker finishes there is no turn.
+	//
+	// Called synchronously on the broker's worker goroutine, so an
+	// implementation that blocks stalls task dispatch. The composition root
+	// wires it to a non-blocking broadcast.
+	OnTransition func(workTaskID string)
 }
 
 // NewLifecycleMirror wraps mgr so the broker can report transitions into it.
@@ -45,7 +58,13 @@ func NewLifecycleMirror(mgr *Manager) *LifecycleMirror {
 }
 
 func (l *LifecycleMirror) report(id string, err error) {
-	if err == nil || l.OnError == nil {
+	if err == nil {
+		if l.OnTransition != nil {
+			l.OnTransition(id)
+		}
+		return
+	}
+	if l.OnError == nil {
 		return
 	}
 	// An illegal transition means the durable row moved on without us (most

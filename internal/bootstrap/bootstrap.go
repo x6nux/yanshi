@@ -36,6 +36,7 @@ import (
 	"github.com/x6nux/yanshi/internal/netpolicy"
 	obslog "github.com/x6nux/yanshi/internal/observe/log"
 	otelobs "github.com/x6nux/yanshi/internal/observe/otel"
+	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/sandbox"
 	"github.com/x6nux/yanshi/internal/secproc"
 	"github.com/x6nux/yanshi/internal/secrets"
@@ -1236,6 +1237,25 @@ func Build(opts Options) (*App, error) {
 	// sweeper. The broker itself, ctx and the dispatcher binding were created
 	// earlier, next to workMgr — C1 needs them at tool-registry assembly time.
 	srv.TaskAPI(broker, cfg.Profiles)
+
+	// Push durable-task transitions to connected clients. The mirror runs on a
+	// broker worker goroutine with no turn, so TurnOpts.EmitWorkFrame — the
+	// path every tool-emitted work event takes — cannot reach it: that
+	// callback lives in a turn context that no longer exists by the time a
+	// worker finishes. Without this the TUI shows a durable task at "pending"
+	// until the user runs task_read again, which is the same "state is
+	// correct, nobody can see it" gap the mirror itself was written to close.
+	//
+	// Wired here rather than next to broker.Work because srv does not exist
+	// yet at that point. Read failures are dropped: this is a notification,
+	// and the authoritative state is one task_read away.
+	mirror.OnTransition = func(workTaskID string) {
+		task, rerr := workMgr.Read(ctx, workTaskID)
+		if rerr != nil {
+			return
+		}
+		srv.Broadcast(proto.NewTaskUpdate(task))
+	}
 
 	work.StartArtifactJanitor(ctx, workStore, workRoot, 6*time.Hour, work.DefaultArtifactTTL)
 

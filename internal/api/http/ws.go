@@ -249,6 +249,10 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 		}
 		defer raw.Close()
 		conn := &wsConn{Conn: raw, redactor: s.redactor}
+		// Make this connection reachable from outside the request, so the
+		// durable-task broker can push transitions that happen long after the
+		// turn that created the task returned.
+		defer s.registerClient(conn)()
 
 		// Connection context, created exactly once. Its cancel is captured by
 		// the deferred closure so every return path runs it — the cancel is
