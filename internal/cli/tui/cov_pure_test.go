@@ -78,25 +78,6 @@ func TestTaskUpdateEntry_Render(t *testing.T) {
 	assert.Contains(t, out, "do the thing")
 }
 
-// TestPlanAndChecklistUpdateEntry_Render covers planUpdateEntry (the three item
-// statuses) and checklistUpdateEntry (which delegates to planUpdateEntry).
-func TestPlanAndChecklistUpdateEntry_Render(t *testing.T) {
-	cl := work.Checklist{Items: []work.ChecklistItem{
-		{Content: "done item", Status: work.ChecklistDone},
-		{Content: "active item", Status: work.ChecklistInProgress},
-		{Content: "todo item", Status: work.ChecklistPending},
-	}}
-	out := planUpdateEntry{taskID: "P1", checklist: cl}.render(80, spinner.Model{})
-	assert.Contains(t, out, "P1")
-	assert.Contains(t, out, "[x] done item")
-	assert.Contains(t, out, "[-] active item")
-	assert.Contains(t, out, "[ ] todo item")
-
-	// checklistUpdateEntry delegates to planUpdateEntry.
-	out2 := checklistUpdateEntry{taskID: "C1", checklist: cl}.render(80, spinner.Model{})
-	assert.Contains(t, out2, "C1")
-}
-
 // TestSkillsEntry_Render covers the skills list entry: empty and populated.
 func TestSkillsEntry_Render(t *testing.T) {
 	out := skillsEntry{}.render(80, spinner.Model{})

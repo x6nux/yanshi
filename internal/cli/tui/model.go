@@ -1083,6 +1083,24 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 		m.entries = append(m.entries, checklistEntry{
 			taskID: ev.ID, list: *ev.Checklist, replaced: ev.Kind == "plan_update",
 		})
+	case "task_update":
+		// Durable tasks change state on a broker worker, long after the turn
+		// that created them returned, and the server broadcasts each
+		// transition. Without this branch the frame arrives and is dropped —
+		// the same wall plan_update sat behind for the whole of A2, one hop
+		// further along: the transition was correct, persisted, mirrored and
+		// delivered, and the user still saw "pending" until they asked again.
+		//
+		// taskUpdateEntry is used rather than a summaryEntry built here: it
+		// already existed, purpose-built for this frame, with a render test —
+		// and its ONLY reference was the `var _ entry = taskUpdateEntry{}`
+		// interface assertion, which is a compile-time check, not a consumer.
+		// That assertion is exactly what made it look alive.
+		if ev.Task == nil {
+			break
+		}
+		m.flushAssistant()
+		m.entries = append(m.entries, taskUpdateEntry{task: *ev.Task})
 	case "status":
 		// Reply to get_status / set_model / set_thinking / clear / compact.
 		// Always update header fields; fill a pending status block (/cost,

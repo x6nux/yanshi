@@ -235,38 +235,15 @@ func (e taskUpdateEntry) render(_ int, _ spinner.Model) string {
 	return fmt.Sprintf("  task %s  %s  %d%%\n    %s\n", e.task.ID, e.task.Status, e.task.Checklist.CompletionPct(), e.task.Title)
 }
 
-type planUpdateEntry struct {
-	taskID    string
-	checklist work.Checklist
-}
-
-func (e planUpdateEntry) render(_ int, _ spinner.Model) string {
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("  plan %s\n", e.taskID))
-	for _, item := range e.checklist.Items {
-		status := "[ ]"
-		if item.Status == "done" {
-			status = "[x]"
-		} else if item.Status == "in_progress" {
-			status = "[-]"
-		}
-		b.WriteString(fmt.Sprintf("    %s %s\n", status, item.Content))
-	}
-	return b.String()
-}
-
-type checklistUpdateEntry struct {
-	taskID    string
-	checklist work.Checklist
-}
-
-func (e checklistUpdateEntry) render(_ int, _ spinner.Model) string {
-	return planUpdateEntry(e).render(0, spinner.Model{})
-}
+// NB: planUpdateEntry and checklistUpdateEntry used to live here and were
+// deleted. They were superseded by checklistEntry (below), which applyEvent
+// actually reaches, and which the older pair lacked two properties of: glyphs
+// chosen to survive having styling stripped, and a guard that refuses to
+// render an unknown item status as done. Their only reference was the
+// `var _ entry` assertion above — a compile-time interface check that keeps a
+// dead renderer compiling, and reads like a use.
 
 var _ entry = taskUpdateEntry{}
-var _ entry = planUpdateEntry{}
-var _ entry = checklistUpdateEntry{}
 
 type toolEntry struct {
 	name, args  string
