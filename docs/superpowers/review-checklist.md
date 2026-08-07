@@ -112,6 +112,12 @@ git diff <base>..HEAD | grep -nE '^\+.*(因为|否则|正是为了|不能|必须
 还原就是回到一个真实存在的状态。想在提交前试，用 `git stash` / `git stash pop`
 或手动逆向编辑，**不要用 `git checkout`**。
 
+**「已提交」是字面意思，`git add` 不算。** 同一天第四次踩的是这个变体：探针对象是一个
+**新增文件**，`git add` 过了，于是 `git status` 看起来正常 —— 而 `git checkout HEAD -- <新文件>`
+报 `pathspec did not match any file(s) known to git`，**还原静默失败，变异留在文件里**。
+接下来那个「反向探针（干净树应绿）」于是红了，读起来像门禁误伤。判据很简单：
+`git log --oneline -1 -- <file>` 没输出的文件，`git checkout HEAD --` 对它无效。
+
 **次级规则：探针失败时先看失败原因是不是编译错误。** 变异如果让某个变量变成未使用，
 Go 会拒绝编译，测试「红」了，但红的是编译器不是断言 —— 这证明不了断言有效。
 本会话两个 `!forced` 守卫探针第一版就是这样，改成保留引用（`if forced || !forced`、
