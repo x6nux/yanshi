@@ -54,6 +54,14 @@ func TestChatWS_ToolWorkEventReachesTheClient(t *testing.T) {
 	defer c.Close()
 	require.NoError(t, c.WriteJSON(proto.NewUserMessage("plan it")))
 
+	// Read all the way to "done" rather than returning on the first match.
+	// Returning early closes the socket while the turn is still running, and
+	// the turn finishes on its own goroutine afterwards — emitting an
+	// agent.turn span into whichever exporter otel_turnspan_test.go has since
+	// installed as the PROCESS-GLOBAL tracer provider. That made
+	// TestWSTurnOpensATurnSpan fail intermittently, in a different file, under
+	// load. Draining costs a few frames and removes the cross-test coupling.
+	var seen bool
 	for {
 		f := readFrame(t, c)
 		if f.Type == "plan_update" {
@@ -61,10 +69,12 @@ func TestChatWS_ToolWorkEventReachesTheClient(t *testing.T) {
 			require.NotNil(t, f.Checklist, "the frame carries no checklist, so the TUI renders an empty plan")
 			require.Len(t, f.Checklist.Items, 1)
 			require.Equal(t, "write the parser", f.Checklist.Items[0].Content)
-			return
+			seen = true
 		}
 		if f.Type == "done" || f.Type == "error" {
-			t.Fatalf("no plan_update frame before %s: the tool's work event was discarded", f.Type)
+			require.True(t, seen,
+				"no plan_update frame before "+f.Type+": the tool's work event was discarded")
+			return
 		}
 	}
 }
