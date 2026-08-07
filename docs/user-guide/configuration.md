@@ -2,7 +2,9 @@
 
 yanshi 从 `config.yaml` 加载配置（已被 gitignore；从被跟踪的 `config.example.yaml` 复制）。加载时先做 `${VAR}` 环境变量展开，再反序列化，最后 `applyDefaults` 补零值、`validate` 做范围校验。本页解释**每个顶层块的语义、默认值与块间关系**（解释"为什么"），字段级 key/type 速查见文末[生成骨架表](#配置字段骨架由-gendocs-生成)。
 
-> 安全提醒：`llm.providers[].api_key` 若是明文字面量或 `${VAR}` 展开后的明文，会被 fail-closed 校验拒绝。用 `secret://service/account`、`env://VAR`，或显式 `auth.legacy_insecure=true` 接受明文。
+> `llm.providers[].api_key` 只接受两种写法：**明文字面量**，或 **`${VAR}`**（加载时由 `os.ExpandEnv` 展开，展开结果同样是明文）。两者都原样交给 provider SDK，不经任何凭据解析或加密存储。写 `secret://…` / `env://…` 不再有特殊含义 —— 那串字符会被当成 key 本身发出去。
+>
+> 明文 key 仍会注册进进程 Redactor，因此不会出现在日志、WS/SSE 帧或 SQLite 里。但 `config.yaml` 本身是明文文件（已被 gitignore），请自行控制它的读权限。
 
 ## server
 
@@ -97,11 +99,11 @@ COST1 模型单价覆盖（USD per million tokens）：`overrides` 是 model 名
 
 ## secrets
 
-S10 凭据存储后端：`backend`=`auto`（默认，优先 OS keyring，失败降级到加密文件）|`keyring`|`file`|`none`；`file_path`（空=`os.UserConfigDir()/yanshi/secrets.enc`）；`passphrase_env`（主口令环境变量名；空且 backend=auto 时跳过 fileStore）。
+S10 凭据存储后端，**只存 RFC 8628 device-flow token**（provider api_key 不走这里）：`backend`=`auto`（默认，优先 OS keyring，失败降级到加密文件）|`keyring`|`file`|`none`；`file_path`（空=`os.UserConfigDir()/yanshi/secrets.enc`）；`passphrase_env`（主口令环境变量名；空且 backend=auto 时跳过 fileStore）。
 
 ## auth
 
-O03 provider-neutral 认证：`legacy_insecure`（默认 false，fail-closed 拒绝明文 key）；`device` 块配置 RFC 8628 device authorization（`device_auth_enabled` / `client_id` / `providers[]`，端点须 HTTPS-only）。
+O03 provider-neutral 认证：只配置 RFC 8628 device authorization（`device_auth_enabled` / `client_id` / `providers[]`，端点须 HTTPS-only）。provider 的 api_key 不在这里管，见 `llm.providers`。
 
 ## i18n
 
@@ -293,8 +295,6 @@ C15 TUI 偏好：`keymap`（默认 default）、`theme`（默认 default）、`v
 
 | key | type | 说明 |
 |---|---|---|
-| auth.legacy_insecure | bool | |
-| auth.auto_migrate | bool | |
 | auth.device.client_id | string | |
 | auth.device.device_auth_enabled | bool | |
 | auth.device.providers | []DeviceProviderConfig | |

@@ -282,18 +282,6 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 	case tea.KeyShiftTab:
 		mm, cmd := m.cycleMode()
 		return mm.(model), cmd, true
-	case tea.KeyShiftUp:
-		if m.permMode == guard.ModeAuto {
-			m.autoThreshold = clamp(m.autoThreshold+1, 1, 10)
-			mm, cmd := m.sendMode()
-			return mm.(model), cmd, true
-		}
-	case tea.KeyShiftDown:
-		if m.permMode == guard.ModeAuto {
-			m.autoThreshold = clamp(m.autoThreshold-1, 1, 10)
-			mm, cmd := m.sendMode()
-			return mm.(model), cmd, true
-		}
 	case tea.KeyCtrlC:
 		// First Ctrl-C during a stream cancels the turn; a second press
 		// (or any Ctrl-C when idle) quits.

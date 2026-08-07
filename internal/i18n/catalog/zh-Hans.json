@@ -25,7 +25,7 @@
   "tui.command.help.keymap": "查看/重置键位，或打印键位诊断",
   "tui.command.help.locale": "查看/切换界面语言：/locale auto|en|zh-Hans",
   "tui.command.help.mcp": "列出 MCP 服务",
-  "tui.command.help.mode": "设置权限模式（default|allow-edits|yolo|auto [1-10]）",
+  "tui.command.help.mode": "设置权限模式（default|allow-edits|yolo|auto）",
   "tui.command.help.model": "列出或切换模型",
   "tui.command.help.queue_mode": "设置或循环消息队列模式（queue|single|batch）",
   "tui.command.help.rename": "重命名会话：/rename <id> <title>",

@@ -3,7 +3,6 @@ package guard
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -90,16 +89,6 @@ func TestModeLabel_AllCases(t *testing.T) {
 	}
 }
 
-// TestRiskPrompt covers RiskPrompt (mode.go:151): it embeds the date, tool and
-// args so the model can contextualize the risk rating.
-func TestRiskPrompt(t *testing.T) {
-	got := RiskPrompt("shell_run", "rm -rf /")
-	assert.Contains(t, got, "shell_run")
-	assert.Contains(t, got, "rm -rf /")
-	assert.Contains(t, got, time.Now().Format("2006-01-02"))
-	assert.Contains(t, got, "single integer 1-10")
-}
-
 // TestCheckModel_AllowsAnyModel covers profile.go:44-46: a profile with no
 // model restrictions (empty Models) admits any model name.
 func TestCheckModel_AllowsAnyModel(t *testing.T) {
@@ -115,15 +104,6 @@ func TestCheckReasoning_InvalidProfileCap(t *testing.T) {
 	err := p.Subagent.CheckReasoning("low")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid profile reasoning cap")
-}
-
-// TestParseRiskScore_MultiDigitRunWithTrailingText covers a non-leading digit
-// run (e.g. "Risk: 7.") — the trailing branch at mode.go:189-190 — keeping the
-// score-extraction robust against model prose.
-func TestParseRiskScore_MultiDigitRunWithTrailingText(t *testing.T) {
-	n, ok := ParseRiskScore("I would rate this a 6 overall")
-	require.True(t, ok)
-	assert.Equal(t, 6, n)
 }
 
 // keep strings referenced for future expansion of these edge-case tests.

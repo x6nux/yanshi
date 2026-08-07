@@ -177,17 +177,18 @@ Usage: yanshi pr <PR-number>  (run from the repo directory)
 ## auth（凭据管理）
 
 ```sh
-./yanshi auth set --provider openai
 ./yanshi auth status
 ./yanshi auth logout
 ./yanshi auth device --provider <id>
 ```
 
-适用：管理 provider 凭据（set/status/logout，或 RFC 8628 device flow）。
+适用：管理 RFC 8628 device-flow 会话（status/logout/device）。provider 的
+api_key **不在这里管** —— 写进 `config.yaml` 的 `llm.providers[].api_key`，
+可以是明文字面量或 `${VAR}`。
 
 <!-- BEGIN GENERATED: help:auth -->
 ```text
-usage: yanshi auth <set|status|logout|device> ...
+usage: yanshi auth <status|logout|device> ...
 ```
 <!-- END GENERATED: help:auth -->
 

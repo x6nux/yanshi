@@ -355,7 +355,7 @@ func TestFeaturesSetPayloadEncodesFalseEnabled(t *testing.T) {
 // unset (verified by other status tests), so this test focuses on the positive
 // case.
 func TestStatusFrameCarriesCostAndFeatures(t *testing.T) {
-	st := NewStatusWithMode("claude-opus-4-8", "low", 100, 50, 1, 200000, "default", 0)
+	st := NewStatusWithMode("claude-opus-4-8", "low", 100, 50, 1, 200000, "default")
 	st.CostUSD = 0.25
 	st.CostKnown = true
 	st.Features = []FeatureRow{{Key: "observe.otel_export", Stage: "experimental", Enabled: false, Owner: "C4"}}
@@ -418,7 +418,7 @@ func goldenFrames() []ServerFrame {
 		NewRetry(1, 3, 500, "transient error"),
 		NewModels([]string{"a"}),
 		NewStatus("m", "low", 1, 2, 3, 4),
-		NewStatusWithMode("m", "low", 1, 2, 3, 4, "default", 0),
+		NewStatusWithMode("m", "low", 1, 2, 3, 4, "default"),
 		NewCompactChunk("summary"),
 		NewHistoryReplaced(nil),
 		NewSessions(nil),
@@ -626,7 +626,7 @@ func TestClientFrame_UntestedConstructorsRoundTrip(t *testing.T) {
 			func(f ClientFrame) bool { return f.ID == "j1" }},
 		{"job_write", func() ClientFrame { return NewJobWrite("j1", "ls") }, "job_write",
 			func(f ClientFrame) bool { return f.ID == "j1" && f.Text == "ls" }},
-		{"set_mode", func() ClientFrame { return NewSetMode("yolo", 0) }, "set_mode",
+		{"set_mode", func() ClientFrame { return NewSetMode("yolo") }, "set_mode",
 			func(f ClientFrame) bool { return f.Mode == "yolo" }},
 		{"cancel", func() ClientFrame { return NewCancel() }, "cancel",
 			func(f ClientFrame) bool { return true }},

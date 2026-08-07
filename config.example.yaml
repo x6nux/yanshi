@@ -275,31 +275,22 @@ features:
 pricing:
   overrides: {}
 
-# D3-S10 安全凭据存储。auto = 优先 OS keyring (zalando/go-keyring),失败软降级
-# 到加密文件 (Argon2id + AES-256-GCM);keyring = 强制 OS keyring;file = 强制
-# 加密文件;none = 关闭密钥存储(secret:// 引用解析失败)。
+# D3-S10 安全凭据存储。**只存 RFC 8628 device-flow token** —— provider 的
+# api_key 不走这里(见上方 llm.providers,写字面量或 ${VAR})。
+# auto = 优先 OS keyring (zalando/go-keyring),失败软降级到加密文件
+# (Argon2id + AES-256-GCM);keyring = 强制 OS keyring;file = 强制加密文件;
+# none = 关闭密钥存储(device flow 无法保存 token)。
 # file_path 为空 => os.UserConfigDir()/yanshi/secrets.enc
-# passphrase_env 为空且 backend=auto 时,fileStore 被跳过(env/legacy 仍可用)。
+# passphrase_env 为空且 backend=auto 时,fileStore 被跳过。
 secrets:
   backend: auto
   file_path: ""
   passphrase_env: YANSHI_PASSPHRASE
 
-# D3-O03 provider-neutral 认证。legacy_insecure=true 时接受配置里的明文 API key
-# (默认 false,fail-closed)。device 块配置 RFC 8628 device authorization;启用
+# D3-O03 provider-neutral 认证。只配置 RFC 8628 device authorization;启用
 # 前必须用 HTTPS-only 的 device_url/token_url(loopback HTTP 仅供 e2e 测试)。
+# api_key 不在这里管 —— 它在 llm.providers[].api_key 里写死或用 ${VAR}。
 auth:
-  # LegacyInsecure accepts raw literal API keys in config.yaml.
-  # This bypasses S10's fail-closed threat model — only enable temporarily
-  # during migration.
-  legacy_insecure: false
-
-  # AutoMigrate automatically stores raw literal API keys into the secrets
-  # backend and rewrites config.yaml with secret:// references on first boot.
-  # The rewrite is best-effort: if config.yaml is unwritable, boot proceeds
-  # with the ref in memory but prints a warning. Default: false.
-  auto_migrate: false
-
   device:
     device_auth_enabled: false
     client_id: ""

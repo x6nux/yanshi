@@ -11,30 +11,16 @@ import (
 	"github.com/x6nux/yanshi/internal/guard"
 )
 
-// TestCov_SendMode_AutoZeroThreshold covers the threshold==0 + Auto branch:
-// sendMode resolves the default into a LOCAL var for the wire frame (it does
-// not write back to m.autoThreshold — that stays the 0 "unset" sentinel).
-func TestCov_SendMode_AutoZeroThreshold(t *testing.T) {
-	m := newModel(&fakeSession{}, "/proj")
-	m.permMode = guard.ModeAuto
-	m.autoThreshold = 0
-	mm, _ := m.sendMode()
-	got := mm.(model)
-	assert.Equal(t, 0, got.autoThreshold, "model field stays 0; the default is resolved only for the wire")
-}
-
 // TestCov_CycleMode_YoloSkipToAuto covers the yoloConfirm>0 double-cycle that
-// lands on Auto with a zero threshold (the gate-skipping path).
+// lands on Auto (the gate-skipping path).
 func TestCov_CycleMode_YoloSkipToAuto(t *testing.T) {
 	m := newModel(&fakeSession{}, "/proj")
 	m.permMode = guard.ModeDefault
 	m.yoloConfirm = 1
-	m.autoThreshold = 0
 	mm, _ := m.cycleMode()
 	got := mm.(model)
 	assert.Equal(t, 0, got.yoloConfirm, "yolo gate cleared")
 	assert.Equal(t, guard.ModeAuto, got.permMode, "Default double-cycles to Auto")
-	assert.Equal(t, guard.DefaultAutoThreshold, got.autoThreshold)
 }
 
 // TestCov_RespondPermission_NoPending covers the no-pending-prompt no-op.
@@ -55,8 +41,8 @@ func TestCov_PermModeFile_NoConfigDir(t *testing.T) {
 }
 
 // TestCov_PermModePersistence covers the savePermMode path=="" no-op and the
-// loadSavedMode/loadSavedThreshold fallback branches (read error, corrupt
-// JSON, invalid mode, threshold out of range). persistPermMode is flipped on
+// loadSavedMode fallback branches (read error, corrupt JSON, invalid mode).
+// persistPermMode is flipped on
 // (it is disabled for the test binary by perm_mode_test.go's init).
 func TestCov_PermModePersistence(t *testing.T) {
 	orig := persistPermMode
@@ -69,10 +55,9 @@ func TestCov_PermModePersistence(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", "")
-	savePermMode(guard.ModeAuto, 4) // path=="" branch
+	savePermMode(guard.ModeAuto) // path=="" branch
 	if permModeFile() == "" {
 		assert.Equal(t, guard.ModeDefault, loadSavedMode())
-		assert.Equal(t, 0, loadSavedThreshold())
 	}
 
 	// File absent → ReadFile error → defaults.
@@ -81,7 +66,6 @@ func TestCov_PermModePersistence(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 	t.Setenv("HOME", tmp)
 	assert.Equal(t, guard.ModeDefault, loadSavedMode())
-	assert.Equal(t, 0, loadSavedThreshold())
 
 	// Corrupt JSON → Unmarshal error → defaults. Write the exact path
 	// permModeFile() reads (it varies by OS, so do not hardcode tmp/yanshi).
@@ -90,15 +74,14 @@ func TestCov_PermModePersistence(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(f), 0o755))
 	require.NoError(t, os.WriteFile(f, []byte("not json"), 0o644))
 	assert.Equal(t, guard.ModeDefault, loadSavedMode())
-	assert.Equal(t, 0, loadSavedThreshold())
 
 	// Valid JSON, unrecognized mode → NormalizeMode !ok → default.
-	require.NoError(t, os.WriteFile(f, []byte(`{"mode":"bogus","threshold":3}`), 0o644))
+	require.NoError(t, os.WriteFile(f, []byte(`{"mode":"bogus"}`), 0o644))
 	assert.Equal(t, guard.ModeDefault, loadSavedMode())
 
-	// Threshold out of range (< 1 and > 10) → 0.
-	require.NoError(t, os.WriteFile(f, []byte(`{"mode":"auto","threshold":0}`), 0o644))
-	assert.Equal(t, 0, loadSavedThreshold())
-	require.NoError(t, os.WriteFile(f, []byte(`{"mode":"auto","threshold":11}`), 0o644))
-	assert.Equal(t, 0, loadSavedThreshold())
+	// A file left over from the threshold era still loads: the extra key is
+	// ignored rather than failing the whole parse, so an upgrade does not
+	// silently reset the user's mode.
+	require.NoError(t, os.WriteFile(f, []byte(`{"mode":"auto","threshold":7}`), 0o644))
+	assert.Equal(t, guard.ModeAuto, loadSavedMode())
 }

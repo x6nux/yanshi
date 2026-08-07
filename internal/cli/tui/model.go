@@ -220,14 +220,12 @@ type model struct {
 	pendingPermissions []*permissionEntry
 	permSel            int
 
-	permMode         guard.PermissionMode
-	autoThreshold    int
-	prePlanMode      guard.PermissionMode
-	prePlanThreshold int
-	yoloConfirm      int
-	msgQueue         []string
-	queueMode        QueueMode
-	autoProcessing   bool
+	permMode       guard.PermissionMode
+	prePlanMode    guard.PermissionMode
+	yoloConfirm    int
+	msgQueue       []string
+	queueMode      QueueMode
+	autoProcessing bool
 
 	// restoreSessions holds the session list when the restore picker is active.
 	// Non-nil means the picker is open and Up/Down/Enter/Escape are captured.
@@ -376,23 +374,22 @@ func newModelWithPrefs(sess tuiSession, root string, project Preferences) model 
 		bundle = defaultBundle()
 	}
 	m := model{
-		sess:          sess,
-		input:         newInput(),
-		viewport:      vp,
-		spinner:       sp,
-		status:        root,
-		workDir:       dirName(root),
-		gitBranch:     detectGitBranch(root),
-		rootPath:      root,
-		permMode:      loadSavedMode(),
-		autoThreshold: loadSavedThreshold(),
-		queueMode:     QueueModeQueue,
-		theme:         themeForPrefs(eff),
-		bundle:        bundle,
-		prefs:         user,
-		prefsPath:     prefsPath,
-		project:       project,
-		effective:     eff,
+		sess:      sess,
+		input:     newInput(),
+		viewport:  vp,
+		spinner:   sp,
+		status:    root,
+		workDir:   dirName(root),
+		gitBranch: detectGitBranch(root),
+		rootPath:  root,
+		permMode:  loadSavedMode(),
+		queueMode: QueueModeQueue,
+		theme:     themeForPrefs(eff),
+		bundle:    bundle,
+		prefs:     user,
+		prefsPath: prefsPath,
+		project:   project,
+		effective: eff,
 	}
 	m.effective.UILocale = eff.UILocale
 	m.keys = buildKeymap(eff, project)

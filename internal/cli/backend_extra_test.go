@@ -99,7 +99,7 @@ func TestWSBackend_SendFrame_SetModeReturnsNil(t *testing.T) {
 	require.NoError(t, err)
 	defer b.Close()
 
-	ch, err := b.SendFrame(context.Background(), proto.NewSetMode("default", 0))
+	ch, err := b.SendFrame(context.Background(), proto.NewSetMode("default"))
 	require.NoError(t, err)
 	assert.Nil(t, ch, "set_mode carries no direct reply channel")
 }

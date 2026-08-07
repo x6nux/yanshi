@@ -31,12 +31,3 @@ func TestSecurity_NoPlaintextInEncryptedFile(t *testing.T) {
 	}
 }
 
-// TestSecurity_RawLiteralFailsClosedWithoutLegacyOptIn asserts S10's
-// fail-closed posture: a raw API key pasted into config silently working
-// would defeat the entire threat model, so ParseCredentialRef must reject
-// it unless the caller explicitly opted into legacy-insecure.
-func TestSecurity_RawLiteralFailsClosedWithoutLegacyOptIn(t *testing.T) {
-	if _, err := ParseCredentialRef("sk-raw-live-key", false); err == nil {
-		t.Fatal("raw literal accepted without legacy-insecure opt-in")
-	}
-}

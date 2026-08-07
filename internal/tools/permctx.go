@@ -216,6 +216,10 @@ func scopeFromAction(action guard.Action) (approval.Scope, error) {
 	}
 	scope.Program = cmd.Segments[0].Program
 	scope.Prefix = append([]string(nil), cmd.Segments[0].Args...)
+	// A command that executes a script file carries the script's content hash
+	// too, so an approval for "run install.sh" stops applying the moment
+	// install.sh changes. See approval.Scope.ScriptHash.
+	scope.ScriptHash = hashScriptForCommand(action.Shell, action.Workdir)
 	return scope, nil
 }
 

@@ -411,13 +411,11 @@ func Build(opts Options) (*App, error) {
 		}
 	}()
 
-	// S10: secrets.Manager + credential resolution. Done BEFORE
-	// einollm.BuildProviders so the resolved plaintext APIKeys land in
-	// cfg.LLM.Providers[i].APIKey and BuildProviders sees the final values.
-	// legacyRaw is the per-process opt-in: only when Auth.LegacyInsecure is
-	// explicitly true do raw literal APIKeys get accepted. Otherwise
-	// ParseCredentialRef fails closed and Build aborts — silently accepting a
-	// pasted API key would defeat S10's threat model.
+	// secrets.Manager backs device-flow token storage only. Provider api_keys
+	// do NOT pass through it: config takes them verbatim (a literal, or the
+	// value os.ExpandEnv already substituted for ${VAR}) and they reach the
+	// provider SDKs unchanged. The Manager is still built here because
+	// auth.Manager needs its Store for RFC 8628 tokens.
 	secretMgr, err := secrets.NewManager(secrets.Config{
 		Backend:       cfg.Secrets.Backend,
 		FilePath:      cfg.Secrets.FilePath,
@@ -440,13 +438,9 @@ func Build(opts Options) (*App, error) {
 		redactor.Absorb(secretMgr.Redactor())
 	}
 
-	// O03: auth.Manager takes over credential resolution from the inline
-	// Task 5 loop. Ordering is load-bearing: authMgr is constructed, metadata
-	// adapter attached, device providers registered, and ALL credential
-	// sources resolved BEFORE einollm.BuildProviders sees cfg. BuildProviders
-	// passes cfg.LLM.Providers[i].APIKey straight to provider SDK
-	// constructors, so if resolution ran after, those SDKs would receive
-	// refs instead of plaintext and every API call would 401.
+	// O03: auth.Manager owns RFC 8628 device flows and their token storage.
+	// It no longer resolves provider api_keys — those are plaintext by the
+	// time config finishes loading.
 	authMgr := auth.NewManager(secretMgr)
 	authMgr.SetMetadataStore(store.AuthMetadataFromDB(st))
 	if opts.AuthDeps.Clock != nil {
@@ -475,82 +469,27 @@ func Build(opts Options) (*App, error) {
 		}
 	}
 
-	// Resolve every provider credential source. Raw literals fail closed
-	// unless Auth.LegacyInsecure is true; secret:// refs require a backend;
-	// env:// refs read os.Getenv. Resolved plaintext is written back to
-	// cfg.LLM.Providers[i].APIKey AND registered with the redactor so
-	// WS/SSE/SQLite boundaries cannot leak it.
+	// Provider api_keys are used verbatim: config accepts a literal or an
+	// ${VAR} that os.ExpandEnv already substituted, and BuildProviders hands
+	// that string straight to the provider SDK. Nothing is resolved here, but
+	// every key is still registered with the redactor — that is what keeps it
+	// out of logs, WS/SSE frames and SQLite, and it is independent of where
+	// the key came from.
 	for i := range cfg.LLM.Providers {
-		p := &cfg.LLM.Providers[i]
-		if p.APIKey == "" {
+		key := cfg.LLM.Providers[i].APIKey
+		if key == "" {
 			continue
 		}
-		src := auth.CredentialSource{
-			APIKeyRef:      p.APIKey,
-			LegacyInsecure: cfg.Auth.LegacyInsecure,
+		// Register silently drops values below secrets.MinSecretLength.
+		// Silence is right inside the Redactor (it cannot tell a junk value
+		// from a real one) but wrong here, where we know this string is meant
+		// to be a credential: a key that short will not be redacted anywhere,
+		// and the operator should hear about it rather than discover it in a
+		// log. The warning names neither the value nor its length.
+		if len(key) < secrets.MinSecretLength {
+			output.Logger.Printf("warning: provider %q: api_key is too short to redact safely; it will appear verbatim in logs and stored messages\n", cfg.LLM.Providers[i].Name)
 		}
-		resolved, rerr := authMgr.ResolveAPIKey(context.Background(), src)
-		if rerr != nil {
-			if cfg.Auth.AutoMigrate {
-				_, parseErr := secrets.ParseCredentialRef(p.APIKey, false)
-				if !errors.Is(parseErr, secrets.ErrRawLiteralRefused) && parseErr != nil {
-					return nil, fmt.Errorf("bootstrap: resolve credentials for %s: %w", p.Name, rerr)
-				}
-				svc, acct := p.Name, "default"
-				if storeErr := secretMgr.Set(svc, acct, p.APIKey); storeErr != nil {
-					return nil, fmt.Errorf("bootstrap: auto-migrate store key for %s: %v (set auth.auto_migrate=false to disable)", p.Name, storeErr)
-				}
-				refStr := "secret://" + svc + "/" + acct
-				cfgPath := opts.ConfigPath
-				if cfgPath == "" {
-					cfgPath = "config.yaml"
-				}
-				raw, readErr := os.ReadFile(cfgPath)
-				if readErr == nil {
-					oldKey := p.APIKey
-					updated := strings.Replace(string(raw), oldKey, refStr, 1)
-					// The 0644 is inert here: ReadFile already succeeded, so
-					// the file exists, and OpenFile only applies perm on
-					// create. An operator's chmod 600 config.yaml survives.
-					if writeErr := os.WriteFile(cfgPath, []byte(updated), 0644); writeErr != nil {
-						// These two warnings fire with the raw API key still
-						// in p.APIKey, so they go through SafeLogger rather
-						// than os.Stderr -- the errors carry only a path and
-						// an errno today, but this is the credential path and
-						// the next %v added here should be caught by default.
-						// This is only worth doing because the redactor is
-						// now aliased to output.Redactor: before that fix,
-						// SafeLogger had an empty registry for its whole life
-						// and routing through it would have been theater.
-						output.Logger.Printf("warning: auto-migrate: wrote ref to memory but could not update %s: %v\n", cfgPath, writeErr)
-					}
-				} else {
-					output.Logger.Printf("warning: auto-migrate: stored key but could not read %s for rewrite: %v\n", cfgPath, readErr)
-				}
-				p.APIKey = refStr
-				src.APIKeyRef = refStr
-				resolved, rerr = authMgr.ResolveAPIKey(context.Background(), src)
-				if rerr != nil {
-					return nil, fmt.Errorf("bootstrap: auto-migrate resolve %s: stored but cannot re-read: %w", p.Name, rerr)
-				}
-			} else {
-				return nil, fmt.Errorf("bootstrap: resolve credentials for %s: %w (set auth.auto_migrate=true to auto-store in secrets backend)", p.Name, rerr)
-			}
-		}
-		if resolved != "" {
-			// Register silently drops values below secrets.MinSecretLength.
-			// Silence is right inside the Redactor (it cannot tell a junk
-			// value from a real one) but wrong here, where we know this
-			// string is meant to be a credential: a key that short will not
-			// be redacted anywhere, and the operator should hear about it
-			// rather than discover it in a log. The warning names neither the
-			// value nor its length.
-			if len(resolved) < secrets.MinSecretLength {
-				output.Logger.Printf("warning: provider %q: resolved credential is too short to redact safely; it will appear verbatim in logs and stored messages\n", p.Name)
-			}
-			redactor.Register(resolved)
-			p.APIKey = resolved
-		}
+		redactor.Register(key)
 	}
 
 	// Inject the redactor into Store (CreateSession / AppendMessage /

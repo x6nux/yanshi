@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -38,7 +39,7 @@ import (
 
 func TestResolvePermissionMode_AllowEditsDeniesNonEditTool(t *testing.T) {
 	cs := &connSession{perm: &permModeState{}}
-	cs.perm.set(guard.ModeAllowEdits, 0)
+	cs.perm.set(guard.ModeAllowEdits)
 	d, ok := resolvePermissionMode(context.Background(), cs, nil, tools.PermissionRequest{
 		Tool: "shell_run", Args: `{"command":"echo hi"}`,
 	})
@@ -46,28 +47,162 @@ func TestResolvePermissionMode_AllowEditsDeniesNonEditTool(t *testing.T) {
 	assert.Equal(t, tools.PermissionDeny, d)
 }
 
-func TestResolvePermissionMode_AutoBelowThreshold(t *testing.T) {
-	fm := einollm.NewFakeModel([]string{"score: 3"}, nil)
-	models := map[string]model.BaseChatModel{"default": fm}
-	cs := &connSession{perm: &permModeState{}, defaultModel: "default"}
-	cs.perm.set(guard.ModeAuto, 5)
-	d, ok := resolvePermissionMode(context.Background(), cs, models, tools.PermissionRequest{
-		Tool: "fs_write", Args: `{"path":"test.txt"}`,
-	})
-	assert.True(t, ok, "score=3 <= threshold=5 must auto-allow")
-	assert.Equal(t, tools.PermissionAllow, d)
+// TestResolvePermissionMode_AutoHasNoStaticOverride proves the model's answer
+// is the WHOLE verdict: nothing in Go second-guesses it, in either direction.
+//
+// The commands here are the ones a static denylist would have refused. They
+// run because the model said ALLOW. That is the design — and it is also the
+// thing to check first if auto ever approves something it should not have,
+// because the fix then belongs in guard.AutoApprovalPrompt, not here.
+func TestResolvePermissionMode_AutoHasNoStaticOverride(t *testing.T) {
+	for _, shell := range []string{
+		"sudo rm -rf /etc", "systemctl stop nginx", "git push --force",
+		"mkfs.ext4 /dev/sda1", "ssh host uptime",
+	} {
+		t.Run(shell, func(t *testing.T) {
+			yesMan := einollm.NewFakeModel([]string{"ALLOW"}, nil)
+			models := map[string]model.BaseChatModel{"default": yesMan}
+			cs := &connSession{perm: &permModeState{}, defaultModel: "default"}
+			cs.perm.set(guard.ModeAuto)
+			d, ok := resolvePermissionMode(context.Background(), cs, models,
+				tools.PermissionRequest{Tool: "shell_run", Shell: shell})
+			assert.True(t, ok, "no static layer may override the model's ALLOW")
+			assert.Equal(t, tools.PermissionAllow, d)
+		})
+	}
+	// ...and the same commands prompt when the model says so, which is what
+	// makes the case above a statement about the design rather than about a
+	// broken gate.
+	for _, shell := range []string{"sudo rm -rf /etc", "git push --force"} {
+		t.Run(shell+" (model asks)", func(t *testing.T) {
+			cautious := einollm.NewFakeModel([]string{"ASK"}, nil)
+			models := map[string]model.BaseChatModel{"default": cautious}
+			cs := &connSession{perm: &permModeState{}, defaultModel: "default"}
+			cs.perm.set(guard.ModeAuto)
+			d, ok := resolvePermissionMode(context.Background(), cs, models,
+				tools.PermissionRequest{Tool: "shell_run", Shell: shell})
+			assert.False(t, ok)
+			assert.Equal(t, tools.PermissionDeny, d)
+		})
+	}
 }
 
-func TestResolvePermissionMode_AutoAboveThreshold(t *testing.T) {
-	fm := einollm.NewFakeModel([]string{"score: 9"}, nil)
-	models := map[string]model.BaseChatModel{"default": fm}
+// TestResolvePermissionMode_AutoStillCannotCrossTheStructuralGate proves what
+// the model does NOT get to decide. Catastrophic mass deletion is refused
+// before the model is consulted, so an ALLOW cannot buy it.
+func TestResolvePermissionMode_AutoStillCannotCrossTheStructuralGate(t *testing.T) {
+	yesMan := einollm.NewFakeModel([]string{"ALLOW"}, nil)
+	models := map[string]model.BaseChatModel{"default": yesMan}
 	cs := &connSession{perm: &permModeState{}, defaultModel: "default"}
-	cs.perm.set(guard.ModeAuto, 5)
-	d, ok := resolvePermissionMode(context.Background(), cs, models, tools.PermissionRequest{
-		Tool: "fs_write", Args: `{"path":"test.txt"}`,
+	cs.perm.set(guard.ModeAuto)
+	d, ok := resolvePermissionMode(context.Background(), cs, models,
+		tools.PermissionRequest{Tool: "shell_run", Shell: "rm -rf /", Workdir: "/proj"})
+	assert.True(t, ok, "catastrophic deletion resolves without asking the user")
+	assert.Equal(t, tools.PermissionDeny, d, "and it resolves to DENY, whatever the model said")
+}
+
+// TestResolvePermissionMode_AutoAsksTheModel covers stage 2: for calls the
+// denylist clears, the model's answer is the verdict.
+func TestResolvePermissionMode_AutoAsksTheModel(t *testing.T) {
+	cases := []struct {
+		name      string
+		reply     string
+		wantAllow bool
+	}{
+		{"model allows", "ALLOW", true},
+		{"model asks", "ASK", false},
+		{"model is unreadable", "I am not sure about this one at all", false},
+		{"model answers with prose containing allow", "I would not allow this", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fm := einollm.NewFakeModel([]string{c.reply}, nil)
+			models := map[string]model.BaseChatModel{"default": fm}
+			cs := &connSession{perm: &permModeState{}, defaultModel: "default"}
+			cs.perm.set(guard.ModeAuto)
+			d, ok := resolvePermissionMode(context.Background(), cs, models,
+				tools.PermissionRequest{Tool: "shell_run", Shell: "go build ./..."})
+			if c.wantAllow {
+				assert.True(t, ok)
+				assert.Equal(t, tools.PermissionAllow, d)
+				return
+			}
+			assert.False(t, ok, "anything but a clean ALLOW must prompt")
+			assert.Equal(t, tools.PermissionDeny, d)
+		})
+	}
+}
+
+// TestResolvePermissionMode_AutoFailsToPrompting pins the error policy: auto
+// degrades to manual, never to permissive. No model and a model error are the
+// two ways stage 2 can fail to produce a verdict.
+func TestResolvePermissionMode_AutoFailsToPrompting(t *testing.T) {
+	t.Run("no model registered", func(t *testing.T) {
+		cs := &connSession{perm: &permModeState{}}
+		cs.perm.set(guard.ModeAuto)
+		d, ok := resolvePermissionMode(context.Background(), cs, nil,
+			tools.PermissionRequest{Tool: "shell_run", Shell: "go build ./..."})
+		assert.False(t, ok)
+		assert.Equal(t, tools.PermissionDeny, d)
 	})
-	assert.False(t, ok, "score=9 > threshold=5 must not auto-resolve")
-	assert.Equal(t, tools.PermissionDeny, d)
+	t.Run("model errors", func(t *testing.T) {
+		fm := einollm.NewFakeModel(nil, errors.New("upstream 500"))
+		models := map[string]model.BaseChatModel{"default": fm}
+		cs := &connSession{perm: &permModeState{}, defaultModel: "default"}
+		cs.perm.set(guard.ModeAuto)
+		d, ok := resolvePermissionMode(context.Background(), cs, models,
+			tools.PermissionRequest{Tool: "shell_run", Shell: "go build ./..."})
+		assert.False(t, ok)
+		assert.Equal(t, tools.PermissionDeny, d)
+	})
+}
+
+// TestAutoApprovalPromptCarriesSessionContext proves the session context is
+// actually WIRED INTO the prompt, not merely correct in isolation.
+//
+// This exists because a mutation that hardcoded UserGoal to "" left every
+// other test in this file green: latestUserMessage had its own passing test,
+// resolvePermissionMode had its own passing tests, and nothing asserted the
+// two were connected. Context the model never receives is context that does
+// not exist.
+func TestAutoApprovalPromptCarriesSessionContext(t *testing.T) {
+	cs := &connSession{history: []*schema.Message{
+		schema.UserMessage("please refactor the parser package"),
+		schema.AssistantMessage("on it", nil),
+	}}
+	got := autoApprovalPromptFor(cs, tools.PermissionRequest{
+		Tool:    "shell_run",
+		Shell:   "go build ./...",
+		Args:    `{"command":"go build ./..."}`,
+		Workdir: "/proj",
+		Reason:  "shell command not on allowlist",
+	})
+	for _, want := range []string{
+		"please refactor the parser package", // the goal, via latestUserMessage
+		"go build ./...",                     // the command being judged
+		"/proj",                              // the in-scope boundary
+		"shell command not on allowlist",     // why the static policy declined
+	} {
+		assert.Contains(t, got, want, "prompt must carry the session context")
+	}
+}
+
+// TestLatestUserMessage proves the goal handed to the model is the most recent
+// user turn, not the first and not an assistant turn. Getting this wrong would
+// judge every call in a long session against the opening request.
+func TestLatestUserMessage(t *testing.T) {
+	cs := &connSession{history: []*schema.Message{
+		schema.UserMessage("first request"),
+		schema.AssistantMessage("working on it", nil),
+		schema.UserMessage("actually, do this instead"),
+		schema.AssistantMessage("ok", nil),
+	}}
+	assert.Equal(t, "actually, do this instead", cs.latestUserMessage())
+
+	assert.Empty(t, (&connSession{}).latestUserMessage(), "no history yields no goal")
+	assert.Empty(t, (&connSession{history: []*schema.Message{
+		schema.AssistantMessage("hi", nil),
+	}}).latestUserMessage(), "assistant-only history yields no goal")
 }
 
 func TestResolvePermissionMode_DefaultReturnsNotResolved(t *testing.T) {
@@ -83,7 +218,7 @@ func TestResolvePermissionMode_ForcePromptNotAutoResolved(t *testing.T) {
 	for _, mode := range []guard.PermissionMode{guard.ModeYOLO, guard.ModeAuto} {
 		t.Run(string(mode), func(t *testing.T) {
 			cs := &connSession{perm: &permModeState{}}
-			cs.perm.set(mode, 10)
+			cs.perm.set(mode)
 			d, ok := resolvePermissionMode(context.Background(), cs, nil, tools.PermissionRequest{
 				Tool: "dangerous_tool", ForcePrompt: true,
 			})
@@ -95,7 +230,7 @@ func TestResolvePermissionMode_ForcePromptNotAutoResolved(t *testing.T) {
 
 func TestResolvePermissionMode_ApprovalRequiredNotAutoResolved(t *testing.T) {
 	cs := &connSession{perm: &permModeState{}}
-	cs.perm.set(guard.ModeYOLO, 0)
+	cs.perm.set(guard.ModeYOLO)
 	d, ok := resolvePermissionMode(context.Background(), cs, nil, tools.PermissionRequest{
 		Tool: "github_push", ApprovalRequired: true,
 	})
@@ -105,30 +240,12 @@ func TestResolvePermissionMode_ApprovalRequiredNotAutoResolved(t *testing.T) {
 
 func TestResolvePermissionMode_AutoNoModelFallsThrough(t *testing.T) {
 	cs := &connSession{perm: &permModeState{}}
-	cs.perm.set(guard.ModeAuto, 5)
+	cs.perm.set(guard.ModeAuto)
 	d, ok := resolvePermissionMode(context.Background(), cs, nil, tools.PermissionRequest{
 		Tool: "fs_write", Args: `{}`,
 	})
 	assert.False(t, ok, "auto mode with no model must fall through to prompt")
 	assert.Equal(t, tools.PermissionDeny, d)
-}
-
-func TestAssessRisk_ModelErrorFallback(t *testing.T) {
-	fm := einollm.NewFakeModel(nil, errors.New("model error"))
-	models := map[string]model.BaseChatModel{"default": fm}
-	cs := &connSession{perm: &permModeState{}, defaultModel: "default"}
-	score, ok := assessRisk(context.Background(), models, cs, tools.PermissionRequest{
-		Tool: "fs_write", Args: `{}`,
-	})
-	assert.False(t, ok)
-	assert.Equal(t, 0, score)
-}
-
-func TestAssessRisk_NoFallbackModel(t *testing.T) {
-	cs := &connSession{perm: &permModeState{}}
-	score, ok := assessRisk(context.Background(), nil, cs, tools.PermissionRequest{Tool: "fs_write"})
-	assert.False(t, ok)
-	assert.Equal(t, 0, score)
 }
 
 // ---------------------------------------------------------------------------

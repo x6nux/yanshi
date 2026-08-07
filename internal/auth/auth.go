@@ -29,17 +29,6 @@ var ErrResolvedCredentialEmpty = errors.New("auth: resolved credential is empty"
 // "secret") from a real backend failure (must propagate).
 var ErrAuthMetadataNotFound = errors.New("auth: metadata not found")
 
-// CredentialSource describes how a provider obtains its API key. APIKeyRef is
-// a secrets.CredentialRef string (secret://service/account, env://VAR,
-// "legacy-insecure", or raw literal — raw literals fail closed unless
-// LegacyInsecure is true). DeviceProviderID names a DeviceProvider registered
-// with the Manager for RFC 8628 device flow (empty = no device).
-type CredentialSource struct {
-	APIKeyRef        string
-	LegacyInsecure   bool
-	DeviceProviderID string
-}
-
 // Status reports the current authentication state for a (provider, account).
 // Source is "secret", "device", or "" depending on how the credential was
 // last stored; ExpiresAt is non-zero only for device flows whose metadata
@@ -234,31 +223,6 @@ func (m *Manager) RunDeviceFlow(
 // Secrets returns the underlying secrets.Manager (for bootstrap to inject
 // the resolved redactor and for CLI auth to call Set/Delete).
 func (m *Manager) Secrets() *secrets.Manager { return m.secrets }
-
-// ResolveAPIKey resolves src.APIKeyRef to a plaintext key. Raw literals are
-// refused (fail-closed) unless src.LegacyInsecure is true.
-// Context is respected for env lookups via a future OS-level cancel (no I/O
-// today, but the signature is ready for device flow re-use).
-func (m *Manager) ResolveAPIKey(ctx context.Context, src CredentialSource) (string, error) {
-	if src.APIKeyRef == "" {
-		return "", nil
-	}
-	ref, err := secrets.ParseCredentialRef(src.APIKeyRef, src.LegacyInsecure)
-	if err != nil {
-		return "", err
-	}
-	if ctx.Err() != nil {
-		return "", ctx.Err()
-	}
-	value, err := m.secrets.Resolve(ref)
-	if err != nil {
-		return "", err
-	}
-	if ref.Kind != "none" && value == "" {
-		return "", ErrResolvedCredentialEmpty
-	}
-	return value, nil
-}
 
 // Status queries the secret backend for an entry and overlays metadata when
 // available. Authenticated is true iff a non-empty credential exists. Source

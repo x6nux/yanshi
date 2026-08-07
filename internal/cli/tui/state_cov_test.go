@@ -90,8 +90,8 @@ func TestCov_FetchInitialStatus(t *testing.T) {
 
 // ---- syncSavedMode ----
 
-// TestCov_SyncSavedMode covers the empty-mode default, the Auto+zero-threshold
-// default, and the drain closure body.
+// TestCov_SyncSavedMode covers the empty-mode default and the drain closure
+// body.
 func TestCov_SyncSavedMode(t *testing.T) {
 	// Empty mode → ModeDefault; drain closure returns nil.
 	closed := make(chan cli.StreamEvent)
@@ -102,10 +102,9 @@ func TestCov_SyncSavedMode(t *testing.T) {
 	require.NotNil(t, cmd)
 	assert.Nil(t, cmd(), "sync closure drains + returns nil")
 
-	// Auto + threshold 0 → default threshold resolved for the wire.
+	// An explicit mode is forwarded as-is.
 	m2 := newModel(&chanSession{ch: closed}, "/proj")
 	m2.permMode = guard.ModeAuto
-	m2.autoThreshold = 0
 	cmd2 := m2.syncSavedMode()
 	require.NotNil(t, cmd2)
 	assert.Nil(t, cmd2())

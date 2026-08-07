@@ -123,8 +123,8 @@ var wsUpgrader = websocket.Upgrader{
 }
 
 // permModeState is the live, concurrency-safe holder for a connection's
-// interactive permission mode (default|allow-edits|yolo|auto) + the ModeAuto
-// risk ceiling. The reader goroutine updates it on every set_mode frame so a
+// interactive permission mode (default|allow-edits|yolo|auto).
+// The reader goroutine updates it on every set_mode frame so a
 // mode switch takes effect immediately — even while a turn is running and the
 // main loop (the only drainer of the frames channel) is blocked. The permission
 // callback and statusFrame read it. Holding it behind a mutex rather than as
@@ -133,21 +133,19 @@ var wsUpgrader = websocket.Upgrader{
 type permModeState struct {
 	mu   sync.RWMutex
 	mode guard.PermissionMode
-	auto int
 }
 
-func (p *permModeState) set(m guard.PermissionMode, auto int) {
+func (p *permModeState) set(m guard.PermissionMode) {
 	p.mu.Lock()
 	p.mode = m
-	p.auto = auto
 	p.mu.Unlock()
 }
 
-// get returns the current mode + auto threshold.
-func (p *permModeState) get() (guard.PermissionMode, int) {
+// get returns the current mode.
+func (p *permModeState) get() guard.PermissionMode {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.mode, p.auto
+	return p.mode
 }
 
 // authorizeControlAction runs tools.Authorize against the named tool using a
@@ -173,20 +171,14 @@ func (s *Server) authorizeControlAction(connCtx context.Context, connectionSessi
 // state. Called from BOTH the reader goroutine (so the switch lands immediately,
 // mid-turn) and the main loop (the canonical re-apply + status echo). Mode
 // update is conditional on a recognizable mode string (fail-safe: an unknown
-// value leaves the mode unchanged); the threshold is sticky — a prior value is
-// kept unless the frame overrides it, defaulting when still zero.
+// value leaves the mode unchanged).
 func (cs *connSession) applySetMode(cf proto.ClientFrame) (oldMode, newMode guard.PermissionMode) {
-	oldMode, auto := cs.perm.get()
+	oldMode = cs.perm.get()
 	mode := oldMode
 	if m, ok := guard.NormalizeMode(cf.Mode); ok {
 		mode = m
 	}
-	if cf.AutoThreshold > 0 {
-		auto = cf.AutoThreshold
-	} else if auto == 0 {
-		auto = guard.DefaultAutoThreshold
-	}
-	cs.perm.set(mode, auto)
+	cs.perm.set(mode)
 	return oldMode, mode
 }
 
@@ -238,7 +230,7 @@ func resolvePermissionMode(ctx context.Context, cs *connSession,
 	// Read the LIVE mode state: the reader goroutine updates it the instant a
 	// set_mode frame arrives, so a mid-turn switch (e.g. while a sub-agent's
 	// tool call is pending) is honored by the very next callback invocation.
-	mode, auto := cs.perm.get()
+	mode := cs.perm.get()
 
 	// Destructive-deletion gate (profile-independent). Catastrophic mass deletion
 	// is already blocked structurally in guard.Check, so this is a fail-safe.
@@ -281,18 +273,35 @@ func resolvePermissionMode(ctx context.Context, cs *connSession,
 		}
 		return tools.PermissionDeny, false
 	case guard.ModeAuto:
-		threshold := auto
-		if threshold <= 0 {
-			threshold = guard.DefaultAutoThreshold
+		// The model decides, with the session's context. There is no static
+		// list beside it: the categories that would have been one live in
+		// guard.AutoApprovalPrompt instead, where they read the full command
+		// text rather than a tokenised program word (see that function's doc
+		// for why the static version was weaker at exactly the wrapper case
+		// it existed to catch).
+		//
+		// Two layers still sit underneath and are NOT the model's to decide:
+		// catastrophic mass deletion and shell metacharacters are structural
+		// HardDenies, and out-of-workdir deletion was already graded above. A
+		// delete reaching this point is one inside the workdir.
+		if !askAutoApproval(ctx, models, cs, req) {
+			return tools.PermissionDeny, false
 		}
-		score, ok := assessRisk(ctx, models, cs, req)
-		if !ok {
-			return tools.PermissionDeny, false // couldn't rate it — ask the user
+		// A script the model just cleared is worth remembering: the same
+		// script re-run in a loop would otherwise cost one model round-trip
+		// per iteration. AllowPersistent (rather than Allow) makes Authorize
+		// record an approval rule, and that rule's scope carries the script's
+		// content hash — so the memory lasts exactly as long as the script is
+		// unchanged, and editing one byte asks again.
+		//
+		// Only script executions get this. Every other call returns a plain
+		// Allow, because their scope is just program+args: remembering those
+		// would turn one model verdict into a standing rule for a command
+		// shape whose meaning can change entirely with its operands.
+		if tools.CommandRunsAScript(req.Shell, req.Workdir) {
+			return tools.PermissionAllowPersistent, true
 		}
-		if score <= threshold {
-			return tools.PermissionAllow, true
-		}
-		return tools.PermissionDeny, false
+		return tools.PermissionAllow, true
 	default: // ModeDefault
 		if req.ProfileHardDeny {
 			return tools.PermissionDeny, true // policy="deny" means block, not ask
@@ -337,14 +346,16 @@ func forcePromptFlag(req tools.PermissionRequest) bool {
 	return req.ForcePrompt || req.Force
 }
 
-// assessRisk asks the model to rate a tool call's risk 1-10 for ModeAuto. It
-// uses the session's selected model when set, else the first registered model.
-// A 15s timeout guards a hung/slow model; on timeout or any error it returns
-// (0, false) so the caller falls back to prompting the user. The assessment is
-// a single Generate call (the model is idle here: the ReAct loop is paused
-// between iterations awaiting the tool's permission verdict).
-func assessRisk(ctx context.Context, models map[string]model.BaseChatModel,
-	cs *connSession, req tools.PermissionRequest) (int, bool) {
+// askAutoApproval asks the session model whether a tool call may run
+// unattended. It returns true ONLY on an explicit ALLOW: no model, a timeout,
+// an API error and an unreadable reply all return false, which the caller
+// turns into an ordinary user prompt. That is the whole error policy — auto
+// mode degrades to manual mode, never to permissive.
+//
+// The 15s ceiling is generous because the model is idle at this point: the
+// ReAct loop is paused between iterations waiting for this very verdict.
+func askAutoApproval(ctx context.Context, models map[string]model.BaseChatModel,
+	cs *connSession, req tools.PermissionRequest) bool {
 
 	m := cs.selectModel(models)
 	if m == nil {
@@ -355,13 +366,46 @@ func assessRisk(ctx context.Context, models map[string]model.BaseChatModel,
 		}
 	}
 	if m == nil {
-		return 0, false
+		return false
 	}
 	askCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	resp, err := m.Generate(askCtx, []*schema.Message{schema.UserMessage(guard.RiskPrompt(req.Tool, req.Args))})
+	resp, err := m.Generate(askCtx, []*schema.Message{
+		schema.UserMessage(autoApprovalPromptFor(cs, req)),
+	})
 	if err != nil || resp == nil {
-		return 0, false
+		return false
 	}
-	return guard.ParseRiskScore(resp.Content)
+	allow, ok := guard.ParseAutoApproval(resp.Content)
+	return ok && allow
+}
+
+// autoApprovalPromptFor assembles what the model is shown. It is a named
+// function rather than an inline literal so a test can assert the session
+// context actually reaches the prompt: every field here has its own source,
+// and a field silently dropped on the way in is indistinguishable from one
+// that was never collected.
+func autoApprovalPromptFor(cs *connSession, req tools.PermissionRequest) string {
+	return guard.AutoApprovalPrompt(guard.AutoApprovalRequest{
+		Tool:     req.Tool,
+		Args:     req.Args,
+		Shell:    req.Shell,
+		Workdir:  req.Workdir,
+		Reason:   req.Reason,
+		UserGoal: cs.latestUserMessage(),
+	})
+}
+
+// latestUserMessage returns the text of the most recent user turn, which is
+// the agent's stated goal for everything it is currently doing. Auto mode
+// shows it to the model so "is this call part of what was asked for" is
+// answerable at all; without it the model sees a bare command with no purpose
+// to judge it against.
+func (cs *connSession) latestUserMessage() string {
+	for i := len(cs.history) - 1; i >= 0; i-- {
+		if cs.history[i] != nil && cs.history[i].Role == schema.User {
+			return cs.history[i].Content
+		}
+	}
+	return ""
 }

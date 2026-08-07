@@ -35,7 +35,6 @@ type StreamEvent struct {
 	Model            string                  // status / session_restored: active model name
 	Thinking         string                  // status / session_restored: active reasoning effort
 	PermMode         string                  // status: permission mode (default|allow-edits|yolo|auto)
-	AutoThreshold    int                     // status: auto-mode risk ceiling (1-10)
 	TokensIn         int                     // status / session_restored: cumulative input tokens
 	TokensOut        int                     // status / session_restored: cumulative output tokens
 	CachedTokens     int                     // status: cumulative prompt-cache hits

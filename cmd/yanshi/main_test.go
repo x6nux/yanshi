@@ -15,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/x6nux/yanshi/internal/secrets"
 )
 
 // TestRunVCSMCP_InitializeSmoke drives the testable core of the vcs-mcp
@@ -165,12 +166,17 @@ vcs: { worktree_dir: %q }
 	assert.NotContains(t, out.String(), `"checks"`)
 }
 
-// TestMainAuth_E2E exercises the `yanshi auth` subcommand end-to-end via
-// the main entry. Covers set (stdin + --api-key-stdin), status, logout.
-// Uses ONLY loopback HTTPS-style file-backed storage (no real keyring).
+// TestMainAuth_E2E exercises the `yanshi auth` subcommand end-to-end via the
+// main entry: status, logout, and the sibling-isolation property of a failed
+// logout. Uses ONLY file-backed storage (no real keyring).
+//
+// Credentials are seeded through secrets.Manager rather than `auth set`,
+// which no longer exists: provider api_keys live in config.yaml as literals
+// or ${VAR}, so the only thing this store still holds is device-flow tokens.
 func TestMainAuth_E2E(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("YANSHI_PASSPHRASE", "e2e-pass")
+	secretPath := filepath.Join(dir, "secrets.enc")
 	cfgPath := filepath.Join(dir, "config.yaml")
 	cfgBody := fmt.Sprintf(`
 storage:
@@ -179,23 +185,33 @@ secrets:
   backend: file
   file_path: %q
   passphrase_env: YANSHI_PASSPHRASE
-`, filepath.Join(dir, "auth.db"), filepath.Join(dir, "secrets.enc"))
+`, filepath.Join(dir, "auth.db"), secretPath)
 	if err := os.WriteFile(cfgPath, []byte(cfgBody), 0600); err != nil {
 		t.Fatal(err)
 	}
 
-	// 1) Set via --api-key-stdin.
-	var out bytes.Buffer
-	code := runCLI([]string{"yanshi", "--config", cfgPath, "auth", "set",
-		"--provider", "openai", "--account", "main", "--api-key-stdin"},
-		strings.NewReader("sk-e2e-stdin"), &out)
-	if code != 0 {
-		t.Fatalf("auth set exited %d: %s", code, out.String())
+	// 1) Seed two accounts directly in the backend.
+	seed := func(account, value string) {
+		t.Helper()
+		smgr, err := secrets.NewManager(secrets.Config{
+			Backend: "file", FilePath: secretPath, PassphraseEnv: "YANSHI_PASSPHRASE",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := smgr.Store().Set("openai", account, value); err != nil {
+			t.Fatal(err)
+		}
+		if err := smgr.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
+	seed("main", "tok-e2e-main")
+	seed("sibling", "tok-e2e-sibling")
 
 	// 2) Status reports Authenticated.
-	out.Reset()
-	code = runCLI([]string{"yanshi", "--config", cfgPath, "auth", "status",
+	var out bytes.Buffer
+	code := runCLI([]string{"yanshi", "--config", cfgPath, "auth", "status",
 		"--provider", "openai", "--account", "main"}, nil, &out)
 	if code != 0 || !strings.Contains(out.String(), "Authenticated: true") {
 		t.Fatalf("auth status: code=%d out=%s", code, out.String())
@@ -215,12 +231,8 @@ secrets:
 		t.Fatalf("after logout, status still reports Authenticated: %s", out.String())
 	}
 
-	// 4) Delete missing account returns non-zero but does not corrupt the
+	// 4) Logout of a missing account returns non-zero but does not corrupt the
 	//    existing entry of a sibling account.
-	var out2 bytes.Buffer
-	_ = runCLI([]string{"yanshi", "--config", cfgPath, "auth", "set",
-		"--provider", "openai", "--account", "sibling", "--api-key-stdin"},
-		strings.NewReader("sk-sibling"), &out2)
 	out.Reset()
 	code = runCLI([]string{"yanshi", "--config", cfgPath, "auth", "logout",
 		"--provider", "openai", "--account", "nonexistent"}, nil, &out)

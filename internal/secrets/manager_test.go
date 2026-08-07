@@ -31,29 +31,7 @@ func TestManager_ForcedFileRoundTrip(t *testing.T) {
 	}
 }
 
-func TestManager_NoBackendRefusesSecretRef(t *testing.T) {
-	mgr, err := NewManager(Config{Backend: "none"})
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
-	defer mgr.Close()
-	_, err = mgr.Resolve(CredentialRef{Kind: "secret", Service: "x", Account: "y"})
-	if err == nil {
-		t.Fatal("expected error resolving secret:// with no backend")
-	}
-}
 
-func TestManager_LegacyLiteralPassesThroughWhenAllowed(t *testing.T) {
-	mgr, _ := NewManager(Config{Backend: "none"})
-	defer mgr.Close()
-	got, err := mgr.Resolve(CredentialRef{Kind: "legacy", Raw: "sk-legacy"})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if got != "sk-legacy" {
-		t.Fatalf("got %q", got)
-	}
-}
 
 func TestManager_AutoWithoutPassphraseSkipsFileStore(t *testing.T) {
 	// Backend=auto but no passphrase set: must not fatal, only warn.
@@ -69,8 +47,9 @@ func TestManager_AutoWithoutPassphraseSkipsFileStore(t *testing.T) {
 		t.Fatalf("auto mode must not fatal without passphrase: %v", err)
 	}
 	defer mgr.Close()
-	// secret:// must fail (no keyring, no fileStore); env:// and legacy must still work.
-	if _, err := mgr.Resolve(CredentialRef{Kind: "secret", Service: "x", Account: "y"}); err == nil {
-		t.Fatal("secret:// must fail when no backend available")
+	// No keyring and no fileStore means no store at all: device-flow token
+	// storage must fail loudly rather than silently dropping the token.
+	if err := mgr.Set("x", "y", "tok"); err == nil {
+		t.Fatal("Set must fail when no backend available")
 	}
 }

@@ -7,7 +7,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/proto"
 )
 
@@ -243,28 +242,6 @@ func TestCov_ShiftTabCyclesMode(t *testing.T) {
 	m := newModel(&fakeSession{}, "/proj")
 	_, ok := handleKey(m, tea.KeyMsg{Type: tea.KeyShiftTab})
 	assert.True(t, ok)
-}
-
-// TestCov_ShiftUpDownAutoThreshold: Shift+Up/Down adjust the auto threshold
-// when permMode is Auto.
-func TestCov_ShiftUpDownAutoThreshold(t *testing.T) {
-	m := newModel(&fakeSession{}, "/proj")
-	m.permMode = guard.ModeAuto
-	m.autoThreshold = 5
-	mm, ok := handleKey(m, tea.KeyMsg{Type: tea.KeyShiftUp})
-	assert.True(t, ok)
-	assert.Equal(t, 6, mm.autoThreshold)
-	// Chain on the updated model (permMode stays Auto while tuning threshold).
-	mm, ok = handleKey(mm, tea.KeyMsg{Type: tea.KeyShiftDown})
-	assert.True(t, ok)
-	assert.Equal(t, 5, mm.autoThreshold)
-
-	// Clamp at the min (1) on a fresh Auto model.
-	mLow := newModel(&fakeSession{}, "/proj")
-	mLow.permMode = guard.ModeAuto
-	mLow.autoThreshold = 1
-	mmLow, _ := handleKey(mLow, tea.KeyMsg{Type: tea.KeyShiftDown})
-	assert.Equal(t, 1, mmLow.autoThreshold, "clamped to min 1")
 }
 
 // TestCov_PaletteNavTabEnter covers the command-palette paths: Up/Down move,

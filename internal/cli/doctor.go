@@ -160,11 +160,10 @@ func RunDoctor(ctx context.Context, opts DoctorOptions) DoctorReport {
 	checks = append(checks, checkMCP(cfg, cfgErr))
 	checks = append(checks, checkLSP(ctx, root))
 	checks = append(checks, checkPermissions(cfg, cfgErr))
-	// D3 (S10/O03/I18N1/C15) doctor checks: surface credential-ref, locale,
-	// keymap, vim, and high-contrast posture. Each check returns a fixed
-	// safe string; raw error text or API key values are never echoed because
-	// the underlying validators return bounded messages.
-	checks = append(checks, checkSecretsRefs(cfg, cfgErr))
+	// D3 (S10/O03/I18N1/C15) doctor checks: surface locale, keymap, vim, and
+	// high-contrast posture. Each check returns a fixed safe string; raw error
+	// text or API key values are never echoed because the underlying
+	// validators return bounded messages.
 	checks = append(checks, checkWAL(cfg, cfgErr))
 	checks = append(checks, checkKeyringAvailability(cfg, cfgErr))
 	checks = append(checks, checkLocaleConfig(cfg, cfgErr))
@@ -711,31 +710,6 @@ func expandHomeDir(p string) string {
 		}
 	}
 	return p
-}
-
-// checkSecretsRefs verifies every provider api_key is either empty, a
-// secret:// / env:// reference, or accepted under the legacy_insecure opt-in.
-// This is the second gate (after the auth Manager's ParseCredentialRef): it
-// catches raw literals that arrived via ${VAR} expansion in config.Load.
-// Errors are deliberately bounded — a rejected raw literal may itself be a
-// secret, so the message must not echo it.
-func checkSecretsRefs(cfg *config.Config, cfgErr error) CheckResult {
-	if cfgErr != nil {
-		return skipped("secrets", cfgErr)
-	}
-	checked := 0
-	for _, provider := range cfg.LLM.Providers {
-		if provider.APIKey == "" {
-			continue
-		}
-		checked++
-		if _, err := secrets.ParseCredentialRef(provider.APIKey, cfg.Auth.LegacyInsecure); err != nil {
-			return CheckResult{Name: "secrets", Status: StatusFail,
-				Message: fmt.Sprintf("provider %q has an invalid credential reference", provider.Name)}
-		}
-	}
-	return CheckResult{Name: "secrets", Status: StatusOK,
-		Message: fmt.Sprintf("%d credential reference(s) valid", checked)}
 }
 
 // checkLocaleConfig verifies that cfg.I18N.UILocale resolves through the

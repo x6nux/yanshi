@@ -40,7 +40,6 @@ var streamEventFieldMap = map[string]string{
 	"Model":            "Model",
 	"Thinking":         "Thinking",
 	"PermMode":         "PermMode",
-	"AutoThreshold":    "AutoThreshold",
 	"TokensIn":         "TokensIn",
 	"TokensOut":        "TokensOut",
 	"CachedTokens":     "CachedTokens",

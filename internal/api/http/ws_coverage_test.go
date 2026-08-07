@@ -14,8 +14,6 @@ import (
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/skills"
 	"github.com/x6nux/yanshi/internal/tools"
-
-	"github.com/cloudwego/eino/components/model"
 )
 
 // TestChatWS_GetStatus proves get_status returns a status frame.
@@ -222,55 +220,11 @@ func TestAuthorizeControlAction(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestAssessRisk_NoModel tests assessRisk when no model is available.
-func TestAssessRisk_NoModel(t *testing.T) {
-	cs := &connSession{perm: &permModeState{}}
-	score, ok := assessRisk(context.Background(), nil, cs, tools.PermissionRequest{
-		Tool: "fs_write",
-		Args: `{"path":"test.txt"}`,
-	})
-	assert.False(t, ok)
-	assert.Equal(t, 0, score)
-}
-
-// TestAssessRisk_WithModel tests assessRisk with a model that returns a score.
-func TestAssessRisk_WithModel(t *testing.T) {
-	fm := einollm.NewFakeModel([]string{"score: 3"}, nil)
-	models := map[string]model.BaseChatModel{"default": fm}
-	cs := &connSession{
-		perm:         &permModeState{},
-		defaultModel: "default",
-	}
-	score, ok := assessRisk(context.Background(), models, cs, tools.PermissionRequest{
-		Tool: "fs_write",
-		Args: `{"path":"test.txt"}`,
-	})
-	assert.True(t, ok)
-	assert.Equal(t, 3, score)
-}
-
-// TestAssessRisk_SessionModel tests assessRisk with a session-selected model.
-func TestAssessRisk_SessionModel(t *testing.T) {
-	m1 := einollm.NewFakeModel([]string{"high"}, nil)
-	m2 := einollm.NewFakeModel([]string{"score: 8"}, nil)
-	models := map[string]model.BaseChatModel{"slow": m1, "fast": m2}
-	cs := &connSession{
-		perm:  &permModeState{},
-		model: "fast", // session-selected model
-	}
-	score, ok := assessRisk(context.Background(), models, cs, tools.PermissionRequest{
-		Tool: "shell_run",
-		Args: `{"command":"rm -rf /"}`,
-	})
-	assert.True(t, ok)
-	assert.Equal(t, 8, score)
-}
-
 // TestResolvePermissionMode_PlansDenies tests that Plan mode unconditionally
 // denies write operations without prompting.
 func TestResolvePermissionMode_PlanDenies(t *testing.T) {
 	cs := &connSession{perm: &permModeState{}}
-	cs.perm.set(guard.ModePlan, 0)
+	cs.perm.set(guard.ModePlan)
 	d, ok := resolvePermissionMode(context.Background(), cs, nil, tools.PermissionRequest{
 		Tool: "fs_write",
 		Args: `{"path":"/etc/config"}`,
@@ -283,7 +237,7 @@ func TestResolvePermissionMode_PlanDenies(t *testing.T) {
 // allows any non-force/non-approval tool call.
 func TestResolvePermissionMode_YoloAlwaysAllows(t *testing.T) {
 	cs := &connSession{perm: &permModeState{}}
-	cs.perm.set(guard.ModeYOLO, 0)
+	cs.perm.set(guard.ModeYOLO)
 	d, ok := resolvePermissionMode(context.Background(), cs, nil, tools.PermissionRequest{
 		Tool: "shell_run",
 		Args: `{"command":"echo hi"}`,

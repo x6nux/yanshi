@@ -334,7 +334,6 @@ func toStreamEvent(f proto.ServerFrame) StreamEvent {
 		Model:            f.Model,
 		Thinking:         f.Thinking,
 		PermMode:         f.PermMode,
-		AutoThreshold:    f.AutoThreshold,
 		TokensIn:         f.TokensIn,
 		TokensOut:        f.TokensOut,
 		CachedTokens:     f.CachedTokens,

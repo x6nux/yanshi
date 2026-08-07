@@ -426,7 +426,7 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 					// deliver compares the two to spot an `allow` produced by
 					// a mode switch rather than by the user answering the
 					// question we actually asked.
-					curMode, _ := cs.perm.get()
+					curMode := cs.perm.get()
 					pt.deliver(cf.ID, tools.PermissionDecision(cf.Decision), curMode)
 					continue
 				}
@@ -622,7 +622,7 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 				}
 				id := pt.newID()
 				ch := make(chan tools.PermissionDecision, 1)
-				askMode, _ := cs.perm.get()
+				askMode := cs.perm.get()
 				pt.register(id, ch, req, askMode)
 				defer pt.take(id) // remove the entry on every return path
 				// req.ForcePrompt (forcePromptTools) and req.Force
@@ -724,7 +724,7 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 			// change the permission-callback wording and still hand the model a
 			// write-capable tool set. Reading it here (not per tool call) keeps
 			// one turn on one runner even if the user switches mode mid-turn.
-			turnMode, _ := cs.perm.get()
+			turnMode := cs.perm.get()
 			// ModelID/Images are the client's attachments reaching the model.
 			// displayModel() is the registry NAME of the model this turn runs on
 			// (the /model selection, else the session default) — the orchestrator

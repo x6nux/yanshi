@@ -162,27 +162,3 @@ func TestEditToolSetIsExact(t *testing.T) {
 		}
 	}
 }
-
-func TestParseRiskScore(t *testing.T) {
-	cases := []struct {
-		in   string
-		want int
-		ok   bool
-	}{
-		{"3", 3, true},
-		{"9", 9, true},
-		{"10", 10, true},
-		{"Risk: 7.", 7, true},
-		{"  5  ", 5, true},
-		{"0", 1, true},   // clamped up
-		{"99", 10, true}, // clamped down
-		{"no number here", 0, false},
-		{"", 0, false},
-	}
-	for _, c := range cases {
-		got, ok := ParseRiskScore(c.in)
-		if got != c.want || ok != c.ok {
-			t.Errorf("ParseRiskScore(%q) = (%d,%v), want (%d,%v)", c.in, got, ok, c.want, c.ok)
-		}
-	}
-}

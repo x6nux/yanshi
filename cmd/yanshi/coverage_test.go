@@ -957,17 +957,6 @@ secrets:
 	assert.Equal(t, exitErr, code)
 }
 
-// TestRunAuthSubSetFail proves a `set` that fails (empty API key on stdin with
-// --api-key-stdin) maps to exitErr.
-func TestRunAuthSubSetFail(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := writeAuthConfig(t, dir)
-	var errOut bytes.Buffer
-	code := runAuthSub(context.Background(),
-		[]string{"set", "--provider", "openai", "--account", "main", "--api-key-stdin"},
-		cfgPath, strings.NewReader(""), &bytes.Buffer{}, &errOut, authCLIDeps{})
-	assert.Equal(t, exitErr, code)
-}
 
 // TestRunAuthSubDeviceNoProvider proves `auth device` without --provider returns
 // exitUsage.

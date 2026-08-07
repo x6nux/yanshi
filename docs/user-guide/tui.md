@@ -77,7 +77,7 @@ Usage:
   yanshi vcs-mcp (env-driven; spawned by the ACP adapter — YANSHI_DB_PATH/YANSHI_REPO_ID/YANSHI_WT_ID/YANSHI_AGENT/YANSHI_WORKTREE_DIR)
   yanshi doctor [-config FILE] [-json] [-release]
   yanshi pr      <PR-number> | <full-URL>
-  yanshi auth    set|status|logout|device [-provider NAME] [-account NAME] [-api-key-stdin]
+  yanshi auth    status|logout|device [-provider NAME] [-account NAME]
 
 Subcommands:
   (none)   Launch the self-contained TUI. Discovers a running backend for the
@@ -107,8 +107,8 @@ Subcommands:
            1 warn / 2 fail. Never prints secrets.
   pr       Fetch a GitHub pull request into the session as context. Takes a
            PR number (run from the repo directory) or a full URL (any repo).
-  auth     Manage provider credentials in the OS keyring (set / status /
-           logout / device). Never echoes a secret; -api-key-stdin reads the
-           key without a prompt.
+  auth     Manage RFC 8628 device-flow sessions (status / logout / device).
+           Never echoes a secret. Provider api_keys are NOT managed here —
+           they live in config.yaml as a literal or a ${VAR} reference.
 ```
 <!-- END GENERATED: help:yanshi -->

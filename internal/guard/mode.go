@@ -1,11 +1,8 @@
 package guard
 
 import (
-	"fmt"
 	"sort"
-	"strconv"
 	"strings"
-	"time"
 )
 
 // PermissionMode is the interactive permission policy a session runs under. It
@@ -15,8 +12,9 @@ import (
 //   - ModeDefault:     prompt the user (the original behavior).
 //   - ModeAllowEdits:  auto-approve file write/edit tools; prompt for the rest.
 //   - ModeYOLO:        auto-approve everything, never prompt.
-//   - ModeAuto:        ask an AI to rate the call's risk 1-10; auto-approve when
-//     the score is <= AutoThreshold, otherwise prompt.
+//   - ModeAuto:        auto-approve calls that guard.IsKnownSafe recognises as
+//     read-only; prompt for everything else. The judgement is a static
+//     allowlist, not a model call — see IsKnownSafe for why.
 //   - ModePlan:        只读模式。runtime guard（guard.PlanToolAllowed）只放行
 //     只读工具与 task/checklist 元数据；任何写操作直接 deny。
 //     不参与 Shift+Tab cycle（CycleMode 永不返回 ModePlan）。
@@ -30,11 +28,6 @@ const (
 	ModeAuto       PermissionMode = "auto"
 	ModePlan       PermissionMode = "plan"
 )
-
-// DefaultAutoThreshold is the risk ceiling ModeAuto auto-approves under when the
-// user has not set one explicitly. 4 keeps safe/light commands (ls, cat, build,
-// git status) flowing and prompts for writes, deletes, and anything destructive.
-const DefaultAutoThreshold = 4
 
 // allModes 是 Modes() 返回的完整列表（含 ModePlan）。供 TUI 的 /mode 帮助、
 // status line 与 NormalizeMode 校验使用。
@@ -195,63 +188,3 @@ func ModeLabel(m PermissionMode) string {
 	}
 }
 
-// RiskPrompt builds the prompt sent to the model in ModeAuto to rate a tool
-// call's risk. It is deliberately terse and asks for a bare integer so parsing
-// is robust. Includes date + OS so the model can contextualize the risk (e.g.
-// destructive commands on a production server vs a dev workstation).
-// Kept here (model-free) so it can be unit-tested.
-func RiskPrompt(tool, args string) string {
-	date := time.Now().Format("2006-01-02")
-	return fmt.Sprintf(`You are a security risk evaluator for an autonomous coding agent.
-Date: %s
-Rate the risk of executing the following tool call on a 1-10 scale:
-
-  1-2  read-only / harmless      (ls, cat, find, grep, read, status)
-  3-4  low risk, reversible      (mkdir, build, test, git status/add)
-  5-6  moderate, file changes    (writes in safe dirs, npm install)
-  7-8  hard to reverse           (deletes, force ops, network mutations)
-  9-10 destructive / irreversible (rm -rf, force push, drop db, sudo)
-
-Tool: %s
-Arguments: %s
-
-Reply with ONLY a single integer 1-10. No words, no explanation.`, date, tool, args)
-}
-
-// ParseRiskScore extracts the first 1-10 integer from the model's reply,
-// clamping into range. "rm" → fail; "9" → 9; "Risk: 7." → 7; "eleven" → fail.
-// On failure the caller should fall back to prompting the user (fail-safe).
-func ParseRiskScore(reply string) (int, bool) {
-	s := strings.TrimSpace(reply)
-	// Scan for the first run of digits in the reply.
-	start := -1
-	for i := 0; i < len(s); i++ {
-		if s[i] >= '0' && s[i] <= '9' {
-			if start == -1 {
-				start = i
-			}
-		} else if start != -1 {
-			n, err := strconv.Atoi(s[start:i])
-			if err == nil {
-				return clampRisk(n), true
-			}
-			start = -1
-		}
-	}
-	if start != -1 {
-		if n, err := strconv.Atoi(s[start:]); err == nil {
-			return clampRisk(n), true
-		}
-	}
-	return 0, false
-}
-
-func clampRisk(n int) int {
-	if n < 1 {
-		return 1
-	}
-	if n > 10 {
-		return 10
-	}
-	return n
-}

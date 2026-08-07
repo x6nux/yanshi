@@ -2,7 +2,6 @@ package tui
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 
@@ -21,11 +20,7 @@ func (m model) pendingPermission() *permissionEntry {
 }
 
 func (m model) sendMode() (tea.Model, tea.Cmd) {
-	threshold := m.autoThreshold
-	if threshold == 0 && m.permMode == guard.ModeAuto {
-		threshold = guard.DefaultAutoThreshold
-	}
-	savePermMode(m.permMode, threshold)
+	savePermMode(m.permMode)
 
 	// ORDER IS LOAD-BEARING: announce the new mode BEFORE answering anything
 	// on the strength of it.
@@ -38,7 +33,7 @@ func (m model) sendMode() (tea.Model, tea.Cmd) {
 	// change, and skip the check entirely. The two files share no symbol and
 	// each is correct alone; the sequence is the contract.
 	// Pinned by TestSendModeAnnouncesTheModeBeforeAnsweringOnIt.
-	_ = m.sess.SendFrame(proto.NewSetMode(string(m.permMode), threshold))
+	_ = m.sess.SendFrame(proto.NewSetMode(string(m.permMode)))
 	m.autoResolvePendingByMode()
 	m.reflow()
 	return m, nil
@@ -53,9 +48,6 @@ func (m model) cycleMode() (tea.Model, tea.Cmd) {
 		next := guard.CycleMode(m.permMode)
 		next = guard.CycleMode(next)
 		m.permMode = next
-		if next == guard.ModeAuto && m.autoThreshold == 0 {
-			m.autoThreshold = guard.DefaultAutoThreshold
-		}
 		return m.sendMode()
 	}
 	next := guard.CycleMode(m.permMode)
@@ -64,9 +56,6 @@ func (m model) cycleMode() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.permMode = next
-	if next == guard.ModeAuto && m.autoThreshold == 0 {
-		m.autoThreshold = guard.DefaultAutoThreshold
-	}
 	return m.sendMode()
 }
 
@@ -80,11 +69,7 @@ func (m model) permModeText() string {
 	case guard.ModeAllowEdits:
 		return "edit mode"
 	case guard.ModeAuto:
-		t := m.autoThreshold
-		if t == 0 {
-			t = guard.DefaultAutoThreshold
-		}
-		return fmt.Sprintf("auto ≤%d", t)
+		return "auto mode"
 	case guard.ModeYOLO:
 		return "bypass permissions"
 	default:
@@ -195,15 +180,14 @@ func permModeFile() string {
 }
 
 type permModeSave struct {
-	Mode      string `json:"mode"`
-	Threshold int    `json:"threshold"`
+	Mode string `json:"mode"`
 }
 
 // persistPermMode is disabled by the TUI test package so mode-cycling tests do
 // not share the developer's real config file or influence one another.
 var persistPermMode = true
 
-func savePermMode(mode guard.PermissionMode, threshold int) {
+func savePermMode(mode guard.PermissionMode) {
 	if !persistPermMode {
 		return
 	}
@@ -212,7 +196,7 @@ func savePermMode(mode guard.PermissionMode, threshold int) {
 		return
 	}
 	os.MkdirAll(filepath.Dir(path), 0755)
-	data, _ := json.Marshal(permModeSave{Mode: string(mode), Threshold: threshold})
+	data, _ := json.Marshal(permModeSave{Mode: string(mode)})
 	if data != nil {
 		os.WriteFile(path, data, 0644)
 	}
@@ -239,26 +223,4 @@ func loadSavedMode() guard.PermissionMode {
 		return guard.ModeDefault
 	}
 	return pm
-}
-
-func loadSavedThreshold() int {
-	if !persistPermMode {
-		return 0
-	}
-	path := permModeFile()
-	if path == "" {
-		return 0
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return 0
-	}
-	var s permModeSave
-	if json.Unmarshal(data, &s) != nil {
-		return 0
-	}
-	if s.Threshold < 1 || s.Threshold > 10 {
-		return 0
-	}
-	return s.Threshold
 }

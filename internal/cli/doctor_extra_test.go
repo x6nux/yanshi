@@ -71,36 +71,8 @@ func TestExpandHomeDir_TildeAndPlain(t *testing.T) {
 	}
 }
 
-// TestCheckSecretsRefs_InvalidCredentialIsRedacted proves a raw (non-ref)
-// api_key is a fail and the raw value is never echoed.
-func TestCheckSecretsRefs_InvalidCredentialIsRedacted(t *testing.T) {
-	cfg := &config.Config{LLM: config.LLMConfig{Providers: []config.ProviderConfig{
-		{Name: "p", APIKey: "sk-live-raw-secret-value"},
-	}}}
-	c := checkSecretsRefs(cfg, nil)
-	require.Equal(t, StatusFail, c.Status)
-	assert.NotContains(t, c.Message, "sk-live-raw-secret-value", "raw key must not leak")
-	assert.Contains(t, c.Message, "invalid credential reference")
-}
 
-// TestCheckSecretsRefs_SkippedOnConfigError proves the cfgErr path.
-func TestCheckSecretsRefs_SkippedOnConfigError(t *testing.T) {
-	c := checkSecretsRefs(nil, errCfg())
-	assert.Equal(t, StatusWarn, c.Status)
-	assert.Contains(t, c.Message, "skipped")
-}
 
-// TestCheckSecretsRefs_AllRefsValid proves the OK path with secret:// and env://.
-func TestCheckSecretsRefs_AllRefsValid(t *testing.T) {
-	cfg := &config.Config{LLM: config.LLMConfig{Providers: []config.ProviderConfig{
-		{Name: "a", APIKey: "secret://openai/main"},
-		{Name: "b", APIKey: "env://OPENAI_API_KEY"},
-		{Name: "c", APIKey: ""}, // empty -> skipped, not counted
-	}}}
-	c := checkSecretsRefs(cfg, nil)
-	require.Equal(t, StatusOK, c.Status)
-	assert.Contains(t, c.Message, "2 credential reference(s) valid")
-}
 
 // TestCheckLocaleConfig_InvalidLocaleFails proves an unsupported locale is a fail.
 func TestCheckLocaleConfig_InvalidLocaleFails(t *testing.T) {

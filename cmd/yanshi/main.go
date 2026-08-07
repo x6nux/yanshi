@@ -49,7 +49,7 @@ Usage:
   yanshi vcs-mcp (env-driven; spawned by the ACP adapter — YANSHI_DB_PATH/YANSHI_REPO_ID/YANSHI_WT_ID/YANSHI_AGENT/YANSHI_WORKTREE_DIR)
   yanshi doctor [-config FILE] [-json] [-release]
   yanshi pr      <PR-number> | <full-URL>
-  yanshi auth    set|status|logout|device [-provider NAME] [-account NAME] [-api-key-stdin]
+  yanshi auth    status|logout|device [-provider NAME] [-account NAME]
 
 Subcommands:
   (none)   Launch the self-contained TUI. Discovers a running backend for the
@@ -79,9 +79,9 @@ Subcommands:
            1 warn / 2 fail. Never prints secrets.
   pr       Fetch a GitHub pull request into the session as context. Takes a
            PR number (run from the repo directory) or a full URL (any repo).
-  auth     Manage provider credentials in the OS keyring (set / status /
-           logout / device). Never echoes a secret; -api-key-stdin reads the
-           key without a prompt.
+  auth     Manage RFC 8628 device-flow sessions (status / logout / device).
+           Never echoes a secret. Provider api_keys are NOT managed here —
+           they live in config.yaml as a literal or a ${VAR} reference.
 `
 
 func main() {
@@ -269,7 +269,7 @@ func runCLIWithAuthDeps(
 	}
 }
 
-// runAuthSub dispatches the `yanshi auth` subcommands (set/status/logout/
+// runAuthSub dispatches the `yanshi auth` subcommands (status/logout/
 // device). It constructs secrets.Manager + auth.Manager + SQLite metadata
 // adapter per invocation, registers configured device providers when
 // device_auth_enabled is true, then routes by the first remaining arg.
@@ -285,7 +285,7 @@ func runAuthSub(
 ) int {
 	bootstrapLog := secrets.NewSafeLogger(stderr, secrets.NewRedactor())
 	if len(args) == 0 {
-		bootstrapLog.Println("usage: yanshi auth <set|status|logout|device> ...")
+		bootstrapLog.Println("usage: yanshi auth <status|logout|device> ...")
 		return 2
 	}
 	cfg, err := loadConfigForAuth(cfgPath)
@@ -360,30 +360,12 @@ func runAuthSub(
 	fs.SetOutput(io.Discard) // tests require no stderr leak from flag.Parse
 	provider := fs.String("provider", "", "provider name (e.g. openai)")
 	account := fs.String("account", "main", "account name (default: main)")
-	apiKeyStdin := fs.Bool("api-key-stdin", false, "read API key from stdin (no prompt)")
 	if err := fs.Parse(rest); err != nil {
 		safeLog.Printf("auth %s: %v", sub, err)
 		return 2
 	}
 
 	switch sub {
-	case "set":
-		cmd := secrets.AuthCommand{
-			Provider:      *provider,
-			Account:       *account,
-			Backend:       cfg.Secrets.Backend,
-			FilePath:      cfg.Secrets.FilePath,
-			PassphraseEnv: cfg.Secrets.PassphraseEnv,
-			APIKeyStdin:   *apiKeyStdin,
-			Manager:       smgr,
-			Stdin:         stdin,
-			Stdout:        stdout,
-		}
-		if err := cmd.Run(); err != nil {
-			safeLog.Printf("%v", err)
-			return 1
-		}
-		return 0
 	case "status":
 		st, err := amgr.Status(*provider, *account)
 		if err != nil {

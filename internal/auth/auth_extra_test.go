@@ -198,51 +198,6 @@ func (d *deviceProviderWithProgress) Authorize(ctx context.Context, clk Clock, s
 	return d.fn(ctx, clk, slp, progress)
 }
 
-// --- ResolveAPIKey edge cases ---
-
-func TestManager_ResolveAPIKey_EmptyRef(t *testing.T) {
-	m := newTestManager(t)
-	val, err := m.ResolveAPIKey(context.Background(), CredentialSource{})
-	if err != nil {
-		t.Fatalf("empty ref: %v", err)
-	}
-	if val != "" {
-		t.Fatalf("empty ref value: %q", val)
-	}
-}
-
-func TestManager_ResolveAPIKey_CtxErr(t *testing.T) {
-	m := newTestManager(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	src := CredentialSource{APIKeyRef: "secret://openai/main"}
-	_, err := m.ResolveAPIKey(ctx, src)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("want context.Canceled, got %v", err)
-	}
-}
-
-func TestManager_ResolveAPIKey_ResolveError(t *testing.T) {
-	m := newTestManager(t)
-	src := CredentialSource{APIKeyRef: "secret://nonexistent/account"}
-	_, err := m.ResolveAPIKey(context.Background(), src)
-	if err == nil {
-		t.Fatal("expected resolve error for nonexistent secret")
-	}
-}
-
-func TestManager_ResolveAPIKey_EmptyResolvedValue(t *testing.T) {
-	m := newTestManager(t)
-	// Set env var to empty string to make os.LookupEnv return ("", true).
-	// This lets Resolve succeed with "" (nil error), hitting the empty value check.
-	t.Setenv("YANSHI_TEST_EMPTY", "")
-	src := CredentialSource{APIKeyRef: "env://YANSHI_TEST_EMPTY"}
-	_, err := m.ResolveAPIKey(context.Background(), src)
-	if !errors.Is(err, ErrResolvedCredentialEmpty) {
-		t.Fatalf("want ErrResolvedCredentialEmpty, got %v", err)
-	}
-}
-
 // --- Status edge cases ---
 
 func TestManager_Status_StoreNil(t *testing.T) {

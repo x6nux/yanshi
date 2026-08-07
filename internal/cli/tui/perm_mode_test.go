@@ -227,9 +227,8 @@ func TestShiftTab_YoloGate_CancelOnOtherKey(t *testing.T) {
 // TUI's mirror so the footer reflects the server-side mode.
 func TestStatus_MirrorsPermMode(t *testing.T) {
 	m := newModel(&fakeSession{}, "/proj")
-	m = m.applyEvent(cli.StreamEvent{Kind: "status", PermMode: "yolo", AutoThreshold: 7})
+	m = m.applyEvent(cli.StreamEvent{Kind: "status", PermMode: "yolo"})
 	assert.Equal(t, guard.ModeYOLO, m.permMode)
-	assert.Equal(t, 7, m.autoThreshold)
 }
 
 // TestFooter_ShowsPermMode proves the footer renders the permission mode
@@ -241,8 +240,7 @@ func TestFooter_ShowsPermMode(t *testing.T) {
 
 	m2 := newModel(&fakeSession{}, "/proj")
 	m2.permMode = guard.ModeAuto
-	m2.autoThreshold = 5
-	assert.Contains(t, m2.statusHeader(), "auto ≤5")
+	assert.Contains(t, m2.statusHeader(), "auto mode")
 
 	m3 := newModel(&fakeSession{}, "/proj")
 	m3.permMode = guard.ModeDefault

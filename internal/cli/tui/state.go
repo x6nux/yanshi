@@ -234,11 +234,7 @@ func (m model) syncSavedMode() tea.Cmd {
 	if mode == "" {
 		mode = guard.ModeDefault
 	}
-	threshold := m.autoThreshold
-	if threshold == 0 && mode == guard.ModeAuto {
-		threshold = guard.DefaultAutoThreshold
-	}
-	ch := m.sess.SendFrame(proto.NewSetMode(string(mode), threshold))
+	ch := m.sess.SendFrame(proto.NewSetMode(string(mode)))
 	if ch == nil {
 		return nil
 	}

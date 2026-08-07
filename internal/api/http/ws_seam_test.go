@@ -460,7 +460,7 @@ func TestResolvePermissionRequest_ForceNeverAutoResolves(t *testing.T) {
 	} {
 		t.Run(string(mode), func(t *testing.T) {
 			cs := connSession{perm: &permModeState{}}
-			cs.perm.set(mode, 10)
+			cs.perm.set(mode)
 			decision, resolved := resolvePermissionRequest(
 				context.Background(), &cs, nil,
 				tools.PermissionRequest{Tool: "fs_write", Force: true},

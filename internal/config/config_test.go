@@ -438,20 +438,36 @@ func TestConfig_D3Defaults(t *testing.T) {
 	}
 }
 
-// TestConfig_RejectsExpandedVarAsRawLiteral verifies that a ${VAR} reference
-// in api_key is expanded by os.ExpandEnv BEFORE unmarshalling, and the
-// resulting plaintext value is rejected unless auth.legacy_insecure is true.
-// secret:// and env:// refs must always bypass this check (they are resolved
-// by auth.Manager later in bootstrap).
-func TestConfig_RejectsExpandedVarAsRawLiteral(t *testing.T) {
+// TestConfig_AcceptsLiteralAndExpandedVarAPIKeys pins the two accepted
+// api_key shapes. ${VAR} is expanded by os.ExpandEnv BEFORE unmarshalling, so
+// by the time a Config exists both shapes are indistinguishable plaintext —
+// and that is the point: Load has no opinion about where the value came from.
+//
+// The last two cases are the regression guard. secret:// and env:// used to
+// be resolved refs; they are now ordinary strings that Load must pass through
+// untouched rather than reject or interpret, so a stale config keeps loading
+// and simply presents whatever it says to the provider.
+func TestConfig_AcceptsLiteralAndExpandedVarAPIKeys(t *testing.T) {
 	cases := []struct {
-		name         string
-		configYAML   string
-		env          map[string]string
-		wantLoadFail bool
+		name       string
+		configYAML string
+		env        map[string]string
+		wantKey    string
 	}{
 		{
-			name: "expanded var is rejected without legacy opt-in",
+			name: "literal",
+			configYAML: `
+llm:
+  providers:
+    - name: test
+      kind: openai
+      model: gpt-4
+      api_key: sk-plain-literal
+`,
+			wantKey: "sk-plain-literal",
+		},
+		{
+			name: "expanded var",
 			configYAML: `
 llm:
   providers:
@@ -459,29 +475,12 @@ llm:
       kind: openai
       model: gpt-4
       api_key: ${MY_KEY}
-auth:
-  legacy_insecure: false
 `,
-			env:          map[string]string{"MY_KEY": "sk-raw-expanded"},
-			wantLoadFail: true,
+			env:     map[string]string{"MY_KEY": "sk-raw-expanded"},
+			wantKey: "sk-raw-expanded",
 		},
 		{
-			name: "expanded var accepted when legacy_insecure=true",
-			configYAML: `
-llm:
-  providers:
-    - name: test
-      kind: openai
-      model: gpt-4
-      api_key: ${MY_KEY}
-auth:
-  legacy_insecure: true
-`,
-			env:          map[string]string{"MY_KEY": "sk-raw-expanded"},
-			wantLoadFail: false,
-		},
-		{
-			name: "secret:// ref bypasses validation",
+			name: "secret:// is not special-cased any more",
 			configYAML: `
 llm:
   providers:
@@ -489,13 +488,11 @@ llm:
       kind: openai
       model: gpt-4
       api_key: secret://openai/main
-auth:
-  legacy_insecure: false
 `,
-			wantLoadFail: false,
+			wantKey: "secret://openai/main",
 		},
 		{
-			name: "env:// ref bypasses validation",
+			name: "env:// is not special-cased any more",
 			configYAML: `
 llm:
   providers:
@@ -503,10 +500,8 @@ llm:
       kind: openai
       model: gpt-4
       api_key: env://MY_KEY
-auth:
-  legacy_insecure: false
 `,
-			wantLoadFail: false,
+			wantKey: "env://MY_KEY",
 		},
 	}
 
@@ -520,19 +515,11 @@ auth:
 				t.Fatal(err)
 			}
 			cfg, err := Load(path)
-			if c.wantLoadFail {
-				if err == nil {
-					t.Fatalf("expected Load to reject expanded raw literal, got cfg=%+v", cfg)
-				}
-				if !strings.Contains(err.Error(), "raw literal") &&
-					!strings.Contains(err.Error(), "api_key") &&
-					!strings.Contains(err.Error(), "legacy_insecure") {
-					t.Fatalf("error message does not mention the relevant constraint: %v", err)
-				}
-				return
-			}
 			if err != nil {
-				t.Fatalf("unexpected Load failure: %v", err)
+				t.Fatalf("Load must accept any api_key value: %v", err)
+			}
+			if got := cfg.LLM.Providers[0].APIKey; got != c.wantKey {
+				t.Fatalf("api_key = %q, want %q", got, c.wantKey)
 			}
 		})
 	}
@@ -597,31 +584,6 @@ func TestLoadBytes_InvalidYAML(t *testing.T) {
 	_, err := LoadBytes([]byte("{{  invalid "))
 	if err == nil {
 		t.Fatal("expected error for invalid YAML")
-	}
-}
-
-// TestEllipsis_Truncation covers the len>32 branch of ellipsis.
-func TestEllipsis_Truncation(t *testing.T) {
-	s := "abcdefghijklmnopqrstuvwxyz0123456789" // 36 chars
-	got := ellipsis(s)
-	if len(got) != 32 {
-		t.Fatalf("ellipsis(%q) = %q (len=%d), want 32", s, got, len(got))
-	}
-	// Verify the "first16...last13" structure.
-	if !strings.HasPrefix(got, "abcdefghijklmnop") {
-		t.Fatalf("ellipsis output unexpected prefix: %q", got)
-	}
-	if !strings.HasSuffix(got, "xyz0123456789") {
-		t.Fatalf("ellipsis output unexpected suffix: %q", got)
-	}
-}
-
-// TestEllipsis_Short does not truncate.
-func TestEllipsis_Short(t *testing.T) {
-	s := "short"
-	got := ellipsis(s)
-	if got != s {
-		t.Fatalf("ellipsis(%q) = %q", s, got)
 	}
 }
 

@@ -129,19 +129,6 @@ type SecretsConfig struct {
 // AuthConfig configures provider-neutral authentication. Device.ClientID is
 // used for RFC 8628 device authorization flows.
 type AuthConfig struct {
-	// LegacyInsecure accepts raw literal API keys in config.yaml.
-	// This bypasses S10's fail-closed threat model — only enable temporarily
-	// during migration.
-	LegacyInsecure bool `yaml:"legacy_insecure"`
-
-	// AutoMigrate automatically stores raw literal API keys into the secrets
-	// backend and rewrites config.yaml with secret:// references. It does NOT
-	// re-encrypt existing secret:// or env:// references — only raw literals
-	// (sk-..., gsk_..., etc.) that would otherwise be rejected by
-	// validateAPIKeyRefs. The rewrite is best-effort: if config.yaml is
-	// unwritable the boot proceeds with the ref in memory but prints a warning.
-	AutoMigrate bool `yaml:"auto_migrate"`
-
 	Device struct {
 		ClientID          string                 `yaml:"client_id"`
 		DeviceAuthEnabled bool                   `yaml:"device_auth_enabled"`
@@ -484,58 +471,10 @@ func LoadBytes(data []byte) (*Config, error) {
 		}
 	}
 
-	if err := cfg.validateAPIKeyRefs(cfg.Auth.LegacyInsecure); err != nil {
-		return nil, err
-	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
-}
-
-// validateAPIKeyRefs ensures every non-empty, non-reference api_key is either
-// legacy-opted-in or rejected. This is the second gate after the auth
-// Manager's ParseCredentialRef: it catches raw literals that arrived via
-// os.ExpandEnv of ${VAR} references, where the original YAML text was a
-// legitimate-looking env var reference but the expanded result is a
-// plaintext value that would otherwise bypass credential resolution.
-//
-// Empty api_key is always accepted (the provider is unauthenticated and will
-// fail at first API call). secret:// and env:// refs are deferred to the
-// auth layer's resolution.
-func (c *Config) validateAPIKeyRefs(legacyAllowed bool) error {
-	for i := range c.LLM.Providers {
-		p := &c.LLM.Providers[i]
-		if p.APIKey == "" {
-			continue
-		}
-		if strings.HasPrefix(p.APIKey, "secret://") ||
-			strings.HasPrefix(p.APIKey, "env://") {
-			continue
-		}
-		// At this point p.APIKey is a plaintext value — either a raw literal
-		// from the YAML or an ${VAR}-expanded value. Both bypass credential
-		// resolution and fail closed without explicit opt-in.
-		if !legacyAllowed && !c.Auth.AutoMigrate {
-			return fmt.Errorf(
-				"config: provider %q api_key %q is a raw literal or expanded ${VAR}; "+
-					"use secret://service/account or env://VAR, "+
-					"or set auth.legacy_insecure=true to accept plaintext keys",
-				p.Name, ellipsis(p.APIKey),
-			)
-		}
-	}
-	return nil
-}
-
-// ellipsis truncates a string to 32 chars for safe error messages. A
-// truncated key still lets the operator recognise "yes that's the key I
-// pasted" without echoing the full value into logs.
-func ellipsis(s string) string {
-	if len(s) <= 32 {
-		return s
-	}
-	return s[:16] + "..." + s[len(s)-13:]
 }
 
 // applyDefaults fills zero Compaction fields with the conventional defaults.

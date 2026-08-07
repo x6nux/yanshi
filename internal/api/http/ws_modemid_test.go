@@ -89,7 +89,7 @@ func TestChatWS_ModeSwitchMidTurn_SubsequentCallUsesNewMode(t *testing.T) {
 	firstID := req.ID
 
 	// Switch to yolo MID-TURN, then answer the pending prompt.
-	require.NoError(t, c.WriteJSON(proto.NewSetMode("yolo", 0)))
+	require.NoError(t, c.WriteJSON(proto.NewSetMode("yolo")))
 	require.NoError(t, c.WriteJSON(proto.NewPermissionResponse(firstID, "allow")))
 
 	// Drain the rest of the turn. Count any further permission_request frames.

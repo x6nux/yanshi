@@ -1,9 +1,10 @@
 package tui
 
 import (
-	"github.com/x6nux/yanshi/internal/proto"
 	"strings"
 	"testing"
+
+	"github.com/x6nux/yanshi/internal/proto"
 )
 
 // TestPaletteKeepsMCPGroupHeaders pins a filter that discarded the thing it

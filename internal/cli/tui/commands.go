@@ -57,7 +57,7 @@ type command struct {
 var commandTable = []command{
 	{name: "model", help: "list / switch model", helpKey: "tui.command.help.model", run: cmdModel},
 	{name: "think", help: "set reasoning effort (low|medium|high|off)", helpKey: "tui.command.help.think", run: cmdThink},
-	{name: "mode", help: "set permission mode (default|allow-edits|yolo|auto [1-10])", helpKey: "tui.command.help.mode", run: cmdMode},
+	{name: "mode", help: "set permission mode (default|allow-edits|yolo|auto)", helpKey: "tui.command.help.mode", run: cmdMode},
 	{name: "queue-mode", help: "set/cycle queue mode (queue|single|batch)", helpKey: "tui.command.help.queue_mode", run: cmdQueueMode},
 	{name: "clear", help: "reset conversation", helpKey: "tui.command.help.clear", run: cmdClear},
 	{name: "config", help: "show active config", helpKey: "tui.command.help.config", run: cmdConfig},
@@ -432,7 +432,6 @@ func cmdModel(m model, args []string) (tea.Model, tea.Cmd) {
 	}
 	if m.permMode == guard.ModePlan && len(args) > 0 && args[0] != "plan" {
 		m.prePlanMode = ""
-		m.prePlanThreshold = 0
 	}
 	if len(args) == 0 {
 		m.pickerKind = "model"
@@ -472,10 +471,9 @@ func cmdPlan(m model, _ []string) (tea.Model, tea.Cmd) {
 		if m.prePlanMode == "" {
 			m.prePlanMode = guard.ModeDefault
 		}
-		m.prePlanThreshold = m.autoThreshold
+
 	}
 	m.permMode = guard.ModePlan
-	m.autoThreshold = 0
 	return m.sendMode()
 }
 
@@ -490,9 +488,7 @@ func cmdPlanOff(m model, _ []string) (tea.Model, tea.Cmd) {
 		mode = guard.ModeDefault
 	}
 	m.permMode = mode
-	m.autoThreshold = m.prePlanThreshold
 	m.prePlanMode = ""
-	m.prePlanThreshold = 0
 	return m.sendMode()
 }
 
@@ -539,22 +535,7 @@ func cmdMode(m model, args []string) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 		return m, nil
 	}
-	threshold := m.autoThreshold
-	if pm == guard.ModeAuto {
-		if len(args) > 1 {
-			if n, err := strconv.Atoi(args[1]); err == nil && n >= 1 && n <= 10 {
-				threshold = n
-			} else {
-				m.entries = append(m.entries, errorEntry{text: "threshold must be 1-10"})
-				m.refresh()
-				return m, nil
-			}
-		} else if threshold == 0 {
-			threshold = guard.DefaultAutoThreshold
-		}
-	}
 	m.permMode = pm
-	m.autoThreshold = threshold
 	return m.sendMode()
 }
 

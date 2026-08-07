@@ -1013,137 +1013,50 @@ token: "test-token"
 	assert.NotEmpty(t, thread.ID, "thread.ID must be populated")
 }
 
-// TestBuild_SecretsResolvesBeforeProviders (S10-L5) verifies the secrets
-// pipeline: a provider with an env:// ref has its APIKey replaced by the env
-// value, a provider with a raw literal is rejected unless Auth.LegacyInsecure
-// is true, and resolved plaintexts are registered with the process Redactor
-// so they cannot leak through WS/SSE/SQLite boundaries.
-func TestBuild_SecretsResolvesBeforeProviders(t *testing.T) {
+// TestBuild_APIKeysAreUsedVerbatimAndRedacted pins the only two api_key
+// shapes yanshi accepts: a literal written straight into config.yaml, and a
+// ${VAR} that config.Load expanded before Build ever saw it. Neither is
+// resolved through the secrets backend — Build must hand both to
+// BuildProviders unchanged.
+//
+// The redaction half is not incidental. Taking keys verbatim removes the
+// resolution step that used to call Redactor.Register, so registration had to
+// be re-established on its own; without it a plaintext key reaches WS/SSE
+// frames and SQLite rows. The env case is what proves registration is not
+// keyed to how the value arrived.
+func TestBuild_APIKeysAreUsedVerbatimAndRedacted(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("YANSHI_TEST_OPENAI_KEY", "sk-from-env")
-	cfg := &config.Config{
-		LLM: config.LLMConfig{
-			Providers: []config.ProviderConfig{
-				{Name: "p1", Kind: "openai", Model: "gpt-fake", APIKey: "env://YANSHI_TEST_OPENAI_KEY"},
-				{Name: "p2", Kind: "openai", Model: "gpt-fake", APIKey: "sk-legacy-pass"},
-				// p3 uses a real raw literal without opt-in: must fail to build.
-				{Name: "p3", Kind: "openai", Model: "gpt-fake", APIKey: "sk-raw-not-allowed"},
-			},
-		},
-		Secrets: config.SecretsConfig{Backend: "none"},
-		Auth:    config.AuthConfig{LegacyInsecure: false},
-		Storage: config.StorageConfig{SQLitePath: filepath.Join(dir, "yanshi.db")},
-	}
-	_, err := bootstrap.Build(bootstrap.Options{Cfg: cfg, FakeModel: true})
-	if err == nil {
-		t.Fatal("Build must fail when a raw-literal APIKey is present and Auth.LegacyInsecure is false")
-	}
+	t.Setenv("YANSHI_TEST_OPENAI_KEY", "sk-from-env-expansion")
 
-	// Flip the opt-in and drop p3 to assert the happy path.
-	cfg.Auth.LegacyInsecure = true
-	cfg.LLM.Providers = cfg.LLM.Providers[:2]
+	cfgPath := filepath.Join(dir, "config.yaml")
+	dbPath := toYAMLPath(filepath.Join(dir, "yanshi.db"))
+	cfgContent := "server:\n  http_addr: \"127.0.0.1:0\"\nstorage:\n  sqlite_path: \"" + dbPath + "\"\n" +
+		"llm:\n  providers:\n" +
+		"    - name: literal\n      kind: openai\n      model: gpt-fake\n      api_key: sk-plain-literal-key\n" +
+		"    - name: fromenv\n      kind: openai\n      model: gpt-fake\n      api_key: ${YANSHI_TEST_OPENAI_KEY}\n"
+	require.NoError(t, os.WriteFile(cfgPath, []byte(cfgContent), 0o644))
+
+	cfg, err := config.Load(cfgPath)
+	require.NoError(t, err, "a literal api_key must load without any opt-in flag")
+	require.Equal(t, "sk-plain-literal-key", cfg.LLM.Providers[0].APIKey)
+	require.Equal(t, "sk-from-env-expansion", cfg.LLM.Providers[1].APIKey,
+		"${VAR} must be expanded by config.Load")
+
 	app, err := bootstrap.Build(bootstrap.Options{Cfg: cfg, FakeModel: true})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	require.NoError(t, err)
 	defer app.Shutdown(context.Background())
-	if cfg.LLM.Providers[0].APIKey != "sk-from-env" {
-		t.Errorf("p1 APIKey not resolved: %q", cfg.LLM.Providers[0].APIKey)
-	}
-	if cfg.LLM.Providers[1].APIKey != "sk-legacy-pass" {
-		t.Errorf("p2 APIKey not resolved: %q", cfg.LLM.Providers[1].APIKey)
-	}
-	if app.Redactor == nil {
-		t.Fatal("app.Redactor must be non-nil after Build")
-	}
-	leaked := app.Redactor.Redact("error containing sk-from-env")
-	if strings.Contains(leaked, "sk-from-env") {
-		t.Errorf("redactor did not register resolved env secret: %q", leaked)
+
+	// Build must not have rewritten either key.
+	assert.Equal(t, "sk-plain-literal-key", cfg.LLM.Providers[0].APIKey)
+	assert.Equal(t, "sk-from-env-expansion", cfg.LLM.Providers[1].APIKey)
+
+	require.NotNil(t, app.Redactor, "app.Redactor must be non-nil after Build")
+	for _, key := range []string{"sk-plain-literal-key", "sk-from-env-expansion"} {
+		assert.NotContains(t, app.Redactor.Redact("error containing "+key), key,
+			"redactor must have registered %q regardless of how it arrived", key)
 	}
 }
 
-// TestBuild_AuthManagerResolvesCredentialsBeforeProviders verifies the strict
-// ordering: auth.Manager must be constructed, credential sources resolved,
-// and resolved keys written back to cfg BEFORE einollm.BuildProviders is
-// called. We assert this by seeding a provider with secret:// ref + a
-// pre-populated secret store, then checking the Build result's providers
-// have the resolved key.
-func TestBuild_AuthManagerResolvesCredentialsBeforeProviders(t *testing.T) {
-	dir := t.TempDir()
-	secretPath := filepath.Join(dir, "secrets.enc")
-	t.Setenv("YANSHI_PASSPHRASE", "test-pass")
-	// Pre-populate the secret store with the credential.
-	smgr, err := secrets.NewManager(secrets.Config{
-		Backend: "file", FilePath: secretPath, PassphraseEnv: "YANSHI_PASSPHRASE",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := smgr.Store().Set("openai", "main", "sk-secret-store-value"); err != nil {
-		t.Fatal(err)
-	}
-	if err := smgr.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := &config.Config{
-		LLM: config.LLMConfig{
-			Providers: []config.ProviderConfig{
-				{Name: "p1", Kind: "openai", Model: "gpt-fake", APIKey: "secret://openai/main"},
-			},
-		},
-		Secrets: config.SecretsConfig{Backend: "file", FilePath: secretPath, PassphraseEnv: "YANSHI_PASSPHRASE"},
-		Storage: config.StorageConfig{SQLitePath: filepath.Join(dir, "yanshi.db")},
-	}
-
-	var builderCalls int
-	recordingBuilder := func(got *config.Config) (
-		map[string]model.BaseChatModel,
-		[]model.BaseChatModel,
-		map[string]int,
-		error,
-	) {
-		builderCalls++
-		if got.LLM.Providers[0].APIKey != "sk-secret-store-value" {
-			t.Fatalf("provider builder observed unresolved key %q", got.LLM.Providers[0].APIKey)
-		}
-		fm := einollm.NewFakeModelWithMessages([]*schema.Message{
-			schema.AssistantMessage("ok", nil),
-		}, nil)
-		fm.Repeat = true
-		return map[string]model.BaseChatModel{"gpt-fake": fm},
-			[]model.BaseChatModel{fm},
-			map[string]int{"gpt-fake": 128000},
-			nil
-	}
-
-	app, err := bootstrap.Build(bootstrap.Options{
-		Cfg:             cfg,
-		FakeModel:       false,
-		ProviderBuilder: recordingBuilder,
-	})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	defer app.Shutdown(context.Background())
-	if builderCalls != 1 {
-		t.Fatalf("provider builder calls = %d, want 1", builderCalls)
-	}
-	if cfg.LLM.Providers[0].APIKey != "sk-secret-store-value" {
-		t.Fatalf("APIKey not resolved before BuildProviders: %q",
-			cfg.LLM.Providers[0].APIKey)
-	}
-	if strings.Contains(app.Redactor.Redact("error sk-secret-store-value"), "sk-secret-store-value") {
-		t.Fatal("redactor missing the resolved secret")
-	}
-	if app.Auth == nil {
-		t.Fatal("App.Auth nil")
-	}
-	st, _ := app.Auth.Status("openai", "main")
-	if !st.Authenticated {
-		t.Fatal("auth.Status reports unauthenticated after Build")
-	}
-}
 
 // TestBuild_DeviceProviderInjection (structural fix #2) covers both sources:
 //
@@ -1333,101 +1246,9 @@ storage:
 	require.Nil(t, app.VisionAux)
 }
 
-// TestBuild_AutoMigrate covers the auto-migration code path:
-// a raw literal API key with Auth.AutoMigrate=true and a file secrets
-// backend triggers the migration block in Build.
-func TestBuild_AutoMigrate(t *testing.T) {
-	dir := t.TempDir()
-	secretPath := filepath.Join(dir, "secrets.enc")
-	t.Setenv("YANSHI_PASSPHRASE", "test-pass")
-	cfg := &config.Config{
-		LLM: config.LLMConfig{
-			Providers: []config.ProviderConfig{
-				{Name: "p1", Kind: "openai", Model: "gpt-fake", APIKey: "sk-raw-key"},
-			},
-		},
-		Secrets: config.SecretsConfig{Backend: "file", FilePath: secretPath, PassphraseEnv: "YANSHI_PASSPHRASE"},
-		Auth:    config.AuthConfig{AutoMigrate: true, LegacyInsecure: false},
-		Storage: config.StorageConfig{SQLitePath: filepath.Join(dir, "yanshi.db")},
-	}
-	app, err := bootstrap.Build(bootstrap.Options{Cfg: cfg, FakeModel: true})
-	// The auto-migration path: raw literal is refused by ResolveAPIKey,
-	// then auto-migration stores it in secrets backend and re-resolves.
-	if err != nil {
-		t.Fatalf("Build with AutoMigrate: %v", err)
-	}
-	app.Shutdown(context.Background())
-}
 
-// TestBuild_AutoMigrateSecretSetError covers the secretMgr.Set failure
-// branch inside auto-migration (no backend configured but AutoMigrate=true).
-func TestBuild_AutoMigrateSecretSetError(t *testing.T) {
-	dir := t.TempDir()
-	cfg := &config.Config{
-		LLM: config.LLMConfig{
-			Providers: []config.ProviderConfig{
-				{Name: "p1", Kind: "openai", Model: "gpt-fake", APIKey: "sk-raw-key"},
-			},
-		},
-		Secrets: config.SecretsConfig{Backend: "none"},
-		Auth:    config.AuthConfig{AutoMigrate: true, LegacyInsecure: false},
-		Storage: config.StorageConfig{SQLitePath: filepath.Join(dir, "yanshi.db")},
-	}
-	_, err := bootstrap.Build(bootstrap.Options{Cfg: cfg, FakeModel: true})
-	if err == nil {
-		t.Fatal("Build must fail when auto-migrate secret Set fails")
-	}
-	// The error should mention auto-migrate.
-	if !strings.Contains(err.Error(), "auto-migrate") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
 
-// TestBuild_AutoMigrateWithConfigFile covers the config file read+write path
-// inside auto-migration: when a raw literal API key is in a config file on
-// disk, the migration should rewrite the file replacing the raw key with a
-// secret:// ref.
-func TestBuild_AutoMigrateWithConfigFile(t *testing.T) {
-	dir := t.TempDir()
-	secretPath := filepath.Join(dir, "secrets.enc")
-	t.Setenv("YANSHI_PASSPHRASE", "test-pass")
 
-	cfgPath := filepath.Join(dir, "config.yaml")
-	rawKey := "sk-raw-to-migrate"
-	dbPath := toYAMLPath(filepath.Join(dir, "yanshi.db"))
-	cfgContent := "server:\n  http_addr: \"127.0.0.1:0\"\nstorage:\n  sqlite_path: \"" + dbPath + "\"\nllm:\n  providers:\n    - name: migrateme\n      model: gpt-fake\n      api_key: " + rawKey + "\nsecrets:\n  backend: file\n  file_path: \"" + toYAMLPath(secretPath) + "\"\n  passphrase_env: YANSHI_PASSPHRASE\nauth:\n  auto_migrate: true\n"
-	require.NoError(t, os.WriteFile(cfgPath, []byte(cfgContent), 0o644))
-
-	app, err := bootstrap.Build(bootstrap.Options{ConfigPath: cfgPath, FakeModel: true})
-	require.NoError(t, err, "Build with AutoMigrate and config file should succeed")
-	defer app.Shutdown(context.Background())
-
-	// The config file should now contain the secret:// ref instead of the raw key.
-	updated, err := os.ReadFile(cfgPath)
-	require.NoError(t, err)
-	assert.Contains(t, string(updated), "secret://migrateme/default",
-		"config file should be rewritten with secret:// ref")
-	assert.NotContains(t, string(updated), rawKey,
-		"raw key should be removed from config file")
-}
-
-// TestBuild_AutoMigrateReadOnlyConfig covers the WriteFile error branch:
-// when the config file exists but is read-only, the migration warns but
-// continues (the key is still stored in the secrets backend).
-func TestBuild_AutoMigrateReadOnlyConfig(t *testing.T) {
-	dir := t.TempDir()
-	secretPath := filepath.Join(dir, "secrets.enc")
-	t.Setenv("YANSHI_PASSPHRASE", "test-pass")
-
-	cfgPath := filepath.Join(dir, "config.yaml")
-	dbPath := toYAMLPath(filepath.Join(dir, "yanshi.db"))
-	cfgContent := "server:\n  http_addr: \"127.0.0.1:0\"\nstorage:\n  sqlite_path: \"" + dbPath + "\"\nllm:\n  providers:\n    - name: ro\n      model: gpt-fake\n      api_key: sk-readonly-test\nsecrets:\n  backend: file\n  file_path: \"" + toYAMLPath(secretPath) + "\"\n  passphrase_env: YANSHI_PASSPHRASE\nauth:\n  auto_migrate: true\n"
-	require.NoError(t, os.WriteFile(cfgPath, []byte(cfgContent), 0o444)) // read-only
-
-	app, err := bootstrap.Build(bootstrap.Options{ConfigPath: cfgPath, FakeModel: true})
-	require.NoError(t, err, "Build should succeed even when config file is read-only")
-	defer app.Shutdown(context.Background())
-}
 
 // TestOTelExportIsOffUnlessBothSwitchesAgree closes the gap the old ledger note
 // named and the previous test could not: TestBuildSetsUpOTelAndShutsDown drives

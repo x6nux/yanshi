@@ -1118,6 +1118,13 @@
   # 之后每次 Register(resolvedAPIKey) 都落在 SafeLogger 从没听说过的对象上 ——
   # 日志侧整个生命周期在打明文 key，而 SafeOutput 的 doc 却自称两者共享注册表。
   # DB 侧一直是好的（st.SetRedactor 拿的就是那份拷贝），所以只有日志这条瞎了。
+  #
+  # 后续变更（api_key 退出加密存储）：provider 的 api_key 不再经 secrets 解析，
+  # config 拿到什么就用什么（字面量或已展开的 ${VAR}）。这**没有削弱子句 1** ——
+  # 注册进 Redactor 的动作被单独保留在 bootstrap 里，由
+  # internal/bootstrap::TestBuild_APIKeysAreUsedVerbatimAndRedacted 钉住；
+  # 上面那段说的 resolvedAPIKey 现在读作「provider 的 api_key」。子句 2、3 覆盖的
+  # 是 Store 本身，它还在，只是唯一的写入者变成了 device-flow token。
   acceptance: "secret 不入日志/DB 明文；keyring 读写删；无 keyring 安全降级"
   evidence:
     "1": "internal/secrets::TestSafeOutputRegistryIsAnAliasNotACopy; internal/store::TestStore_RedactsAllWritePaths"

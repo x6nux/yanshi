@@ -49,32 +49,3 @@ func TestSafeLogger_RedactsFormattedSentinel(t *testing.T) {
 		t.Fatalf("SafeLogger omitted redaction marker: %q", out.String())
 	}
 }
-
-func TestCredentialRef_Parse(t *testing.T) {
-	cases := []struct {
-		in          string
-		allowLegacy bool
-		wantKind    string
-		wantErr     bool
-	}{
-		{"secret://openai/main", false, "secret", false},
-		{"env://OPENAI_API_KEY", false, "env", false},
-		{"sk-legacy-enabled", true, "legacy", false},
-		{"sk-live-raw", false, "", true},
-	}
-	for _, c := range cases {
-		ref, err := ParseCredentialRef(c.in, c.allowLegacy)
-		if c.wantErr {
-			if err == nil {
-				t.Fatalf("ParseCredentialRef(%q): want err, got %+v", c.in, ref)
-			}
-			continue
-		}
-		if err != nil {
-			t.Fatalf("ParseCredentialRef(%q): %v", c.in, err)
-		}
-		if ref.Kind != c.wantKind {
-			t.Fatalf("ParseCredentialRef(%q): kind=%s want %s", c.in, ref.Kind, c.wantKind)
-		}
-	}
-}

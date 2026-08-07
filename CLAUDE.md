@@ -113,7 +113,7 @@ go run ./cmd/gendocs -help-all docs/user-guide/tui.md docs/user-guide/entrypoint
 
 **这个顺序是承重的**，因为 `Check` 在第一个非 Allow 维度短路，而不同维度对同一个动作给的是不同**档位**的否定。以 `Tools.Allow=["fs_*"]`、`MCP.Allow` 为空、动作是 `mcp_foo` 为例：mcp 维度先跑 → 空 allowlist → 可覆盖 HardDeny（default 模式静默拒绝，SSE 无 callback 一律 fail-closed）；若 tools 排在前面则是 glob 未命中 → Prompt（可交互批准）。两条完全不同的下游路径。`checkMCPTools` 排在 `checkTools` 之前是**刻意**的，理由写在它自己的 doc 注释里（宽泛的 `Tools.Allow`（尤其历史遗留的 `"*"`）不得静默授权新配置的 MCP server）—— 动这个顺序前先读那段。
 
-Profile 来自 `profiles:` 配置 map（见 `config.example.yaml` 中的 `coding` profile）。`shell_run` 还会额外拒绝元字符（`&&`、单个 `&`、`||`、`;`、`|`、反引号、`$(`、`>`、`<`、`\n`、`\r`）—— 请改为顺序执行多条命令。列表以 `checkShell` 里那个字面量切片为准。交互式权限模式（`default`/`allow-edits`/`yolo`/`auto`）叠加在其之上，并通过 WebSocket 询问用户。**模式词表与风险打分提示词**在 `internal/guard/mode.go`（`guard.Modes`/`guard.NormalizeMode`/`guard.RiskPrompt`）；**询问逻辑本身**（`resolvePermissionMode` 与它调用的 `assessRisk`）在 `internal/api/http/ws_perm.go` —— guard 包里没有这个函数。
+Profile 来自 `profiles:` 配置 map（见 `config.example.yaml` 中的 `coding` profile）。`shell_run` 还会额外拒绝元字符（`&&`、单个 `&`、`||`、`;`、`|`、反引号、`$(`、`>`、`<`、`\n`、`\r`）—— 请改为顺序执行多条命令。列表以 `checkShell` 里那个字面量切片为准。交互式权限模式（`default`/`allow-edits`/`yolo`/`auto`）叠加在其之上，并通过 WebSocket 询问用户。**模式词表**在 `internal/guard/mode.go`（`guard.Modes`/`guard.NormalizeMode`）、**auto 模式的判据**在 `internal/guard/autoapproval.go`（`guard.AutoApprovalPrompt` 的提示词 + `guard.ParseAutoApproval` 的回答解析）；**询问逻辑本身**（`resolvePermissionMode`）在 `internal/api/http/ws_perm.go` —— guard 包里没有这个函数。
 
 **HardDeny 分两档（`Decision.Overridable`）**。**结构性 HardDeny**（`Overridable=false`，任何模式都不可越过）当前是 **5 类**：
 
@@ -132,7 +132,13 @@ Profile 来自 `profiles:` 配置 map（见 `config.example.yaml` 中的 `coding
 **模式语义（`internal/api/http::resolvePermissionMode`，仅 WS 有 callback 时生效；SSE 无 callback 一律 fail-closed）**：
 - **yolo**：越过全部 profile 策略；拦 Catastrophic 与 OutOfScope 删除。工作目录内的 `rm -rf build/` 等仍放行。
 - **所有模式（含 yolo/auto）之上还有两道 auto-resolve 豁免**：`req.ForcePrompt`（如 `task_cancel`）与 `req.ApprovalRequired`（`NewApprovalGuardedTool` 包的工具，如 GitHub 变更）在 `resolvePermissionMode` 的**最开头**就返回 `(deny, false)`，即"不自动放行、交回 callback 显式审批"。所以"yolo 只拦破坏性删除"是不对的 —— 这两类工具在 yolo 下**每次**都弹窗，无 callback 时 fail-closed。
-- **auto**：Catastrophic 直接拦（结构性）；其余一切（含 profile 拒绝、越界删除、allowlist 未命中）交给 AI 风险评分（`assessRisk`），低风险放行、高风险弹窗。
+- **auto**：Catastrophic 直接拦（结构性）、越界删除弹窗；**其余一切交给 AI 判断，Go 侧没有任何静态白/黑名单**。模型连同会话上下文（最近一条 user message 作为意图、workdir、profile 的拒绝理由、完整命令原文）拿到问题，答 `ALLOW`/`ASK`。
+
+  **风险类别写在提示词里，不写成代码**（`internal/guard/autoapproval.go::AutoApprovalPrompt`），分四组：**伸出项目之外**（提权、关机/服务、磁盘、系统账户与属主、防火墙/内核、系统包管理器、定时任务、远程执行、Windows 注册表）、**不可逆**（force-push/filter-branch 改写共享历史、删除 VCS 从未记录的东西、容器逃逸、跨会话杀进程）、**执行没人读过的代码**（下载即执行的各种形态、从 `/tmp` `~/Downloads` `~/.cache` 跑脚本、执行本会话抓来但没读回的东西 —— 远程脚本必须先落盘、被读过再执行）、**数据外泄**（把项目内容/凭据/环境变量发给外部服务、`env`/`printenv` 把 API key 打进 transcript 进而随下一轮请求发给 provider）。**这么放比写成 Go 黑名单强**，理由不是"AI 更聪明"而是很具体的一条：`bash -c "sudo rm -rf /"` 被 `lexShellLite` 切成程序 `bash` + 一个引号参数，静态表只能匹配到 `bash`（于是要么全拒每个 `bash -c`，要么永远看不见那个 sudo）；模型读的是原始整串，`sudo` 就在眼前。`env FOO=1 sudo x`、`nohup sudo x`、`timeout 5 sudo x` 同理。**代价是真的**：黑名单没法被说服，提示词可以 —— `Args` 里混着攻击者可控文本（路径、commit message、抓回的文档），所以调用能给自己辩护。fence 与「视为数据」的标注减轻它但不消除它。
+
+  **提示词里的类别有测试保护**：`internal/guard::TestAutoApprovalPrompt_CoversEveryRiskCategory` 逐类断言关键词还在。搬进提示词等于搬出编译器视野 —— 删掉一整段，代码照样编译、照样返回判决，只有这个测试会红。
+
+  **没有等级也没有阈值**（此前是 LLM 打 1-10 分比阈值，中间还短暂做过静态黑白名单）。**错误策略是单向的**：无模型、超时、API 报错、回复读不懂，全部 → 弹窗。**auto 退化成 manual，永远不退化成放行**。回复解析（`guard.ParseAutoApproval`）只认 ≤3 词的短回答且拒绝两个判决词并存 —— 散文没法解析只能拒绝，`I would not allow this without asking` 里 "asking" 不是 "ask"，纯词扫描会把一句拒绝读成批准（这是测试逼出来的，不是设计出来的）。
 - **default / allow-edits**：普通拒绝弹窗询问；profile 策略拒绝（`ProfileHardDeny`）**静默拒绝**（`policy: "deny"` = 不问，直接拦）。
 - **plan**：只读，写操作一律拒绝。
 

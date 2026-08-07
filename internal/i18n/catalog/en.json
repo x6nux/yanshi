@@ -25,7 +25,7 @@
   "tui.command.help.keymap": "show / reset keymap, or print binding diagnostics",
   "tui.command.help.locale": "show / switch UI language: /locale auto|en|zh-Hans",
   "tui.command.help.mcp": "list MCP servers",
-  "tui.command.help.mode": "set permission mode (default|allow-edits|yolo|auto [1-10])",
+  "tui.command.help.mode": "set permission mode (default|allow-edits|yolo|auto)",
   "tui.command.help.model": "list / switch model",
   "tui.command.help.queue_mode": "set/cycle queue mode (queue|single|batch)",
   "tui.command.help.rename": "rename a session: /rename <id> <title>",

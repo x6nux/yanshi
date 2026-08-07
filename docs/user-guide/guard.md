@@ -43,7 +43,7 @@ shell 维度按顺序过三层，任一层给出结论就短路：
 拒绝分两档（`Decision.Overridable`）：
 
 - **结构性 HardDeny**（`Overridable=false`）—— **任何模式都越不过**：shell 元字符、execpolicy parse-error、未知 shell policy、灾难性批量删除。
-- **可覆盖 HardDeny**（`Overridable=true`）—— profile 能说"不"的一切：空的 tools/fs allowlist、空的 mcp allowlist、`shell.policy: "deny"`、denylist 命中、execpolicy `hard_deny` 规则、`net.allow: false`。`yolo` 直接越过，`auto` 交给 AI 风险评分。
+- **可覆盖 HardDeny**（`Overridable=true`）—— profile 能说"不"的一切：空的 tools/fs allowlist、空的 mcp allowlist、`shell.policy: "deny"`、denylist 命中、execpolicy `hard_deny` 规则、`net.allow: false`。`yolo` 直接越过，`auto` 交给 AI 判断。
 
 > **本页这份枚举比 `CLAUDE.md` 的同名枚举短一项，两边都对**（两边的当前条数都别从这里读，`CLAUDE.md` 那份自带现场清点命令）。少的那一项是源码里 `checkShell` 的另一个结构性分支（`switch result.Verdict` 的 `default`），它是**防御性的、从任何配置都到不了**：`execpolicy.Evaluate` 的出口集合是 `allow` / `prompt` / `hard_deny`，三个都被前面的 `case` 接住了。规则里把 `decision` 写错（比如 `decision: warn`）不会走到那里 —— `Evaluate` 自己先把它转成 `hard_deny`，落进 `case "hard_deny", "deny":`，那是**可覆盖**的一档，`yolo` 能越过。本页不列它，`CLAUDE.md` 那份枚举面向改 guard 源码的人，把源码分支也数进去。这个"出口集合到不了 default"由 `internal/guard::TestExecPolicyVerdictsAreHandledByCheckShell` 钉住。
 >
@@ -91,7 +91,7 @@ profile **不是**按 `agents[].profile` 字段选的 —— 那个字段今天*
 | `default` | 普通拒绝弹窗询问；profile 策略拒绝（`policy: "deny"` 等）**静默拒绝**，不问。 |
 | `allow-edits` | 编辑类工具（`internal/guard::EditToolNames`）免提示放行，其余同 `default`。 |
 | `yolo` | 越过全部 profile 策略（含 MCP allowlist）。**仍然拦**：灾难性删除、工作目录之外的删除、强制批准工具。 |
-| `auto` | 灾难性删除直接拦；其余一切（含 profile 拒绝、越界删除）交给 AI 风险评分，低分放行、高分弹窗。评分失败一律回落弹窗。 |
+| `auto` | 灾难性删除直接拦、越界删除弹窗；**其余一切交给 AI 判断**（`guard.AutoApprovalPrompt`），Go 侧没有静态白/黑名单。模型拿到完整命令原文 + 会话上下文（用户最近的请求、workdir、策略拒绝理由）答 ALLOW/ASK。风险类别写在提示词里，四组：伸出项目之外（提权/关机/磁盘/系统账户/防火墙/系统包管理器/定时任务/远程执行）、不可逆（force-push、删除 VCS 未记录的东西、容器逃逸）、**执行没人读过的代码**（下载即执行、从 `/tmp` `~/Downloads` 跑脚本 —— 远程脚本必须先落盘审计）、数据外泄（外传项目内容/凭据、`env` 把 API key 打进 transcript）。无模型、超时、出错、回复读不懂 → 一律弹窗；auto 退化成 manual，不退化成放行。无阈值可调。 |
 | `plan` | 只读，写操作一律拒绝。 |
 
 > **`yolo` 不是"放行所有"。** 结构性 HardDeny（元字符、未知 policy、execpolicy parse-error）与灾难性删除在任何模式下都拦得住；强制批准工具（下一节）也一样。`yolo` 越过的是 **profile 说的"不"**。

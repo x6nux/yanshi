@@ -51,6 +51,20 @@ type Scope struct {
 	FSOp    string   `json:"fs_op,omitempty"`
 	Paths   []string `json:"paths,omitempty"`
 	Host    string   `json:"host,omitempty"`
+
+	// ScriptHash is the SHA-256 of the script a shell command executes, set
+	// only when the command runs a script FILE (`sh x.sh`, `./x.sh`,
+	// `node x.js`). It is what makes a rule about running a script safe to
+	// keep: Program+Prefix alone would admit `sh install.sh` forever, so
+	// rewriting install.sh would silently inherit the approval. Because the
+	// hash participates in the DeepEqual match, editing the script by one
+	// byte produces a different scope and the user is asked again.
+	//
+	// Empty means "not a script execution, or the file could not be read".
+	// The second case deliberately produces a scope that will never be
+	// recorded, so an unreadable script is re-asked rather than blanket-
+	// approved.
+	ScriptHash string `json:"script_hash,omitempty"`
 }
 
 // Rule is one recorded permission decision. ID is unique within the scope of a

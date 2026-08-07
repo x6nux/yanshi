@@ -22,7 +22,6 @@ import (
 //	set_model            switch the session model; Name is the provider name
 //	set_thinking         set reasoning effort; Effort is low|medium|high|off
 //	set_mode             switch the permission mode; Mode is default|allow-edits|yolo|auto
-//	                     (AutoThreshold sets the auto-mode risk ceiling 1-10)
 //	clear                reset the conversation history and usage counters
 //	list_models          request the available model names (reply: models)
 //	get_status           request session status (reply: status)
@@ -38,14 +37,13 @@ import (
 //	features_list        request the runtime feature flag table (reply: features)
 //	features_set         toggle one flag; Enabled *bool so false is serialised (reply: features)
 type ClientFrame struct {
-	Type          string `json:"type"`                     // user_message|cancel|set_model|set_thinking|set_mode|clear|list_models|get_status|permission_response|compact|list_mcp|mcp_action
-	Text          string `json:"text,omitempty"`           // user_message
-	Name          string `json:"name,omitempty"`           // set_model
-	Effort        string `json:"effort,omitempty"`         // set_thinking: low|medium|high|off
-	Mode          string `json:"mode,omitempty"`           // set_mode: default|allow-edits|yolo|auto
-	AutoThreshold int    `json:"auto_threshold,omitempty"` // set_mode: auto risk ceiling 1-10 (0 = default)
-	ID            string `json:"id,omitempty"`             // permission_response
-	Decision      string `json:"decision,omitempty"`       // permission_response: allow|deny|always_allow
+	Type     string `json:"type"`               // user_message|cancel|set_model|set_thinking|set_mode|clear|list_models|get_status|permission_response|compact|list_mcp|mcp_action
+	Text     string `json:"text,omitempty"`     // user_message
+	Name     string `json:"name,omitempty"`     // set_model
+	Effort   string `json:"effort,omitempty"`   // set_thinking: low|medium|high|off
+	Mode     string `json:"mode,omitempty"`     // set_mode: default|allow-edits|yolo|auto
+	ID       string `json:"id,omitempty"`       // permission_response
+	Decision string `json:"decision,omitempty"` // permission_response: allow|deny|always_allow
 	// OutputSchema carries an optional JSON Schema for a user_message turn. When
 	// non-empty the server validates the model's final output against it and
 	// emits a structured_result frame (A12-core); when empty/absent the turn is
@@ -167,10 +165,9 @@ func NewListModels() ClientFrame { return ClientFrame{Type: "list_models"} }
 func NewGetStatus() ClientFrame { return ClientFrame{Type: "get_status"} }
 
 // NewSetMode switches the session's interactive permission mode. mode is
-// "default"|"allow-edits"|"yolo"|"auto". autoThreshold is the ModeAuto risk
-// ceiling (1-10); pass 0 to keep the default (guard.DefaultAutoThreshold).
-func NewSetMode(mode string, autoThreshold int) ClientFrame {
-	return ClientFrame{Type: "set_mode", Mode: mode, AutoThreshold: autoThreshold}
+// "default"|"allow-edits"|"yolo"|"auto".
+func NewSetMode(mode string) ClientFrame {
+	return ClientFrame{Type: "set_mode", Mode: mode}
 }
 
 // NewPermissionResponse answers a permission_request; decision is
@@ -326,12 +323,9 @@ type ServerFrame struct {
 	Thinking  string   `json:"thinking,omitempty"` // status / session_restored
 	// PermMode is the session's interactive permission mode (default|allow-edits|
 	// yolo|auto), carried on status frames so the client footer reflects it.
-	PermMode string `json:"perm_mode,omitempty"` // status
-	// AutoThreshold is the ModeAuto risk ceiling; carried on status frames so the
-	// client can render "auto(≤N)".
-	AutoThreshold int `json:"auto_threshold,omitempty"` // status
-	TokensIn      int `json:"tokens_in,omitempty"`      // status / session_restored
-	TokensOut     int `json:"tokens_out,omitempty"`     // status / session_restored
+	PermMode  string `json:"perm_mode,omitempty"`  // status
+	TokensIn  int    `json:"tokens_in,omitempty"`  // status / session_restored
+	TokensOut int    `json:"tokens_out,omitempty"` // status / session_restored
 	// CachedTokens / ReasoningTokens (Task A6) break out the API's
 	// prompt-cache-hit and reasoning-model spend so /cost can surface them
 	// separately. Sources: schema.TokenUsage.PromptTokenDetails.CachedTokens and
@@ -579,13 +573,12 @@ func NewStatus(model, thinking string, in, out, turns, contextWindow int) Server
 
 // NewStatusWithMode is NewStatus plus the permission mode fields. Used by the WS
 // handler's statusFrame so the client footer always shows the active mode.
-func NewStatusWithMode(model, thinking string, in, out, turns, contextWindow int, permMode string, autoThreshold int) ServerFrame {
+func NewStatusWithMode(model, thinking string, in, out, turns, contextWindow int, permMode string) ServerFrame {
 	return ServerFrame{
 		Type:          "status",
 		Model:         model,
 		Thinking:      thinking,
 		PermMode:      permMode,
-		AutoThreshold: autoThreshold,
 		TokensIn:      in,
 		TokensOut:     out,
 		Turns:         turns,

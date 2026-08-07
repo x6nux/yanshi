@@ -115,30 +115,6 @@ func (m *Manager) Store() Store { return m.store }
 // secrets in one place.
 func (m *Manager) Redactor() *Redactor { return m.redact }
 
-// Resolve returns the plaintext secret for ref. Fails closed for Kind=secret
-// when no backend is available.
-func (m *Manager) Resolve(ref CredentialRef) (string, error) {
-	switch ref.Kind {
-	case "", "none":
-		return "", nil
-	case "secret":
-		if m.store == nil {
-			return "", fmt.Errorf("secrets: cannot resolve %s/%s: no backend configured", ref.Service, ref.Account)
-		}
-		return m.store.Get(ref.Service, ref.Account)
-	case "env":
-		v, ok := os.LookupEnv(ref.VarName)
-		if !ok {
-			return "", fmt.Errorf("secrets: env var %s not set", ref.VarName)
-		}
-		return v, nil
-	case "legacy":
-		return ref.Raw, nil
-	default:
-		return "", fmt.Errorf("secrets: unknown ref kind %q", ref.Kind)
-	}
-}
-
 // Set stores a secret in the configured backend. Used by the CLI auth flow.
 func (m *Manager) Set(service, account, secret string) error {
 	if m.store == nil {

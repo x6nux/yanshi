@@ -22,12 +22,6 @@ import (
 	"sync"
 )
 
-// ErrRawLiteralRefused is returned by ParseCredentialRef when the input is a
-// raw literal (not a secret:// / env:// / legacy-insecure ref) AND the caller
-// has not opted into legacy insecure mode. This is fail-closed: a raw API key
-// in config silently working would defeat S10's threat model.
-var ErrRawLiteralRefused = errors.New("secrets: raw literal credential refused (use secret:// or env:// reference, or set legacy-insecure)")
-
 // ErrKeyringUnavailable is returned by the OS keyring adapter when no platform
 // backend is wired (CGO disabled, no D-Bus on Linux, etc). The Manager treats
 // this as a soft-degrade trigger, not a fatal error.
@@ -37,49 +31,6 @@ var ErrKeyringUnavailable = errors.New("secrets: OS keyring unavailable")
 // proves the backend answered and is therefore available. Manager auto mode
 // must not misclassify a normal miss as an unavailable keyring.
 var ErrSecretNotFound = errors.New("secrets: secret not found")
-
-// CredentialRef is the parsed form of a credential source string. Kind is one
-// of "secret" / "env" / "legacy" / "none"; Service/Account are populated for
-// Kind=="secret"; VarName is populated for Kind=="env". Raw is preserved for
-// diagnostics but MUST NOT be logged through any non-redacted path.
-type CredentialRef struct {
-	Kind    string
-	Service string
-	Account string
-	VarName string
-	Raw     string
-}
-
-// ParseCredentialRef parses a credential reference. allowLegacy controls
-// whether "legacy-insecure" and raw literals are accepted; the Manager only
-// passes true when explicitly configured (legacy opt-in). The empty string
-// parses to a zero-ref (treated as "no credential configured").
-func ParseCredentialRef(s string, allowLegacy bool) (CredentialRef, error) {
-	switch {
-	case s == "":
-		return CredentialRef{Kind: "none"}, nil
-	case strings.HasPrefix(s, "secret://"):
-		rest := strings.TrimPrefix(s, "secret://")
-		parts := strings.SplitN(rest, "/", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return CredentialRef{}, fmt.Errorf("secrets: invalid secret:// ref %q (want secret://service/account)", s)
-		}
-		return CredentialRef{Kind: "secret", Service: parts[0], Account: parts[1], Raw: s}, nil
-	case strings.HasPrefix(s, "env://"):
-		v := strings.TrimPrefix(s, "env://")
-		if v == "" {
-			return CredentialRef{}, fmt.Errorf("secrets: invalid env:// ref %q (want env://VARNAME)", s)
-		}
-		return CredentialRef{Kind: "env", VarName: v, Raw: s}, nil
-	default:
-		// Every non-reference value is a raw literal. It is accepted only
-		// when auth.legacy_insecure is explicitly true for this process.
-		if !allowLegacy {
-			return CredentialRef{}, ErrRawLiteralRefused
-		}
-		return CredentialRef{Kind: "legacy", Raw: s}, nil
-	}
-}
 
 // Redactor is a concurrency-safe registry of secret substrings. Register each
 // secret exactly once after resolution; every output boundary then calls

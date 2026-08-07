@@ -74,23 +74,6 @@ func withFakeKeyring(t *testing.T, s Store) {
 // secrets.go
 // ---------------------------------------------------------------------------
 
-func TestParseCredentialRef_EdgeCases(t *testing.T) {
-	// Empty string → none ref (no credential configured).
-	ref, err := ParseCredentialRef("", false)
-	if err != nil || ref.Kind != "none" {
-		t.Fatalf("empty parse = %+v, %v", ref, err)
-	}
-	// Malformed secret:// refs must fail (each missing service or account).
-	for _, bad := range []string{"secret://svc", "secret:///acct", "secret:///", "secret://a/"} {
-		if _, err := ParseCredentialRef(bad, false); err == nil {
-			t.Fatalf("ParseCredentialRef(%q) must error", bad)
-		}
-	}
-	// Malformed env:// must fail.
-	if _, err := ParseCredentialRef("env://", false); err == nil {
-		t.Fatal("ParseCredentialRef(env://) must error")
-	}
-}
 
 func TestRedactor_RegisterEmptyAndIdempotent(t *testing.T) {
 	r := NewRedactor()
@@ -311,50 +294,6 @@ func TestManager_NewManagerAllModes(t *testing.T) {
 	})
 }
 
-func TestManager_ResolveAllKinds(t *testing.T) {
-	fs := newFakeStore()
-	_ = fs.Set("svc", "acct", "resolved-value")
-	withFakeKeyring(t, fs)
-	mgr, err := NewManager(Config{Backend: "keyring"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mgr.Close()
-
-	// Empty / none kind → "", nil.
-	if v, err := mgr.Resolve(CredentialRef{Kind: ""}); err != nil || v != "" {
-		t.Fatalf("empty kind = %q, %v", v, err)
-	}
-	if v, err := mgr.Resolve(CredentialRef{Kind: "none"}); err != nil || v != "" {
-		t.Fatalf("none kind = %q, %v", v, err)
-	}
-	// Secret kind with store → resolved.
-	ref, _ := ParseCredentialRef("secret://svc/acct", false)
-	if v, err := mgr.Resolve(ref); err != nil || v != "resolved-value" {
-		t.Fatalf("secret kind = %q, %v", v, err)
-	}
-	// Secret missing entry → ErrSecretNotFound.
-	refMiss, _ := ParseCredentialRef("secret://svc/missing", false)
-	if _, err := mgr.Resolve(refMiss); !errors.Is(err, ErrSecretNotFound) {
-		t.Fatalf("missing secret = %v, want ErrSecretNotFound", err)
-	}
-	// Env set / unset.
-	t.Setenv("YANSHI_TEST_RESOLVE_VAR", "env-value")
-	if v, err := mgr.Resolve(CredentialRef{Kind: "env", VarName: "YANSHI_TEST_RESOLVE_VAR"}); err != nil || v != "env-value" {
-		t.Fatalf("env set = %q, %v", v, err)
-	}
-	if _, err := mgr.Resolve(CredentialRef{Kind: "env", VarName: "YANSHI_TEST_RESOLVE_UNSET"}); err == nil {
-		t.Fatal("unset env must error")
-	}
-	// Legacy passthrough.
-	if v, err := mgr.Resolve(CredentialRef{Kind: "legacy", Raw: "sk-legacy"}); err != nil || v != "sk-legacy" {
-		t.Fatalf("legacy = %q, %v", v, err)
-	}
-	// Unknown kind.
-	if _, err := mgr.Resolve(CredentialRef{Kind: "weird"}); err == nil {
-		t.Fatal("unknown kind must error")
-	}
-}
 
 func TestManager_SetDeleteNoBackend(t *testing.T) {
 	mgr, _ := NewManager(Config{Backend: "none"})
@@ -649,99 +588,12 @@ func TestPadKdfTruncatesLongNames(t *testing.T) {
 // cli.go
 // ---------------------------------------------------------------------------
 
-func TestAuthCommand_RequiresProviderAndAccount(t *testing.T) {
-	for _, c := range []AuthCommand{
-		{Account: "a", Backend: "none"},
-		{Provider: "p", Backend: "none"},
-	} {
-		if err := c.Run(); err == nil {
-			t.Fatalf("Run must require provider and account: %+v", c)
-		}
-	}
-}
 
-func TestAuthCommand_NewManagerErrorPropagates(t *testing.T) {
-	cmd := AuthCommand{Provider: "p", Account: "a", Backend: "bogus", Stdin: &bytes.Buffer{}, Stdout: &bytes.Buffer{}}
-	if err := cmd.Run(); err == nil {
-		t.Fatal("unknown backend must surface a NewManager error")
-	}
-}
 
-func TestAuthCommand_DeleteSuccessWithNilStdoutStdin(t *testing.T) {
-	// Inject a Manager holding the entry; delete with nil Stdin/Stdout so the
-	// os.Stdin/os.Stdout defaults are wired (delete never reads stdin). Covers
-	// the delete-success branch and the default IO wiring.
-	path := filepath.Join(t.TempDir(), "s.enc")
-	mgr, err := NewManager(Config{Backend: "file", FilePath: path, Passphrase: []byte("p")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mgr.Close()
-	if err := mgr.Set("p", "a", "secret"); err != nil {
-		t.Fatal(err)
-	}
-	cmd := AuthCommand{Provider: "p", Account: "a", Delete: true, Manager: mgr}
-	// Stdin and Stdout intentionally nil → defaults assigned inside Run.
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("delete success: %v", err)
-	}
-}
 
-func TestAuthCommand_EmptyInteractiveKeyRefused(t *testing.T) {
-	cmd := AuthCommand{
-		Provider: "p", Account: "a", Backend: "file",
-		FilePath:   filepath.Join(t.TempDir(), "s.enc"),
-		Passphrase: []byte("p"),
-		Stdin:      bytes.NewBufferString("\n"), // empty line → empty key
-		Stdout:     &bytes.Buffer{},
-	}
-	if err := cmd.Run(); err == nil || !strings.Contains(err.Error(), "empty API key") {
-		t.Fatalf("want empty-key refusal, got %v", err)
-	}
-}
 
-func TestAuthCommand_SetErrorPropagates(t *testing.T) {
-	// Inject a failing replace so the owned FileStore's Set fails.
-	old := replaceEncryptedFile
-	replaceEncryptedFile = func(src, dst string) error { return errors.New("injected") }
-	t.Cleanup(func() { replaceEncryptedFile = old })
-	cmd := AuthCommand{
-		Provider: "p", Account: "a", Backend: "file",
-		FilePath:   filepath.Join(t.TempDir(), "s.enc"),
-		Passphrase: []byte("p"),
-		Stdin:      bytes.NewBufferString("sk-key\n"),
-		Stdout:     &bytes.Buffer{},
-	}
-	if err := cmd.Run(); err == nil || !strings.Contains(err.Error(), "auth: set") {
-		t.Fatalf("want set error, got %v", err)
-	}
-}
 
-func TestReadLimitedSecretError(t *testing.T) {
-	if _, err := readLimitedSecret(errReader{err: errors.New("boom")}); err == nil {
-		t.Fatal("readLimitedSecret must surface reader error")
-	}
-}
 
-func TestReadLineErrorBranches(t *testing.T) {
-	t.Run("eof-with-data-returns-buffer", func(t *testing.T) {
-		// No trailing newline → reads all data then EOF with buf>0.
-		got, err := readLine(strings.NewReader("no-newline"))
-		if err != nil || got != "no-newline" {
-			t.Fatalf("readLine = %q, %v", got, err)
-		}
-	})
-	t.Run("reader-error", func(t *testing.T) {
-		if _, err := readLine(errReader{err: errors.New("read-failed")}); err == nil {
-			t.Fatal("readLine must surface reader error")
-		}
-	})
-	t.Run("empty-eof-returns-error", func(t *testing.T) {
-		if _, err := readLine(strings.NewReader("")); err == nil {
-			t.Fatal("readLine on empty reader must error")
-		}
-	})
-}
 
 // ---------------------------------------------------------------------------
 // file_store_replace_windows.go (Windows atomic replace)
@@ -850,102 +702,8 @@ func TestKeyring_AvailableProbeHit(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// cli.go — interactive terminal (echo-off) password branch, driven via the
-// isTerminal / readPasswordFromTerminal seams.
-// ---------------------------------------------------------------------------
 
-// withTerminalSeam forces Run to take the term.ReadPassword branch by reporting
-// the stdin fd as a terminal and returning canned password bytes. Stdin must be
-// a real *os.File so the (*os.File) type assertion inside Run succeeds.
-func withTerminalSeam(t *testing.T, password []byte, readErr error) (*os.File, func()) {
-	t.Helper()
-	tmp, err := os.CreateTemp(t.TempDir(), "fake-tty")
-	if err != nil {
-		t.Fatal(err)
-	}
-	origIsTerm, origRead := isTerminal, readPasswordFromTerminal
-	isTerminal = func(int) bool { return true }
-	readPasswordFromTerminal = func(int) ([]byte, error) { return password, readErr }
-	return tmp, func() {
-		isTerminal, readPasswordFromTerminal = origIsTerm, origRead
-		_ = tmp.Close()
-	}
-}
-
-func TestAuthCommand_TerminalPasswordPaths(t *testing.T) {
-	t.Run("success", func(t *testing.T) {
-		stdin, restore := withTerminalSeam(t, []byte("sk-tty-secret"), nil)
-		defer restore()
-		out := &bytes.Buffer{}
-		cmd := AuthCommand{
-			Provider: "p", Account: "a", Backend: "file",
-			FilePath:   filepath.Join(t.TempDir(), "s.enc"),
-			Passphrase: []byte("p"),
-			Stdin:      stdin,
-			Stdout:     out,
-		}
-		if err := cmd.Run(); err != nil {
-			t.Fatalf("terminal password Run: %v", err)
-		}
-		if !strings.HasSuffix(out.String(), "\n") {
-			t.Fatalf("terminal path must print newline after hidden input: %q", out.String())
-		}
-	})
-	t.Run("read-error", func(t *testing.T) {
-		stdin, restore := withTerminalSeam(t, nil, errors.New("tty read failed"))
-		defer restore()
-		cmd := AuthCommand{
-			Provider: "p", Account: "a", Backend: "file",
-			FilePath:   filepath.Join(t.TempDir(), "s.enc"),
-			Passphrase: []byte("p"),
-			Stdin:      stdin,
-			Stdout:     &bytes.Buffer{},
-		}
-		if err := cmd.Run(); err == nil || !strings.Contains(err.Error(), "read password") {
-			t.Fatalf("want read-password error, got %v", err)
-		}
-	})
-	t.Run("oversized", func(t *testing.T) {
-		stdin, restore := withTerminalSeam(t, bytes.Repeat([]byte("x"), maxSecretInputBytes+1), nil)
-		defer restore()
-		cmd := AuthCommand{
-			Provider: "p", Account: "a", Backend: "file",
-			FilePath:   filepath.Join(t.TempDir(), "s.enc"),
-			Passphrase: []byte("p"),
-			Stdin:      stdin,
-			Stdout:     &bytes.Buffer{},
-		}
-		if err := cmd.Run(); err == nil || !strings.Contains(err.Error(), "exceeds") {
-			t.Fatalf("want oversized error, got %v", err)
-		}
-	})
-}
 
 // Reference io so the import stays used by the errReader contract above.
 var _ = io.EOF
 
-// TestTerminalSeamDefaults confirms the production defaults of the
-// isTerminal / readPasswordFromTerminal seams delegate to the real term
-// functions (executing the closure body rather than a test override). On a
-// non-tty file descriptor term.ReadPassword returns an error, which is the
-// expected delegation — we only assert it does not panic.
-func TestTerminalSeamDefaults(t *testing.T) {
-	orig := readPasswordFromTerminal
-	t.Cleanup(func() { readPasswordFromTerminal = orig })
-	tmp, err := os.CreateTemp(t.TempDir(), "not-a-tty")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tmp.Close()
-	// isTerminal default is a direct alias to term.IsTerminal; reading it
-	// executes the (trivial) lookup. readPasswordFromTerminal's closure body
-	// calls term.ReadPassword, which errors on a plain file — that proves the
-	// seam delegates instead of panicking.
-	_ = isTerminal(int(tmp.Fd()))
-	if _, err := readPasswordFromTerminal(int(tmp.Fd())); err == nil {
-		// A file fd is not a console; an error is the expected outcome. If the
-		// host somehow accepts it we still pass — the goal is to exercise the
-		// delegation, not to assert terminal semantics.
-	}
-}

@@ -200,11 +200,9 @@ func TestCmdModel_PlanModeClearsPrePlanOnSwitch(t *testing.T) {
 	m := wsModel(rec)
 	m.permMode = guard.ModePlan
 	m.prePlanMode = guard.ModeAuto
-	m.prePlanThreshold = 4
 	mm, _ := runCommandOn(model(m), "/model gpt-4o")
 	m = mm.(model)
 	assert.Equal(t, guard.PermissionMode(""), m.prePlanMode, "switching model from plan clears prePlanMode")
-	assert.Equal(t, 0, m.prePlanThreshold)
 
 	// /model plan delegates to cmdPlan.
 	rec = &recordingSession{}

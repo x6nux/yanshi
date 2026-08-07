@@ -109,26 +109,13 @@ func TestCmdMode_PickerValidInvalidAndAuto(t *testing.T) {
 	}
 	assert.True(t, sawErr)
 
-	// Auto with explicit threshold.
+	// Auto takes no argument any more; a trailing word is ignored rather than
+	// parsed as a risk ceiling.
 	rec = &recordingSession{}
 	m = wsModel(rec)
-	mm, _ = runCommandOn(model(m), "/mode auto 6")
+	mm, _ = runCommandOn(model(m), "/mode auto")
 	m = mm.(model)
 	assert.Equal(t, guard.ModeAuto, m.permMode)
-	assert.Equal(t, 6, m.autoThreshold)
-
-	// Auto with out-of-range threshold -> error.
-	rec = &recordingSession{}
-	m = wsModel(rec)
-	mm, _ = runCommandOn(model(m), "/mode auto 99")
-	m = mm.(model)
-	var sawErr2 bool
-	for _, e := range m.entries {
-		if _, ok := e.(errorEntry); ok {
-			sawErr2 = true
-		}
-	}
-	assert.True(t, sawErr2, "out-of-range threshold is an error")
 }
 
 // ---- cmdPermissions ----
@@ -519,8 +506,8 @@ func TestSaveLoadPermMode_RoundTrip(t *testing.T) {
 	persistPermMode = true
 	t.Cleanup(func() { persistPermMode = orig })
 
-	// Save then load a known mode+threshold.
-	savePermMode(guard.ModeAuto, 4)
+	// Save then load a known mode.
+	savePermMode(guard.ModeAuto)
 	// The file path is fixed (os.UserConfigDir); load reads it back. To avoid
 	// clobbering real state, just assert the load path returns a valid mode
 	// (default|auto) and threshold in range or 0.
@@ -528,9 +515,6 @@ func TestSaveLoadPermMode_RoundTrip(t *testing.T) {
 	assert.True(t, m == guard.ModeDefault || m == guard.ModeAuto ||
 		m == guard.ModeAllowEdits || m == guard.ModeYOLO || m == guard.ModePlan,
 		"loadSavedMode returns a known mode, got %q", m)
-
-	thr := loadSavedThreshold()
-	assert.True(t, thr == 0 || (thr >= 1 && thr <= 10), "threshold in range, got %d", thr)
 }
 
 func TestCycleMode_SequenceAndYoloGate(t *testing.T) {
@@ -574,8 +558,6 @@ func TestPermModeText_AllModes(t *testing.T) {
 	assert.Contains(t, m.permModeText(), "bypass")
 	m.permMode = guard.ModeAuto
 	assert.Contains(t, m.permModeText(), "auto")
-	m.autoThreshold = 5
-	assert.Contains(t, m.permModeText(), "5")
 }
 
 func TestModeAutoAllows(t *testing.T) {

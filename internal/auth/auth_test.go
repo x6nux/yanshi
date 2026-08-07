@@ -1,8 +1,6 @@
 package auth
 
 import (
-	"context"
-	"errors"
 	"math"
 	"path/filepath"
 	"testing"
@@ -24,48 +22,6 @@ func newTestManager(t *testing.T) *Manager {
 		t.Fatalf("secrets.NewManager: %v", err)
 	}
 	return NewManager(smgr)
-}
-
-func TestManager_ResolveSource(t *testing.T) {
-	m := newTestManager(t)
-	_ = m.secrets.Store().Set("openai", "main", "sk-from-secret-store")
-
-	cases := []struct {
-		name        string
-		in          string
-		allowLegacy bool
-		want        string
-		err         bool
-	}{
-		{"secret ref", "secret://openai/main", false, "sk-from-secret-store", false},
-		{"env ref", "env://PATH", false, "", false},
-		{"legacy opt-in", "sk-legacy", true, "sk-legacy", false},
-		{"raw literal refused", "sk-raw", false, "", true},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			src := CredentialSource{APIKeyRef: c.in, LegacyInsecure: c.allowLegacy}
-			got, err := m.ResolveAPIKey(context.Background(), src)
-			if c.err {
-				if err == nil {
-					t.Fatalf("ResolveAPIKey(%q): want error", c.in)
-				}
-				if !errors.Is(err, secrets.ErrRawLiteralRefused) {
-					t.Fatalf("ResolveAPIKey(%q): want ErrRawLiteralRefused, got %v", c.in, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("ResolveAPIKey(%q): %v", c.in, err)
-			}
-			if c.name == "secret ref" && got != c.want {
-				t.Fatalf("got %q want %q", got, c.want)
-			}
-			if c.name == "legacy opt-in" && got != c.want {
-				t.Fatalf("got %q want %q", got, c.want)
-			}
-		})
-	}
 }
 
 func TestManager_Status_Logout(t *testing.T) {

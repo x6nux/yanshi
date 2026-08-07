@@ -187,9 +187,9 @@ func setFeature(reg *features.Registry, payload proto.FeaturesSetPayload) error 
 // --resume: SessionID is created lazily on the first user_message (ensureSession)
 // and was previously only surfaced on session_restored.
 func (cs *connSession) statusFrame(s *Server) proto.ServerFrame {
-	mode, auto := cs.perm.get()
+	mode := cs.perm.get()
 	st := proto.NewStatusWithMode(cs.displayModel(), cs.thinking, cs.tokensIn, cs.tokensOut, cs.turns,
-		contextWindowFor(cs.model, s.compaction), string(mode), auto)
+		contextWindowFor(cs.model, s.compaction), string(mode))
 	// CachedTokens / ReasoningTokens are populated after construction so
 	// NewStatusWithMode's signature (and its many callers) stay unchanged. The
 	// omitempty JSON tag drops them when zero (pre-record / non-reporting model).

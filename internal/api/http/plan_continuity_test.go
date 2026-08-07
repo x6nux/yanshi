@@ -49,13 +49,13 @@ func TestPlanThenExecuteKeepsTheHistory(t *testing.T) {
 	defer c.Close()
 
 	// Turn 1, in plan mode.
-	require.NoError(t, c.WriteJSON(proto.NewSetMode("plan", 0)))
+	require.NoError(t, c.WriteJSON(proto.NewSetMode("plan")))
 	drainUntil(t, c, "status")
 	require.NoError(t, c.WriteJSON(proto.NewUserMessage("draft a plan: "+planMarker)))
 	drainUntil(t, c, "done")
 
 	// Confirm: back to the ordinary mode.
-	require.NoError(t, c.WriteJSON(proto.NewSetMode("default", 0)))
+	require.NoError(t, c.WriteJSON(proto.NewSetMode("default")))
 	drainUntil(t, c, "status")
 
 	// Turn 2, executing.
@@ -109,12 +109,12 @@ func TestPlanModeSwitchDoesNotReplayAsANewSession(t *testing.T) {
 	c := dial(t, "ws"+strings.TrimPrefix(ts.URL, "http")+"/api/v1/chat/ws")
 	defer c.Close()
 
-	require.NoError(t, c.WriteJSON(proto.NewSetMode("plan", 0)))
+	require.NoError(t, c.WriteJSON(proto.NewSetMode("plan")))
 	drainUntil(t, c, "status")
 	require.NoError(t, c.WriteJSON(proto.NewUserMessage(planMarker)))
 	drainUntil(t, c, "done")
 
-	require.NoError(t, c.WriteJSON(proto.NewSetMode("default", 0)))
+	require.NoError(t, c.WriteJSON(proto.NewSetMode("default")))
 	drainUntil(t, c, "status")
 	require.NoError(t, c.WriteJSON(proto.NewUserMessage("execute")))
 	drainUntil(t, c, "done")

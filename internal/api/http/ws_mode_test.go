@@ -22,7 +22,7 @@ func TestChatWS_ModeYOLO_NoPrompt(t *testing.T) {
 	defer c.Close()
 
 	// Enter yolo mode first.
-	require.NoError(t, c.WriteJSON(proto.NewSetMode("yolo", 0)))
+	require.NoError(t, c.WriteJSON(proto.NewSetMode("yolo")))
 	drainUntil(t, c, "status")
 
 	require.NoError(t, c.WriteJSON(proto.NewUserMessage("write the file")))
@@ -53,7 +53,7 @@ func TestChatWS_ModeAllowEdits_NoPromptForEditTool(t *testing.T) {
 	c := dial(t, url)
 	defer c.Close()
 
-	require.NoError(t, c.WriteJSON(proto.NewSetMode("allow-edits", 0)))
+	require.NoError(t, c.WriteJSON(proto.NewSetMode("allow-edits")))
 	drainUntil(t, c, "status")
 
 	require.NoError(t, c.WriteJSON(proto.NewUserMessage("write the file")))
@@ -80,10 +80,9 @@ func TestChatWS_StatusEchoesMode(t *testing.T) {
 	c := dial(t, url)
 	defer c.Close()
 
-	require.NoError(t, c.WriteJSON(proto.NewSetMode("auto", 6)))
+	require.NoError(t, c.WriteJSON(proto.NewSetMode("auto")))
 	st := drainUntil(t, c, "status")
 	assert.Equal(t, "auto", st.PermMode)
-	assert.Equal(t, 6, st.AutoThreshold)
 }
 
 // TestResolvePermissionMode_ProfileHardDeny proves an overridable profile-policy
@@ -107,7 +106,7 @@ func TestResolvePermissionMode_ProfileHardDeny(t *testing.T) {
 	for _, c := range cases {
 		t.Run(string(c.mode), func(t *testing.T) {
 			cs := &connSession{perm: &permModeState{}}
-			cs.perm.set(c.mode, 0)
+			cs.perm.set(c.mode)
 			req := tools.PermissionRequest{Tool: "shell_run", ProfileHardDeny: true}
 			d, resolved := resolvePermissionMode(context.Background(), cs, nil, req)
 			assert.Equal(t, c.wantTool, d, "mode %s", c.mode)
@@ -140,7 +139,7 @@ func TestResolvePermissionMode_DestructiveGate(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			cs := &connSession{perm: &permModeState{}}
-			cs.perm.set(c.mode, 0)
+			cs.perm.set(c.mode)
 			req := tools.PermissionRequest{Tool: "shell_run", Shell: c.shell, Workdir: "/proj"}
 			d, resolved := resolvePermissionMode(context.Background(), cs, nil, req)
 			assert.Equal(t, c.want, d)
@@ -172,7 +171,7 @@ func TestChatWS_ModePlan_ProducesReadOnlyTurn(t *testing.T) {
 	c := dial(t, url)
 	defer c.Close()
 
-	require.NoError(t, c.WriteJSON(proto.NewSetMode("plan", 0)))
+	require.NoError(t, c.WriteJSON(proto.NewSetMode("plan")))
 	drainUntil(t, c, "status")
 
 	require.NoError(t, c.WriteJSON(proto.NewUserMessage("write the file")))

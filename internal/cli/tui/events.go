@@ -61,9 +61,6 @@ func (m *model) applyStatus(ev cli.StreamEvent) {
 			m.permMode = pm
 		}
 	}
-	if ev.AutoThreshold > 0 {
-		m.autoThreshold = ev.AutoThreshold
-	}
 	// C4 COST1: per-session cumulative USD. costKnown=false renders as N/A,
 	// never as $0, so operators can distinguish "missing price" from "zero spend".
 	m.costUSD = ev.CostUSD

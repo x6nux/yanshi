@@ -55,7 +55,6 @@ var clientFieldAbsentReason = map[string]string{
 var clientControlOnlyFields = map[string]string{
 	"Type":          "the frame discriminator itself",
 	"Mode":          "set_mode",
-	"AutoThreshold": "set_mode",
 	"ID":            "permission_response / session and skill verbs address a target",
 	"Decision":      "permission_response",
 	"ConfirmedHead": "restore_turn",
