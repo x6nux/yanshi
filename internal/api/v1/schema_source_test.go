@@ -51,6 +51,8 @@ func defsOf(t *testing.T, raw []byte) []string {
 // ledger: D1/V14#2 单一 schema 真相源且 parity 守门
 //
 // ledger: H2/APIREF1#3 与 schema 一致
+//
+// ledger: D2/V15#2 类型与 Go 契约对账
 func TestRuntimeSchemaIsTheSDKSchema(t *testing.T) {
 	onDisk, err := os.ReadFile(sdkSchemaPath(t, filepath.Join("v1", "agent-api.schema.json")))
 	if err != nil {

@@ -5,9 +5,7 @@ import {
   makeUrl,
   parseItem,
   readSse,
-  readWebSocket,
   versionIsSupported,
-  type WebSocketLike,
 } from "../src/transport.js";
 import { isValidVersion } from "../src/validators.js";
 import { ApiVersionError, ProtocolError } from "../src/errors.js";
@@ -119,25 +117,9 @@ describe("transport helpers", () => {
     }).rejects.toBeInstanceOf(ApiVersionError);
   });
 
-  it("accepts narrow callback handlers through socketOn under strictFunctionTypes", async () => {
-    const listeners = new Map<string, (...args: unknown[]) => void>();
-    const socket: WebSocketLike = {
-      readyState: 1,
-      send: vi.fn(),
-      close: vi.fn(),
-      on(name, listener) { listeners.set(name, listener); },
-    };
-    const iterator = readWebSocket(socket, ["v1"], { turnId: "turn-1" });
-    const pending = iterator.next();
-    await Promise.resolve();
-    listeners.get("message")?.({
-      data: JSON.stringify({
-        version: "v1", id: "item-1", sequence: 1,
-        threadId: "t", turnId: "turn-1", type: "turn.started",
-      }),
-    });
-    listeners.get("close")?.({ code: 1000, reason: "done" });
-    expect((await pending).value).toMatchObject({ sequence: 1 });
-    await iterator.return(undefined);
-  });
+  // The readWebSocket test that stood here went with the transport. It fed a
+  // fake socket, so the only thing it could prove was that the reader parsed
+  // the frames it was handed — never that the URL it would have connected to
+  // exists. That URL was /api/v1/threads/{id}/stream, which the server has
+  // never served.
 });

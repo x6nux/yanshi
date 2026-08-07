@@ -206,6 +206,8 @@ func blockAfter(src, header, terminator string) (string, bool) {
 // ledger: D1/V14#2 单一 schema 真相源且 parity 守门
 //
 // ledger: H2/APIREF1#3 与 schema 一致
+//
+// ledger: D2/V15#2 类型与 Go 契约对账
 func TestContractParityAcrossFourSources(t *testing.T) {
 	tsSrc := readSDK(t, "ts", "v1.ts")
 	pySrc := readSDK(t, "python", "src", "yanshi_sdk", "generated.py")

@@ -1,6 +1,6 @@
 // sdk/ts/src/transport.ts
 //
-// HTTP + SSE + WebSocket transports for the Yanshi v1 Agent API. All D1 paths
+// HTTP + SSE transports for the Yanshi v1 Agent API. All D1 paths
 // are isolated in this file (the client and IDE never build URLs themselves).
 //
 // D1 contract served by this module (verified against
@@ -32,29 +32,12 @@ import { isValidVersion } from "./validators.js";
 import { ApiVersionError, HttpError, ProtocolError, StreamDisconnectedError } from "./errors.js";
 
 export type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
-export type WebSocketFactory = (url: string, options?: { headers?: Record<string, string> }) => WebSocketLike;
-
-export interface WebSocketLike {
-  readonly readyState: number;
-  send(data: string): void;
-  close(code?: number, reason?: string): void;
-  addEventListener?(type: string, listener: (...args: unknown[]) => void): void;
-  on?(event: string, listener: (...args: unknown[]) => void): void;
-  onopen?: () => void;
-  onmessage?: (event: { data: string | Uint8Array }) => void;
-  onerror?: (event: unknown) => void;
-  onclose?: (event: { code?: number; reason?: string }) => void;
-}
-
 export interface TransportOptions {
   baseUrl: string;
   token?: string;
   fetch?: FetchLike;
-  websocketFactory?: WebSocketFactory;
   supportedVersions?: readonly string[];
 }
-
-const OPEN = 1;
 
 const KNOWN_ITEM_TYPES: ReadonlySet<string> = new Set<ItemType | "unknown" | `event.${string}`>([
   "turn.started",
@@ -67,14 +50,6 @@ const KNOWN_ITEM_TYPES: ReadonlySet<string> = new Set<ItemType | "unknown" | `ev
   "turn.error",
   "turn.completed",
 ]);
-
-export function defaultWebSocketFactory(url: string, options?: { headers?: Record<string, string> }): WebSocketLike {
-  // Lazy import so the SDK works in runtimes that never use WS (e.g. tests
-  // that inject a fake). The `ws` package is a peer at runtime.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const mod = require("ws") as { WebSocket: new (url: string, options?: { headers?: Record<string, string> }) => unknown };
-  return new mod.WebSocket(url, options) as unknown as WebSocketLike;
-}
 
 export function makeUrl(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
@@ -247,101 +222,11 @@ export async function* readSse(
   }
 }
 
-function socketOn(socket: WebSocketLike, name: string, listener: (...args: unknown[]) => void): void {
-  if (socket.on) {
-    socket.on(name, listener);
-  } else if (socket.addEventListener) {
-    socket.addEventListener(name, listener);
-  } else {
-    throw new ProtocolError(`socket does not support event subscription for ${name}`);
-  }
-}
-
-/**
- * Read a WebSocket stream and yield Items. The SDK speaks a thin JSON-RPC
- * notification shape: each message is `{"jsonrpc":"2.0","method":"item/updated",
- * "params":<Item>}` (matching D1's internal/appserver shape). Other messages
- * (responses, unknown methods) are ignored. D1 does not yet serve WS, so this
- * transport is forward-looking; callers who want to test it inject a fake.
- */
-export async function* readWebSocket(
-  socket: WebSocketLike,
-  supported: readonly string[],
-  options: { turnId?: string; signal?: AbortSignal } = {},
-): AsyncGenerator<Item> {
-  const queue: Item[] = [];
-  let wake: (() => void) | undefined;
-  let closed: { code?: number; reason?: string } | undefined;
-  let failure: unknown;
-  let lastSequence: number | undefined;
-  const push = (item: Item): void => { queue.push(item); wake?.(); wake = undefined; };
-  const messageListener = (...args: unknown[]): void => {
-    const raw = args[0];
-    const data = typeof raw === "object" && raw !== null && "data" in raw
-      ? (raw as { data?: unknown }).data
-      : raw;
-    const text = typeof data === "string" ? data : new TextDecoder().decode(data as Uint8Array);
-    try {
-      let value: unknown;
-      try { value = JSON.parse(text); }
-      catch (cause) { throw new ProtocolError("invalid JSON websocket payload", { cause }); }
-      // Accept either a bare Item or a JSON-RPC item/updated notification.
-      const maybeRpc = value as { jsonrpc?: string; method?: string; params?: unknown };
-      const candidate = maybeRpc.jsonrpc === "2.0" && maybeRpc.method === "item/updated"
-        ? maybeRpc.params
-        : value;
-      const item = parseItem(JSON.stringify(candidate));
-      if (!versionIsSupported(item.version, supported)) {
-        throw new ApiVersionError(item.version, supported);
-      }
-      push(item);
-    } catch (cause) {
-      failure = cause;
-      wake?.();
-      wake = undefined;
-    }
-  };
-  const errorListener = (...args: unknown[]): void => {
-    failure = args[0] ?? new ProtocolError("websocket error");
-    wake?.();
-    wake = undefined;
-  };
-  const closeListener = (...args: unknown[]): void => {
-    const event = args[0];
-    closed = (typeof event === "object" && event !== null && ("code" in event || "reason" in event))
-      ? (event as { code?: number; reason?: string })
-      : { code: 1006, reason: "closed" };
-    wake?.();
-    wake = undefined;
-  };
-  socketOn(socket, "message", messageListener);
-  socketOn(socket, "error", errorListener);
-  socketOn(socket, "close", closeListener);
-  const open = new Promise<void>((resolve, reject) => {
-    if (socket.readyState === OPEN) { resolve(); return; }
-    socketOn(socket, "open", () => resolve());
-    socketOn(socket, "error", (...args: unknown[]) => reject(args[0]));
-  });
-  await open;
-  try {
-    while (!closed || queue.length > 0) {
-      if (options.signal?.aborted) return;
-      if (failure) throw failure;
-      if (queue.length === 0) await new Promise<void>((resolve) => { wake = resolve; });
-      if (options.signal?.aborted) return;
-      if (failure) throw failure;
-      const item = queue.shift();
-      if (item) {
-        if (options.turnId && item.turnId !== options.turnId) continue;
-        lastSequence = item.sequence;
-        yield item;
-      }
-    }
-    if (closed && closed.code !== 1000) throw new StreamDisconnectedError(lastSequence, { cause: closed.reason });
-  } catch (cause) {
-    if (cause instanceof ApiVersionError || cause instanceof ProtocolError || cause instanceof StreamDisconnectedError) throw cause;
-    throw new StreamDisconnectedError(lastSequence, { cause });
-  } finally {
-    socket.close(1000, "client finished");
-  }
-}
+// WebSocket support was removed. The client's ws transport pointed at
+// /api/v1/threads/{id}/stream, an endpoint the server has never registered
+// (curl returned 404), and that branch had no test — the fake socket injected
+// by callers meant nothing ever tried to reach the real path. SSE carries the
+// item stream and POST /api/v1/thread/interrupt carries cancellation, so WS
+// added no capability to v1; what it added was an advertised option that could
+// not work. internal/archtest::TestSDKsOnlyReferenceRegisteredEndpoints keeps
+// the phantom from coming back.

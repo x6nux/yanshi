@@ -135,7 +135,7 @@ async def test_run_yields_items_and_invokes_on_started() -> None:
         async for item in client.run(
             "thread-001",
             RunTurnParams(input="hello"),
-            RunOptions(transport="sse", on_started=on_started),
+            RunOptions(on_started=on_started),
         ):
             items.append(item)
     finally:

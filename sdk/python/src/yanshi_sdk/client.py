@@ -39,8 +39,15 @@ class RunTurnParams:
 
 @dataclass
 class RunOptions:
+    """Per-run options.
+
+    `transport` used to live here alongside AgentClient(stream_transport=...);
+    both accepted "ws", which raised on use because D1 never served
+    /api/v1/threads/{id}/stream. SSE is the only stream v1 has, so the option
+    had one working value and one that was an error message.
+    """
+
     signal: Optional[Any] = None  # asyncio.AbstractEventLoop.create_task cancellation handle
-    transport: str = "sse"
     on_started: Optional[Any] = field(default=None)  # Callable[[TurnStartResponse], Awaitable[None]]
 
 
@@ -52,16 +59,12 @@ class AgentClient:
         base_url: str,
         token: Optional[str] = None,
         *,
-        stream_transport: str = "sse",
         supported_versions: tuple[str, ...] = ("v1",),
         transport: Optional[Transport] = None,
     ) -> None:
-        if stream_transport not in {"sse", "ws"}:
-            raise ValueError("stream_transport must be 'sse' or 'ws'")
         self.transport = transport if transport is not None else Transport(
             base_url, token, supported_versions
         )
-        self.stream_transport = stream_transport
         self.supported_versions = supported_versions
 
     async def start(self, params: Optional[ThreadStartParams] = None) -> ThreadStartResponse:
@@ -112,15 +115,6 @@ class AgentClient:
             raise ProtocolError("turn input must not be empty")
         options = options or RunOptions()
         body = self._build_turn_body(thread_id, params)
-        if options.transport == "ws":
-            # Forward-looking WS path; D1 does not yet serve WS. The first
-            # event still needs to come from somewhere — use the SSE path for
-            # metadata, then switch to WS. For now, raise so callers don't
-            # silently get nothing.
-            raise ProtocolError(
-                "WebSocket transport requires D1 server support; use SSE (default)"
-            )
-
         path = "/api/v1/turn/start"
         last_sequence: Optional[int] = None
         started_emitted = False

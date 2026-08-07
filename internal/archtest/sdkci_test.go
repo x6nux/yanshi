@@ -19,6 +19,8 @@ import (
 // was not covered.
 //
 // ledger: H2/APIREF1#2 SDK 用法有示例
+//
+// ledger: D2/V15#3 契约测试在 CI 真跑
 func TestSDKContractSuitesRunInCI(t *testing.T) {
 	ci := readWorkflow(t, "ci.yml")
 	body, ok := workflowJobBody(ci, "sdk-contract")

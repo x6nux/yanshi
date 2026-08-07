@@ -1053,18 +1053,36 @@
 
 - id: "D2/V15"
   package: "W9"
-  verdict: partial
+  verdict: done
   title: "TS / Python SDK"
-  # 2026-08-06 W9：**保持 partial，卡在子句 1 的 stream，不是记账问题。**
-  # 子句 2 已改写并闭合：W9 判定「类型生成」是不该做的事 —— cmd/api-schema 那半
-  # 自称生成器而实为手抄字面量（跑它再对拍恒等，因为生成器与产物是同一段字面量），
-  # 删掉比修好省，守门人换成四路 parity。子句 3 也已闭合：那两套契约测试此前
-  # **没有任何 workflow 在跑**（.github 全仓 vitest/pytest 零命中），现在有硬门禁。
-  # 子句 1 的 start/resume/run/cancel 实跑为真，**stream 不是**：D1 未提供
-  # /api/v1/threads/{id}/stream，Python 客户端在 transport="ws" 时直接 raise。
-  # 那是 D1 的端点缺口，不属于 W9 的对外契约范围。
   acceptance: "start/resume/run/stream/cancel 可用；类型与 Go 契约对账；契约测试在 CI 真跑"
-  evidence: "internal/api/v1::TestContractParityAcrossFourSources"
+  evidence:
+    "1": "internal/api/http::TestV1TurnStreamItemsAreVersionedAndOrdered; internal/api/http::TestAgentV1TurnStreamUsesItemEvents; internal/archtest::TestSDKsOnlyReferenceRegisteredEndpoints"
+    "2": "internal/api/v1::TestContractParityAcrossFourSources; internal/api/v1::TestRuntimeSchemaIsTheSDKSchema"
+    "3": "internal/archtest::TestSDKContractSuitesRunInCI"
+# 2026-08-06 W9：**曾保持 partial，卡在子句 1 的 stream。** 子句 2 已改写并闭合：
+# W9 判定「类型生成」是不该做的事 —— cmd/api-schema 那半自称生成器而实为手抄字面量
+# （跑它再对拍恒等，因为生成器与产物是同一段字面量），删掉比修好省，守门人换成四路
+# parity。子句 3 也已闭合：那两套契约测试此前**没有任何 workflow 在跑**
+# （.github 全仓 vitest/pytest 零命中），现在有硬门禁。
+#
+# 2026-08-07：partial → done。复核发现台账把两件事混了 ——
+#   · 「stream 可用」**是真的**：POST /api/v1/turn/start 返回一条 SSE，首个事件是
+#     `event: turn`（TurnStartResponse），随后是 `event: item` 流，两个 SDK 的 run()
+#     都走这条，各有测试。
+#   · 不可用的是 **ws transport**，而 acceptance 从未要求 WS。
+# 真正的问题在别处，而且比原记录严重：**TS 客户端的 ws 分支会去连
+#   /api/v1/threads/{id}/stream —— 一个服务端从未注册过的端点**（审计实测 404），
+#   且那条分支零测试（每个调用方都注入 fake socket，于是没有任何东西试过真 URL）。
+#   Python 侧则显式 raise，两个 SDK 对「不支持」的表现还不一致。
+# 处置（用户裁定）：**删掉两个 SDK 的 ws 选项**。SSE 已承载 item 流，
+#   POST /api/v1/thread/interrupt 已承载取消 —— WS 对 v1 没有任何增量能力，
+#   它加的只是一个无法工作的宣传项。新增门禁
+#   internal/archtest::TestSDKsOnlyReferenceRegisteredEndpoints 逐条比对
+#   「SDK 字符串字面量里的 /api/v1 路径」与「internal/api/http 真实注册的路由」，
+#   让这个幻影不能复活 —— GOV5 只推理 Go 工具名、GOV9 只推理 Go 符号，
+#   两者都读不懂 TypeScript 与 Python。注释里的路径**故意不算引用**，
+#   否则「写下墓碑」这个动作本身会让门禁变红。
 
 - id: "D3/C15"
   package: "W8"

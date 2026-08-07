@@ -56,6 +56,8 @@ func TestAgentV1StartAcceptsUnknownFieldsAndReturnsCamelCase(t *testing.T) {
 // where every event is `event: item\ndata: <v1.Item JSON>\n\n` (plus the
 // initial `event: turn`). The wire never carries the legacy agent_chunk event
 // name — v1 clients consume items only.
+//
+// ledger: D2/V15#1 start/resume/run/stream/cancel 可用
 func TestAgentV1TurnStreamUsesItemEvents(t *testing.T) {
 	model := einollm.NewFakeModel([]string{"answer"}, nil)
 	svc, err := v1.NewService(v1.Config{DefaultModel: model})
@@ -150,6 +152,8 @@ func TestV1CompatibilityMatrix(t *testing.T) {
 // matrix above by walking the streaming payload.
 //
 // ledger: D1/V14#1 start/resume/interrupt + 流式 item 可用
+//
+// ledger: D2/V15#1 start/resume/run/stream/cancel 可用
 func TestV1TurnStreamItemsAreVersionedAndOrdered(t *testing.T) {
 	model := einollm.NewFakeModel([]string{"answer"}, nil)
 	svc, err := v1.NewService(v1.Config{DefaultModel: model})

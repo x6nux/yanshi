@@ -37,20 +37,19 @@ import type {
 import type { ContextItem } from "./extensions.js";
 import { ApiVersionError, HttpError, ProtocolError, StreamDisconnectedError } from "./errors.js";
 import {
-  defaultWebSocketFactory,
   makeUrl,
   parseItem,
-  readWebSocket,
   requestJson,
   type FetchLike,
   type TransportOptions,
-  type WebSocketFactory,
 } from "./transport.js";
 import { isValidVersion } from "./validators.js";
 
-export interface AgentClientOptions extends TransportOptions {
-  streamTransport?: "sse" | "ws";
-}
+// AgentClientOptions used to carry streamTransport?: "sse" | "ws". The ws
+// value pointed the client at /api/v1/threads/{id}/stream, which the server
+// has never served; SSE is the only stream v1 has, so the option had one legal
+// value and one that returned 404.
+export type AgentClientOptions = TransportOptions;
 
 export interface RunTurnParams {
   input: string;
@@ -62,7 +61,6 @@ export interface RunTurnParams {
 
 export interface RunOptions {
   signal?: AbortSignal;
-  transport?: "sse" | "ws";
   onStarted?: (turn: TurnStartResponse) => void;
 }
 
@@ -96,7 +94,6 @@ export class AgentClient {
       ...options,
       baseUrl: options.baseUrl.replace(/\/$/, ""),
       supportedVersions: options.supportedVersions ?? ["v1"],
-      streamTransport: options.streamTransport ?? "sse",
     };
   }
 
@@ -155,24 +152,6 @@ export class AgentClient {
     if (!params.input?.trim()) throw new ProtocolError("turn input must not be empty");
 
     const body = buildTurnStartBody(threadId, params);
-    const transport = options.transport ?? this.options.streamTransport;
-
-    if (transport === "ws") {
-      const started = await this.startTurnMetadata(threadId, params);
-      options.onStarted?.(started);
-      const factory: WebSocketFactory = this.options.websocketFactory ?? defaultWebSocketFactory;
-      const url = makeUrl(this.options.baseUrl, `/api/v1/threads/${encodeURIComponent(threadId)}/stream`)
-        .replace(/^http:/, "ws:")
-        .replace(/^https:/, "wss:");
-      const socket = factory(url, this.options.token ? { headers: { Authorization: `Bearer ${this.options.token}` } } : undefined);
-      if (options.signal) {
-        if (options.signal.aborted) socket.close(1000, "aborted");
-        else options.signal.addEventListener("abort", () => socket.close(1000, "aborted"), { once: true });
-      }
-      const supported = this.options.supportedVersions ?? ["v1"];
-      yield* readWebSocket(socket, supported, { turnId: started.turn.id, signal: options.signal });
-      return;
-    }
 
     // SSE: read metadata + items from one response. We cannot use the simple
     // transport.readSse helper directly because we also need the TurnStart
