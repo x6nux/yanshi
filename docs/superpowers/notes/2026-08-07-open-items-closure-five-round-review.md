@@ -109,6 +109,51 @@ A2 收尾时修了，第一跳没修，而它就躺在一份每轮必读的文�
 教训不是「要更仔细读清单」——那不可执行。教训是：**清单实例在描述一个未修复的缺陷时，
 必须同时在台账或工作包里留一个可跟踪的条目**。已写进清单 J 段那条实例。
 
+---
+
+## 追加：第 5 轮的 J 清扫（同日，配额再次确认耗尽后）
+
+R5-1 的教训是「修一跳只让缺陷往下游挪一格」。把它做成系统对账：**服务端能构造的
+每一种 `ServerFrame` 类型 vs `applyEvent` 认得的每一个 case。**
+
+33 种可构造类型，3 种无分支：
+
+| 类型 | 判定 |
+|---|---|
+| `history_replaced` | **不是缺口** —— 只有 SSE 构造它，且在 `internal/cli/ssebackend.go` 里消费掉了 |
+| `structured_result` | **不是缺口** —— 需要 `TurnOpts.OutputSchema`，TUI 从不设置（headless/SDK 路径） |
+| `subagent_event` | **阻塞（已修）** |
+
+**阻塞 J-1（已修）：`subagent_event` 在整个客户端零处理。** `StreamEvent` 连字段都没有，
+`toStreamEvent` 全丢，`applyEvent` 无分支。两个传输各有一条**服务端**测试证明帧发出去了
+（`internal/api/http::TestChatWS_ForwardsTypedSubagentEvent`、
+`internal/api/http::TestChatSSE_ForwardsTypedSubagentEventWithSingleWriter`），没有一条
+检查有人收到。用户 `agent_spawn` 之后到父 turn 结束之间**什么都看不到**。
+
+**这一条最值得记的不是缺陷，是门禁为什么没拦住它。**
+`internal/cli::TestToStreamEventCarriesEveryServerFrameField` 一直存在，而且是一道好门禁 ——
+它在我改动的当场就红了。但那四个字段躺在它的 `streamEventNotCarried` 表里，理由写的是
+「TUI 从 tool block 渲染 subagent 生命周期，不用这些 id」。
+
+这条理由**对生命周期从来就不成立**：tool block 显示的是 `agent_start` 的最终结果，
+而 relay 存在的理由正是 `agent_spawn` —— 它 fire-and-forget，返回时什么都还没发生。
+它只是**恰好无害**，因为 `agent_spawn` 不在出厂 allow 列表里，几乎没人能产出那些被丢弃的帧。
+**而这个会话把它加进去了。**
+
+门禁验证「声明不透传的字段确实没透传」，它**验证不了理由**，而理由正是让这张表成为
+「决策」而非「清单」的那部分。于是门禁忠实地执行了一条假前提，前提的失效日
+（profile 放宽那天）静默地过去了。
+
+修法：四个字段转为 carried，`streamEventNotCarried` 清空并留下这段实例；新增
+类型级门禁 `internal/cli/tui::TestEveryServerFrameTypeIsRenderedOrDeclared`
+（四正一反探针全部正确）。它的两条豁免**都写成可达性主张**（帧到不了这个 switch），
+这是唯一一种不会因为「有人放宽了 profile」而腐烂的理由形态。
+
+**探针纪律又被打了一次（同日第四次，新变体）：** 探针对象是**新增文件**，
+`git add` 过了、`git status` 看起来正常，而 `git checkout HEAD -- <新文件>` 报
+`pathspec did not match`，**还原静默失败**，紧接着的反向探针于是红了、读起来像门禁误伤。
+已写进清单 0-ter。
+
 **未闭合：**
 
 - 独立评审为零 → 需要 `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION` 提额。本轮已在会话内
