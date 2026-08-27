@@ -29,11 +29,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ledgerSize is the fixed number of entries in the S0 ledger: the audit's 64
-// items minus A1/S08, which moved to the S1 sub-project (spec §4.1). A
-// changed count means someone added or dropped scope without updating the
-// spec.
-const ledgerSize = 63
+// ledgerSize is the fixed number of entries in the ledger: the original S0
+// audit's 64 items minus A1/S08, which moved to the S1 sub-project (spec
+// §4.1), plus entries added by later, separately-scoped work packages. A
+// changed count means someone added or dropped scope without updating this
+// constant and saying why here.
+//
+// 2026-08-27: +1 for A2/W-A-01, package "W-A" — a P0 fix from the
+// codex/QwenPaw capability audit (docs/superpowers/notes/2026-08-27-capability-audit.md
+// P0-1), not part of the original S0 scope. This is new scope, deliberately
+// added, not a silent drift.
+const ledgerSize = 64
 
 type ledgerEntry struct {
 	ID         string `yaml:"id"`
@@ -57,7 +63,8 @@ var (
 	validPackages    = map[string]bool{
 		"W1": true, "W2": true, "W3": true, "W4": true, "W5": true,
 		"W6": true, "W7": true, "W8": true, "W9": true, "W10": true,
-		"-": true, // O12, closed by removal
+		"W-A": true, // immediate fixes from the 2026-08-27 capability audit, outside the W1-W10 sequence
+		"-":   true, // O12, closed by removal
 	}
 )
 

@@ -1619,4 +1619,19 @@
     "3": "internal/archtest::TestRetiredToolSymbolsDoNotReturn; internal/tools::TestModelSeesOnlyResultAndTUISeesEveryField"
     "4": "internal/tools::TestSubAgentProgressArrivesAsStatusNotResult"
     "5": "internal/cli/tui::TestToolBlockRendersFromAFixedTemplate; internal/cli/tui::TestToolBlockTemplateVariesOnlyByName"
+- id: "A2/W-A-01"
+  package: "W-A"
+  verdict: done
+  title: "多模态内容计入 token 估算"
+  # 审计（docs/superpowers/notes/2026-08-27-capability-audit.md P0-1）只点了
+  # UserInputMultiContent。实测 schema.Message 上三个多模态字段全部不被
+  # estimateMessageTokens 读到，因此本条覆盖三个 —— 只修一个会让同一缺陷换个
+  # 字段复发。子句 2 钉住「按 part 计价不按载荷长度」，那是 len(data)/4 这个
+  # 错误实现唯一会被抓住的地方。
+  acceptance: "带图片的消息其 token 估算随图片数量单调增长；估算不随 base64 载荷字节数线性增长；Message 上三个多模态字段都被计入；低 detail 档位的估算低于高 detail 档位"
+  evidence:
+    "1": "internal/ctxcompact::TestEstimateTokensGrowsWithImageCount"
+    "2": "internal/ctxcompact::TestEstimateTokensImageCostIsIndependentOfPayloadSize"
+    "3": "internal/ctxcompact::TestEstimateTokensCountsAllThreeMultimodalFields"
+    "4": "internal/ctxcompact::TestEstimateTokensLowDetailCostsLessThanHigh"
 
