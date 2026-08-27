@@ -1695,3 +1695,29 @@
     "2": "internal/api/http::TestDistillFrameRoundTrips"
     "3": "internal/api/http::TestDistillFailureDoesNotAbortTurn"
 
+- id: "A2/W-A-06"
+  package: "W-A"
+  verdict: done
+  title: "流式空闲超时看门狗"
+  # consumeStream 的循环只在每轮开头查一次 ctx.Err()，随后整轮阻塞在
+  # sr.Recv() 上，Recv 本身不带超时——网关接受连接后一言不发会把这个流永远
+  # 挂住。loopguard 的 DeadlineGate 救不了：它只在 ReAct 迭代边界检查，卡在
+  # Recv 里的流永远走不到下一个边界，无人值守的 goal loop 会把整轮预算耗在
+  # 一条僵死流上。watchdogReader（internal/llm/eino/streamwatchdog.go）包一层
+  # streamRecver，first/idle 两个独立预算：first 卡「上游有没有开始回」，idle
+  # 卡「上游还在不在动」，必须分开量因为二者衡量的是不同的事——一次长推理轮次
+  # 里 chunk 间隔本来就可能很大。空控制块（仅 Role 或全空 delta）判定复用
+  # consumeStream 已有的 isBlank，不新写一份可能与之分叉的副本。两个超时值
+  # 各自默认 0 = 关闭，不设非零默认值，与本字段引入前逐字节一致，同 loopguard
+  # 「零值即关闭」的原则。ErrStreamIdle 包成 *RetryableModelError 而非裸
+  # sentinel，使 IsRetryableModelErr 由构造保证为真；isRetryableStreamErr
+  # 里另加一条 errors.Is 恒等短路，且 ErrStreamIdle 的文案刻意不含
+  # "timeout"/"eof" 等关键字表里的词——否则这条短路会被关键字兜底悄悄掩盖，
+  # 测不出它到底有没有在起作用（探针把两者错开后才能证明二者互相独立）。
+  acceptance: "首块超时后流被终止并返回可重试错误；仅发送空控制块的流在稳态超时后被终止；有实际内容持续到达的长流不被误杀；两个超时值均可配置且零值表示关闭"
+  evidence:
+    "1": "internal/llm/eino::TestWatchdogFirstChunkTimeout"
+    "2": "internal/llm/eino::TestWatchdogEmptyControlChunksDoNotRenewTheDeadline"
+    "3": "internal/llm/eino::TestWatchdogLongStreamWithContentIsNotKilled"
+    "4": "internal/llm/eino::TestWatchdogZeroTimeoutsDisableIt"
+

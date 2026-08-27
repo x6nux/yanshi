@@ -48,6 +48,28 @@ type ResilientConfig struct {
 	// MaxRetryAfter bounds that.
 	RateLimitBase time.Duration
 	RateLimitMax  time.Duration
+
+	// FirstChunkTimeout / IdleTimeout are the stream watchdog's two idle
+	// budgets (W-A-06). consumeStream's loop otherwise only checks ctx.Err()
+	// and then blocks on Recv with no timeout at all — a gateway that accepts
+	// the connection and sends nothing hangs the stream forever, and
+	// loopguard's DeadlineGate cannot help: it only checks at ReAct iteration
+	// boundaries, and a stream stuck inside Recv never reaches one.
+	//
+	// FirstChunkTimeout measures "did the upstream ever start": request sent
+	// to the first content-bearing chunk. IdleTimeout measures "is the
+	// upstream still going": the gap between two content-bearing chunks. A
+	// chunk carrying only Role, or an otherwise all-empty delta, does NOT
+	// reset either clock (see watchdogReader in streamwatchdog.go) — otherwise
+	// a gateway that emits heartbeats and nothing else would hang forever.
+	//
+	// Zero disables the corresponding budget. Both zero reproduces pre-W-A-06
+	// behaviour byte-for-byte — no non-zero default is set here, mirroring
+	// loopguard's principle that a stop condition switching itself on by
+	// default silently truncates a response and looks like the model giving
+	// up. The composition root turns this on explicitly via config.
+	FirstChunkTimeout time.Duration
+	IdleTimeout       time.Duration
 }
 
 // RetryableModelError marks a transient model error (rate limit, timeout, 5xx).
@@ -260,7 +282,14 @@ func (r *ResilientChatModel) runStream(ctx context.Context, in []*schema.Message
 			_ = sw.Send(nil, openErr)
 			return
 		}
-		outcome, recvErr := consumeStream(ctx, sr, sw, &deliveredTools)
+		// Wrap with the idle watchdog only when at least one budget is set, so
+		// a default (zero, zero) config never allocates the extra goroutine —
+		// see ResilientConfig.FirstChunkTimeout for why that matters.
+		var rd streamRecver = sr
+		if r.cfg.FirstChunkTimeout > 0 || r.cfg.IdleTimeout > 0 {
+			rd = newWatchdogReader(sr, r.cfg.FirstChunkTimeout, r.cfg.IdleTimeout)
+		}
+		outcome, recvErr := consumeStream(ctx, rd, sw, &deliveredTools)
 		sr.Close()
 		switch outcome {
 		case streamDone:
@@ -311,6 +340,18 @@ func (r *ResilientChatModel) openStreamChain(ctx context.Context, in []*schema.M
 	return nil, lastErr
 }
 
+// streamRecver is the one capability consumeStream needs from its source:
+// receive the next message or an error. It exists so watchdogReader —  which
+// is not, and cannot pretend to be, a *schema.StreamReader[*schema.Message] —
+// can sit between the real provider stream and consumeStream without
+// consumeStream's signature growing a config parameter. The interface has two
+// real implementations (the raw *schema.StreamReader and watchdogReader), not
+// one, so it is not the "interface for a single implementation" pattern this
+// codebase otherwise avoids.
+type streamRecver interface {
+	Recv() (*schema.Message, error)
+}
+
 // consumeStream drains sr, forwarding each non-blank message to sw. It sets
 // *deliveredTools once any tool call is seen. Blank deltas (no content,
 // reasoning, tool calls, or usage) are dropped so an all-empty stream stays
@@ -320,7 +361,7 @@ func (r *ResilientChatModel) openStreamChain(ctx context.Context, in []*schema.M
 // is retried), or streamErr with the recv error. No prefix-skip: on retry the
 // caller re-feeds the regenerated stream in full and the consumer discards its
 // partial (overwrite semantics).
-func consumeStream(ctx context.Context, sr *schema.StreamReader[*schema.Message], sw *schema.StreamWriter[*schema.Message],
+func consumeStream(ctx context.Context, sr streamRecver, sw *schema.StreamWriter[*schema.Message],
 	deliveredTools *bool) (streamOutcome, error) {
 	// sawSubstantive tracks whether THIS attempt delivered real output — content
 	// or a tool call (NOT reasoning). A reasoning-only response is treated as
@@ -440,6 +481,16 @@ func isRetryableStreamErr(ctx context.Context, err error) bool {
 	// cancel of the request's own context is NOT misread as a user cancel.
 	if ucCtx := userCancelCtxFrom(ctx); ucCtx.Err() != nil {
 		return false
+	}
+	// ErrStreamIdle (W-A-06) is our own sentinel, not a provider error: a
+	// gateway that connects and then sends nothing is a network-level stall,
+	// always transient. Checked by identity, ahead of ClassifyError, so this
+	// does not depend on any keyword list (M8 replaced exactly this kind of
+	// fragile substring matching for provider errors; ErrStreamIdle's message
+	// deliberately avoids "timeout"/"eof"/etc. so no keyword table accidentally
+	// covers for a missing check here — see the wording note on ErrStreamIdle).
+	if errors.Is(err, ErrStreamIdle) {
+		return true
 	}
 	switch ClassifyError(err).Class {
 	case ClassTransient, ClassRateLimit:

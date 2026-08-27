@@ -79,6 +79,15 @@ llm:
   # 只有一个用途：让离线/气隙部署不必在每次启动时等那几个必然超时的探测。
   # preflight: false
 
+  # W-A-06 流式空闲超时看门狗：first 卡的是「上游有没有开始回」（网关接受连接后
+  # 一言不发会一直卡在 Recv 里，DeadlineGate 只在 ReAct 迭代边界检查，救不了
+  # 这种情况）；idle 卡的是「上游还在不在动」，必须给得比 first 松——长推理轮次
+  # 里 chunk 间隔本来就可能很大。两者各自默认 0 = 关闭，不设非零默认值，行为
+  # 与本字段引入前逐字节一致（同 loopguard「零值即关闭」的原则）。只有内容块能
+  # 续命，纯控制/心跳块不会。
+  # stream_first_chunk_timeout: 30s
+  # stream_idle_timeout: 2m
+
 agents:
   - name: "orchestrator"
     type: "local"

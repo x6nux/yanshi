@@ -191,6 +191,22 @@ func TestIsRetryableStreamErr_UserCancelStillWins(t *testing.T) {
 		"a user cancel must win over any classification")
 }
 
+// TestIsRetryableStreamErr_ErrStreamIdleIsAlwaysRetryable pins the W-A-06
+// stream watchdog's error onto the actual Stream-path retry gate, not just
+// IsRetryableModelErr (the Generate-path helper the watchdog's own test
+// asserts against). isRetryableStreamErr is what runStream really consults on
+// a streamErr outcome, and it does not call IsRetryableModelErr at all — a
+// change that made ErrStreamIdle satisfy the latter without also reaching
+// this switch would leave the goal loop's actual retry decision unfixed.
+//
+// The identity check is asserted directly (not merely "the keyword classifier
+// happens to match 'timeout' in the text") so a future rewording of
+// ErrStreamIdle's message, or a pruning of transientMarkers, cannot silently
+// stop this from retrying.
+func TestIsRetryableStreamErr_ErrStreamIdleIsAlwaysRetryable(t *testing.T) {
+	assert.True(t, isRetryableStreamErr(context.Background(), ErrStreamIdle))
+}
+
 // TestIsNonRetryableClientErr_CoversOverflow pins that the Generate-path
 // short-circuit and the Stream-path decision agree on both non-retryable
 // classes, which is the property that lets one classifier serve both.

@@ -626,7 +626,10 @@ func Build(opts Options) (*App, error) {
 		named, chain = BuildAdaptiveModels(named, chain, adaptiveDeps{
 			Cfg: cfg, Store: st, Windows: windows, Redactor: redactor,
 		})
-		rm, err := einollm.NewResilientModel(chain, einollm.ResilientConfig{})
+		rm, err := einollm.NewResilientModel(chain, einollm.ResilientConfig{
+			FirstChunkTimeout: cfg.LLM.StreamFirstChunkTimeout,
+			IdleTimeout:       cfg.LLM.StreamIdleTimeout,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap: resilient model: %w", err)
 		}

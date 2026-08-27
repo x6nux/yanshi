@@ -57,7 +57,7 @@ import (
 // store.ApplyDistillation shipped complete with no caller. Wires /distill
 // (interactive) plus an optional post-turn pass behind
 // memory_distill_after_turn (default off).
-const ledgerSize = 68
+const ledgerSize = 69
 
 type ledgerEntry struct {
 	ID         string `yaml:"id"`
