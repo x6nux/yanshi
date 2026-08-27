@@ -51,7 +51,13 @@ import (
 // loop mapped only Role + Content and split role into just user/assistant,
 // dropping every stored ToolCallID/ToolName/ToolArgs and misclassifying
 // tool messages as user).
-const ledgerSize = 67
+//
+// 2026-08-28: +1 for A2/W-A-05, same package and audit — the "written but
+// zero readers" pattern recurring a ninth time: tools.DistillMemories +
+// store.ApplyDistillation shipped complete with no caller. Wires /distill
+// (interactive) plus an optional post-turn pass behind
+// memory_distill_after_turn (default off).
+const ledgerSize = 68
 
 type ledgerEntry struct {
 	ID         string `yaml:"id"`

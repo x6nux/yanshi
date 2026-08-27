@@ -37,6 +37,15 @@ func cmdFork(m model, args []string) (tea.Model, tea.Cmd) {
 	return m.sendControlFrame(proto.NewForkSession(seq))
 }
 
+// cmdDistill triggers one memory-consolidation pass over the active session's
+// stored memories (A2/W-A-05). The reply (memories_distilled) carries a
+// considered/merged summary; applyEvent renders it as a one-line ack. It
+// takes no args — the pass always runs over the current session's memories,
+// mirroring cmdMemory/cmdFork's no-argument-picks-current-scope shape.
+func cmdDistill(m model, _ []string) (tea.Model, tea.Cmd) {
+	return m.sendControlFrame(proto.NewDistillMemories())
+}
+
 // cmdSide enters an ephemeral side conversation. The server pushes the current
 // state and clears sessionID; side turns never write DB. /btw is an alias.
 func cmdSide(m model, _ []string) (tea.Model, tea.Cmd) {

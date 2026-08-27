@@ -88,6 +88,7 @@ var commandTable = []command{
 	{name: "plan-off", help: "exit plan mode, restore previous permission mode", run: cmdPlanOff},
 	{name: "restore-turn", help: "list main seams or revert to a prior turn", run: cmdRestoreTurn},
 	{name: "memory", help: "show active memory file path", run: cmdMemory},
+	{name: "distill", help: "merge redundant memories", helpKey: "tui.command.help.distill", run: cmdDistill},
 	{name: "logs", help: "tail the structured log file (or report stderr)", run: cmdLogs},
 	{name: "fork", help: "fork this session: /fork [seq] (-1=all, >=0=up to seq)", run: cmdFork},
 	{name: "side", help: "start an ephemeral side conversation (V11)", run: cmdSide},
@@ -112,6 +113,20 @@ func lookupCommand(name string) (command, bool) {
 		}
 	}
 	return command{}, false
+}
+
+// HasCommand 报告 name 是否是已注册的斜杠命令（不含前导斜杠）。
+//
+// 导出它是为了让别的包能对「文档里宣传的命令真的存在吗」这个问题给出机器
+// 判据。internal/archtest/slashcmd_test.go 是 denylist（只拦已知幻影），
+// 抓不到「文档写了但从未注册」这个方向。
+func HasCommand(name string) bool {
+	for _, c := range commandTable {
+		if c.name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // parseCommand splits "/name arg1 arg2" into ("name", ["arg1","arg2"]). A bare

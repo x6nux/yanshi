@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/x6nux/yanshi/internal/secrets"
 	"github.com/x6nux/yanshi/internal/skills"
 	"github.com/x6nux/yanshi/internal/store"
+	"github.com/x6nux/yanshi/internal/tools"
 )
 
 // sessionInfos projects stored session rows into the wire shape.
@@ -259,6 +261,46 @@ func handleForkSession(s *Server, conn *wsConn, cs *connSession, seq int) {
 		return
 	}
 	conn.write(proto.NewSessionForked(forkID))
+}
+
+// runDistillPass runs one memory-consolidation pass over dims and reports the
+// outcome by logging, never by returning the underlying error (A2/W-A-05).
+//
+// It backs BOTH call sites: the synchronous distill_memories handler below
+// (which also wants the DistillResult, to build the reply frame) and the
+// automatic post-turn pass (ws.go's runUserTurn), which fires this in a
+// goroutine and discards the return values entirely. The two correctness
+// requirements this file exists to satisfy — "distillation failure must not
+// affect the turn" for the background path, and "don't scare the user with
+// an error for a background-safe, always-retryable operation" for the
+// interactive path — collapse into the same rule if the error never leaves
+// this function: nothing downstream has to remember to swallow it.
+// tools.DistillMemories is itself failure-safe by construction (see its doc
+// comment: every failure path leaves the original memories untouched), so
+// logging and returning a zero result on error loses nothing a retry
+// wouldn't recover.
+func runDistillPass(ctx context.Context, st *store.Store, m tools.DistillModel, dims store.MemoryFilter) (tools.DistillResult, error) {
+	res, err := tools.DistillMemories(ctx, st, m, dims)
+	if err != nil {
+		slog.Warn("memory distillation failed", "session", dims.SessionID, "error", err)
+		return tools.DistillResult{}, nil
+	}
+	return res, nil
+}
+
+// handleDistillMemories replies to a distill_memories frame by running one
+// consolidation pass over the connSession's stored memories (A2/W-A-05).
+// This is the interactive half of the entry point /distill triggers; see
+// runUserTurn in ws.go for the automatic post-turn half. Both wire up the
+// same previously-uncalled tools.DistillMemories + store.ApplyDistillation
+// chain documented in docs/feature-status.yaml under A2/W-A-05.
+func handleDistillMemories(s *Server, conn *wsConn, cs *connSession) {
+	if s.store == nil || s.distillModel == nil {
+		conn.write(proto.NewError("memory distillation is disabled"))
+		return
+	}
+	res, _ := runDistillPass(context.Background(), s.store, s.distillModel, store.MemoryFilter{SessionID: cs.sessionID})
+	conn.write(proto.NewMemoriesDistilled(res.Considered, res.Merged))
 }
 
 // skillInfo converts an internal skills.Skill snapshot into a proto.SkillInfo

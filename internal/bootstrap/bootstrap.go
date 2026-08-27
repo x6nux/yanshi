@@ -1317,6 +1317,23 @@ func Build(opts Options) (*App, error) {
 	// to refill these — they ride on Config.
 	httpCfg.PriceTab = priceTab
 	httpCfg.FeaturesReg = featureReg
+	// A2/W-A-05: prefer the cheap batch.rlm_model provider for the memory
+	// consolidation pass, falling back to the main chat model when none is
+	// configured. Unlike SelectRLMModel (used by RLM1's rlm_query tool),
+	// which hard-errors without an explicit batch.rlm_model, this never
+	// fails: distillation summarizes existing memory rows -- not the kind
+	// of reasoning that needs the expensive model or a dedicated one -- so
+	// running the pass on the main model beats not running it at all, and
+	// chatModel is always non-nil by this point (real provider or
+	// FakeModel). See Config.DistillModel's doc comment for the full
+	// reasoning this mirrors.
+	distillModel := chatModel
+	if cfg.Batch.RLMModel != "" {
+		if selected, ok := providerModels[cfg.Batch.RLMModel]; ok && selected != nil {
+			distillModel = selected
+		}
+	}
+	httpCfg.DistillModel = distillModel
 	// S10: inject the process-wide redactor so the SSE writeSSEFrame and
 	// the WS wsConn.write boundaries redact every outbound frame.
 	httpCfg.Redactor = redactor

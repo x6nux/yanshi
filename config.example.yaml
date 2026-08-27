@@ -361,6 +361,12 @@ observability:
 #     status 帧、会话列表(/stats 渲染它)与 session_restored 上的 USD 成本字段。
 #     关掉只影响**显示**:入库的账本照记,开回来能看到完整历史。
 #
+#   memory_distill_after_turn  experimental, 默认 false(A2/W-A-05)
+#     每个 turn 结束后在后台自动跑一次记忆蒸馏(合并冗余的历史记忆行)。默认关闭:
+#     交互式的 /distill 斜杠命令是主入口,这个开关只是把同一条通道接成自动的。
+#     蒸馏用的模型优先取 batch.rlm_model 配置的便宜 provider,未配置则退回主
+#     聊天模型;蒸馏失败只记日志,不影响所在 turn 的正常结束。
+#
 # 运行时还能用 TUI 的 /features 临时切换(不落盘)。
 features:
   strict: false

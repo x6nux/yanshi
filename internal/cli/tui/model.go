@@ -995,6 +995,12 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 			text: "forked and switched to " + ev.SessionID,
 		})
 		m.sessionID = ev.SessionID
+	case "memories_distilled":
+		// A2/W-A-05: reply to /distill. Render the considered/merged summary as
+		// a one-line ack, mirroring session_forked above. Without this case the
+		// frame round-trips over the wire but is invisible in the transcript.
+		m.flushAssistant()
+		m.entries = append(m.entries, ackEntry{text: ev.Text})
 	case "side_state":
 		// Reply to /side /btw /main (V11): update the depth indicator. The
 		// footer renders "in side (N)" when sideDepth > 0 (see view.go).

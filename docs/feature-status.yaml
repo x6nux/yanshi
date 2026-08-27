@@ -1676,4 +1676,22 @@
     "2": "internal/api/http::TestRestoreMessagesPairsToolCallsWithResults; internal/api/http::TestRestoreMessagesRegroupsParallelToolCalls; internal/api/http::TestApplySessionRevertSnapshotKeepsToolTurn"
     "3": "internal/api/http::TestRestoreMessagesSurvivesPairEnforcement"
     "4": "internal/api/http::TestRestoreMessagesPlainTurnIsUnchanged"
+- id: "A2/W-A-05"
+  package: "W-A"
+  verdict: done
+  title: "记忆蒸馏链路接线（/distill + 可选 post-turn pass）"
+  # 审计原文：tools.DistillMemories + store.ApplyDistillation 写完即无调用者，
+  # 是「写了但零读者」模式第九次复现。最小入口是 /distill 斜杠命令（同步）加一个
+  # 默认关闭的 post-turn 自动通道（memory_distill_after_turn），无调度器。子句 2
+  # 的证据测试必须真的拨号 WS 连接、走服务端 handleDistillMemories，不能只调
+  # proto 构造函数——那种写法即使 dispatch case 整个漏掉也会通过，是本计划已经
+  # 踩过两次的「evidence 测试没有证明子句」同款缺陷的第三种形状。子句 3 的证据
+  # 测试同理：必须用一个真的返回 error 的 DistillModel 走完整 WS turn，而不是
+  # 传 nil store/model 触发 DistillMemories 自己文档化的 NO-OP 分支——那不是
+  # failure，是 ordinary state。
+  acceptance: "/distill 命令在 commandTable 中注册并能触发一次蒸馏；蒸馏请求帧被服务端处理并回复结果帧；蒸馏失败不影响所在 turn 的正常结束"
+  evidence:
+    "1": "internal/cli/tui::TestDistillSlashCommandIsRegistered"
+    "2": "internal/api/http::TestDistillFrameRoundTrips"
+    "3": "internal/api/http::TestDistillFailureDoesNotAbortTurn"
 
