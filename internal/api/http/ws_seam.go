@@ -12,8 +12,6 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/cloudwego/eino/schema"
-
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/store"
 	"github.com/x6nux/yanshi/internal/vcs"
@@ -22,16 +20,17 @@ import (
 // applySessionRevertSnapshot replaces only the conversation-owned connSession
 // fields from an exact durable snapshot. It intentionally leaves live transport
 // state (perm, inTurn, startedAt, defaultModel) untouched.
+//
+// The message mapping is restoreMessages (ws_handlers.go), shared with the
+// WS restore_session path rather than duplicated here. This used to carry
+// its own copy — role split into a user/assistant binary with an
+// Assistant-leaning default, dropping ToolCallID/ToolName/ToolArgs — which
+// was the same defect restoreMessages exists to fix, reachable from three
+// live frames (fork/reconnect via loadSession, restore_turn's two snapshot
+// branches below) that a fix scoped to only the WS restore_session handler
+// would have left broken.
 func applySessionRevertSnapshot(cs *connSession, snap store.SessionRevertSnapshot) {
-	hist := make([]*schema.Message, 0, len(snap.Messages))
-	for _, m := range snap.Messages {
-		role := schema.Assistant
-		if m.Role == "user" {
-			role = schema.User
-		}
-		hist = append(hist, &schema.Message{Role: role, Content: m.Content})
-	}
-	cs.history = hist
+	cs.history = restoreMessages(snap.Messages)
 	cs.sessionID = snap.Meta.ID
 	cs.seq = len(snap.Messages)
 	cs.model = snap.Meta.Model

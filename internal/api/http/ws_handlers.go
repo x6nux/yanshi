@@ -88,60 +88,82 @@ func handleSessionList(s *Server, conn *wsConn) {
 // This function exists to fix the bug it describes: the restore loop used to
 // map only Role + Content, and it split role into just user/assistant, so
 // the ToolCallID / ToolName / ToolArgs that store.Message already carries
-// were dropped on every restore, and a "tool" message was restored as if the
-// operator had typed it. After a resume the model could not see the tools it
-// had called, and read its own past tool output as user input.
+// were dropped on every restore, and a store.RoleToolResult row was restored
+// as if the operator had typed it. After a resume the model could not see
+// the tools it had called, and read its own past tool output as user input.
 //
-// Pairing is load-bearing: the assistant side's ToolCalls and the tool
-// side's ToolCallID must both be restored, with matching IDs. Restoring only
+// The role vocabulary here is store.RoleUser / store.RoleAssistant /
+// store.RoleToolCall / store.RoleToolResult (internal/store/message_log.go),
+// not the raw strings "user"/"assistant"/"tool" — an earlier version of this
+// function matched "tool" and put ToolCallID on an "assistant" row, neither
+// of which any production writer ever produces (storeMessagesFor, the only
+// writer of tool rows, always uses the RoleToolCall/RoleToolResult
+// constants), so that version was a no-op against real data despite passing
+// tests built on an invented fixture.
+//
+// Pairing is load-bearing: a RoleToolCall row's ToolCallID and its matching
+// RoleToolResult row's ToolCallID must both survive restore. Restoring only
 // one side of the pair creates an orphan that the next compaction's
 // ctxcompact.EnforceToolCallPairs fixpoint deletes — a failure with no
 // error and no log, only a history that silently got shorter after resume.
+//
+// Regrouping is also load-bearing for parallel tool calls. storeMessagesFor
+// writes ONE RoleToolCall row per call (see its doc comment): a live
+// assistant message with N parallel ToolCalls becomes an optional prose row
+// followed by N consecutive RoleToolCall rows, nothing interleaved. A naive
+// restore that turns each row back into its own one-call assistant message
+// would hand the provider N separate assistant messages before any tool
+// result appears, which is not the shape providers accept (a turn's
+// tool_calls must live on a single assistant message, immediately followed
+// by their results). This function instead merges a run of RoleToolCall
+// rows into the single preceding assistant message when there is one, and
+// into one fresh assistant message otherwise — reconstructing the original
+// one-message-many-calls shape rather than fragmenting it.
 func restoreMessages(msgs []store.Message) []*schema.Message {
 	out := make([]*schema.Message, 0, len(msgs))
 	for _, m := range msgs {
-		msg := &schema.Message{Role: restoreRole(m.Role), Content: m.Content}
-		switch msg.Role {
-		case schema.Tool:
-			msg.ToolCallID = m.ToolCallID
-			msg.ToolName = m.ToolName
-		case schema.Assistant:
-			// A stored assistant row carries a ToolCallID only when it made a
-			// tool call. The durable log holds one call per row, so this
-			// restores a single-element slice; parallel calls in the same
-			// turn are separate assistant rows in the log.
-			if m.ToolCallID != "" {
-				msg.ToolCalls = []schema.ToolCall{{
-					ID: m.ToolCallID,
-					Function: schema.FunctionCall{
-						Name:      m.ToolName,
-						Arguments: m.ToolArgs,
-					},
-				}}
+		switch m.Role {
+		case store.RoleToolResult:
+			out = append(out, &schema.Message{
+				Role:       schema.Tool,
+				Content:    m.Content,
+				ToolCallID: m.ToolCallID,
+				ToolName:   m.ToolName,
+			})
+		case store.RoleToolCall:
+			tc := schema.ToolCall{
+				ID: m.ToolCallID,
+				Function: schema.FunctionCall{
+					Name:      m.ToolName,
+					Arguments: m.ToolArgs,
+				},
 			}
+			if n := len(out); n > 0 && out[n-1].Role == schema.Assistant {
+				out[n-1].ToolCalls = append(out[n-1].ToolCalls, tc)
+				continue
+			}
+			out = append(out, &schema.Message{Role: schema.Assistant, ToolCalls: []schema.ToolCall{tc}})
+		default:
+			out = append(out, &schema.Message{Role: restoreRole(m.Role), Content: m.Content})
 		}
-		out = append(out, msg)
 	}
 	return out
 }
 
-// restoreRole maps a persisted role string back to schema.RoleType.
+// restoreRole maps a persisted store.Role* value to schema.RoleType for the
+// roles that carry no tool metadata (restoreMessages handles
+// store.RoleToolCall / store.RoleToolResult itself, since those also decide
+// message grouping, not just a role tag).
 //
-// An unknown value falls to User, the fail-safe side: treating an
+// An unrecognized value falls to User, the fail-safe side: treating an
 // unrecognized row as user input is safer than treating it as assistant
 // (the model would believe it said that itself) or as tool (it would become
 // a pairing orphan).
 func restoreRole(role string) schema.RoleType {
-	switch role {
-	case "assistant":
+	if role == store.RoleAssistant {
 		return schema.Assistant
-	case "tool":
-		return schema.Tool
-	case "system":
-		return schema.System
-	default:
-		return schema.User
 	}
+	return schema.User
 }
 
 // handleRestoreSession replies to a restore_session frame by loading the
