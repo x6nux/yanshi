@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/cloudwego/eino/schema"
@@ -20,6 +21,21 @@ type VCSTools struct {
 	Restore *GuardedTool
 	Merge   *GuardedTool
 	Revert  *GuardedTool // B2-RB1: revert_turn agent tool (VCS-only, destructive)
+
+	// Preview / RestoreFiles are the two halves of the mandatory dry-run
+	// protocol (V1 + V4). Preview is read-only and never prompts; RestoreFiles
+	// writes and always does. They are split into two TOOLS rather than one
+	// tool with a dry_run flag on purpose: a boolean argument is something a
+	// model can forget, and forgetting it would default the destructive
+	// direction. Two names make the read-only call unable to write at all.
+	Preview      *GuardedTool
+	RestoreFiles *GuardedTool
+	// Timeline renders seams as "what you asked at that moment" (V3).
+	Timeline *GuardedTool
+	// Worktrees reports branch lifecycle and orphan status (V7).
+	Worktrees *GuardedTool
+	// GC prunes unreachable history (V2). Its dry-run form is the default.
+	GC *GuardedTool
 }
 
 // NewVCSTools builds the vcs_* tools. They read the active VCSScope from context.
@@ -77,12 +93,16 @@ func NewVCSTools() *VCSTools {
 		}),
 		SyncStream(t.runRevert),
 	)
+	t.registerRestoreTools()
 	return t
 }
 
 // Tools returns all vcs tools.
 func (t *VCSTools) Tools() []*GuardedTool {
-	return []*GuardedTool{t.Commit, t.Log, t.Diff, t.Restore, t.Merge, t.Revert}
+	return []*GuardedTool{
+		t.Commit, t.Log, t.Diff, t.Restore, t.Merge, t.Revert,
+		t.Preview, t.RestoreFiles, t.Timeline, t.Worktrees, t.GC,
+	}
 }
 
 // vcsScopeFromCtx returns the active VCSScope or an error if none is bound / the
@@ -325,4 +345,399 @@ func (t *VCSTools) runRevert(ctx context.Context, argsJSON string) (string, erro
 		"undo_seam_id": undoID,
 		"hint":         "call revert_turn again with seam_id=" + undoID + " to undo this revert",
 	}), nil
+}
+
+// --- V1/V4/V3/V7/V2 tools ---
+//
+// These five share one design decision worth stating once: every destructive
+// entry point here requires a token that only the corresponding READ-ONLY tool
+// can produce. vcs_restore_files will not act without a confirm_token from
+// vcs_preview_restore; vcs_gc will not delete without confirm=true after a
+// dry-run report. The pattern is QwenPaw's mandatory `--dry-run` → `--confirm`
+// for checkpoint restore and gc, and its value is that "I forgot to preview"
+// is not a reachable state: the model cannot construct a valid token by
+// guessing, so the preview is not advice, it is a precondition.
+
+// registerRestoreTools builds the preview/restore/timeline/worktree/gc tools.
+// Split out of NewVCSTools so that constructor stays readable rather than
+// growing into one 200-line function.
+func (t *VCSTools) registerRestoreTools() {
+	t.Preview = NewGuardedTool(
+		"vcs_preview_restore", "VCS Preview Restore",
+		"Preview (read-only) what restoring main to a commit or seam would do: which files are created, overwritten or deleted, how many lines change, and which of them hold uncommitted work that would be lost. Returns a confirm_token required by vcs_restore_files. Never writes.",
+		60*time.Second,
+		params(map[string]*schema.ParameterInfo{
+			"seam_id": {Type: schema.String, Desc: "seam id to preview reverting to (from vcs_timeline); mutually exclusive with commit"},
+			"commit":  {Type: schema.String, Desc: "commit id to preview restoring to; mutually exclusive with seam_id"},
+			"paths":   {Type: schema.String, Desc: "optional comma-separated repo-relative glob patterns; omit to preview the whole tree"},
+		}),
+		SyncStream(t.runPreviewRestore),
+	)
+	t.RestoreFiles = NewGuardedTool(
+		"vcs_restore_files", "VCS Restore Files",
+		"Apply a previewed restore. Requires the confirm_token from vcs_preview_restore, with identical seam_id/commit and paths. Destructive: overwrites and deletes working-copy files, and always prompts even in yolo/allow-edits mode.",
+		120*time.Second,
+		params(map[string]*schema.ParameterInfo{
+			"seam_id":       {Type: schema.String, Desc: "same seam_id passed to vcs_preview_restore"},
+			"commit":        {Type: schema.String, Desc: "same commit passed to vcs_preview_restore"},
+			"paths":         {Type: schema.String, Desc: "same comma-separated glob patterns passed to vcs_preview_restore"},
+			"confirm_token": {Type: schema.String, Desc: "confirm_token returned by vcs_preview_restore", Required: true},
+		}),
+		SyncStream(t.runRestoreFiles),
+	)
+	t.Timeline = NewGuardedTool(
+		"vcs_timeline", "VCS Timeline",
+		"List snapshot points as a readable timeline: for each one, the time, the first line of the user message that opened that turn, how many files it changed, and its seam/commit ids. Use this to find the seam_id to preview.",
+		60*time.Second,
+		params(map[string]*schema.ParameterInfo{
+			"limit":          {Type: schema.Integer, Desc: "max entries, newest first (default 30)"},
+			"include_revert": {Type: schema.Boolean, Desc: "also list rollback audit seams (default false)"},
+		}),
+		SyncStream(t.runTimeline),
+	)
+	t.Worktrees = NewGuardedTool(
+		"vcs_worktrees", "VCS Worktrees",
+		"List this repo's worktree branches with their lifecycle state (active/merged/abandoned/orphaned), owner PID and heartbeat, and flag the orphans whose owning process is gone and whose work never reached main.",
+		60*time.Second,
+		params(map[string]*schema.ParameterInfo{
+			"orphans_only": {Type: schema.Boolean, Desc: "list only orphaned worktrees (default false)"},
+		}),
+		SyncStream(t.runWorktrees),
+	)
+	t.GC = NewGuardedTool(
+		"vcs_gc", "VCS GC",
+		"Prune unreachable VCS history and reclaim space. Defaults to a dry run that reports what WOULD be deleted; pass confirm=true to actually delete. Commits referenced by main, any worktree or any seam are never deleted.",
+		300*time.Second,
+		params(map[string]*schema.ParameterInfo{
+			"keep_recent": {Type: schema.Integer, Desc: "retain at least this many newest commits (default 100)"},
+			"keep_days":   {Type: schema.Integer, Desc: "retain commits newer than this many days (default 14); -1 disables the age floor, which is what a same-session goal loop needs since all of its commits are minutes old"},
+			"confirm":     {Type: schema.Boolean, Desc: "actually delete; omit or false for a dry run"},
+			"vacuum":      {Type: schema.Boolean, Desc: "rewrite the database afterwards so the file shrinks (slow; requires confirm)"},
+		}),
+		SyncStream(t.runGC),
+	)
+}
+
+// vcsPreviewArgs are shared by vcs_preview_restore and vcs_restore_files: the
+// two tools MUST take the same target so a token can pin one to the other.
+type vcsPreviewArgs struct {
+	SeamID       string `json:"seam_id"`
+	Commit       string `json:"commit"`
+	Paths        string `json:"paths"`
+	ConfirmToken string `json:"confirm_token"`
+}
+
+type vcsTimelineArgs struct {
+	Limit         int  `json:"limit"`
+	IncludeRevert bool `json:"include_revert"`
+}
+
+type vcsWorktreesArgs struct {
+	OrphansOnly bool `json:"orphans_only"`
+}
+
+type vcsGCArgs struct {
+	KeepRecent int  `json:"keep_recent"`
+	KeepDays   int  `json:"keep_days"`
+	Confirm    bool `json:"confirm"`
+	Vacuum     bool `json:"vacuum"`
+}
+
+// mainScopeFromCtx resolves the VCS scope and rejects a worktree scope.
+//
+// All five tools below are main-only for the same reason revert_turn is: the
+// seams, the retention roots and the orphan ledger are all main-line concepts,
+// and a worktree's own head is not a rollback target. Rejecting at the tool
+// layer produces a message the model can act on, rather than a deeper error
+// about a commit belonging to the wrong scope.
+func mainScopeFromCtx(ctx context.Context) (VCSScope, string) {
+	sc, err := vcsScopeFromCtx(ctx)
+	if err != nil {
+		return VCSScope{}, err.Error()
+	}
+	if sc.WorktreeID != "" {
+		return VCSScope{}, "this tool operates on the main scope only; the active scope is worktree " + sc.WorktreeID
+	}
+	return sc, ""
+}
+
+// splitSelectors parses the comma-separated glob list. Blank entries are
+// dropped so a trailing comma is not a selector that matches nothing (which
+// PlanRestore would, correctly, reject).
+func splitSelectors(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// resolveRestoreTarget turns the seam_id / commit pair into one commit id.
+// Exactly one must be given: accepting both and preferring one would let a
+// preview and an apply that disagree about which field matters silently target
+// different commits.
+func resolveRestoreTarget(sc VCSScope, a vcsPreviewArgs) (string, error) {
+	switch {
+	case a.SeamID != "" && a.Commit != "":
+		return "", fmt.Errorf("pass either seam_id or commit, not both")
+	case a.SeamID != "":
+		seam, err := sc.VCS.FindSeam(a.SeamID)
+		if err != nil {
+			return "", fmt.Errorf("seam %s: %w", a.SeamID, err)
+		}
+		if seam.RepoID != sc.RepoID {
+			return "", fmt.Errorf("seam %s belongs to another repository", a.SeamID)
+		}
+		return seam.CommitID, nil
+	case a.Commit != "":
+		return a.Commit, nil
+	default:
+		return "", fmt.Errorf("pass seam_id or commit")
+	}
+}
+
+// planJSON renders a RestorePlan for the model. Line counts and the dirty list
+// are included because they are the two things that decide whether a human
+// should be asked before confirming.
+func planJSON(plan *vcs.RestorePlan, applied bool) string {
+	create, overwrite, del := plan.Counts()
+	changes := make([]map[string]any, 0, len(plan.Changes))
+	for _, c := range plan.Changes {
+		changes = append(changes, map[string]any{
+			"path":          c.Path,
+			"op":            string(c.Op),
+			"lines_before":  c.LinesBefore,
+			"lines_after":   c.LinesAfter,
+			"lines_added":   c.LinesAdded,
+			"lines_removed": c.LinesRemoved,
+			"approx":        c.Approx,
+			"dirty":         c.Dirty,
+		})
+	}
+	out := map[string]any{
+		"applied":       applied,
+		"from_commit":   plan.FromCommit,
+		"target_commit": plan.TargetCommit,
+		"selectors":     plan.Selectors,
+		"create":        create,
+		"overwrite":     overwrite,
+		"delete":        del,
+		"unchanged":     plan.Unchanged,
+		"changes":       changes,
+		"dirty_paths":   plan.DirtyPaths(),
+		"confirm_token": plan.ConfirmToken,
+	}
+	if !applied {
+		out["next_step"] = "call vcs_restore_files with the SAME seam_id/commit and paths plus this confirm_token"
+		if len(plan.DirtyPaths()) > 0 {
+			out["warning"] = "some listed paths hold uncommitted working-copy changes that this restore would destroy; no seam can bring them back"
+		}
+	}
+	return toJSON(out)
+}
+
+func (t *VCSTools) runPreviewRestore(ctx context.Context, argsJSON string) (string, error) {
+	var a vcsPreviewArgs
+	if err := ParseArgs(argsJSON, &a); err != nil {
+		return "", err
+	}
+	sc, reject := mainScopeFromCtx(ctx)
+	if reject != "" {
+		return toJSON(map[string]string{"error": reject}), nil
+	}
+	target, err := resolveRestoreTarget(sc, a)
+	if err != nil {
+		return toJSON(map[string]string{"error": err.Error()}), nil
+	}
+	plan, err := sc.VCS.PlanRestore(sc.RepoID, target, splitSelectors(a.Paths))
+	if err != nil {
+		return "", err
+	}
+	return planJSON(plan, false), nil
+}
+
+func (t *VCSTools) runRestoreFiles(ctx context.Context, argsJSON string) (string, error) {
+	var a vcsPreviewArgs
+	if err := ParseArgs(argsJSON, &a); err != nil {
+		return "", err
+	}
+	if a.ConfirmToken == "" {
+		return toJSON(map[string]string{
+			"error": "confirm_token is required; run vcs_preview_restore first",
+		}), nil
+	}
+	sc, reject := mainScopeFromCtx(ctx)
+	if reject != "" {
+		return toJSON(map[string]string{"error": reject}), nil
+	}
+	target, err := resolveRestoreTarget(sc, a)
+	if err != nil {
+		return toJSON(map[string]string{"error": err.Error()}), nil
+	}
+	// Forced destructive approval, exactly like revert_turn: Force=true tells
+	// the WS callback to skip interactive-mode auto-resolution, so yolo /
+	// allow-edits / auto cannot silently overwrite a working copy. The confirm
+	// token proves the MODEL previewed; this proves the HUMAN agreed. Neither
+	// substitutes for the other.
+	if err := RequireApproval(ctx, PermissionRequest{
+		Tool:   "vcs_restore_files",
+		Args:   argsJSON,
+		Reason: "overwrite working-copy files from VCS history (previewed restore)",
+	}); err != nil {
+		return toJSON(map[string]string{
+			"error":  "vcs_restore_files denied: " + err.Error(),
+			"denied": "true",
+		}), nil
+	}
+	plan, err := sc.VCS.ApplyRestore(sc.RepoID, target, splitSelectors(a.Paths), a.ConfirmToken)
+	if err != nil {
+		// A stale plan and an external mutation are both "look again", not
+		// tool failures: the model should re-preview rather than see a Go error
+		// it cannot interpret. Everything else is a genuine error.
+		if errors.Is(err, vcs.ErrPlanStale) || errors.Is(err, vcs.ErrExternalMutation) {
+			return toJSON(map[string]string{
+				"error":     err.Error(),
+				"next_step": "run vcs_preview_restore again; the repository or working copy changed since the preview",
+			}), nil
+		}
+		return "", err
+	}
+	return planJSON(plan, true), nil
+}
+
+func (t *VCSTools) runTimeline(ctx context.Context, argsJSON string) (string, error) {
+	var a vcsTimelineArgs
+	if err := ParseArgs(argsJSON, &a); err != nil {
+		return "", err
+	}
+	sc, reject := mainScopeFromCtx(ctx)
+	if reject != "" {
+		return toJSON(map[string]string{"error": reject}), nil
+	}
+	// SessionID is left empty on purpose: VCSScope carries no session id, and
+	// the agent has no way to name one. The repo-wide listing is not a
+	// degradation — vcs.Timeline resolves each seam's question through that
+	// seam's OWN session, so a cross-session list is still correctly labelled;
+	// the entries just span more than one conversation. The per-entry
+	// session id is not surfaced because it is an internal handle the model
+	// cannot use for anything.
+	entries, err := sc.VCS.Timeline(sc.RepoID, vcs.TimelineOptions{
+		Limit:              a.Limit,
+		IncludeRevertSeams: a.IncludeRevert,
+	})
+	if err != nil {
+		return "", err
+	}
+	out := make([]map[string]any, 0, len(entries))
+	for _, e := range entries {
+		question := e.Question
+		if e.QuestionTruncated {
+			question += "…"
+		}
+		out = append(out, map[string]any{
+			"seam_id":       e.SeamID,
+			"kind":          string(e.Kind),
+			"commit":        e.CommitID,
+			"turn":          e.TurnSeq,
+			"question":      question,
+			"files_changed": e.FilesChanged,
+			"created_at":    e.CreatedAt,
+			"is_head":       e.IsHead,
+		})
+	}
+	return toJSON(map[string]any{"timeline": out}), nil
+}
+
+func (t *VCSTools) runWorktrees(ctx context.Context, argsJSON string) (string, error) {
+	var a vcsWorktreesArgs
+	if err := ParseArgs(argsJSON, &a); err != nil {
+		return "", err
+	}
+	sc, reject := mainScopeFromCtx(ctx)
+	if reject != "" {
+		return toJSON(map[string]string{"error": reject}), nil
+	}
+	orphans, err := sc.VCS.ScanOrphanWorktrees(sc.RepoID)
+	if err != nil {
+		return "", err
+	}
+	orphanIDs := map[string]bool{}
+	for _, o := range orphans {
+		orphanIDs[o.ID] = true
+	}
+	states := orphans
+	if !a.OrphansOnly {
+		states, err = sc.VCS.ListWorktreeStates(sc.RepoID)
+		if err != nil {
+			return "", err
+		}
+	}
+	out := make([]map[string]any, 0, len(states))
+	for _, s := range states {
+		out = append(out, map[string]any{
+			"worktree_id":  s.ID,
+			"lifecycle":    string(s.Lifecycle),
+			"owner_pid":    s.OwnerPID,
+			"heartbeat_at": s.HeartbeatAt,
+			"base_commit":  s.BaseCommit,
+			"tip":          s.Tip,
+			"dir_present":  s.Active,
+			"orphaned":     orphanIDs[s.ID],
+		})
+	}
+	return toJSON(map[string]any{
+		"worktrees":    out,
+		"orphan_count": len(orphans),
+	}), nil
+}
+
+func (t *VCSTools) runGC(ctx context.Context, argsJSON string) (string, error) {
+	var a vcsGCArgs
+	if err := ParseArgs(argsJSON, &a); err != nil {
+		return "", err
+	}
+	sc, reject := mainScopeFromCtx(ctx)
+	if reject != "" {
+		return toJSON(map[string]string{"error": reject}), nil
+	}
+	if a.Confirm {
+		// Deleting history is destructive in the same way a rollback is, so it
+		// takes the same forced prompt. The dry run below does not: it writes
+		// nothing, and making the safe half cost a dialog would train the model
+		// to skip straight to the destructive one.
+		if err := RequireApproval(ctx, PermissionRequest{
+			Tool:   "vcs_gc",
+			Args:   argsJSON,
+			Reason: "permanently delete unreachable VCS commits and blobs",
+		}); err != nil {
+			return toJSON(map[string]string{
+				"error":  "vcs_gc denied: " + err.Error(),
+				"denied": "true",
+			}), nil
+		}
+	}
+	res, err := sc.VCS.RunGC(sc.RepoID, vcs.GCOptions{
+		KeepRecent: a.KeepRecent,
+		KeepDays:   a.KeepDays,
+		DryRun:     !a.Confirm,
+		Vacuum:     a.Vacuum && a.Confirm,
+	})
+	if err != nil {
+		return "", err
+	}
+	out := map[string]any{
+		"dry_run":                   res.DryRun,
+		"deleted_commits":           len(res.DeletedCommits),
+		"deleted_blobs":             len(res.DeletedBlobs),
+		"kept_commits":              res.KeptCommits,
+		"protected_by_reachability": res.ProtectedByReachability,
+		"freed_bytes":               res.FreedBytes,
+		"vacuumed":                  res.Vacuumed,
+	}
+	if res.DryRun {
+		out["next_step"] = "call vcs_gc again with confirm=true to delete (add vacuum=true to shrink the database file)"
+	}
+	return toJSON(out), nil
 }

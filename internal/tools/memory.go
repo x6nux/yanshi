@@ -28,6 +28,7 @@ func NewMemoryTools(s *store.Store) *MemoryTools {
 		params(map[string]*schema.ParameterInfo{
 			"query": {Type: schema.String, Desc: "search terms", Required: true},
 			"limit": {Type: schema.Integer, Desc: "max results (default 10)"},
+			"scope": {Type: schema.String, Desc: "'all' (default, every conversation and agent), 'session' (this conversation), or 'agent' (memories written by this agent)"},
 		}),
 		SyncStream(mt.runSearch),
 	)
@@ -37,6 +38,7 @@ func NewMemoryTools(s *store.Store) *MemoryTools {
 		30*time.Second,
 		params(map[string]*schema.ParameterInfo{
 			"limit": {Type: schema.Integer, Desc: "max results (default 10)"},
+			"scope": {Type: schema.String, Desc: "'all' (default, every conversation and agent), 'session' (this conversation), or 'agent' (memories written by this agent)"},
 		}),
 		SyncStream(mt.runRecall),
 	)
@@ -64,10 +66,12 @@ func (m *MemoryTools) Tools() []*GuardedTool {
 type searchArgs struct {
 	Query string `json:"query"`
 	Limit int    `json:"limit"`
+	Scope string `json:"scope"`
 }
 
 type recallArgs struct {
-	Limit int `json:"limit"`
+	Limit int    `json:"limit"`
+	Scope string `json:"scope"`
 }
 
 type writeArgs struct {
@@ -75,33 +79,115 @@ type writeArgs struct {
 	Kind    string `json:"kind"`
 }
 
+// --- C14 retrieval dimensions ---
+
+// Memory scope names accepted by memory_search / memory_recall.
+const (
+	// MemoryScopeAll searches every session and agent. The DEFAULT, and
+	// deliberately so: sub-agents and the goalloop have always shared one table,
+	// and making a narrower scope the default would make memories that were
+	// findable yesterday vanish today without a single error to notice.
+	MemoryScopeAll = "all"
+	// MemoryScopeSession restricts to the current conversation.
+	MemoryScopeSession = "session"
+	// MemoryScopeAgent restricts to memories written by the acting agent.
+	MemoryScopeAgent = "agent"
+)
+
+// memoryDims resolves the write-side dimensions for the current call from the
+// same context values everything else in the tool layer reads: the session from
+// the approval context (with the thread link as fallback, since the WS turn
+// sets ThreadID to the session id), and the acting agent from the VCS scope,
+// which already carries it for commit attribution.
+//
+// Empty is a legitimate answer — the SSE path has no session, a bare sub-agent
+// has no VCS scope — and is stored as the empty string rather than a
+// placeholder, because the empty string is precisely the value an unscoped
+// query matches and a made-up id is not.
+func memoryDims(ctx context.Context) store.MemoryFilter {
+	var f store.MemoryFilter
+	if ac, ok := approvalFromContext(ctx); ok {
+		f.SessionID = ac.SessionID
+	}
+	if f.SessionID == "" {
+		if link, ok := ThreadLinkFromContext(ctx); ok {
+			f.SessionID = link.ThreadID
+		}
+	}
+	if scope, ok := VCSScopeFromContext(ctx); ok {
+		f.AgentID = scope.Agent
+	}
+	return f
+}
+
+// memoryFilterFor turns a caller-supplied scope name into a query filter.
+//
+// An unknown scope is an ERROR rather than a silent fallback to "all": a model
+// that asks for `scope:"this-session"` and is quietly given every agent's
+// memories has been answered wrongly with no way to tell. Asking for a
+// dimension the context cannot supply is likewise an error, for the same
+// reason — an empty SessionID would match the rows written with an empty
+// dimension by callers that had no session, which is the opposite of "restrict
+// to mine".
+func memoryFilterFor(ctx context.Context, scope string) (store.MemoryFilter, error) {
+	dims := memoryDims(ctx)
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case "", MemoryScopeAll:
+		return store.MemoryFilter{}, nil
+	case MemoryScopeSession:
+		if dims.SessionID == "" {
+			return store.MemoryFilter{}, fmt.Errorf(
+				"memory scope %q is unavailable: this call has no recorded conversation", MemoryScopeSession)
+		}
+		return store.MemoryFilter{SessionID: dims.SessionID}, nil
+	case MemoryScopeAgent:
+		if dims.AgentID == "" {
+			return store.MemoryFilter{}, fmt.Errorf(
+				"memory scope %q is unavailable: no acting agent is bound to this call", MemoryScopeAgent)
+		}
+		return store.MemoryFilter{AgentID: dims.AgentID}, nil
+	default:
+		return store.MemoryFilter{}, fmt.Errorf(
+			"unknown memory scope %q (want %q, %q or %q)",
+			scope, MemoryScopeAll, MemoryScopeSession, MemoryScopeAgent)
+	}
+}
+
 // --- run functions ---
 
-func (m *MemoryTools) runSearch(_ context.Context, argsJSON string) (string, error) {
+func (m *MemoryTools) runSearch(ctx context.Context, argsJSON string) (string, error) {
 	var a searchArgs
 	if err := ParseArgs(argsJSON, &a); err != nil {
 		return "", err
 	}
-	ms, err := m.store.SearchMemory(a.Query, a.Limit)
+	filter, err := memoryFilterFor(ctx, a.Scope)
+	if err != nil {
+		return "", err
+	}
+	ms, err := m.store.SearchMemoryScoped(a.Query, a.Limit, filter)
 	if err != nil {
 		return "", err
 	}
 	return formatMemories(ms), nil
 }
 
-func (m *MemoryTools) runRecall(_ context.Context, argsJSON string) (string, error) {
+func (m *MemoryTools) runRecall(ctx context.Context, argsJSON string) (string, error) {
 	var a recallArgs
 	if err := ParseArgs(argsJSON, &a); err != nil {
 		return "", err
 	}
-	ms, err := m.store.RecallMemory(a.Limit)
+	filter, err := memoryFilterFor(ctx, a.Scope)
+	if err != nil {
+		return "", err
+	}
+	ms, err := m.store.RecallMemoryScoped(a.Limit, filter)
 	if err != nil {
 		return "", err
 	}
 	return formatMemories(ms), nil
 }
 
-func (m *MemoryTools) runWrite(_ context.Context, argsJSON string) (string, error) {
+func (m *MemoryTools) runWrite(ctx context.Context, argsJSON string) (string, error) {
 	var a writeArgs
 	if err := ParseArgs(argsJSON, &a); err != nil {
 		return "", err
@@ -110,7 +196,10 @@ func (m *MemoryTools) runWrite(_ context.Context, argsJSON string) (string, erro
 	if kind == "" {
 		kind = "note"
 	}
-	id, err := m.store.WriteMemory(kind, a.Content)
+	// C14: tag the row with whatever dimensions this call actually has. Writing
+	// is where the dimensions must be captured — a memory whose origin was not
+	// recorded can never be filtered later, however good the query side gets.
+	id, err := m.store.WriteMemoryScoped(kind, a.Content, memoryDims(ctx))
 	if err != nil {
 		return "", err
 	}

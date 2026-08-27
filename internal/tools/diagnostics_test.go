@@ -246,6 +246,18 @@ func (d diagTestProbe) recentFiles(ctx context.Context, root string) []string { 
 // Replacing securityctx.Sandbox with a panic used to leave the whole suite
 // green except its own round-trip unit test; this test is what makes that
 // experiment fail loudly now.
+//
+// It asserts the probe against the sandbox's OWN Report() rather than against
+// a hardcoded Phase 0 triple. The hardcoded form worked only while every
+// platform was a no-op adapter: the moment darwin grew a real Seatbelt
+// backend, this test failed on macOS with {os-isolated, true} — a correct
+// posture reported correctly. Pinning the literal would have meant either a
+// per-GOOS expectation table (which goes stale as each platform lands) or
+// deleting the test. Comparing against Report() keeps the actual claim intact:
+// the probe must relay what is bound in ctx, whatever that is. The separate
+// assertion that it is not the unknown triple is what stops the comparison
+// from passing vacuously if sandboxProbe regressed to ignoring the binding —
+// TestDiagnosticsSandboxUnknownWithoutBinding owns the other direction.
 func TestDiagnosticsReportsTheBoundSandboxPosture(t *testing.T) {
 	factory := newScriptedFactory(t, func(secproc.SecureProcessSpec) cannedResult {
 		return cannedResult{Stdout: ""}
@@ -257,13 +269,20 @@ func TestDiagnosticsReportsTheBoundSandboxPosture(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := decodeSandboxDiag(t, out)
+	rep := sb.Report()
 	want := sandboxDiag{
-		Requested: "workspace-write",
-		Effective: string(sandbox.DegradedHostGuard),
-		Enforced:  false, // Phase 0 has no OS backing and must say so
+		Requested: rep.Requested.String(),
+		Effective: string(rep.Effective),
+		Enforced:  rep.Enforced,
 	}
 	if got != want {
 		t.Fatalf("sandbox diagnostic = %+v, want %+v (the posture actually bound in ctx)", got, want)
+	}
+	if got.Requested == "unknown" || got.Effective == "unknown" {
+		t.Fatalf("the probe reported the unknown triple for a sandbox that IS bound: %+v", got)
+	}
+	if got.Requested != "workspace-write" {
+		t.Fatalf("the probe lost the requested tier: %+v", got)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/x6nux/yanshi/internal/sandbox"
 	"github.com/x6nux/yanshi/internal/secproc"
 )
 
@@ -139,7 +140,64 @@ func tailOf(s string, max int) string {
 	return "…" + s[len(s)-max:]
 }
 
+// runSecureCapture is the capture path every non-streaming tool spawns
+// through (git_status, git_diff, run_tests, ast_search, diagnostics,
+// github_*), and since S12 it is also the single wiring point for the
+// sandbox-violation escalation loop.
+//
+// Putting the loop HERE rather than in each tool is what makes it real for all
+// of them at once: a tool that forgot to opt in would report a sandbox refusal
+// to the model as a bare non-zero exit, which is precisely the state S12
+// exists to end. The one-shot spawn is also the only shape where a retry is
+// clean — nothing has been emitted to the model or the TUI yet, so re-running
+// at a higher tier produces one result rather than two interleaved ones.
+//
+// When the escalation retries, the returned commandResult is the RETRY's. When
+// it does not, the original result is returned with the explanation appended
+// to Stderr, so a caller that renders failures (commandFailureTail) tells the
+// model why the command was refused without every call site having to learn
+// about escalations.
 func runSecureCapture(ctx context.Context, spec secproc.SecureProcessSpec, timeout time.Duration) (commandResult, error) {
+	var res commandResult
+	command := spec.Shell
+	if command == "" {
+		command = strings.TrimSpace(spec.Program + " " + strings.Join(spec.Args, " "))
+	}
+	_, esc, err := EscalateOnSandboxViolation(ctx, spec.Tool, command, spec.UseSandboxTier,
+		func(runCtx context.Context, tier sandbox.AccessTier) (SandboxAttempt, error) {
+			attemptSpec := spec
+			attemptSpec.UseSandboxTier = tier
+			out, err := runSecureCaptureOnce(runCtx, attemptSpec, timeout)
+			if err != nil {
+				return SandboxAttempt{}, err
+			}
+			res = out
+			return SandboxAttempt{ExitCode: out.ExitCode, Stdout: out.Stdout, Stderr: out.Stderr}, nil
+		})
+	if err != nil {
+		return commandResult{}, err
+	}
+	if esc.Explanation != "" {
+		res.Stderr = appendExplanation(res.Stderr, esc.Explanation)
+	}
+	return res, nil
+}
+
+// appendExplanation puts the escalation's model-facing text on the end of a
+// stream. Separate function because two paths need identical framing and a
+// silently different separator would make the two transports' transcripts
+// diverge for no reason.
+func appendExplanation(stream, explanation string) string {
+	if strings.TrimSpace(stream) == "" {
+		return explanation
+	}
+	return stream + "\n" + explanation
+}
+
+// runSecureCaptureOnce is one spawn: launch, drain both streams to EOF, reap,
+// report. It holds no policy of its own — everything about tiers, refusals and
+// retries lives in runSecureCapture above.
+func runSecureCaptureOnce(ctx context.Context, spec secproc.SecureProcessSpec, timeout time.Duration) (commandResult, error) {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	started, err := LaunchSecureProcess(runCtx, spec)

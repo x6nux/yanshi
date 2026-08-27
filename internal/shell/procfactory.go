@@ -55,22 +55,41 @@ func NewSecureLaunchFactory(f SecureLaunchFactory) SecureLaunchFactory {
 	return f
 }
 
+// posture builds the shared launch posture this factory applies to every child.
+//
+// Extracted so prepareLaunch and Start cannot disagree about it: the post-spawn
+// sandbox step must be asked of the SAME posture that prepared the command, and
+// a second struct literal in Start would drift the first time a field is added
+// there (the new field would be missing here, and the sandbox seam would run
+// against a posture nothing was launched under).
+func (f SecureLaunchFactory) posture() childLaunchPosture {
+	return childLaunchPosture{Policy: f.Policy, ProxyURL: f.ProxyURL, Sandbox: f.Sandbox}
+}
+
 // prepareLaunch delegates to the shared childLaunchPosture. There is no
 // per-invocation access tier on this path (LaunchSpec has no equivalent of
 // secproc's UseSandboxTier), so the sandbox's globally requested tier is the
 // one handed to Prepare.
 func (f SecureLaunchFactory) prepareLaunch(ctx context.Context, spec LaunchSpec) (LaunchSpec, error) {
-	posture := childLaunchPosture{Policy: f.Policy, ProxyURL: f.ProxyURL, Sandbox: f.Sandbox}
 	tier := sandbox.ReadOnly
 	if f.Sandbox != nil {
 		tier = f.Sandbox.Report().Requested
 	}
-	return posture.prepare(ctx, spec, tier)
+	return f.posture().prepare(ctx, spec, tier)
 }
 
 // Start prepares the spec and delegates. A sandbox refusal aborts the spawn
 // (fail-closed) rather than falling through to an unsandboxed process.
+//
+// The post-spawn sandbox step runs between the OS factory returning and this
+// function returning, which is the only window in which it is correct: the
+// process exists (so it has a pid to bind) and nothing has reaped it yet (so the
+// pid is unambiguous). A failure there means the child could not be contained
+// and has already been terminated by the backend, so the console is torn down
+// and the error propagated rather than handing back a process the capability
+// report claims is inside a job.
 func (f SecureLaunchFactory) Start(ctx context.Context, spec LaunchSpec) (Process, Console, error) {
+	posture := f.posture()
 	prepared, err := f.prepareLaunch(ctx, spec)
 	if err != nil {
 		return nil, nil, err
@@ -79,5 +98,15 @@ func (f SecureLaunchFactory) Start(ctx context.Context, spec LaunchSpec) (Proces
 	if backend == nil {
 		backend = OSProcessFactory{}
 	}
-	return backend.Start(ctx, prepared)
+	proc, console, err := backend.Start(ctx, prepared)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := posture.postStart(proc.PID()); err != nil {
+		if console != nil {
+			_ = console.Close()
+		}
+		return nil, nil, err
+	}
+	return proc, console, nil
 }

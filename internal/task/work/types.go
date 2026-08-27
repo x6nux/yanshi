@@ -107,10 +107,17 @@ const (
 )
 
 // ChecklistItem 是清单中的一条。
+//
+// Verify (L7) is the machine-checkable condition that decides Status, when one
+// is set. Without it the checklist is the model's own account of its progress,
+// which is exactly the claim a completion gate must not take on trust — see
+// checklistgate.go. The zero value means "no condition", so every item written
+// before L7 keeps its recorded status.
 type ChecklistItem struct {
 	ID      int                 `json:"id"`
 	Content string              `json:"content"`
 	Status  ChecklistItemStatus `json:"status"`
+	Verify  ChecklistCondition  `json:"verify,omitzero"`
 }
 
 // Checklist 是一个任务的可选清单。

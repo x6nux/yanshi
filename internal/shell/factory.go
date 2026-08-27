@@ -29,9 +29,9 @@ type DefaultSecureFactory struct {
 
 // Start runs the full spawn pipeline:
 //  1. Build the child environment through the shared childLaunchPosture: host
-//     env as the baseline, caller-supplied spec.Env layered on top, inherited
-//     proxy vars stripped and the managed HTTP_PROXY/HTTPS_PROXY/NO_PROXY
-//     appended.
+//     env as the baseline, caller-supplied spec.Env layered on top, credential
+//     variables stripped unless spec.AllowEnv names them, inherited proxy vars
+//     stripped and the managed HTTP_PROXY/HTTPS_PROXY/NO_PROXY appended.
 //  2. Run the Sandbox seam with THIS invocation's spec.UseSandboxTier (the
 //     field every secproc caller already populates; it used to be dropped on
 //     the floor together with f.Sandbox).
@@ -60,6 +60,7 @@ func (f DefaultSecureFactory) Start(ctx context.Context, spec secproc.SecureProc
 	launch, err := posture.prepare(ctx, LaunchSpec{
 		ShellName:      spec.Shell,
 		Env:            spec.Env,
+		AllowEnv:       spec.AllowEnv,
 		Command:        spec.Shell,
 		Program:        spec.Program,
 		Args:           spec.Args,
@@ -74,16 +75,38 @@ func (f DefaultSecureFactory) Start(ctx context.Context, spec secproc.SecureProc
 	if err != nil {
 		return nil, err
 	}
+	// Step 2b: the post-spawn half of the sandbox seam, for backends whose
+	// mechanism attaches to a running process rather than rewriting its argv
+	// (Windows Job Objects). This is the only correct window — the process
+	// exists, and proc.Wait has not run, so the pid is unambiguous.
+	//
+	// A failure means the child could not be contained and the backend has
+	// already terminated it. The console is torn down and the error returned
+	// rather than handing back a StartedProcess the capability report claims is
+	// inside a container. See childLaunchPosture.postStart.
+	if err := posture.postStart(proc.PID()); err != nil {
+		if console != nil {
+			_ = console.Close()
+		}
+		return nil, err
+	}
 	// proc.Wait is the reaper: Process.Wait already guarantees the
 	// *exec.ExitError-on-non-zero contract StartedProcess.Wait documents, so
 	// it forwards verbatim. Dropping it here (as an earlier revision did)
 	// leaves callers with an unreapable process — see
 	// TestRunSecureCaptureWithProductionFactory.
+	//
+	// Stdin is the Console itself, which is a ReadWriteCloser over the child's
+	// stdin pipe. Closing it therefore tears down the whole console rather than
+	// half-closing stdin; secproc.StartedProcess.Stdin documents that as a
+	// factory-defined property, and the one caller that writes to it (the ACP
+	// delegation path) only closes at teardown.
 	return &secproc.StartedProcess{
 		Wait:   proc.Wait,
 		PID:    proc.PID(),
 		Stdout: consoleReader{console},
 		Stderr: separatedStderr(console),
+		Stdin:  console,
 	}, nil
 }
 

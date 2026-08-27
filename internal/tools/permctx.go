@@ -12,6 +12,7 @@ import (
 	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/secproc"
 	"github.com/x6nux/yanshi/internal/shell"
+	"github.com/x6nux/yanshi/internal/toolreg"
 )
 
 // PermissionRequest describes a tool call awaiting user approval. The GuardedTool
@@ -224,15 +225,28 @@ func scopeFromAction(action guard.Action) (approval.Scope, error) {
 }
 
 // auditPermission writes a structured audit record for a permission decision.
-// Only safe fields are emitted: tool name, decision, source and a fixed
-// reason_code drawn from a closed vocabulary. The raw argsJSON, the guard's
-// Reason text, FS paths, shell commands and hosts are deliberately omitted so
-// the audit trail cannot leak sensitive input. The slog default handler is the
-// redacting one installed by observe/log at bootstrap, so this remains
-// defense-in-depth rather than the only layer.
-func auditPermission(ctx context.Context, tool, decision, source, reasonCode string) {
+//
+// TWO sinks, deliberately independent (S6):
+//
+//   - slog, the live view. Only safe fields reach it: tool name, decision,
+//     source and a fixed reason_code drawn from a closed vocabulary. The raw
+//     argsJSON, the guard's Reason text, FS paths, shell commands and hosts are
+//     omitted so the log cannot leak sensitive input. The slog default handler
+//     is the redacting one installed by observe/log at bootstrap, so this
+//     remains defense-in-depth rather than the only layer.
+//   - the durable sink bound by WithPermissionAuditSink, the archive. It
+//     additionally receives the session/agent identity and a truncated digest
+//     of the command or paths, because "deny shell_run" repeated four hundred
+//     times answers nothing about which one mattered. The digest is redacted by
+//     the sink before it is persisted.
+//
+// They are separate calls because they fail independently: a quiet log level
+// kills the line, a full disk kills the row, and folding them together would
+// lose both at once. The action is passed whole (rather than just its name)
+// solely so the digest can be derived; slog still sees only the name.
+func auditPermission(ctx context.Context, action guard.Action, decision, source, reasonCode string) {
 	attrs := []slog.Attr{
-		slog.String("tool", tool),
+		slog.String("tool", action.Tool),
 		slog.String("decision", decision),
 		slog.String("source", source),
 	}
@@ -240,6 +254,17 @@ func auditPermission(ctx context.Context, tool, decision, source, reasonCode str
 		attrs = append(attrs, slog.String("reason_code", reasonCode))
 	}
 	slog.LogAttrs(ctx, slog.LevelInfo, "permission decision", attrs...)
+
+	sessionID, agentID := auditIdentity(ctx)
+	recordPermissionAudit(ctx, PermissionAuditRecord{
+		SessionID:  sessionID,
+		AgentID:    agentID,
+		Tool:       action.Tool,
+		Decision:   decision,
+		Source:     source,
+		ReasonCode: reasonCode,
+		CmdDigest:  auditDigest(action),
+	})
 }
 
 // explainDecision renders a guard Decision as the one-line reason a user sees.
@@ -300,13 +325,38 @@ func explainDecision(dec guard.Decision) string {
 // the callback (resolvePermissionMode) — which structural HardDenies never
 // reach because this branch returns before consulting it.
 func Authorize(ctx context.Context, action guard.Action, argsJSON string) error {
+	// S8: refuse names that no registered tool of this agent answers to.
+	//
+	// Measured before this check existed: with Tools.Allow=["*"] and a bound
+	// callback, authorizing "fs_mkdir" returned nil after consulting the
+	// callback exactly once — i.e. a phantom name reached the operator as a
+	// clickable Allow dialog for a tool nothing can execute.
+	//
+	// Placed FIRST because the refusal is STRUCTURAL rather than policy-based:
+	// it must not depend on any policy state being present or well-formed. The
+	// observable consequence is the fail-closed path — when no profile is
+	// bound at all, this still reports the real cause ("not a registered
+	// tool") instead of the generic missing-profile denial, which is the
+	// difference between a diagnosable wiring bug and a dead end. Note that
+	// merely moving this below the profile lookup does NOT reopen the dialog
+	// hazard above (both orderings return before the callback); that was
+	// verified by moving it and watching these tests stay green, so the
+	// ordering is justified on the narrower ground stated here.
+	//
+	// toolreg.Check is a no-op when no set is bound (sub-agents and tests that
+	// never call WithRegistered), so this cannot fail closed on a caller that
+	// simply does not participate.
+	if err := toolreg.Check(ctx, action.Tool); err != nil {
+		auditPermission(ctx, action, "deny", "unregistered_tool", "not_registered")
+		return &DenyErr{Reason: err.Error()}
+	}
 	if err := CheckRolePolicy(ctx, action); err != nil {
-		auditPermission(ctx, action.Tool, "deny", "role_policy", "role_denied")
+		auditPermission(ctx, action, "deny", "role_policy", "role_denied")
 		return err
 	}
 	prof, ok := ProfileFromContext(ctx)
 	if !ok {
-		auditPermission(ctx, action.Tool, "deny", "fail_closed", "missing_profile")
+		auditPermission(ctx, action, "deny", "fail_closed", "missing_profile")
 		return &DenyErr{Reason: "no permission profile in context"}
 	}
 
@@ -317,7 +367,7 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 	//     模式下 callback 也会 deny（resolvePermissionMode 返回 deny+resolved），
 	//     所以 Plan 下 task_cancel 必拒绝，与白名单一致。
 	if PlanModeActive(ctx) && !guard.PlanToolAllowed(action.Tool) {
-		auditPermission(ctx, action.Tool, "deny", "plan_mode", "plan_filter")
+		auditPermission(ctx, action, "deny", "plan_mode", "plan_filter")
 		return &DenyErr{Reason: "tool " + action.Tool + " not available in plan mode"}
 	}
 
@@ -329,7 +379,7 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 	if isForcePromptTool(action.Tool) {
 		ask, hasCallback := permissionCallback(ctx)
 		if !hasCallback {
-			auditPermission(ctx, action.Tool, "deny", "force_prompt", "no_callback")
+			auditPermission(ctx, action, "deny", "force_prompt", "no_callback")
 			return &DenyErr{Reason: "tool requires explicit approval"}
 		}
 		req := PermissionRequest{
@@ -340,10 +390,10 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 		switch ask(req) {
 		case PermissionAllow, PermissionAlwaysAllow, PermissionAllowSession, PermissionAllowPersistent:
 			// 故意不调 approval.Manager.Record：force-prompt 每次都要问。
-			auditPermission(ctx, action.Tool, "allow", "force_prompt", "")
+			auditPermission(ctx, action, "allow", "force_prompt", "")
 			return nil
 		default:
-			auditPermission(ctx, action.Tool, "deny", "force_prompt", "user_denied")
+			auditPermission(ctx, action, "deny", "force_prompt", "user_denied")
 			return &DenyErr{Reason: req.Reason}
 		}
 	}
@@ -356,7 +406,7 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 	profileDenied := false
 	switch dec.Verdict {
 	case guard.Allow:
-		auditPermission(ctx, action.Tool, "allow", "static_profile", "")
+		auditPermission(ctx, action, "allow", "static_profile", "")
 		return nil
 	case guard.HardDeny:
 		if !dec.Overridable {
@@ -370,7 +420,7 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 			// policy, both arrive here with Overridable=true, and both therefore
 			// take the escalation path below. Reading them as structural makes
 			// yolo look narrower than it is.
-			auditPermission(ctx, action.Tool, "deny", "hard_deny", "firewall")
+			auditPermission(ctx, action, "deny", "hard_deny", "firewall")
 			return &DenyErr{Reason: explainDecision(dec)}
 		}
 		// Overridable profile-policy deny: YOLO/Auto may override via the callback
@@ -380,23 +430,23 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 		profileDenied = true
 	case guard.Prompt:
 		if !dec.Promptable {
-			auditPermission(ctx, action.Tool, "deny", "guard", "unpromptable")
+			auditPermission(ctx, action, "deny", "guard", "unpromptable")
 			return &DenyErr{Reason: "guard returned Prompt without Promptable"}
 		}
 	default:
-		auditPermission(ctx, action.Tool, "deny", "guard", "unknown_verdict")
+		auditPermission(ctx, action, "deny", "guard", "unknown_verdict")
 		return &DenyErr{Reason: "unknown guard verdict"}
 	}
 
 	// (3) Approval manager: short-circuit on a prior session/persistent rule.
 	scope, err := scopeFromAction(action)
 	if err != nil {
-		auditPermission(ctx, action.Tool, "deny", "approval_scope", "scope_error")
+		auditPermission(ctx, action, "deny", "approval_scope", "scope_error")
 		return &DenyErr{Reason: "approval scope: " + err.Error()}
 	}
 	if ac, ok := approvalFromContext(ctx); ok {
 		if hit, _ := ac.Manager.Match(ac.SessionID, scope, time.Now()); hit {
-			auditPermission(ctx, action.Tool, "allow", "approval_manager", "")
+			auditPermission(ctx, action, "allow", "approval_manager", "")
 			return nil
 		}
 	}
@@ -404,7 +454,7 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 	// (4) No prior approval. Consult the interactive callback when one is bound.
 	ask, hasCallback := permissionCallback(ctx)
 	if !hasCallback {
-		auditPermission(ctx, action.Tool, "deny", "no_callback", "static_denied")
+		auditPermission(ctx, action, "deny", "no_callback", "static_denied")
 		return &DenyErr{Reason: explainDecision(dec)}
 	}
 	decision := ask(PermissionRequest{
@@ -419,34 +469,34 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 		if profileDenied {
 			source = "mode_override"
 		}
-		auditPermission(ctx, action.Tool, "allow", source, "")
+		auditPermission(ctx, action, "allow", source, "")
 		return nil
 	case PermissionAlwaysAllow, PermissionAllowSession:
 		if ac, ok := approvalFromContext(ctx); ok {
 			rule := approval.Rule{ID: newApprovalID(), Action: action.Tool, Scope: scope, TTL: approval.TTLSession, Source: approval.SourceUser, ExpiresAt: approvalExpiry(approval.TTLSession, time.Now())}
 			if err := ac.Manager.Record(ac.SessionID, rule); err != nil {
-				auditPermission(ctx, action.Tool, "deny", "approval_record", "record_error")
+				auditPermission(ctx, action, "deny", "approval_record", "record_error")
 				return &DenyErr{Reason: err.Error()}
 			}
-			auditPermission(ctx, action.Tool, "allow", "interactive_session", "")
+			auditPermission(ctx, action, "allow", "interactive_session", "")
 			return nil
 		}
-		auditPermission(ctx, action.Tool, "deny", "approval_record", "no_manager")
+		auditPermission(ctx, action, "deny", "approval_record", "no_manager")
 		return &DenyErr{Reason: "approval manager unavailable"}
 	case PermissionAllowPersistent:
 		if ac, ok := approvalFromContext(ctx); ok {
 			rule := approval.Rule{ID: newApprovalID(), Action: action.Tool, Scope: scope, TTL: approval.TTLPersistent, Source: approval.SourceUser, ExpiresAt: approvalExpiry(approval.TTLPersistent, time.Now())}
 			if err := ac.Manager.Record(ac.SessionID, rule); err != nil {
-				auditPermission(ctx, action.Tool, "deny", "approval_record", "record_error")
+				auditPermission(ctx, action, "deny", "approval_record", "record_error")
 				return &DenyErr{Reason: err.Error()}
 			}
-			auditPermission(ctx, action.Tool, "allow", "interactive_persistent", "")
+			auditPermission(ctx, action, "allow", "interactive_persistent", "")
 			return nil
 		}
-		auditPermission(ctx, action.Tool, "deny", "approval_record", "no_kv")
+		auditPermission(ctx, action, "deny", "approval_record", "no_kv")
 		return &DenyErr{Reason: "persistent approval store unavailable"}
 	default:
-		auditPermission(ctx, action.Tool, "deny", "interactive", "user_denied")
+		auditPermission(ctx, action, "deny", "interactive", "user_denied")
 		return &DenyErr{Reason: explainDecision(dec)}
 	}
 }
@@ -466,6 +516,13 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 // PermissionRequest.ApprovalRequired field is set to true so the TUI/WS can
 // render the appropriate UX (hide "always allow", etc.).
 func AuthorizeApprovalRequired(ctx context.Context, action guard.Action, argsJSON string) error {
+	// S8, same structural refusal as in Authorize and for a sharper reason:
+	// this path prompts UNCONDITIONALLY, so without this line a phantom name
+	// is guaranteed to reach the operator as an approval dialog for a tool
+	// that cannot be executed by anything.
+	if err := toolreg.Check(ctx, action.Tool); err != nil {
+		return &DenyErr{Reason: err.Error()}
+	}
 	if err := CheckRolePolicy(ctx, action); err != nil {
 		return err
 	}

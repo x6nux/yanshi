@@ -93,6 +93,8 @@ CREATE TABLE IF NOT EXISTS task_work_checklist (
     item_id INTEGER NOT NULL,
     content TEXT NOT NULL,
     status TEXT NOT NULL,
+    verify_kind TEXT NOT NULL DEFAULT '',
+    verify_target TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(task_id, item_id),
     FOREIGN KEY(task_id) REFERENCES task_work(id) ON DELETE CASCADE
 );
@@ -139,9 +141,69 @@ CREATE INDEX IF NOT EXISTS idx_task_work_timeline_task_seq ON task_work_timeline
 
 func (s *Store) migrate() error {
 	return s.wt().WriteTx(context.Background(), func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(context.Background(), workSchema)
-		return err
+		if _, err := tx.ExecContext(context.Background(), workSchema); err != nil {
+			return err
+		}
+		return addChecklistVerifyColumns(tx)
 	})
+}
+
+// checklistVerifyColumns are the L7 condition columns added to an EXISTING
+// task_work_checklist table.
+//
+// The CREATE TABLE above already declares them, but it is CREATE TABLE IF NOT
+// EXISTS: on any database written before L7 the statement is a no-op and the
+// columns never appear. Without this migration the very next SELECT names two
+// columns SQLite has never heard of and the whole work store fails to open —
+// which is to say the schema edit alone would have bricked every existing
+// installation, silently in tests (they all start from :memory:) and loudly on
+// the first real upgrade.
+var checklistVerifyColumns = []struct{ name, decl string }{
+	{"verify_kind", "TEXT NOT NULL DEFAULT ''"},
+	{"verify_target", "TEXT NOT NULL DEFAULT ''"},
+}
+
+// addChecklistVerifyColumns adds any missing L7 column to
+// task_work_checklist. ALTER TABLE ADD COLUMN is not idempotent in SQLite, so
+// each column is checked against PRAGMA table_info first — the same shape
+// internal/store.addColumnIfMissing uses, reimplemented here rather than
+// imported because work must not depend on the session store.
+func addChecklistVerifyColumns(tx *sql.Tx) error {
+	rows, err := tx.QueryContext(context.Background(), `PRAGMA table_info(task_work_checklist)`)
+	if err != nil {
+		return err
+	}
+	have := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid          int
+			name, typ    string
+			notNull, pk  int
+			defaultValue any
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		have[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, col := range checklistVerifyColumns {
+		if have[col.name] {
+			continue
+		}
+		if _, err := tx.ExecContext(context.Background(),
+			`ALTER TABLE task_work_checklist ADD COLUMN `+col.name+` `+col.decl); err != nil {
+			return fmt.Errorf("work: add checklist column %s: %w", col.name, err)
+		}
+	}
+	return nil
 }
 
 // Create 在单事务内插入 task 行、checklist 与初始 timeline。
@@ -155,8 +217,9 @@ func (s *Store) Create(ctx context.Context, w *WorkTask) error {
 			return fmt.Errorf("work: insert task: %w", err)
 		}
 		for _, item := range w.Checklist.Items {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO task_work_checklist(task_id,item_id,content,status) VALUES(?,?,?,?)`,
-				w.ID, item.ID, item.Content, string(item.Status)); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO task_work_checklist(task_id,item_id,content,status,verify_kind,verify_target) VALUES(?,?,?,?,?,?)`,
+				w.ID, item.ID, item.Content, string(item.Status),
+				string(item.Verify.Kind), item.Verify.Target); err != nil {
 				return err
 			}
 		}
@@ -194,18 +257,22 @@ func (s *Store) Get(ctx context.Context, id string) (*WorkTask, error) {
 	w.CreatedAt = time.Unix(createdAt, 0)
 	w.UpdatedAt = time.Unix(updatedAt, 0)
 
-	rows, err := s.db.QueryContext(ctx, `SELECT item_id,content,status FROM task_work_checklist WHERE task_id=? ORDER BY item_id`, id)
+	rows, err := s.db.QueryContext(ctx, `SELECT item_id,content,status,verify_kind,verify_target FROM task_work_checklist WHERE task_id=? ORDER BY item_id`, id)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var item ChecklistItem
-		var st string
-		if err := rows.Scan(&item.ID, &item.Content, &st); err != nil {
+		var st, verifyKind, verifyTarget string
+		if err := rows.Scan(&item.ID, &item.Content, &st, &verifyKind, &verifyTarget); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		item.Status = ChecklistItemStatus(st)
+		item.Verify = ChecklistCondition{
+			Kind:   ChecklistConditionKind(verifyKind),
+			Target: verifyTarget,
+		}
 		w.Checklist.Items = append(w.Checklist.Items, item)
 	}
 	rows.Close()
@@ -401,8 +468,9 @@ func (s *Store) SetChecklist(ctx context.Context, taskID string, c Checklist) er
 			return err
 		}
 		for _, item := range c.Items {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO task_work_checklist(task_id,item_id,content,status) VALUES(?,?,?,?)`,
-				taskID, item.ID, item.Content, string(item.Status)); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO task_work_checklist(task_id,item_id,content,status,verify_kind,verify_target) VALUES(?,?,?,?,?,?)`,
+				taskID, item.ID, item.Content, string(item.Status),
+				string(item.Verify.Kind), item.Verify.Target); err != nil {
 				return err
 			}
 		}

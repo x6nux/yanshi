@@ -46,7 +46,13 @@ type LaunchSpec struct {
 	// netpolicy.PrepareEnv populates this; OSProcessFactory.Start applies it via
 	// cmd.Env. This is a []string to match SecureProcessSpec.Env.
 	Env []string
-	PTY bool
+	// AllowEnv names the credential-bearing environment variables this spawn
+	// legitimately needs (e.g. GH_TOKEN for `gh`). Empty — the default — means
+	// the child inherits no credentials at all; see childLaunchPosture.env and
+	// netpolicy.CredentialPolicy. Mirrors secproc.SecureProcessSpec.AllowEnv so
+	// the two launch paths express the same declaration.
+	AllowEnv []string
+	PTY      bool
 	// SeparateStderr asks the factory to keep the child's stderr on its own
 	// pipe instead of folding it into the Console. Callers that PARSE the
 	// child's stdout (git porcelain, `go test -json`) must set it; callers

@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"os"
 	"os/exec"
 
 	"github.com/x6nux/yanshi/internal/netpolicy"
@@ -83,7 +84,8 @@ func (p childLaunchPosture) proxy() string {
 }
 
 // env builds the child environment: the host env as the baseline, caller
-// entries layered on top (exec keeps the last duplicate, so they win), and
+// entries layered on top (exec keeps the last duplicate, so they win),
+// credential-bearing variables stripped under allowEnv, and
 // netpolicy.PrepareEnv run over the result so any inherited or smuggled-in
 // proxy variable is stripped and replaced by the managed ones.
 //
@@ -91,18 +93,39 @@ func (p childLaunchPosture) proxy() string {
 // a child that cannot resolve `go`, `node` or `gh` through PATH — or read
 // ~/.config/gh through HOME — is not "sandboxed", it is broken.
 //
-// The isolation boundary yanshi enforces today is the guard layer, and that is
-// the whole list. It does not depend on an empty environment, which is why
-// inheriting the host env costs nothing. The proxy variables this function
-// appends are NOT a second boundary: see proxy() for why they are a black hole
-// rather than an egress policy in Phase 0.
-func (p childLaunchPosture) env(callerEnv []string) []string {
+// Inheriting the host env used to cost nothing because the guard layer was the
+// whole isolation boundary. It cost exactly one thing: every provider API key,
+// cloud credential and VCS token in yanshi's own process environment reached
+// every untrusted child, so `printenv` from shell_run put them in the model's
+// transcript and therefore into the next request to the provider. The guard's
+// auto-approval prompt has named that risk category since it was written; the
+// scrub is the code side of it. Structural variables (PATH, HOME, LANG, …) are
+// never candidates — see secrets.ScrubEnv.
+//
+// allowEnv is the caller's per-spawn declaration of the credentials THIS
+// program legitimately needs (gh wants GH_TOKEN; shell_run wants nothing).
+// Empty means strip everything, which is the correct default.
+//
+// The credential scrub runs ONCE, over host+caller entries, BEFORE the managed
+// proxy variables are appended. Layering the two helpers the other way round
+// (ManagedEnvWithPolicy, then PrepareEnvWithPolicy over the result) reads
+// equivalently and is not: the second pass would re-inspect the proxy entries
+// this function just published, and a proxy URL carrying inline basic-auth
+// credentials (http://user:pass@proxy) is a shape LooksLikeCredentialValue
+// recognises — so the managed variables would be stripped from the child that
+// needs them to reach the proxy at all.
+//
+// The proxy variables this function appends are NOT a second boundary: see
+// proxy() for why they are a black hole rather than an egress policy in
+// Phase 0.
+func (p childLaunchPosture) env(callerEnv []string, allowEnv []string) []string {
 	proxy := p.proxy()
-	env := netpolicy.ManagedEnv(proxy)
+	base := os.Environ()
 	if len(callerEnv) > 0 {
-		env = netpolicy.PrepareEnv(append(env, callerEnv...), proxy)
+		base = append(base, callerEnv...)
 	}
-	return env
+	kept, _ := netpolicy.ScrubCredentials(base, netpolicy.CredentialPolicy{AllowEnv: allowEnv})
+	return netpolicy.PrepareEnv(kept, proxy)
 }
 
 // prepare computes the spec handed to the OS factory without spawning
@@ -113,7 +136,7 @@ func (p childLaunchPosture) env(callerEnv []string) []string {
 // tier is the access class requested for THIS invocation; callers that have no
 // per-invocation tier pass the sandbox's globally requested one.
 func (p childLaunchPosture) prepare(ctx context.Context, spec LaunchSpec, tier sandbox.AccessTier) (LaunchSpec, error) {
-	spec.Env = p.env(spec.Env)
+	spec.Env = p.env(spec.Env, spec.AllowEnv)
 	if p.Sandbox == nil {
 		return spec, nil
 	}
@@ -132,4 +155,50 @@ func (p childLaunchPosture) prepare(ctx context.Context, spec LaunchSpec, tier s
 		spec.Args = cmd.Args[1:]
 	}
 	return spec, nil
+}
+
+// postStart runs the sandbox's optional post-spawn step for a process that has
+// just started and has NOT yet been reaped.
+//
+// # Why this exists at all
+//
+// prepare() hands the backend a command that has not been started, which suits
+// an argv-rewriting backend (macOS re-heads it with sandbox-exec) and cannot
+// suit a backend whose mechanism is a kernel object a RUNNING process must be
+// attached to. Windows Job Objects are the second kind: AssignProcessToJobObject
+// takes a process handle, so it has nothing to take until the process exists.
+//
+// The obvious alternative — CREATE_SUSPENDED, assign, resume — is not reachable
+// from prepare(): the *exec.Cmd it builds is a stand-in and only Program, Dir,
+// Env and Args are copied back into the LaunchSpec. SysProcAttr is not among
+// them and LaunchSpec has no field to carry it, so CreationFlags set there would
+// be silently dropped. See sandbox.PostStartSandbox's file header.
+//
+// # Ordering
+//
+// Callers MUST call this after Start and BEFORE anything reaps the process.
+// On Windows a pid stays reserved only while a handle to the process object is
+// open, and the Go runtime holds one from Start until Wait; call this after the
+// reap and the pid may already name a different process, which the backend
+// would then bind into a kill-on-close job and terminate at shutdown.
+//
+// # Failure is fatal to the launch
+//
+// A non-nil error means the child is NOT contained, and the backend has already
+// terminated it (that is its half of the contract). Callers must tear down the
+// console and propagate: returning a running process while Report() claims
+// CanKillTree is the over-claim the sandbox package exists to prevent.
+//
+// A backend that does not implement the optional interface — darwin, linux, the
+// degraded stub, every test double — makes this a no-op via the failed type
+// assertion, which is why adding the seam did not have to touch them.
+func (p childLaunchPosture) postStart(pid int) error {
+	if p.Sandbox == nil {
+		return nil
+	}
+	ps, ok := p.Sandbox.(sandbox.PostStartSandbox)
+	if !ok {
+		return nil
+	}
+	return ps.PostStart(pid)
 }

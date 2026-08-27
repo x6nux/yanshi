@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,20 +44,49 @@ func spillIfTooLong(ctx context.Context, toolName, result string) string {
 	if len(result) <= SpillThreshold {
 		return result
 	}
+	rel, ok := spillFullText(ctx, toolName, result)
+	if !ok {
+		return degradedSpill(result, errSpillWriteFailed)
+	}
+	return spillPreview(result, rel)
+}
+
+// errSpillWriteFailed is the cause degradedSpill reports when spillFullText
+// declined. The concrete os error is logged by spillFullText's own return
+// path being a bool: a caller that only needs "did it land" should not have to
+// thread an error it will not inspect, and the footer text is for the model,
+// which cannot act on an errno either way.
+var errSpillWriteFailed = errors.New("could not write the spillover file")
+
+// spillFullText writes text verbatim to
+// <workRoot>/.yanshi/tmp/spillover/<tool>-<unixms>-<rand>.txt and returns the
+// path RELATIVE to the work root (so the model can hand it straight back to
+// fs_read), plus whether the write landed.
+//
+// Split out of spillIfTooLong because T4's degrade tier needs exactly this and
+// nothing else: it must place a recoverable copy on disk BEFORE shrinking a
+// result that is nowhere near the 64 KiB spill cap. Having two functions
+// writing files into the same directory with two naming schemes is how the
+// janitor and Sweep would start disagreeing about what they own.
+//
+// A failure is reported rather than fatal: every caller has a defined answer
+// for "no disk copy" (spillIfTooLong truncates with a footer, DegradeToolResult
+// declines to shrink at all).
+func spillFullText(ctx context.Context, toolName, text string) (string, bool) {
 	root := WorkRootFromContext(ctx)
 	if root == "" {
 		root = "."
 	}
 	dir := filepath.Join(root, spillDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return degradedSpill(result, err)
+		return "", false
 	}
 	name := fmt.Sprintf("%s-%d-%s.txt", toolName, time.Now().UnixMilli(), randSuffix(4))
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(result), 0o600); err != nil {
-		return degradedSpill(result, err)
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		return "", false
 	}
-	return spillPreview(result, relPath(root, path))
+	return relPath(root, path), true
 }
 
 // degradedSpill truncates result to SpillThreshold and appends a footer noting

@@ -17,8 +17,8 @@ func TestAgentToolsReturnsAll(t *testing.T) {
 func TestFSToolsReturnsAll(t *testing.T) {
 	ft := NewFSTools(".")
 	gt := ft.Tools()
-	if len(gt) != 7 {
-		t.Fatalf("FSTools.Tools() should return 7 tools, got %d", len(gt))
+	if len(gt) != 8 {
+		t.Fatalf("FSTools.Tools() should return 8 tools, got %d", len(gt))
 	}
 }
 

@@ -73,12 +73,30 @@ type Manager struct {
 	store      *Store
 	dispatcher Dispatcher
 	policy     ArtifactPolicy
+	// verifyRoot is the directory a checklist item's file_exists condition
+	// resolves against (L7). Empty makes every such condition UNSATISFIED
+	// rather than skipped — see VerifyChecklist for why an unverifiable claim
+	// must not read as a verified one. Set it with WithVerifyRoot.
+	verifyRoot string
 }
 
 // NewManager 构造一个 Manager。dispatcher 可以为 nil（local-only 模式，
 // Dispatch=true 的 Create 会回错）。policy 经 withDefaults 补齐默认值。
 func NewManager(store *Store, dispatcher Dispatcher, policy ArtifactPolicy) *Manager {
 	return &Manager{store: store, dispatcher: dispatcher, policy: policy.withDefaults()}
+}
+
+// WithVerifyRoot sets the project root that L7 file_exists checklist
+// conditions resolve against, and returns m for chaining.
+//
+// A separate setter rather than a NewManager parameter because every existing
+// call site would otherwise have to be edited to pass a value most of them do
+// not have — and the ones that skipped it would silently get "" , which reads
+// as "no file condition can ever be satisfied". A setter makes supplying the
+// root a visible act at the one place (the composition root) that knows it.
+func (m *Manager) WithVerifyRoot(root string) *Manager {
+	m.verifyRoot = root
+	return m
 }
 
 // Create 创建一条 WorkTask 并可选地经 Dispatcher 投递 broker。
@@ -157,11 +175,70 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 
 // Finish 把 task 转移到 completed 或 failed 并追加 timeline。
 // 其它 status 一律拒绝（pending/cancelled 不是合法的 finish 目标）。
+//
+// L7: a completion is GATED on the checklist. Before this, Checklist was a
+// data structure with no consumer but CompletionPct — a task could be finished
+// with every item still pending and nothing anywhere noticed, which made the
+// checklist a decoration rather than a plan. Now:
+//
+//   - each item carrying a Verify condition has its status RE-DERIVED from the
+//     world (file present / recorded gate exited zero) rather than from what
+//     the model last claimed, and the re-derived checklist is persisted so the
+//     caller can see which items blocked them;
+//   - if anything is still not done, the transition is REFUSED with
+//     ErrChecklistIncomplete naming the unmet items, and the refusal is
+//     recorded on the timeline.
+//
+// Only completed is gated. A FAILED task is allowed to have unfinished items —
+// that is what failing means, and gating it would leave a broken task stuck at
+// running forever with no legal exit.
+//
+// An empty checklist gates nothing, so every task that never used one behaves
+// exactly as before.
 func (m *Manager) Finish(ctx context.Context, id string, status Status, note string) error {
 	if status != StatusCompleted && status != StatusFailed {
 		return errors.New("work: finish status must be completed or failed")
 	}
+	if status == StatusCompleted {
+		if err := m.gateCompletion(ctx, id); err != nil {
+			return err
+		}
+	}
 	return m.store.Transition(ctx, id, status, "finished", truncate(note, 240))
+}
+
+// gateCompletion runs the L7 checklist gate for one task: verify, persist the
+// verified checklist, and refuse if anything is unmet.
+//
+// The verified checklist is written back BEFORE the refusal so the caller who
+// then reads the task sees the machine's verdict on each item, not the stale
+// self-reported one. Without that write, "why was I blocked" would require
+// re-running the verification by hand.
+//
+// A SetChecklist failure is returned rather than swallowed: it means the
+// verdict was not recorded, and completing on the strength of a verdict nobody
+// stored would be the same trust-the-model failure this gate exists to remove.
+func (m *Manager) gateCompletion(ctx context.Context, id string) error {
+	task, err := m.store.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if len(task.Checklist.Items) == 0 {
+		return nil
+	}
+	verified, unmet := checklistGate(task.Checklist, m.verifyRoot, task.Gates)
+	if err := m.store.SetChecklist(ctx, id, verified); err != nil {
+		return err
+	}
+	if unmet == "" {
+		return nil
+	}
+	if tlErr := m.store.AppendTimeline(ctx, id, TimelineEntry{
+		At: time.Now(), Kind: "completion_blocked", Summary: truncate(incompleteNote(unmet), 240),
+	}); tlErr != nil {
+		return fmt.Errorf("%w: %s (timeline log also failed: %v)", ErrChecklistIncomplete, unmet, tlErr)
+	}
+	return fmt.Errorf("%w: %s", ErrChecklistIncomplete, unmet)
 }
 
 // Cancel 先（若已投递 broker）通过 Dispatcher.Cancel 取消 broker 行，

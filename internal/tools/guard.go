@@ -282,6 +282,16 @@ func (g *GuardedTool) Stream(ctx context.Context, argsJSON string) <-chan ToolCh
 		close(ch)
 		return ch
 	}
+	// T3: a long-running, backgroundable call takes a different pump — one
+	// that hands the model a handle at the deadline instead of a bare
+	// "context deadline exceeded" with the work discarded. Everything above
+	// (authorization, the OTel span) has already happened, so the offload path
+	// cannot widen anything; it only changes what happens to a call that has
+	// ALREADY been authorized once its foreground budget runs out. See
+	// guard_offload.go.
+	if ch, taken := g.streamWithOffload(ctx, argsJSON, end); taken {
+		return ch
+	}
 	// NoTimeout must take a different call, not a different number: WithTimeout
 	// treats every non-positive duration as already expired.
 	var runCtx context.Context

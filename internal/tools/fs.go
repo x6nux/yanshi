@@ -25,6 +25,12 @@ type FSTools struct {
 	List   *GuardedTool
 	Glob   *GuardedTool
 	Search *GuardedTool
+	// AstSearch is the structural (AST) counterpart of Search, backed by the
+	// external ast-grep CLI. It is a distinct tool, not a mode of Search: the
+	// two query languages are mutually unintelligible and a model that mixes
+	// them gets a confident empty result rather than an error. See
+	// fs_astsearch.go.
+	AstSearch *GuardedTool
 	// Patch is the multi-file apply_patch tool (add/update/delete/move),
 	// atomic + dry-run, auto-tracked via the same VCS scope as fs_write/fs_edit.
 	Patch *GuardedTool
@@ -95,6 +101,7 @@ func NewFSTools(root string) *FSTools {
 		}),
 		SyncStream(f.runSearch),
 	)
+	f.AstSearch = f.NewAstSearchTool()
 	f.Patch = NewGuardedTool(
 		"apply_patch", "Patch",
 		"Apply a multi-file patch (add/update/delete/move) atomically. "+
@@ -112,7 +119,7 @@ func NewFSTools(root string) *FSTools {
 // Tools returns all FS tools once they exist (added in later tasks).
 func (f *FSTools) Tools() []*GuardedTool {
 	var ts []*GuardedTool
-	for _, t := range []*GuardedTool{f.Read, f.Write, f.Edit, f.List, f.Glob, f.Search, f.Patch} {
+	for _, t := range []*GuardedTool{f.Read, f.Write, f.Edit, f.List, f.Glob, f.Search, f.AstSearch, f.Patch} {
 		if t != nil {
 			ts = append(ts, t)
 		}

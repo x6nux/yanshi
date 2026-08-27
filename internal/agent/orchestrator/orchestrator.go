@@ -18,6 +18,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/x6nux/yanshi/internal/agent/registry"
 	"github.com/x6nux/yanshi/internal/approval"
+	"github.com/x6nux/yanshi/internal/ctxcompact"
 	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/imagestore"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
@@ -30,6 +31,7 @@ import (
 	"github.com/x6nux/yanshi/internal/secproc"
 	"github.com/x6nux/yanshi/internal/shell"
 	"github.com/x6nux/yanshi/internal/task/work"
+	"github.com/x6nux/yanshi/internal/toolreg"
 	"github.com/x6nux/yanshi/internal/tools"
 )
 
@@ -78,6 +80,18 @@ type Config struct {
 	// preferences across sessions and across sub-agent boundaries. Empty = no
 	// memory injection (the default).
 	MemorySuffix string
+
+	// LoopGuard configures the per-turn stop conditions (repetition detection,
+	// tool-call budgets, turn deadline, token budget). The zero value installs
+	// nothing; see LoopGuardConfig for why nothing defaults on.
+	LoopGuard LoopGuardConfig
+
+	// Background owns tool calls moved to the background at their foreground
+	// deadline (T3). nil disables offloading: every tool then keeps the plain
+	// context.WithTimeout behaviour, and a long run still fails at its
+	// deadline with nothing to show for it. The composition root supplies one
+	// and closes it during shutdown.
+	Background *tools.BackgroundManager
 }
 
 // CompactionConfig mirrors config.CompactionConfig.
@@ -104,6 +118,17 @@ type CompactionConfig struct {
 	// HTTP layer; it is passed here rather than resolved locally so the
 	// orchestrator never has to import internal/api/http, which GOV1 forbids.
 	ProviderWindows map[string]int
+	// Redactor strips registered secrets from the history handed to the summary
+	// model on the MID-TURN compaction path, and from the summary it returns
+	// (C11). nil disables redaction.
+	//
+	// It rides on this config rather than being resolved locally for the same
+	// reason ProviderWindows does: bootstrap owns the process-wide
+	// secrets.Redactor, and the orchestrator must not import the packages that
+	// would let it find one itself. Assign only a non-nil redactor — a
+	// typed-nil pointer in this interface field panics instead of disabling
+	// redaction (see ctxcompact.Options.Redactor).
+	Redactor ctxcompact.Redactor
 }
 
 // windowFor returns the context window to size a turn's compaction gates
@@ -160,6 +185,25 @@ type Orchestrator struct {
 	// aux model itself — image_describe does — so holding the model here would
 	// be a second reference to the same thing with no consumer.
 	visionAuxAvailable bool
+	// loopGuard is the per-turn stop-condition policy. It is CONFIG, not
+	// state: withTurnContext builds a fresh turnGuard from it for every turn,
+	// because runnerFor memoises runners across turns and sessions.
+	loopGuard LoopGuardConfig
+
+	// background owns tool calls moved to the background at their foreground
+	// deadline (T3). PROCESS-scoped, not per-turn: a run that is cancelled
+	// when its turn ends is not a background run, it is the same timeout with
+	// extra steps. nil disables offloading entirely and every tool keeps its
+	// plain WithTimeout behaviour.
+	background *tools.BackgroundManager
+
+	// sessionRules holds the per-connection approval rule sets (S9), keyed by
+	// connection session id. Guarded by sessionRulesMu because approvals
+	// arrive on the WebSocket reader goroutine while turns read the profile.
+	// Entries are removed by ReleaseSession; see sessionrules.go for why the
+	// explicit teardown is not optional.
+	sessionRulesMu sync.Mutex
+	sessionRules   map[string]*guard.RuleSet
 }
 
 // runnerToolMode distinguishes between agent (full tools) and plan (filtered tools) runners.
@@ -252,6 +296,9 @@ func New(cfg Config) (*Orchestrator, error) {
 		imageStore:         cfg.ImageStore,
 		visionAuxAvailable: cfg.VisionAuxAvailable,
 		availableModels:    cfg.AvailableModels,
+		loopGuard:          cfg.LoopGuard,
+		background:         cfg.Background,
+		sessionRules:       make(map[string]*guard.RuleSet),
 	}, nil
 }
 
@@ -278,6 +325,7 @@ func wrapCompaction(m model.BaseChatModel, cc CompactionConfig, window int) mode
 		CooldownTokens:    int(cc.CooldownFraction * float64(window)),
 		CooldownDuration:  cc.CooldownDuration,
 		HardForceFraction: cc.HardForceFraction,
+		Redactor:          cc.Redactor,
 	}
 }
 
@@ -317,9 +365,22 @@ func (o *Orchestrator) ProfileForTest() guard.PermissionProfile { return o.profi
 
 // bindExecutionContext threads every orchestrator-owned security value into ctx.
 func (o *Orchestrator) bindExecutionContext(ctx context.Context, connectionSessionID string) context.Context {
-	ctx = tools.WithProfile(ctx, o.profile)
+	// S9: the acting profile is the orchestrator's profile PLUS whatever this
+	// connection's approvals widened. profileForSession is a no-op for a
+	// profile with no Shell.Rules and for an empty session id, so the default
+	// coding profile behaves exactly as before — see sessionrules.go for why
+	// grafting rules onto a glob profile would be a hard denial of everything
+	// rather than a widening.
+	ctx = tools.WithProfile(ctx, o.profileForSession(connectionSessionID))
 	ctx = tools.WithWorkRoot(ctx, o.workRoot)
 	ctx = tools.WithTaskManager(ctx, o.taskManager)
+	// S8: the names that actually exist in THIS execution scope. Bound here,
+	// alongside the profile, because the two are read at the same moment and
+	// answer adjacent questions — the profile says whether a tool may run, this
+	// says whether the tool is a tool at all. A sub-agent built with a filtered
+	// tool subset gets its own narrower set for free, since it is a separate
+	// Orchestrator with its own toolNames.
+	ctx = toolreg.WithRegistered(ctx, o.toolNames)
 	if o.approvals != nil && connectionSessionID != "" {
 		ctx = tools.WithApprovalManager(ctx, o.approvals, connectionSessionID)
 	}
@@ -340,6 +401,11 @@ func (o *Orchestrator) bindExecutionContext(ctx context.Context, connectionSessi
 	}
 	if o.lspMgr != nil {
 		ctx = tools.WithLSP(ctx, o.lspMgr)
+	}
+	// T3: nil-gated like the rest. An unbound manager means GuardedTool.Stream
+	// keeps its plain WithTimeout path, which is the pre-T3 behaviour.
+	if o.background != nil {
+		ctx = tools.WithBackgroundManager(ctx, o.background)
 	}
 	return ctx
 }
@@ -368,6 +434,11 @@ func (o *Orchestrator) withTurnContext(ctx context.Context, opts TurnOpts) conte
 	if o.mcpMgr != nil && o.mcpMgr.Enabled() {
 		ctx = tools.WithMCP(ctx, o.mcpMgr)
 	}
+	// A FRESH loop-guard state per turn. Bound here rather than inside
+	// runnerFor because runnerFor memoises: one runner (and one middleware
+	// instance) serves every turn on that model, so any counter living there
+	// would be process-wide.
+	ctx = WithLoopGuard(ctx, o.loopGuard)
 	return o.bindManagedRunner(ctx)
 }
 
@@ -479,7 +550,7 @@ func (o *Orchestrator) runnerFor(chatModel model.BaseChatModel, plan bool, model
 				UnknownToolsHandler: unknownToolHandler(names),
 			},
 		},
-		Handlers: []adk.ChatModelAgentMiddleware{newMessageRecorder(), newImageAttacher()},
+		Handlers: orchestratorMiddlewares(),
 	})
 	if err != nil {
 		return nil
@@ -487,6 +558,30 @@ func (o *Orchestrator) runnerFor(chatModel model.BaseChatModel, plan bool, model
 	runner := adk.NewRunner(context.Background(), adk.RunnerConfig{Agent: agent, EnableStreaming: true})
 	actual, _ := o.runners.LoadOrStore(key, runner)
 	return actual.(*adk.Runner)
+}
+
+// orchestratorMiddlewares returns the ADK middleware stack every runner is
+// built with, IN ORDER. The order is load-bearing in three places:
+//
+//  1. newLoopGuardMiddleware is FIRST, so a turn the guard is about to stop
+//     does not spend work preparing a model call that will never go out.
+//  2. newResultHygiene runs after the guard and BEFORE the recorder, so what
+//     the recorder captures — and therefore what JudgeCompletion and the
+//     compactor see — is the degraded history the model was actually sent,
+//     not a pre-degradation copy that would make the T4 saving invisible
+//     downstream.
+//  3. newImageAttacher is LAST, so a native image part appended for this call
+//     is not something the hygiene pass has to reason about.
+//
+// It is a named function rather than a literal inside runnerFor so a test can
+// assert what is installed. runnerFor needs a live model to build an agent, so
+// the alternative to this seam is either an integration test with a fake
+// provider or no check at all — and "the middleware exists and is correct but
+// was never added to the slice" is this repository's dominant failure shape.
+func orchestratorMiddlewares() []adk.ChatModelAgentMiddleware {
+	return []adk.ChatModelAgentMiddleware{
+		newLoopGuardMiddleware(), newResultHygiene(), newMessageRecorder(), newImageAttacher(),
+	}
 }
 
 // filterPlanTools 返回只包含 plan-safe 工具的子集（PlanToolAllowed 白名单）。
@@ -875,6 +970,12 @@ func (o *Orchestrator) runSubAgentTurn(ctx context.Context, prompt string, allow
 		Instruction: subInstruction,
 		WorkRoot:    o.workRoot,
 		LSP:         o.lspMgr,
+		// The sub-agent inherits the loop-guard POLICY and gets its own fresh
+		// per-turn STATE (its EventsWithHistoryOpts call below runs
+		// withTurnContext, which rebinds). Without this line delegation is a
+		// budget escape hatch: an agent that has burnt its shell_run budget
+		// spawns a sub-agent and gets a full one.
+		LoopGuard: o.loopGuard,
 	})
 	if err != nil {
 		resp, gerr := o.model.Generate(ctx, []*schema.Message{schema.UserMessage(prompt)})

@@ -118,12 +118,32 @@ func NewGitHubTools(ghFactory secproc.Factory) *GitHubTools {
 // permitted` and all four github_* tools were dead out of the box. The error
 // named a tool that does not exist anywhere in the registry, which made it
 // look like a profile typo rather than a spec builder writing the wrong name.
+//
+// AllowEnv is the credential escape hatch, and `gh` is the case it exists for:
+// every child launched through secproc now has its credential variables
+// stripped by default, and gh authenticates with GH_TOKEN / GITHUB_TOKEN or
+// not at all. Both spellings are named because gh reads either, and an
+// operator who exported only GITHUB_TOKEN would otherwise see "not logged in"
+// on a machine where `gh auth status` succeeds. Note what is NOT here: no
+// provider API key, no AWS credential, no SSH agent socket — the allowlist is
+// the two names this program needs, not the operator's whole keyring.
 func ghSpec(tool string, args ...string) secproc.SecureProcessSpec {
 	return secproc.SecureProcessSpec{
 		Tool: tool, Program: "gh", Args: args,
+		AllowEnv:       ghCredentialEnv,
 		UseSandboxTier: sandbox.FullAccess, // gh needs network + gh config reads
 	}
 }
+
+// ghCredentialEnv is the exact credential set `gh` is allowed to inherit.
+//
+// GH_CONFIG_DIR is here because gh's other authentication route is the token
+// stored in its config directory, which it locates through this variable when
+// the operator has relocated it. The variable holds a PATH, not a secret; it
+// needs naming only because it ends in a word the name-based scrub treats as
+// credential material, and losing it silently sends gh looking in the wrong
+// directory.
+var ghCredentialEnv = []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR"}
 
 // ghFailure reports the error result for a `gh` invocation that did not
 // succeed, or "" when it did. Both failure shapes must be surfaced: a launch

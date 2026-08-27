@@ -21,7 +21,7 @@ import (
 func TestFSTools_Tools(t *testing.T) {
 	ft := NewFSTools("")
 	got := ft.Tools()
-	assert.Len(t, got, 7, "FSTools should have 7 tools")
+	assert.Len(t, got, 8, "FSTools should have 8 tools")
 	for _, g := range got {
 		assert.NotNil(t, g)
 	}

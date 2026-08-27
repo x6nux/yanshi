@@ -15,6 +15,7 @@ package work
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -28,6 +29,8 @@ type FakeManager struct {
 	tasks     map[string]*WorkTask
 	artifacts map[string]Artifact
 	artBytes  map[string]int64 // taskID → total artifact bytes
+	// verifyRoot mirrors Manager.verifyRoot for the L7 checklist gate.
+	verifyRoot string
 }
 
 // NewFakeManager 返回一个空的 FakeManager（map 预初始化）。
@@ -134,10 +137,36 @@ func (f *FakeManager) Finish(_ context.Context, id string, status Status, note s
 	if err := t.Status.CanTransitionTo(status); err != nil {
 		return err
 	}
+	// L7: the SAME gate the real Manager runs, via the same shared function.
+	// The fake exists to be interchangeable with the real manager in tool
+	// tests, so a gate enforced in only one of them is a gate the tests that
+	// are meant to prove it cannot see. Ordered after CanTransitionTo so the
+	// two managers reject an illegal transition with the same error either
+	// way, gate or no gate.
+	if status == StatusCompleted && len(t.Checklist.Items) > 0 {
+		verified, unmet := checklistGate(t.Checklist, f.verifyRoot, t.Gates)
+		t.Checklist = verified
+		if unmet != "" {
+			t.UpdatedAt = time.Now()
+			t.Timeline = append(t.Timeline, TimelineEntry{
+				At: t.UpdatedAt, Kind: "completion_blocked", Summary: truncate(incompleteNote(unmet), 240),
+			})
+			return fmt.Errorf("%w: %s", ErrChecklistIncomplete, unmet)
+		}
+	}
 	t.Status = status
 	t.UpdatedAt = time.Now()
 	t.Timeline = append(t.Timeline, TimelineEntry{At: t.UpdatedAt, Kind: "finished", Summary: truncate(note, 240)})
 	return nil
+}
+
+// WithVerifyRoot sets the root L7 file_exists conditions resolve against,
+// mirroring Manager.WithVerifyRoot, and returns f for chaining.
+func (f *FakeManager) WithVerifyRoot(root string) *FakeManager {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.verifyRoot = root
+	return f
 }
 
 // Cancel 校验转移并清空 broker id（如果存在）。Fake 不模拟外部 broker。
