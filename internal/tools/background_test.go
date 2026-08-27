@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/x6nux/yanshi/internal/guard"
+	"github.com/x6nux/yanshi/internal/secrets"
 )
 
 // slowStream is a StreamFunc that emits `chunks` pieces of text with `gap`
@@ -416,6 +417,56 @@ func TestBackgroundResultIsSpilled(t *testing.T) {
 	got := mgr.List()[0].Result
 	assert.Less(t, len(got), SpillThreshold, "the reinjected result must be capped")
 	assert.Contains(t, got, "[spilled:", "and must point at the full text")
+}
+
+// TestOffloadedResultIsRedactedBeforeFinish is the fix for a real leak found
+// in W-A-02 fix round 1: InvokableRun's redactForModel choke point only sees
+// the FOREGROUND path. A call promoted to the background finishes inside
+// pumpOffloadable, which calls handle.Finish directly — bypassing
+// InvokableRun entirely — and BackgroundRun.Result then reaches the model
+// verbatim via hygiene.go's CompletionNotice injection. This drives the real
+// offload path (real BackgroundManager, real GuardedTool.Stream ->
+// streamWithOffload -> pumpOffloadable) end to end and asserts on
+// BackgroundRun.Result, which is exactly the string handle.Finish received.
+// It fails if the redactForModel call at guard_offload.go's handle.Finish
+// site is reverted.
+func TestOffloadedResultIsRedactedBeforeFinish(t *testing.T) {
+	mgr := NewBackgroundManager()
+	t.Cleanup(func() { mgr.Close() })
+
+	const key = "sk-test-DEADBEEFdeadbeef0123456789"
+	r := secrets.NewRedactor()
+	r.Register(key)
+	ctx := WithRedactor(bgCtx(t, mgr), r)
+
+	tool := NewGuardedTool("shell_run", "Bash", "d", 20*time.Millisecond, nil,
+		func(ctx context.Context, _ string) <-chan ToolChunk {
+			ch := make(chan ToolChunk)
+			go func() {
+				defer close(ch)
+				time.Sleep(60 * time.Millisecond) // past the 20ms foreground deadline
+				select {
+				case ch <- ToolChunk{Result: "OPENAI_API_KEY=" + key + "\nPATH=/usr/bin"}:
+				case <-ctx.Done():
+				}
+			}()
+			return ch
+		})
+
+	out, err := tool.InvokableRun(ctx, `{}`)
+	require.NoError(t, err)
+	require.Contains(t, out, "moved to the background")
+
+	require.Eventually(t, func() bool {
+		runs := mgr.List()
+		return len(runs) == 1 && runs[0].State.IsTerminal()
+	}, 2*time.Second, 10*time.Millisecond)
+
+	got := mgr.List()[0].Result
+	assert.NotContains(t, got, key,
+		"a registered secret reached BackgroundRun.Result unredacted — this is the "+
+			"exact leak CompletionNotice then forwards to the model verbatim")
+	assert.Contains(t, got, "PATH=/usr/bin", "redaction must not eat the rest of the output")
 }
 
 // TestBackgroundToolsQueryTheManager covers the three model-facing tools.
