@@ -48,6 +48,24 @@ func TestParseFTSTermsStripsQuotesAndSplitsOnOR(t *testing.T) {
 	require.Nil(t, parseFTSTerms(""))
 }
 
+// TestParseFTSTermsHandlesMixedAndBareBooleanQueries covers the two shapes the
+// first version got silently wrong. Both are shapes the MODEL is instructed to
+// produce: history_search's own error message tells it to "use double quotes
+// for phrases, OR / NOT for boolean terms", and nothing requires it to quote
+// every term.
+func TestParseFTSTermsHandlesMixedAndBareBooleanQueries(t *testing.T) {
+	require.Equal(t, []string{"张伟", "项目"}, parseFTSTerms(`"张伟" OR 项目`),
+		"the unquoted half of a mixed query was dropped, silently, with no error")
+	require.Equal(t, []string{"张伟", "项目"}, parseFTSTerms(`张伟 OR 项目`),
+		"a bare boolean query was LIKE'd whole, literal \" OR \" included, so it matched nothing")
+	require.Equal(t, []string{"项目", "张伟", "截止"}, parseFTSTerms(`项目 NOT "张伟" OR (截止)`),
+		"grouping parens and NOT are syntax, not content; terms keep source order")
+	require.Equal(t, []string{"gone or missing"}, parseFTSTerms(`"gone or missing"`),
+		"lowercase or is not an FTS5 operator and must stay searchable")
+	require.Equal(t, []string{"deadline", "or", "due"}, parseFTSTerms(`deadline or due`),
+		"a bare lowercase or is an ordinary term, not a dropped delimiter")
+}
+
 func TestLikeAnyTermClauseEmptyTermsMatchesNothing(t *testing.T) {
 	clause, args := likeAnyTermClause([]string{"m.content"}, nil)
 	require.Equal(t, "0", clause)

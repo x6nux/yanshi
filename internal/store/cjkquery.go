@@ -84,12 +84,28 @@ var ftsQuotedTermRe = regexp.MustCompile(`"([^"]*)"`)
 // quoted-OR string and routed it into the fallback, which then searched for
 // `"张伟" OR "项目"` as one literal substring and found nothing.
 //
-// Quoted phrases are extracted whole via regexp, so a phrase that happens to
-// contain the substring " OR " or a bare double quote is not mistaken for a
-// delimiter: the quote pairs are found first, before anything is split on
-// OR. An unquoted query — the shape a query typed directly without FTS
-// syntax takes — is treated as a single term, matching what MATCH itself
-// does with a bare word or phrase.
+// Quoted phrases are extracted whole, so a phrase that happens to contain the
+// substring " OR " or a bare double quote is not mistaken for a delimiter: the
+// quote pairs are located first, and only the text BETWEEN them is tokenized.
+//
+// Mixed and unquoted queries are tokenized rather than taken whole. The first
+// version handled only the fully-quoted shape and dropped everything else,
+// which produced two silent failures on queries the model is actively taught
+// to write (history_search's own error text advertises `OR` / `NOT`):
+//
+//	`"张伟" OR 项目`  → ["张伟"]            — 项目 vanished, no error
+//	`张伟 OR 项目`    → ["张伟 OR 项目"]    — LIKE'd whole, including the
+//	                                        literal " OR ", so: zero hits
+//
+// Both now yield ["张伟", "项目"]. FTS5's boolean operators are uppercase-only,
+// so dropping the exact tokens OR/AND/NOT/NEAR still lets a search for the
+// English word "or" through as an ordinary term.
+//
+// The OR-of-all-terms approximation is deliberately loose where FTS5 would be
+// strict: `a b` is an implicit AND in MATCH, and NOT is an exclusion this
+// function has no way to express. Loose costs extra rows on a path that is
+// already unranked and bounded (maxCJKFallbackRows); strict-by-accident —
+// which is what LIKE'ing the raw string was — costs the whole result set.
 //
 // The return value is never empty for a non-empty input: a query that
 // consists only of quote/OR syntax with no content between the quotes (a
@@ -103,18 +119,47 @@ func parseFTSTerms(query string) []string {
 	if query == "" {
 		return nil
 	}
-	if matches := ftsQuotedTermRe.FindAllStringSubmatch(query, -1); len(matches) > 0 {
-		var terms []string
-		for _, m := range matches {
-			if t := strings.TrimSpace(m[1]); t != "" {
-				terms = append(terms, t)
-			}
-		}
-		if len(terms) > 0 {
-			return terms
+	var terms []string
+	add := func(s string) {
+		if s = strings.TrimSpace(s); s != "" {
+			terms = append(terms, s)
 		}
 	}
-	return []string{query}
+	// Walk the quoted spans in order, tokenizing the unquoted text between
+	// them. Locating the quotes first is what keeps ` OR ` inside a phrase
+	// from being read as a delimiter.
+	last := 0
+	for _, loc := range ftsQuotedTermRe.FindAllStringSubmatchIndex(query, -1) {
+		for _, tok := range strings.Fields(query[last:loc[0]]) {
+			add(trimFTSToken(tok))
+		}
+		add(query[loc[2]:loc[3]])
+		last = loc[1]
+	}
+	for _, tok := range strings.Fields(query[last:]) {
+		add(trimFTSToken(tok))
+	}
+	if len(terms) == 0 {
+		return []string{query}
+	}
+	return terms
+}
+
+// ftsOperators are the FTS5 MATCH keywords that are syntax, not content. FTS5
+// recognises them only in uppercase, so a lowercase "or" stays searchable as
+// an ordinary word.
+var ftsOperators = map[string]bool{"OR": true, "AND": true, "NOT": true, "NEAR": true}
+
+// trimFTSToken strips the grouping punctuation FTS5 allows around a bare term
+// and returns "" for a token that is pure syntax. Returning "" rather than the
+// token itself matters: a literal "OR" in the LIKE pattern is what made
+// `张伟 OR 项目` match nothing at all.
+func trimFTSToken(tok string) string {
+	tok = strings.Trim(tok, "()")
+	if ftsOperators[tok] {
+		return ""
+	}
+	return tok
 }
 
 // likeAnyTermClause builds a SQL fragment (plus its bound arguments) that

@@ -15,13 +15,13 @@ import (
 // complete with zero production callers nine times running before this).
 //
 // This test lives in internal/cli/tui rather than internal/api/http because
-// HasCommand and commandTable are TUI/client concerns; an internal/api/http
+// hasCommand and commandTable are TUI/client concerns; an internal/api/http
 // -> internal/cli/tui import would be server->client and GOV1
 // (internal/archtest/deps_test.go) rejects it.
 //
 // ledger: A2/W-A-05#1 /distill 命令在 commandTable 中注册并能触发一次蒸馏
 func TestDistillSlashCommandIsRegistered(t *testing.T) {
-	require.True(t, HasCommand("distill"), "/distill must be registered in commandTable")
+	require.True(t, hasCommand("distill"), "/distill must be registered in commandTable")
 
 	rec := &recordingSession{}
 	m := newModel(rec, "/proj")
