@@ -353,20 +353,30 @@ func (s *Store) SearchMessages(sessionID, query string, limit int) ([]MessageSea
 // descending (newest first); no FTS5 snippet(), so cjkSnippet builds one by
 // hand. Both beat the status quo of zero hits. maxCJKFallbackRows bounds the
 // scan on top of ORDER BY, because LIKE '%…%' is a full table scan.
+//
+// query is FTS5 MATCH syntax, same as the non-CJK path — history_search's own
+// error message tells the model to "use double quotes for phrases, OR / NOT
+// for boolean terms", so a CJK history_search query can arrive quoted and
+// OR'd exactly like memory_autorecall's. parseFTSTerms recovers the terms and
+// likeAnyTermClause matches a row if any of them is found in either column,
+// which is the LIKE-side equivalent of MATCH's OR.
 func (s *Store) searchMessagesCJK(sessionID, query string, limit int) ([]MessageSearchHit, error) {
-	pattern, esc := likePattern(query)
+	terms := parseFTSTerms(query)
+	clause, args := likeAnyTermClause([]string{"m.content", "m.tool_args"}, terms)
 	n := clampLimit(limit)
 	if n > maxCJKFallbackRows {
 		n = maxCJKFallbackRows
 	}
+	all := append([]any{sessionID}, args...)
+	all = append(all, n)
 	rows, err := s.DB.Query(
 		`SELECT `+prefixed(messageColumns, "m.")+`
 		 FROM messages m
 		 WHERE m.session_id = ?
-		   AND (m.content LIKE ? ESCAPE ? OR m.tool_args LIKE ? ESCAPE ?)
+		   AND (`+clause+`)
 		 ORDER BY m.seq DESC
 		 LIMIT ?`,
-		sessionID, pattern, esc, pattern, esc, n,
+		all...,
 	)
 	if err != nil {
 		return nil, err
@@ -378,7 +388,7 @@ func (s *Store) searchMessagesCJK(sessionID, query string, limit int) ([]Message
 		if err := rows.Scan(scanTargets(&h.Message)...); err != nil {
 			return nil, err
 		}
-		h.Snippet = cjkSnippet(h.Content, query)
+		h.Snippet = snippetForTerms(h.Content, terms)
 		out = append(out, h)
 	}
 	return out, rows.Err()

@@ -38,6 +38,22 @@ func TestLikePatternEscapesTheEscapeChar(t *testing.T) {
 		"an unescaped backslash would make the next character literal and change the match")
 }
 
+func TestParseFTSTermsStripsQuotesAndSplitsOnOR(t *testing.T) {
+	require.Equal(t, []string{"张伟"}, parseFTSTerms(`"张伟"`))
+	require.Equal(t, []string{"张伟", "项目"}, parseFTSTerms(`"张伟" OR "项目"`))
+	require.Equal(t, []string{"张伟"}, parseFTSTerms("张伟"),
+		"an unquoted query is one term, matching what MATCH does with a bare word")
+	require.Equal(t, []string{"go OR die"}, parseFTSTerms(`"go OR die"`),
+		"OR inside a quoted phrase is data, not a delimiter")
+	require.Nil(t, parseFTSTerms(""))
+}
+
+func TestLikeAnyTermClauseEmptyTermsMatchesNothing(t *testing.T) {
+	clause, args := likeAnyTermClause([]string{"m.content"}, nil)
+	require.Equal(t, "0", clause)
+	require.Empty(t, args)
+}
+
 func TestCJKSnippetBoundsTheWindow(t *testing.T) {
 	// Padding on each side must exceed cjkSnippetRadius, or the "window" covers
 	// the whole string and the snippet is not actually a window.

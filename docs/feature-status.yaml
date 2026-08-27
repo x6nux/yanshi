@@ -1660,7 +1660,7 @@
   acceptance: "中文词查询在 history_search 上返回非零命中；SearchMemory 与 memory_autorecall 走同一检索路径因而同时生效；英文查询的命中集合与本改动前逐条一致；CJK 回退路径有结果数上限"
   evidence:
     "1": "internal/store::TestSearchMessagesFindsChineseWords"
-    "2": "internal/store::TestSearchMemoryFindsChineseWords"
+    "2": "internal/store::TestSearchMemoryFindsChineseWords; internal/tools::TestAutoRecall_FindsChineseMemory"
     "3": "internal/store::TestSearchMessagesEnglishPathIsUnchanged"
     "4": "internal/store::TestSearchMessagesCJKFallbackIsBounded"
 

@@ -214,6 +214,16 @@ func (s *Store) SearchMemoryRanked(query string, limit int, dims MemoryFilter) (
 // absolute threshold. Fabricating a score would let a caller further up the
 // stack mistake it for a real relevance judgement. Ordering falls back to
 // created_at DESC instead.
+//
+// query is FTS5 MATCH syntax, not a literal LIKE pattern. This matters
+// concretely: memory_autorecall's ftsQuery renders queries as `"term1" OR
+// "term2"`, and that string reaching hasCJK routes it straight into this
+// function. Matching it as one literal substring (the original version of
+// this fallback did) requires a row to contain the quote characters and the
+// word OR, which no real memory ever does — memory_autorecall was silently
+// dead in Chinese even after this fallback existed. parseFTSTerms recovers
+// the OR'd terms and likeAnyTermClause matches a row if any of them is
+// present, which is the LIKE-side equivalent of MATCH's OR.
 func (s *Store) searchMemoryCJK(query string, limit int, dims MemoryFilter) ([]MemoryHit, error) {
 	if limit <= 0 {
 		limit = 10
@@ -221,13 +231,15 @@ func (s *Store) searchMemoryCJK(query string, limit int, dims MemoryFilter) ([]M
 	if limit > maxCJKFallbackRows {
 		limit = maxCJKFallbackRows
 	}
-	pattern, esc := likePattern(query)
-	cond, args := dims.where("m.")
+	terms := parseFTSTerms(query)
+	clause, likeArgs := likeAnyTermClause([]string{"m.content"}, terms)
+	cond, condArgs := dims.where("m.")
 	q := `SELECT ` + prefixed(memoryColumns, "m.") + `
 	      FROM memories m
-	      WHERE m.content LIKE ? ESCAPE ?` + cond + `
+	      WHERE (` + clause + `)` + cond + `
 	      ORDER BY m.created_at DESC LIMIT ?`
-	all := append([]any{pattern, esc}, args...)
+	all := append([]any{}, likeArgs...)
+	all = append(all, condArgs...)
 	all = append(all, limit)
 	rows, err := s.DB.Query(q, all...)
 	if err != nil {
