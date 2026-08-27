@@ -269,8 +269,26 @@ func (r *ResilientChatModel) runStream(ctx context.Context, in []*schema.Message
 		lastErr                    error
 	)
 	for {
-		sr, openErr := r.openStreamChain(ctx, in, opts)
+		// attemptCtx is a per-attempt child of ctx so the watchdog can cancel
+		// JUST this attempt's provider call on timeout, without touching ctx
+		// itself (which callers still use for turn-level cancellation). This
+		// is what lets a timeout actually unblock the goroutine parked in
+		// sr.Recv (see newWatchdogReader's doc comment) instead of merely
+		// abandoning it: cancelling attemptCtx aborts the in-flight HTTP
+		// request in every provider in the chain (AnthropicModel and
+		// openaiResponsesModel both build their request with
+		// http.NewRequestWithContext(ctx, ...); the eino-ext openai provider
+		// passes ctx into CreateChatCompletionStream), which makes the
+		// provider's own read goroutine observe an error and run its
+		// deferred sw.Close()/sw.Send() — unblocking Recv from the writer
+		// side, the only side that actually can (see stream.go: closeSend
+		// closes the items channel; closeRecv, which is what sr.Close() on
+		// OUR side calls, closes an unrelated channel recv() never selects
+		// on).
+		attemptCtx, cancelAttempt := context.WithCancel(ctx)
+		sr, openErr := r.openStreamChain(attemptCtx, in, opts)
 		if openErr != nil {
+			cancelAttempt()
 			lastErr = openErr
 			if isRetryableStreamErr(ctx, openErr) && errAttempts < r.cfg.MaxRetries {
 				errAttempts++
@@ -287,10 +305,15 @@ func (r *ResilientChatModel) runStream(ctx context.Context, in []*schema.Message
 		// see ResilientConfig.FirstChunkTimeout for why that matters.
 		var rd streamRecver = sr
 		if r.cfg.FirstChunkTimeout > 0 || r.cfg.IdleTimeout > 0 {
-			rd = newWatchdogReader(sr, r.cfg.FirstChunkTimeout, r.cfg.IdleTimeout)
+			rd = newWatchdogReader(sr, r.cfg.FirstChunkTimeout, r.cfg.IdleTimeout, cancelAttempt)
 		}
 		outcome, recvErr := consumeStream(ctx, rd, sw, &deliveredTools)
 		sr.Close()
+		// Always cancel: on a clean EOF/normal error this just releases
+		// attemptCtx's bookkeeping a little early (harmless, ctx.Done()
+		// unrelated); on a watchdog timeout the watchdog already called this
+		// same func, and CancelFunc is idempotent.
+		cancelAttempt()
 		switch outcome {
 		case streamDone:
 			return

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -848,5 +849,75 @@ func TestUnwrapRetryableError(t *testing.T) {
 	re := &RetryableModelError{Err: inner}
 	if !errors.Is(re, inner) {
 		t.Fatal("errors.Is must traverse Unwrap")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// hangingStreamModel: proves runStream wires a per-attempt cancellable
+// context all the way into the provider chain, not just into the standalone
+// watchdogReader unit exercised by streamwatchdog_test.go.
+// ---------------------------------------------------------------------------
+
+// hangingStreamModel mimics a gateway that accepts the connection and then
+// sends nothing: Stream returns immediately and its goroutine writes nothing
+// until its own ctx is cancelled — the same shape AnthropicModel,
+// openaiResponsesModel (both built on http.NewRequestWithContext), and
+// eino-ext's openai ACL client (ctx threaded into
+// CreateChatCompletionStream) all share. unblocked closes the moment this
+// model FIRST observes a ctx.Done(), which is the only signal a wiring bug
+// in runStream (e.g. passing the turn ctx instead of the per-attempt one to
+// openStreamChain) could break. A retrying caller invokes Stream once per
+// attempt, each with its own per-attempt ctx, so the close is guarded by
+// sync.Once rather than assuming exactly one call.
+type hangingStreamModel struct {
+	unblocked chan struct{}
+	once      sync.Once
+}
+
+func newHangingStreamModel() *hangingStreamModel {
+	return &hangingStreamModel{unblocked: make(chan struct{})}
+}
+
+func (m *hangingStreamModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	return schema.AssistantMessage("unused", nil), nil
+}
+
+func (m *hangingStreamModel) Stream(ctx context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	sr, sw := schema.Pipe[*schema.Message](1)
+	go func() {
+		defer sw.Close()
+		<-ctx.Done()
+		m.once.Do(func() { close(m.unblocked) })
+	}()
+	return sr, nil
+}
+
+var _ model.BaseChatModel = (*hangingStreamModel)(nil)
+
+// Not itself ledger evidence (A2/W-A-06#1's evidence citation stays on
+// TestWatchdogFirstChunkTimeout) — this is the wiring half of the same fix:
+// streamwatchdog_test.go pins that watchdogReader.Recv calls the cancel func
+// it is GIVEN; this pins that runStream actually GIVES it a cancel tied to
+// the context handed to the provider — the gap a stray plain `ctx` left in
+// openStreamChain's call would slip through undetected by the unit tests
+// alone.
+func TestResilientModel_StreamIdleTimeoutCancelsProviderContext(t *testing.T) {
+	m := newHangingStreamModel()
+	cfg := fastEinoCfg()
+	cfg.MaxRetries = 1 // NewResilientModel defaults MaxRetries<=0 to 10; keep this small but positive so the test stays fast even across two attempts
+	cfg.FirstChunkTimeout = 20 * time.Millisecond
+	r, err := NewResilientModel([]model.BaseChatModel{m}, cfg)
+	require.NoError(t, err)
+
+	sr, err := r.Stream(context.Background(), []*schema.Message{schema.UserMessage("x")})
+	require.NoError(t, err)
+	defer sr.Close()
+	_, recvErr := sr.Recv()
+	require.ErrorIs(t, recvErr, ErrStreamIdle)
+
+	select {
+	case <-m.unblocked:
+	case <-time.After(time.Second):
+		t.Fatal("provider's Stream ctx was never cancelled — runStream is not threading the watchdog's cancel into the chain")
 	}
 }

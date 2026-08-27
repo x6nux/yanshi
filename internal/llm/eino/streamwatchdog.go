@@ -1,6 +1,7 @@
 package eino
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -47,10 +48,11 @@ var ErrStreamIdle error = &RetryableModelError{Err: errors.New("eino: stream idl
 // the SAME function consumeStream uses to drop no-op deltas — not a second,
 // possibly-divergent copy of that logic.
 type watchdogReader struct {
-	sr    *schema.StreamReader[*schema.Message]
-	first time.Duration
-	idle  time.Duration
-	begun bool // has a content-bearing chunk arrived yet?
+	sr     *schema.StreamReader[*schema.Message]
+	first  time.Duration
+	idle   time.Duration
+	cancel context.CancelFunc // aborts the provider call that owns sr; see Recv
+	begun  bool               // has a content-bearing chunk arrived yet?
 
 	// deadline is the absolute time by which the next content-bearing chunk
 	// must arrive. It is deliberately NOT re-armed on every Recv call — only
@@ -68,8 +70,12 @@ type watchdogReader struct {
 // zero value disables that budget. When both are zero, Recv behaves exactly
 // like calling sr.Recv directly — same call, no goroutine, no timer — so
 // leaving both unset reproduces pre-W-A-06 behaviour byte-for-byte.
-func newWatchdogReader(sr *schema.StreamReader[*schema.Message], first, idle time.Duration) *watchdogReader {
-	return &watchdogReader{sr: sr, first: first, idle: idle}
+//
+// cancel aborts the provider call that produced sr (the per-attempt context
+// passed to that provider's Stream method) — see Recv's doc comment for why
+// this, not sr.Close(), is what actually releases the goroutine on timeout.
+func newWatchdogReader(sr *schema.StreamReader[*schema.Message], first, idle time.Duration, cancel context.CancelFunc) *watchdogReader {
+	return &watchdogReader{sr: sr, first: first, idle: idle, cancel: cancel}
 }
 
 // budget returns the timeout that applies to the NEXT Recv: first before any
@@ -93,10 +99,23 @@ func (w *watchdogReader) budget() time.Duration {
 // gateway this defence exists to catch.
 //
 // sr.Recv is a blocking call with no context form, so a non-zero budget races
-// it against a timer in a goroutine. On timeout that goroutine is left
-// blocked in Recv on purpose: the caller closes sr once it gives up on the
-// stream, which unblocks Recv and lets the goroutine exit. The channel is
-// buffered so the send never blocks even if nothing is left to receive it.
+// it against a timer in a goroutine.
+//
+// On timeout, w.cancel is called before returning: it is NOT sr.Close(), and
+// that distinction is load-bearing. sr wraps an eino schema.stream, whose
+// recv() blocks purely on <-items; StreamReader.Close() (receiver-side)
+// closes an unrelated "closed" channel that recv() never selects on, so it
+// does not unblock a Recv already in flight — only the WRITER closing items
+// (via StreamWriter.Close/Send) can do that. w.cancel is the per-attempt
+// context.CancelFunc threaded down into the provider's Stream(ctx, ...) call
+// that produced sr; cancelling it aborts that provider's in-flight HTTP
+// request, which makes the provider's own read goroutine observe an error
+// and run its (always-present, in every provider this ships with) deferred
+// StreamWriter.Close/Send — that is what unblocks the goroutine leaked
+// below, not this function returning. The leaked goroutine's own exit is
+// therefore bounded by the provider's request-abort latency, not by this
+// call, which is why Recv does not wait for it: the channel is buffered so
+// the eventual send never blocks even if nothing is left to receive it.
 func (w *watchdogReader) Recv() (*schema.Message, error) {
 	d := w.budget()
 	if d <= 0 {
@@ -109,6 +128,7 @@ func (w *watchdogReader) Recv() (*schema.Message, error) {
 	}
 	remaining := time.Until(w.deadline)
 	if remaining <= 0 {
+		w.cancel()
 		return nil, ErrStreamIdle
 	}
 
@@ -129,6 +149,7 @@ func (w *watchdogReader) Recv() (*schema.Message, error) {
 		w.note(r.msg, r.err)
 		return r.msg, r.err
 	case <-timer.C:
+		w.cancel()
 		return nil, ErrStreamIdle
 	}
 }
