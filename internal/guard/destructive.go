@@ -1,7 +1,6 @@
 package guard
 
 import (
-	"os"
 	"path"
 	"strings"
 )
@@ -49,20 +48,147 @@ var deletionPrograms = map[string]bool{
 // (lexShellLite). Commands containing a control operator (&&, ;, |, >, $(, …)
 // defer to DestructionNone so the shell-metachar HardDeny in checkShell fires
 // rather than being short-circuited by a Prompt here.
+//
+// Two obfuscations are seen THROUGH rather than refused, because the visible
+// text of a command is not always what runs (see ansic.go for the rationale):
+//
+//   - ANSI-C quoting: $'\x72\x6d -rf /' is decoded by lexShellLite as it
+//     tokenizes, so the hex spelling reaches the same verdict as the plain one.
+//     Decoding happens per TOKEN, not on the raw string, because $'...' is a
+//     QUOTING construct: its content never word-splits and never becomes a
+//     control operator, so decoding can reveal a target but can never
+//     manufacture a chain.
+//   - Shell wrappers: the inner string of `bash -c "..."` / `sh -lc "..."` is
+//     re-lexed and re-classified recursively (bounded by maxUnwrapDepth). The
+//     MOST SEVERE verdict across the wrapper and its payload wins - a wrapper
+//     can only ever add danger, never launder it away.
 func ClassifyDestruction(cmd, workdir string) Destruction {
+	return classifyDestruction(cmd, workdir, maxUnwrapDepth, true)
+}
+
+// classifyDestruction is ClassifyDestruction with two pieces of state made
+// explicit.
+//
+// depth is the wrapper-recursion budget; reaching zero stops the descent, and
+// the verdict computed so far still stands, so exhausting the budget cannot
+// turn a Catastrophic into a None.
+//
+// topLevel decides what a control operator MEANS, and the distinction is
+// load-bearing. At the top level a chained command is handed to checkShell's
+// structural metacharacter HardDeny by returning DestructionNone - classifying
+// it here would short-circuit that stronger refusal with a mere Prompt. Inside
+// a wrapper payload no such handoff exists: checkShell only ever sees the OUTER
+// string, and `bash -c "ls && rm -rf /"` presents it with a metacharacter-free
+// command. So an inner chain is split and every segment is classified. Without
+// that split, chaining inside a wrapper would launder a command past both gates
+// at once.
+func classifyDestruction(cmd, workdir string, depth int, topLevel bool) Destruction {
 	if strings.TrimSpace(cmd) == "" {
 		return DestructionNone
 	}
 	if hasControlOperator(cmd) {
-		return DestructionNone
+		if topLevel {
+			return DestructionNone
+		}
+		worst := DestructionNone
+		for _, seg := range splitControlSegments(cmd) {
+			if d := classifyDestruction(seg, workdir, depth, false); d > worst {
+				worst = d
+			}
+		}
+		return worst
+	}
+	// A chain whose operators are ANSI-C encoded reaches here with a raw string
+	// that has no metacharacter in it — so checkShell's structural HardDeny will
+	// NOT fire, and the "defer to that dimension" branch above would be
+	// deferring to nobody. `ls $'\x26\x26' rm -rf /` is exactly that shape.
+	// Since there is no stronger gate downstream to hand it to, classify the
+	// decoded segments here instead, the same way a wrapper payload is handled.
+	if topLevel {
+		if decoded, wasEncoded := decodeANSIC(cmd); wasEncoded && hasControlOperator(decoded) {
+			return classifyDestruction(decoded, workdir, depth, false)
+		}
 	}
 	program, args, ok := lexShellLite(cmd)
-	if !ok || !deletionPrograms[program] {
+	if !ok {
 		return DestructionNone
+	}
+	return classifyLexed(program, args, workdir, depth)
+}
+
+// classifyLexed grades an ALREADY-TOKENIZED command. It is split out from
+// classifyDestruction so that a prefix runner's payload can be classified
+// without being re-serialized: stripCommandPrefix hands back the inner
+// program plus its remaining argv, and re-joining those into a string to feed
+// back through the lexer would require re-quoting every operand. Any bug in
+// that re-quoting would land on the security side — `rm -rf "/my dir"` rejoined
+// as `rm -rf /my dir` becomes two targets, and `rm -rf $'\x2f'` cannot be
+// re-emitted at all once decoded. Passing the tokens straight through has no
+// such step.
+func classifyLexed(program string, args []string, workdir string, depth int) Destruction {
+	worst := DestructionNone
+	if depth > 0 {
+		if inner, isWrapper := unwrapShellCommand(program, args); isWrapper {
+			// The payload of `bash -c "..."` is a whole command in its own
+			// right. Classify it with the same workdir: the wrapper does not
+			// change which directory the deletion lands in.
+			worst = classifyDestruction(inner, workdir, depth-1, false)
+			if worst == DestructionCatastrophic {
+				return worst
+			}
+		}
+		if inner, isSu := unwrapSuCommand(program, args); isSu {
+			// `su -c "rm -rf /"` / `su root -c "…"`: same shape as a shell
+			// wrapper but with a username positional bash never allows. See
+			// unwrapSuCommand for why it is not folded into shellWrappers.
+			if d := classifyDestruction(inner, workdir, depth-1, false); d > worst {
+				worst = d
+			}
+			if worst == DestructionCatastrophic {
+				return worst
+			}
+		}
+		// COMMAND PREFIX RUNNERS: `sudo rm -rf /`, `timeout 5 rm -rf /`,
+		// `nohup rm -rf /`. The trailing argv IS another command, with no -c
+		// flag to mark it, so unwrapShellCommand cannot see it and every
+		// predicate below declined on the program word "sudo". Measured: that
+		// made `sudo rm -rf /` grade None and reach Allow under a
+		// `patterns: ["*"]` profile while the plain spelling was refused. The
+		// stripped command is classified and the MORE SEVERE verdict wins, so
+		// stripping can only reveal danger, never launder it. See
+		// prefixrunner.go.
+		if inner, innerArgs, isPrefix := stripCommandPrefix(program, args); isPrefix {
+			if d := classifyLexed(inner, innerArgs, workdir, depth-1); d > worst {
+				worst = d
+			}
+			if worst == DestructionCatastrophic {
+				return worst
+			}
+		}
+	}
+	// Storage destruction (dd onto a device, mkfs, wipefs, ...) is graded
+	// BEFORE the deletionPrograms filter, because none of those programs is a
+	// deletion program and every one of them destroys more than `rm -rf /`
+	// does. See storage.go for how the gap was measured. Placed inside the
+	// same recursion so wrapper and ANSI-C unwrapping already applies.
+	w := cleanScope(workdir)
+	if isStorageDestruction(program, args) {
+		return DestructionCatastrophic
+	}
+	if findDeleteOnCatastrophicTarget(program, args, w) {
+		return DestructionCatastrophic
+	}
+	// Recursive chmod/chown on a system root is reversible, so it prompts
+	// rather than being refused outright. See storage.go's header.
+	if isRecursiveOwnershipOnCatastrophicTarget(program, args, w) {
+		return DestructionOutOfScope
+	}
+
+	if !deletionPrograms[program] {
+		return worst
 	}
 	recursive := deleteIsRecursive(program, args)
 	targets := deleteTargets(args)
-	w := cleanScope(workdir)
 
 	// Catastrophic: recursive mass deletion of a broad/root target, the workdir
 	// itself or an ancestor of it, or a bare recursive delete with no target.
@@ -83,13 +209,71 @@ func ClassifyDestruction(cmd, workdir string) Destruction {
 			return DestructionOutOfScope
 		}
 	}
-	return DestructionNone
+	return worst
+}
+
+// splitControlSegments breaks a command on its control operators, redirections
+// and command-substitution delimiters so each executable piece can be
+// classified on its own. It is quote-aware: an operator character inside quotes
+// is data, not a separator.
+//
+// It is used ONLY for wrapper payloads (see classifyDestruction's topLevel
+// parameter). Splitting is deliberately generous - a fragment that is not a
+// command simply fails to match a deletion program and contributes
+// DestructionNone - because an extra fragment costs nothing while a missed
+// segment is a laundered `rm -rf /`.
+func splitControlSegments(cmd string) []string {
+	var segs []string
+	var cur strings.Builder
+	quote := byte(0)
+	flush := func() {
+		if strings.TrimSpace(cur.String()) != "" {
+			segs = append(segs, cur.String())
+		}
+		cur.Reset()
+	}
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			cur.WriteByte(c)
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			quote = c
+			cur.WriteByte(c)
+		case ';', '|', '&', '\n', '\r', '>', '<', '`', ')':
+			flush()
+		case '$':
+			if i+1 < len(cmd) && cmd[i+1] == '(' {
+				flush()
+				i++
+				continue
+			}
+			cur.WriteByte(c)
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	flush()
+	return segs
 }
 
 // hasControlOperator reports whether cmd contains a shell control operator or
 // redirection that checkShell rejects structurally (its metacharacter HardDeny
 // set). When true, ClassifyDestruction defers so that dimension fires instead of
 // being short-circuited. Quote-unaware, matching checkShell's own behavior.
+//
+// The quote-unawareness is what keeps the ANSI-C decoder from ever WIDENING
+// what runs. checkShell tests the raw string with the same literal set, so any
+// command whose raw text contains a metacharacter is structurally denied
+// regardless of what the decoder would have made of it. A `&&` written as
+// $'\x26\x26' therefore never reaches an allow: the decoded form is not
+// consulted here, and the raw form still carries "$'" through to a lexer that
+// treats it as one token.
 func hasControlOperator(cmd string) bool {
 	for _, m := range []string{"&&", "&", "||", ";", "|", "`", "$(", "\n", "\r", ">", "<"} {
 		if strings.Contains(cmd, m) {
@@ -105,6 +289,14 @@ func hasControlOperator(cmd string) bool {
 // drive/backslash paths — those are the destructive forms we must inspect. A
 // backslash is treated as a literal character (so "C:\" stays intact). Returns
 // ok=false for an unterminated quote or empty command.
+//
+// It also DECODES ANSI-C quoting ($'...') into the literal bytes bash would
+// produce, as part of the same pass that handles ordinary quotes. That is the
+// correct layer for it: $'...' is a quoting construct, so its content joins the
+// current token exactly as '...' content does, never word-splits, and never
+// becomes a control operator. Decoding earlier — over the whole raw string —
+// would break that invariant and let $'\x26\x26' materialize a chain that the
+// caller's control-operator check had already passed. See ansic.go.
 func lexShellLite(cmd string) (program string, args []string, ok bool) {
 	var tokens []string
 	var cur strings.Builder
@@ -129,6 +321,14 @@ func lexShellLite(cmd string) (program string, args []string, ok bool) {
 			continue
 		}
 		switch {
+		case c == '$' && i+1 < len(cmd) && cmd[i+1] == '\'':
+			lit, next, spanOK := decodeANSICSpan(cmd, i+2)
+			if !spanOK {
+				return "", nil, false // unterminated $'...' — same as any unterminated quote
+			}
+			cur.WriteString(lit)
+			inTok = true
+			i = next - 1
 		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
 			flush()
 		case c == '\'' || c == '"':
@@ -272,6 +472,13 @@ var catastrophicRoots = map[string]bool{
 // isCatastrophicTarget reports whether deleting t would be catastrophic: a
 // known system root/home/drive/wildcard, the workdir itself, or an ancestor of
 // the workdir (which would delete the whole project).
+//
+// The literal table is consulted on the RAW token and the resolved comparison
+// on the normalized one, and both halves are needed. The table catches forms
+// that have no filesystem resolution at all ("*", "~/*", "%PROGRAMDATA%" on a
+// host that does not set it); the resolved half catches the forms that only
+// become catastrophic after expansion and collapse — `rm -rf ~/foo/../..`,
+// which no literal table can enumerate.
 func isCatastrophicTarget(t, workdir string) bool {
 	raw := normLiteral(t)
 	if catastrophicRoots[raw] {
@@ -281,16 +488,58 @@ func isCatastrophicTarget(t, workdir string) bool {
 	if (len(raw) == 2 || len(raw) == 3) && raw[1] == ':' && (len(raw) == 2 || raw[2] == '/') {
 		return true
 	}
-	resolved, ok := resolveTarget(t, workdir)
-	if !ok || workdir == "" {
+	resolved, ok := normalizePath(t, workdir)
+	if !ok {
+		return false
+	}
+	// A resolved path that lands on a system root or a home root is
+	// catastrophic no matter how it was spelled. This is the half that closes
+	// the collapse bypass: "~/foo/../.." normalizes to the parent of the home
+	// directory, which the literal table never sees.
+	if resolvedIsCatastrophicRoot(resolved) {
+		return true
+	}
+	if workdir == "" {
 		return false
 	}
 	w := cleanScope(workdir)
-	if resolved == w {
+	if samePath(resolved, w) {
 		return true // deleting the workdir root itself
 	}
-	if strings.HasPrefix(w, resolved+"/") {
-		return true // deleting an ancestor of the workdir
+	return isAncestorOf(resolved, w) // deleting an ancestor of the workdir
+}
+
+// resolvedCatastrophicRoots are absolute paths whose deletion is catastrophic
+// once a target has been fully expanded and lexically cleaned. It overlaps
+// catastrophicRoots on purpose: that table matches the raw SPELLING (including
+// unresolvable forms like "*"), this one matches the RESOLVED location, and a
+// collapse attack is only visible to the second.
+var resolvedCatastrophicRoots = map[string]bool{
+	"/":    true,
+	"/etc": true, "/usr": true, "/var": true, "/bin": true, "/sbin": true,
+	"/boot": true, "/lib": true, "/lib64": true, "/opt": true, "/dev": true,
+	"/proc": true, "/sys": true, "/home": true, "/users": true, "/root": true,
+	"/system": true, "/private": true, "/library": true, "/applications": true,
+	"/volumes": true, "/mnt": true, "/media": true, "/srv": true, "/run": true,
+}
+
+// resolvedIsCatastrophicRoot reports whether a fully normalized path names a
+// system root, a drive root, a whole UNC share, or the user's home directory.
+func resolvedIsCatastrophicRoot(resolved string) bool {
+	folded := foldForDeny(resolved)
+	if resolvedCatastrophicRoots[folded] {
+		return true
+	}
+	// A volume prefix with nothing (or only a root slash) after it is a whole
+	// drive or a whole UNC share. normalizePath emits exactly one spelling for
+	// each, so this is an equality test rather than a family of patterns.
+	if vol, rest := splitVolume(resolved); vol != "" && strings.Trim(rest, "/") == "" {
+		return true
+	}
+	if home := homeDir(); home != "" {
+		if h, ok := normalizePath(home, ""); ok && samePath(resolved, h) {
+			return true // wiping the entire home directory
+		}
 	}
 	return false
 }
@@ -299,65 +548,28 @@ func isCatastrophicTarget(t, workdir string) bool {
 // working directory. Absolute targets with an unknown boundary (workdir=="")
 // are treated as outside (fail-safe).
 func resolvesOutsideWorkdir(t, workdir string) bool {
-	resolved, ok := resolveTarget(t, workdir)
+	resolved, ok := normalizePath(t, workdir)
 	if !ok {
 		return false
 	}
 	if workdir == "" {
 		return true
 	}
-	w := cleanScope(workdir)
-	if resolved == w {
-		return false
-	}
-	return !strings.HasPrefix(resolved, w+"/")
+	return !isWithin(resolved, cleanScope(workdir))
 }
 
-// resolveTarget resolves a deletion target to a normalized absolute-ish forward
-// slash path for scope comparison. It expands ~/$HOME/%USERPROFILE%, converts
-// backslashes to forward slashes, joins relative targets against workdir, and
-// lexically cleans . and .. It does NOT touch the filesystem (the target need
-// not exist; we classify intent). Returns ok=false for a relative target with
-// no workdir.
-func resolveTarget(t, workdir string) (string, bool) {
-	t = strings.Trim(t, `"'`)
-	if t == "" {
-		return "", false
-	}
-	// homeDir tries HOME first (Unix/macOS), then USERPROFILE (Windows).
-	homeDir := os.Getenv("HOME")
-	if homeDir == "" {
-		homeDir = os.Getenv("USERPROFILE")
-	}
-	switch {
-	case t == "~" || strings.HasPrefix(t, "~/"):
-		if homeDir == "" {
-			return "", false
-		}
-		t = homeDir + t[1:]
-	case t == "$HOME" || strings.HasPrefix(t, "$HOME/"):
-		if homeDir == "" {
-			return "", false
-		}
-		t = homeDir + strings.TrimPrefix(t, "$HOME")
-	}
-	t = strings.ReplaceAll(t, "\\", "/")
-	if !(strings.HasPrefix(t, "/") || isDrivePath(t)) {
-		if workdir == "" {
-			return "", false
-		}
-		t = strings.ReplaceAll(workdir, "\\", "/") + "/" + t
-	}
-	return path.Clean(t), true
-}
-
-// cleanScope normalizes the workdir the same way resolveTarget normalizes
-// targets, so prefix comparisons are consistent.
+// cleanScope normalizes the workdir the same way normalizePath normalizes
+// targets, so prefix comparisons are consistent. The workdir is supplied by the
+// shell tool rather than by the model, so it needs no relative-path fallback.
 func cleanScope(workdir string) string {
 	if workdir == "" {
 		return ""
 	}
-	return path.Clean(strings.ReplaceAll(workdir, "\\", "/"))
+	normalized, ok := normalizePath(workdir, "")
+	if !ok {
+		return path.Clean(strings.ReplaceAll(workdir, `\`, "/"))
+	}
+	return normalized
 }
 
 func normLiteral(t string) string {
@@ -373,8 +585,4 @@ func normLiteral(t string) string {
 		t = "/"
 	}
 	return t
-}
-
-func isDrivePath(t string) bool {
-	return len(t) >= 3 && t[1] == ':' && (t[2] == '/' || t[2] == '\\')
 }

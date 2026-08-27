@@ -234,8 +234,14 @@ var managedProxyKeys = []string{
 }
 
 // ManagedEnv is the convenience wrapper for child-process spawning: it
-// starts from os.Environ() and applies PrepareEnv in one call so the
-// SecureProcessFactory (Task 14) has a single helper to call.
+// starts from os.Environ() and applies PrepareEnv in one call.
+//
+// It does NOT strip credentials. os.Environ() carries whatever the operator
+// exported — provider API keys, cloud credentials, VCS tokens — and this
+// function hands all of it to the child. Callers spawning an untrusted program
+// want ManagedEnvWithPolicy instead, which takes the per-spawn allowlist and
+// removes everything else. This one survives for callers whose child is yanshi
+// itself or a trusted helper, where the host environment is the point.
 func ManagedEnv(proxyURL string) []string { return PrepareEnv(os.Environ(), proxyURL) }
 
 // serveConnect gates a CONNECT on its target host and, when allowed, splices

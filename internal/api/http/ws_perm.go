@@ -409,3 +409,67 @@ func (cs *connSession) latestUserMessage() string {
 	}
 	return ""
 }
+
+// sessionRuleRecorder is the slice of the orchestrator that S9 needs: turn one
+// answered shell prompt into (or out of) a session rule.
+//
+// An interface rather than *orchestrator.Orchestrator so the WS tests can
+// count calls without standing up a model, a tool registry and a runner —
+// which is the shape of test that makes a "zero readers" regression easy to
+// reintroduce, because the expensive setup is exactly what gets dropped.
+type sessionRuleRecorder interface {
+	ApproveShellForSession(connectionSessionID, command string) bool
+	DemoteShellForSession(connectionSessionID, command string) bool
+}
+
+// recordSessionApproval feeds one answered permission prompt back into the
+// connection's approval rule set (S9), so a long goal loop stops asking about
+// `go test ./internal/a`, `./internal/b`, `./internal/c` one prompt at a time.
+//
+// This is THE consumer that internal/guard/generalize.go never had. Everything
+// that file implements — the widening, the high-risk verb refusal, the
+// irreversible demotion — described behaviour nothing could produce until this
+// call existed.
+//
+// Only SHELL prompts participate. req.Shell is empty for every other tool, and
+// a generalized rule is an execpolicy rule, which is a statement about a
+// program and its argument vector; there is nothing for it to say about
+// fs_write.
+//
+// The mapping is deliberately asymmetric:
+//
+//   - ALLOW (in any of its four spellings) widens. The user said yes to this
+//     command shape.
+//   - DENY demotes, IRREVERSIBLY for the session. A refusal inside a family a
+//     previous approval widened is direct evidence that the widening was
+//     wrong, and the only heuristic available to re-widen it later is the one
+//     that just produced the bad rule.
+//
+// A prompt that TIMED OUT arrives here as PermissionDeny too, and demoting on
+// it is the conservative reading rather than a bug: an unattended connection
+// that stops answering is not evidence for keeping a widened rule alive.
+//
+// Scope caveat, repeated from orchestrator/sessionrules.go because this is
+// where an operator would look: WithSessionRules is a no-op on a profile with
+// no shell.rules, so this changes nothing for the factory-default coding
+// profile. It is live for the operator profile.
+func recordSessionApproval(rec sessionRuleRecorder, connectionSessionID string,
+	req tools.PermissionRequest, decision tools.PermissionDecision) {
+	if rec == nil || connectionSessionID == "" || req.Shell == "" {
+		return
+	}
+	// A force-prompt or approval-required tool must ask EVERY time; recording
+	// a rule for one would be a standing grant for a call whose whole contract
+	// is that it has none. Neither reaches Authorize's approval manager for the
+	// same reason.
+	if req.ForcePrompt || req.ApprovalRequired || req.Force {
+		return
+	}
+	switch decision {
+	case tools.PermissionAllow, tools.PermissionAlwaysAllow,
+		tools.PermissionAllowSession, tools.PermissionAllowPersistent:
+		rec.ApproveShellForSession(connectionSessionID, req.Shell)
+	default:
+		rec.DemoteShellForSession(connectionSessionID, req.Shell)
+	}
+}

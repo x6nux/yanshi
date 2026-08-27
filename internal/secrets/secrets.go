@@ -82,19 +82,26 @@ func (r *Redactor) Register(secret string) {
 	})
 }
 
-// Redact replaces every registered secret substring in s with "[REDACTED]".
-// Concurrent-safe. Returns s unchanged if no secrets registered.
+// Redact replaces every registered secret substring in s with "[REDACTED]",
+// and then every vendor-shaped credential token that was never registered
+// (see patternredact.go for the shapes and for why both halves are needed).
+//
+// The registry pass runs FIRST. A registered secret is known-exact, so
+// replacing it before the shape scan means a credential yanshi itself resolved
+// is never left half-matched by a pattern that happens to cover a prefix of it.
+//
+// Concurrent-safe. An empty registry no longer means "return s unchanged":
+// that early return was correct when registration was the only mechanism, and
+// keeping it would have made the pattern pass dead in exactly the processes
+// that register nothing.
 func (r *Redactor) Redact(s string) string {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if len(r.secrets) == 0 {
-		return s
-	}
 	out := s
 	for _, secret := range r.secrets {
 		out = strings.ReplaceAll(out, secret, "[REDACTED]")
 	}
-	return out
+	r.mu.RUnlock()
+	return RedactPatterns(out)
 }
 
 // SafeError wraps err so that Error() is redacted but Unwrap() returns the
@@ -119,9 +126,13 @@ func (e *safeError) Unwrap() error { return e.cause }
 // This is required at WS/SSE boundaries: json.Marshal escapes quotes,
 // backslashes and control characters, so replacing only the raw spelling
 // would miss a key such as `abc"def` after marshal.
+//
+// The vendor-shape pass runs on the marshalled text too. It needs no escaped
+// spelling of its own: every character class in credentialPatterns is drawn
+// from base62 plus "-_.:/@", none of which json.Marshal escapes, so a token
+// that matches before marshalling matches identically after it.
 func (r *Redactor) RedactJSON(data []byte) []byte {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	out := string(data)
 	for _, secret := range r.secrets {
 		quoted := strconv.Quote(secret)
@@ -129,7 +140,8 @@ func (r *Redactor) RedactJSON(data []byte) []byte {
 		out = strings.ReplaceAll(out, secret, "[REDACTED]")
 		out = strings.ReplaceAll(out, escaped, "[REDACTED]")
 	}
-	return []byte(out)
+	r.mu.RUnlock()
+	return []byte(RedactPatterns(out))
 }
 
 // SafeLogger is the only stderr/log sink introduced by D3. It formats first,

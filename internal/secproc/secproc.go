@@ -42,6 +42,19 @@ type SecureProcessSpec struct {
 	Dir            string
 	Env            []string
 	UseSandboxTier sandbox.AccessTier
+
+	// AllowEnv names the credential-bearing environment variables THIS
+	// invocation legitimately needs. Empty (the zero value) means the child
+	// gets no credentials at all, which is the correct default for every
+	// untrusted program: shell_run, ACP agents and the model-reachable
+	// diagnostics tools have no business reading the operator's provider keys.
+	//
+	// Declared per-spawn rather than per-profile because the need is a property
+	// of the PROGRAM, not of the permission level: `gh` cannot authenticate
+	// without GH_TOKEN no matter how restrictive the profile, and shell_run has
+	// no claim on it no matter how permissive. See netpolicy.CredentialPolicy
+	// for why the allowlist is by NAME and can never be by value shape.
+	AllowEnv []string
 }
 
 // StartedProcess is what Factory.Start returns: a reaper the caller must
@@ -75,6 +88,28 @@ type StartedProcess struct {
 	PID    int
 	Stdout io.Reader
 	Stderr io.Reader
+
+	// Stdin is the child's standard input, or nil when the Factory could not
+	// supply one. It is OPTIONAL because most callers here are one-shot
+	// capture spawns (git, go test, gh) that write nothing to the child, and
+	// requiring every Factory — including the test doubles — to mint a writer
+	// for a stream nobody uses would be pure ceremony.
+	//
+	// It exists because one class of untrusted program is inherently
+	// bidirectional: an ACP agent speaks newline-delimited JSON-RPC over
+	// stdin/stdout for the whole life of the session. Without a writer here
+	// that program cannot go through Launch at all, which is how
+	// internal/acp ended up with its own exec.CommandContext outside the
+	// Authorize firewall. Callers that need it MUST nil-check and fail closed
+	// rather than assume it is present.
+	//
+	// CLOSE SEMANTICS ARE FACTORY-DEFINED AND MAY NOT BE A HALF-CLOSE. The
+	// production factory hands back the console itself, so Close tears down
+	// stdout and stderr along with stdin rather than merely signalling EOF to
+	// the child. A caller that wants to close stdin and keep draining output
+	// must not use this; the ACP path closes it only at teardown, where the
+	// wider effect is what it wanted anyway.
+	Stdin io.WriteCloser
 }
 
 // MergedOutput returns the display stream: stdout and stderr interleaved as
@@ -210,12 +245,18 @@ func SwapAuthorizer(a Authorizer) Authorizer {
 //     tools.Authorize already uses.
 //  2. If no Factory is in context, fail closed (returns a factory-missing
 //     error rather than silently skipping the spawn).
-//  3. Factory.Start receives spec verbatim; spec.Program/Args MUST come from
-//     shell.ShellArgv (Task 15) when spec.Shell is set.
+//  3. Strip credential-bearing variables out of spec.Env under spec.AllowEnv,
+//     so a caller cannot route a credential past the scrub by handing it in
+//     explicitly. The Factory applies the same policy to the host-environment
+//     baseline it builds — that is where the credentials actually come from,
+//     since almost no caller populates Env.
+//  4. Factory.Start receives the scrubbed spec; spec.Program/Args MUST come
+//     from shell.ShellArgv (Task 15) when spec.Shell is set.
 //
-// The two fail-closed gates are the entire security value of this type: they
-// guarantee that no spawn site can forget to Authorize, and no spawn site can
-// silently proceed when the Factory wiring is missing.
+// The fail-closed gates are the entire security value of this type: they
+// guarantee that no spawn site can forget to Authorize, no spawn site can
+// silently proceed when the Factory wiring is missing, and no spawn site can
+// hand an untrusted program a credential it did not declare.
 func Launch(ctx context.Context, spec SecureProcessSpec) (*StartedProcess, error) {
 	if currentAuthorizer == nil {
 		return nil, ErrNoAuthorizer
@@ -227,5 +268,7 @@ func Launch(ctx context.Context, spec SecureProcessSpec) (*StartedProcess, error
 	if !ok {
 		return nil, fmt.Errorf("secproc: no Factory in context (fail-closed)")
 	}
+	spec, dropped := scrubSpecEnv(spec)
+	auditCredentialScrub(spec, dropped)
 	return f.Start(ctx, spec)
 }

@@ -101,14 +101,41 @@ func (c *CloneStub) Clone(_ context.Context, _, repo, intoDir string) error {
 // Security invariants:
 //   - Source parsing rejects ".", "..", whitespace, shell metachars.
 //   - Staging is a tempdir; any symlink in the clone is rejected (Walk Lstat).
-//   - Remote .trusted / .disabled markers are removed (never trust remote
-//     assertions).
+//   - Remote .trusted / .disabled / .scan-override markers are removed (never
+//     trust remote assertions).
+//   - S7 content scan of SKILL.md and every shipped script; blocking findings
+//     refuse the install.
 //   - Rename is atomic on POSIX; target must not exist (refuse overwrite).
 //   - Containment check: the final path must be inside dstRoot.
 //
 // `clone` may be nil — production passes nil to use realClone; tests pass a
 // CloneStub.
+//
+// The content scan is NOT optional on this entry point. Callers that need the
+// escape hatch use InstallWithOptions; keeping the default signature
+// fail-closed means a call site that has not thought about the question gets
+// the safe answer, which is the opposite of what a defaulted `allowUnsafe bool`
+// parameter would have produced.
 func Install(src string, dstRoot string, clone CloneImpl) (string, error) {
+	return InstallWithOptions(src, dstRoot, clone, InstallOptions{})
+}
+
+// InstallOptions carries the acquisition-time choices a caller may make.
+//
+// It is a struct rather than a bool parameter because the answer to "should
+// this install skip the safety scan" must be spelled at the call site
+// (`InstallOptions{AllowUnsafe: true}`), not passed positionally where a reader
+// sees only `true`.
+type InstallOptions struct {
+	// AllowUnsafe admits a pack whose content scan produced blocking findings.
+	// The findings are still computed and still reported by /skill validate;
+	// only their fatality is waived. This is the `--allow-unsafe` escape hatch.
+	AllowUnsafe bool
+}
+
+// InstallWithOptions is Install with the acquisition-time options made
+// explicit. See Install for the security invariants; they all apply here.
+func InstallWithOptions(src string, dstRoot string, clone CloneImpl, opts InstallOptions) (string, error) {
 	parsed, err := ParseInstallSource(src)
 	if err != nil {
 		return "", err
@@ -163,20 +190,39 @@ func Install(src string, dstRoot string, clone CloneImpl) (string, error) {
 
 	// Validate SKILL.md exists and frontmatter name is safe.
 	mdPath := filepath.Join(skillDir, "SKILL.md")
-	name, _, _, err := readFrontmatter(mdPath)
+	fm, _, err := readFrontmatter(mdPath)
 	if err != nil {
 		return "", fmt.Errorf("skills: read SKILL.md: %w", err)
 	}
+	name := fm.Name
 	if !validName(name) {
 		return "", fmt.Errorf("skills: invalid skill name %q", name)
 	}
+	// Refuse a pack whose `requires:` block does not parse into requirements.
+	// Load would drop the malformed entries and carry on, which is right for a
+	// skill already on disk but wrong at the moment of acquisition: an entry
+	// that means nothing probes as permanently missing, and a permanently
+	// missing requirement now hides the skill from the model. Installing that
+	// silently produces a skill the user can see in /skills and the model
+	// never can.
+	if err := ValidateRequirements(fm.Requires); err != nil {
+		return "", fmt.Errorf("skills: skill %q: %w", name, err)
+	}
 
 	// Remove any remote marker files — never trust remote assertions about
-	// trust/enabled state.
+	// trust/enabled/scan-approved state.
 	for _, marker := range []string{".trusted", ".disabled"} {
 		if err := os.Remove(filepath.Join(skillDir, marker)); err != nil && !os.IsNotExist(err) {
 			return "", fmt.Errorf("skills: remove remote %s: %w", marker, err)
 		}
+	}
+
+	// S7 content scan. Runs on the STAGED pack, before the rename that makes it
+	// visible to the loader, so a refused pack never exists at a path anything
+	// scans. scanStagedPack also purges a remote .scan-override for the same
+	// reason the two markers above are purged.
+	if err := scanStagedPack(skillDir, opts.AllowUnsafe); err != nil {
+		return "", err
 	}
 
 	// Containment + target-exists check.

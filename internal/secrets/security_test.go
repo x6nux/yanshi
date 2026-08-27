@@ -30,4 +30,3 @@ func TestSecurity_NoPlaintextInEncryptedFile(t *testing.T) {
 		t.Fatal("encrypted file contains plaintext API key")
 	}
 }
-

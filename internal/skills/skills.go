@@ -26,6 +26,37 @@ type Skill struct {
 	Enabled bool
 	// Trusted records user review only; it never authorizes script execution.
 	Trusted bool
+	// Requires lists the external programs this skill's instructions tell the
+	// model to run. Declared in the SKILL.md frontmatter, resolved against PATH
+	// by ProbeRequirements — never used to authorize anything, only to answer
+	// "will this skill's first step fail" before the model spends a turn
+	// finding out.
+	Requires []Requirement
+	// Missing names the subset of Requires that ProbeRequirements could not
+	// resolve on PATH. Nil when everything resolved and nil when Requires is
+	// empty, so `len(Missing) > 0` is the single "this skill is unusable here"
+	// predicate for every consumer (MetaPrompt, skill_use, /skills).
+	//
+	// It is a FIELD rather than a method because the probe hits the filesystem:
+	// recomputing it per consumer would make an O(1) list render into one
+	// exec.LookPath per skill per call, and the two consumers could disagree
+	// about the same skill within one turn if PATH changed between them.
+	Missing []string
+	// Unsafe records the S7 content-scan findings that BLOCK this skill, and is
+	// the load-time half of the gate described in scangate.go. Non-empty means
+	// the skill was loaded into the registry but is withheld from the model:
+	// MetaPrompt omits it and skill_use refuses it, so its text never reaches
+	// the system prompt.
+	//
+	// The skill is still REGISTERED rather than dropped, and that is the whole
+	// design. A dropped skill is indistinguishable from one that was never
+	// installed — /skills would show nothing, and the user whose own hand-edited
+	// pack just vanished would have no way to learn why. Keeping the entry and
+	// carrying the reason is what makes the withholding diagnosable.
+	//
+	// Empty for every skill that scans clean or carries the .scan-override
+	// marker, so `len(Unsafe) > 0` is the single predicate consumers test.
+	Unsafe []Finding
 }
 
 // Root is a skill search root: a directory whose immediate children are skill dirs.
@@ -115,17 +146,43 @@ func (r *Registry) List() []*Skill {
 }
 
 // MetaPrompt returns a human-readable "Available skills" block for injection
-// into the orchestrator system prompt, or "" if no Enabled skills are
-// registered. Disabled skills are omitted so the model does not advertise
-// them. The string is an instantaneous registry snapshot; orchestrator.New
-// bakes its return value, so a later Reload does not mutate an already-running
-// orchestrator prompt (FN3).
+// into the orchestrator system prompt, or "" if no advertisable skill is
+// registered. The string is an instantaneous registry snapshot;
+// orchestrator.New bakes its return value, so a later Reload does not mutate
+// an already-running orchestrator prompt (FN3).
+//
+// Three classes of skill are omitted, each because listing it would cost the
+// model a turn or worse:
+//
+//   - Disabled skills, so the model does not advertise what the operator
+//     switched off.
+//   - Skills whose declared `requires:` programs are not on PATH. A skill
+//     whose first instruction is "run ast-grep" on a machine without ast-grep
+//     is not a capability, it is a scripted failure: the model picks it
+//     because the description matches, spends a turn discovering the binary is
+//     missing, and has no way to learn that from the listing. Withholding the
+//     NAME is what stops that, which is why the filter is here and not only in
+//     skill_use — skill_use can refuse, but by then the turn is already spent.
+//   - Skills the S7 content scan blocked (len(Unsafe) > 0). Here the reason is
+//     stronger than for the other two: this string is CONCATENATED INTO THE
+//     SYSTEM PROMPT, so a blocked skill's own description would ride into the
+//     prompt on the very listing that was supposed to withhold it. Filtering
+//     in skill_use alone would be too late by one full prompt.
+//
+// This is deliberately the narrow form of "skill state gates what the model
+// sees". The broad form — a skill declaring which TOOLS it needs and those
+// tools vanishing from the schema — is not implemented and should not be
+// inferred from this: skills do not own tool registration in this codebase
+// (bootstrap does), no skill declares a tool today, and a mechanism with no
+// declared consumers would be a layer that exists to be diagrammed. The skill
+// listing is the surface skills actually own, so it is the surface that is
+// gated.
 func (r *Registry) MetaPrompt() string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	names := make([]string, 0, len(r.skills))
 	for n, s := range r.skills {
-		if s.Enabled {
+		if s.Enabled && len(s.Missing) == 0 && len(s.Unsafe) == 0 {
 			names = append(names, n)
 		}
 	}
@@ -146,20 +203,33 @@ func (r *Registry) MetaPrompt() string {
 	return b.String()
 }
 
-// cloneSkill returns a shallow copy of s. Get/List hand these out so callers
-// cannot mutate the registry's internal state through the returned pointer
-// (FN2).
+// cloneSkill returns a copy of s. Get/List hand these out so callers cannot
+// mutate the registry's internal state through the returned pointer (FN2).
+//
+// The two slice fields are copied, not aliased. A shallow copy leaves Requires
+// and Missing pointing at the registry's own backing arrays, so a caller that
+// appended to the returned Skill's Missing would write into the live entry — a
+// mutation through exactly the pointer this function exists to prevent.
 func cloneSkill(s *Skill) *Skill {
 	if s == nil {
 		return nil
 	}
 	cp := *s
+	if s.Requires != nil {
+		cp.Requires = append([]Requirement(nil), s.Requires...)
+	}
+	if s.Missing != nil {
+		cp.Missing = append([]string(nil), s.Missing...)
+	}
+	if s.Unsafe != nil {
+		cp.Unsafe = append([]Finding(nil), s.Unsafe...)
+	}
 	return &cp
 }
 
 // Body returns the skill's markdown body (frontmatter stripped), read lazily.
 func (r *Registry) Body(s *Skill) (string, error) {
-	_, _, body, err := readFrontmatter(filepath.Join(s.Dir, "SKILL.md"))
+	_, body, err := readFrontmatter(filepath.Join(s.Dir, "SKILL.md"))
 	if err != nil {
 		return "", fmt.Errorf("skills: read body of %q: %w", s.Name, err)
 	}
@@ -213,10 +283,11 @@ func (l *Loader) Load() (*Registry, error) {
 				continue
 			}
 			dir := filepath.Join(root.Dir, e.Name())
-			name, desc, _, err := readFrontmatter(filepath.Join(dir, "SKILL.md"))
-			if err != nil || !validName(name) || !validDesc(desc) {
+			fm, _, err := readFrontmatter(filepath.Join(dir, "SKILL.md"))
+			if err != nil || !validName(fm.Name) || !validDesc(fm.Description) {
 				continue
 			}
+			name := fm.Name
 			if existing, exists := r.skills[name]; exists {
 				// first-seen-wins, but the loss is recorded rather than
 				// dropped: see Registry.conflicts.
@@ -229,36 +300,129 @@ func (l *Loader) Load() (*Registry, error) {
 				})
 				continue
 			}
+			// A malformed requires: block does not drop the skill — Load's
+			// contract is "one bad skill never fails the whole load", and a
+			// dependency declaration is metadata, not the skill. It is
+			// normalized away here and reported by ValidateSkillDir, which is
+			// the verb whose job is to say so.
+			reqs, _ := normalizeRequirements(fm.Requires)
 			r.skills[name] = &Skill{
-				Name: name, Description: desc, Dir: dir, Source: root.Source,
-				Enabled: !disabledMarkerExists(dir),
-				Trusted: trustMarkerExists(dir),
+				Name: name, Description: fm.Description, Dir: dir, Source: root.Source,
+				Enabled:  !disabledMarkerExists(dir),
+				Trusted:  trustMarkerExists(dir),
+				Requires: reqs,
+				Missing:  ProbeRequirements(reqs),
+				Unsafe:   scanFindingsForLoad(dir),
 			}
 		}
 	}
 	return r, nil
 }
 
-type frontmatter struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
+// scanFindingsForLoad runs the S7 content scan for Load and returns the
+// findings that must WITHHOLD this skill from the model, or nil.
+//
+// Three decisions are compressed here, and each has a failure mode:
+//
+//   - An override marker returns nil. The user vouched for this pack; the
+//     findings are still available from ValidateSkillDir, which is the verb
+//     whose job is diagnosis.
+//   - A scan that FAILS TO RUN returns nil, and this is the one place in the
+//     S7 design that is fail-OPEN rather than fail-closed. The reason is that
+//     Load's inputs are directories that already passed a frontmatter parse:
+//     an I/O failure here is a broken disk or a permissions problem, not an
+//     attack, and refusing every skill in the root because one directory
+//     became unreadable would turn a local fault into a total loss of
+//     capability at boot. Acquisition is where an unscannable pack is refused
+//     (GateSkillDir returns the error), and acquisition is the door that
+//     actually faces the network.
+//   - Only BLOCKING findings are returned. An advisory finding must not
+//     withhold a skill; see scan.go's header for why the tiers are split.
+func scanFindingsForLoad(dir string) []Finding {
+	if ScanOverridden(dir) {
+		return nil
+	}
+	res, err := ScanSkillDir(dir)
+	if err != nil {
+		return nil
+	}
+	blocking := res.Blocking()
+	if len(blocking) == 0 {
+		return nil
+	}
+	return blocking
 }
 
-// readFrontmatter parses the YAML frontmatter of a SKILL.md. Returns the body
-// too (used by Registry.Body in a later task).
-func readFrontmatter(path string) (name, desc, body string, err error) {
+// UnsafeSkillHint renders the refusal a MODEL-FACING consumer shows when a
+// skill was withheld by the content scan, or "" when the skill is clean.
+//
+// It is the S7 twin of MissingRequirementHint and exists for the same reason:
+// two consumers (skill_use and the /skills listing) must say the same thing
+// about the same state, and the way that stops being true is each writing its
+// own sentence.
+//
+// # It names the rule and the location but NOT the matched text
+//
+// Finding.String() includes the offending line, and every other refusal path
+// prints it — those are read by a person deciding whether to override. This one
+// is returned to the MODEL, and the offending line is, by construction, the
+// prompt injection. Echoing it would hand the model the exact sentence the
+// withholding existed to keep away from it, merely wrapped in an apology.
+//
+// That is not a hypothetical concern about a snippet: it was the first version
+// of this function, and a test asserting the refusal does not contain the
+// payload is what caught it.
+//
+// The rule id and the file:line are kept, because they are what makes the
+// refusal actionable without reproducing the content. A human reads the actual
+// line with /skill validate, which is the verb whose audience can safely see it.
+func UnsafeSkillHint(name string, unsafe []Finding) string {
+	if len(unsafe) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "skill %q is withheld: its content scan found %d blocking issue(s)", name, len(unsafe))
+	for _, f := range unsafe {
+		loc := f.File
+		if f.Line > 0 {
+			loc = fmt.Sprintf("%s:%d", f.File, f.Line)
+		}
+		fmt.Fprintf(&b, "\n  [%s] %s at %s", f.Severity, f.RuleID, loc)
+	}
+	fmt.Fprintf(&b, "\n  The matched text is withheld here because it would be the injection itself; "+
+		"run `/skill validate %s` to read it. Its text would otherwise be injected verbatim into the "+
+		"system prompt. After reviewing, place a %s marker in the skill directory to admit it.",
+		name, SkillScanOverrideMarker)
+	return b.String()
+}
+
+// frontmatter is the parsed YAML header of a SKILL.md.
+//
+// It is returned whole rather than destructured into positional results
+// because the header keeps growing (Requires was the third field), and every
+// added field would otherwise have to be threaded through four call sites as
+// one more anonymous string.
+type frontmatter struct {
+	Name        string        `yaml:"name"`
+	Description string        `yaml:"description"`
+	Requires    []Requirement `yaml:"requires"`
+}
+
+// readFrontmatter parses the YAML frontmatter of a SKILL.md, returning the
+// header and the markdown body that follows it.
+func readFrontmatter(path string) (fm frontmatter, body string, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", "", "", err
+		return frontmatter{}, "", err
 	}
 	return parseSkillFile(data)
 }
 
-func parseSkillFile(data []byte) (name, desc, body string, err error) {
+func parseSkillFile(data []byte) (fm frontmatter, body string, err error) {
 	text := string(data)
 	lines := strings.Split(text, "\n")
 	if len(lines) < 2 || strings.TrimSpace(lines[0]) != "---" {
-		return "", "", "", fmt.Errorf("skills: missing frontmatter opening delimiter")
+		return frontmatter{}, "", fmt.Errorf("skills: missing frontmatter opening delimiter")
 	}
 	end := -1
 	for i := 1; i < len(lines); i++ {
@@ -268,14 +432,13 @@ func parseSkillFile(data []byte) (name, desc, body string, err error) {
 		}
 	}
 	if end < 0 {
-		return "", "", "", fmt.Errorf("skills: missing frontmatter closing delimiter")
+		return frontmatter{}, "", fmt.Errorf("skills: missing frontmatter closing delimiter")
 	}
-	var fm frontmatter
 	if err := yaml.Unmarshal([]byte(strings.Join(lines[1:end], "\n")), &fm); err != nil {
-		return "", "", "", fmt.Errorf("skills: parse frontmatter: %w", err)
+		return frontmatter{}, "", fmt.Errorf("skills: parse frontmatter: %w", err)
 	}
 	body = strings.TrimSpace(strings.Join(lines[end+1:], "\n"))
-	return fm.Name, fm.Description, body, nil
+	return fm, body, nil
 }
 
 // trustMarkerExists reports whether dir contains a .trusted marker file.

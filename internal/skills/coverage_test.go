@@ -311,18 +311,18 @@ func TestCloneStubMissingRepo(t *testing.T) {
 
 func TestParseSkillFileErrors(t *testing.T) {
 	// missing opening delimiter
-	_, _, _, err := parseSkillFile([]byte("no frontmatter here"))
+	_, _, err := parseSkillFile([]byte("no frontmatter here"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "opening delimiter")
 	// missing closing delimiter
-	_, _, _, err = parseSkillFile([]byte("---\nname: x\nbody without close"))
+	_, _, err = parseSkillFile([]byte("---\nname: x\nbody without close"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "closing delimiter")
 	// empty (len < 2)
-	_, _, _, err = parseSkillFile([]byte(""))
+	_, _, err = parseSkillFile([]byte(""))
 	require.Error(t, err)
 	// bad YAML in frontmatter
-	_, _, _, err = parseSkillFile([]byte("---\nname: [unclosed\n---\nbody"))
+	_, _, err = parseSkillFile([]byte("---\nname: [unclosed\n---\nbody"))
 	require.Error(t, err)
 }
 

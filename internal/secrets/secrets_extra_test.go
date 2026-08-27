@@ -74,7 +74,6 @@ func withFakeKeyring(t *testing.T, s Store) {
 // secrets.go
 // ---------------------------------------------------------------------------
 
-
 func TestRedactor_RegisterEmptyAndIdempotent(t *testing.T) {
 	r := NewRedactor()
 	r.Register("") // empty ignored
@@ -293,7 +292,6 @@ func TestManager_NewManagerAllModes(t *testing.T) {
 		}
 	})
 }
-
 
 func TestManager_SetDeleteNoBackend(t *testing.T) {
 	mgr, _ := NewManager(Config{Backend: "none"})
@@ -588,13 +586,6 @@ func TestPadKdfTruncatesLongNames(t *testing.T) {
 // cli.go
 // ---------------------------------------------------------------------------
 
-
-
-
-
-
-
-
 // ---------------------------------------------------------------------------
 // file_store_replace_windows.go (Windows atomic replace)
 // ---------------------------------------------------------------------------
@@ -702,8 +693,5 @@ func TestKeyring_AvailableProbeHit(t *testing.T) {
 	}
 }
 
-
-
 // Reference io so the import stays used by the errReader contract above.
 var _ = io.EOF
-

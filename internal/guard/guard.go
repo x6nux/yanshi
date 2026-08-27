@@ -190,7 +190,13 @@ func (g *Guard) checkDestructive(a Action) Decision {
 	}
 	switch ClassifyDestruction(a.Shell, a.Workdir) {
 	case DestructionCatastrophic:
-		return hardDeny("catastrophic mass deletion blocked (rm -rf on a root/home/workdir)")
+		// The parenthetical names the whole graded set, not just the rm
+		// family. It used to say "rm -rf on a root/home/workdir" while the
+		// classifier also graded storage destruction (dd onto a device, mkfs,
+		// wipefs — see storage.go), so an operator who ran `dd of=/dev/disk0`
+		// was told their rm had been blocked. A denial that misdescribes what
+		// it refused sends the reader looking for the wrong command.
+		return hardDeny("catastrophic destruction blocked (mass deletion of a root/home/workdir, or destruction of a raw storage device)")
 	case DestructionOutOfScope:
 		return prompt("deletion outside the working directory")
 	default:
@@ -237,9 +243,23 @@ func (g *Guard) checkTools(p PermissionProfile, a Action) Decision {
 	return prompt(fmt.Sprintf("tool %q not permitted", a.Tool))
 }
 
+// checkFS authorizes a filesystem intent in two stages.
+//
+// Stage 1 is the built-in sensitive-credential denylist (checkSensitiveFS,
+// sensitive.go), which runs BEFORE the profile's globs. It has to run first
+// for the gate to exist at all: the profile layer's job is to answer "does a
+// pattern match", and the shipped example profile's "**" answers yes for
+// ~/.ssh/id_rsa. A denylist consulted after a matching allow-glob never runs.
+// The denial it produces is a Prompt with a literal-grant escape hatch — see
+// the sensitive.go header for why that tier and not a HardDeny.
+//
+// Stage 2 is the profile's own read/write globs, unchanged.
 func (g *Guard) checkFS(p PermissionProfile, a Action) Decision {
 	if len(a.FS.Paths) == 0 {
 		return allow()
+	}
+	if d := g.checkSensitiveFS(p, a); d.Verdict != Allow {
+		return d
 	}
 	var allowed []string
 	if a.FS.Op == "read" {

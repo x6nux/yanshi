@@ -31,12 +31,18 @@ func TestManager_ForcedFileRoundTrip(t *testing.T) {
 	}
 }
 
-
-
 func TestManager_AutoWithoutPassphraseSkipsFileStore(t *testing.T) {
 	// Backend=auto but no passphrase set: must not fatal, only warn.
 	// t.Setenv is the only safe test env mutation on Windows; use a unique
 	// name we know is not exported by the test runner. Do not call os.Unsetenv.
+	//
+	// The keyring seam must be pinned unavailable: this test is about the
+	// "no keyring AND no passphrase" branch, and on a developer machine with
+	// a working OS keyring (macOS Keychain, an unlocked Secret Service) auto
+	// wires the real keyring instead, so Set below would succeed -- and would
+	// write a secret into that real login keychain as a side effect. Every
+	// sibling backend-selection test in this package pins the seam the same way.
+	withFakeKeyring(t, &fakeStore{avail: ErrKeyringUnavailable})
 	path := filepath.Join(t.TempDir(), "secrets.enc")
 	mgr, err := NewManager(Config{
 		Backend:       "auto",
