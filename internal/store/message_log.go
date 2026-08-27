@@ -305,6 +305,9 @@ func (s *Store) SearchMessages(sessionID, query string, limit int) ([]MessageSea
 	if strings.TrimSpace(query) == "" {
 		return nil, fmt.Errorf("store: search messages: empty query")
 	}
+	if hasCJK(query) {
+		return s.searchMessagesCJK(sessionID, query, limit)
+	}
 	rows, err := s.DB.Query(
 		`SELECT `+prefixed(messageColumns, "m.")+`,
 		        snippet(messages_fts, -1, '«', '»', ' … ', 24)
@@ -325,6 +328,57 @@ func (s *Store) SearchMessages(sessionID, query string, limit int) ([]MessageSea
 		if err := rows.Scan(scanTargets(&h.Message, &h.Snippet)...); err != nil {
 			return nil, err
 		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// searchMessagesCJK is the CJK fallback path for SearchMessages.
+//
+// Why it is needed: messages_fts uses tokenize='porter unicode61', which does
+// not segment Chinese words, so an entire sentence collapses into a single
+// token. Measured on a real store: "截止日期" / "项目" / "周二" / "张伟" all
+// return ZERO hits against a message containing every one of them — only the
+// whole sentence matches. That makes history_search / SearchMemory /
+// memory_autorecall dead in Chinese all at once, and Chinese is this repo's
+// own working language.
+//
+// Why LIKE instead of swapping the tokenizer: switching to trigram would
+// require rebuilding both FTS tables (a risky one-shot migration) and would
+// cost English porter stemming. The LIKE fallback is purely additive,
+// reversible, and zero-impact on the English path — English queries never
+// reach this function (see hasCJK).
+//
+// The cost is explicit: no bm25 ranking, so results are ordered by seq
+// descending (newest first); no FTS5 snippet(), so cjkSnippet builds one by
+// hand. Both beat the status quo of zero hits. maxCJKFallbackRows bounds the
+// scan on top of ORDER BY, because LIKE '%…%' is a full table scan.
+func (s *Store) searchMessagesCJK(sessionID, query string, limit int) ([]MessageSearchHit, error) {
+	pattern, esc := likePattern(query)
+	n := clampLimit(limit)
+	if n > maxCJKFallbackRows {
+		n = maxCJKFallbackRows
+	}
+	rows, err := s.DB.Query(
+		`SELECT `+prefixed(messageColumns, "m.")+`
+		 FROM messages m
+		 WHERE m.session_id = ?
+		   AND (m.content LIKE ? ESCAPE ? OR m.tool_args LIKE ? ESCAPE ?)
+		 ORDER BY m.seq DESC
+		 LIMIT ?`,
+		sessionID, pattern, esc, pattern, esc, n,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MessageSearchHit
+	for rows.Next() {
+		var h MessageSearchHit
+		if err := rows.Scan(scanTargets(&h.Message)...); err != nil {
+			return nil, err
+		}
+		h.Snippet = cjkSnippet(h.Content, query)
 		out = append(out, h)
 	}
 	return out, rows.Err()

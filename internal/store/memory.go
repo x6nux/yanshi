@@ -175,6 +175,9 @@ func (s *Store) SearchMemoryRanked(query string, limit int, dims MemoryFilter) (
 	if limit <= 0 {
 		limit = 10
 	}
+	if hasCJK(query) {
+		return s.searchMemoryCJK(query, limit, dims)
+	}
 	cond, args := dims.where("m.")
 	q := `SELECT ` + prefixed(memoryColumns, "m.") + `, bm25(memories_fts)
 	      FROM memories_fts f JOIN memories m ON m.rowid = f.rowid
@@ -193,6 +196,50 @@ func (s *Store) SearchMemoryRanked(query string, limit int, dims MemoryFilter) (
 		var from string
 		if err := rows.Scan(&h.ID, &h.Kind, &h.Content, &h.SessionID, &h.AgentID,
 			&h.CreatedAt, &from, &h.SupersededBy, &h.DistilledAt, &h.Score); err != nil {
+			return nil, err
+		}
+		h.DistilledFrom = splitIDs(from)
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// searchMemoryCJK is the CJK fallback path for SearchMemoryRanked, same cause
+// and same fix as searchMessagesCJK — memories_fts does not even carry a
+// tokenize= clause, so it falls back to the default unicode61 and equally
+// fails to segment Chinese words.
+//
+// Score is always 0: bm25 does not exist on this path, and MemoryHit.Score's
+// doc comment already states it exists only to ORDER and is not a usable
+// absolute threshold. Fabricating a score would let a caller further up the
+// stack mistake it for a real relevance judgement. Ordering falls back to
+// created_at DESC instead.
+func (s *Store) searchMemoryCJK(query string, limit int, dims MemoryFilter) ([]MemoryHit, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > maxCJKFallbackRows {
+		limit = maxCJKFallbackRows
+	}
+	pattern, esc := likePattern(query)
+	cond, args := dims.where("m.")
+	q := `SELECT ` + prefixed(memoryColumns, "m.") + `
+	      FROM memories m
+	      WHERE m.content LIKE ? ESCAPE ?` + cond + `
+	      ORDER BY m.created_at DESC LIMIT ?`
+	all := append([]any{pattern, esc}, args...)
+	all = append(all, limit)
+	rows, err := s.DB.Query(q, all...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MemoryHit
+	for rows.Next() {
+		var h MemoryHit
+		var from string
+		if err := rows.Scan(&h.ID, &h.Kind, &h.Content, &h.SessionID, &h.AgentID,
+			&h.CreatedAt, &from, &h.SupersededBy, &h.DistilledAt); err != nil {
 			return nil, err
 		}
 		h.DistilledFrom = splitIDs(from)

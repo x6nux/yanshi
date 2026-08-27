@@ -1649,4 +1649,18 @@
     "2": "internal/tools::TestInvokableRunWithoutRedactorIsByteIdentical"
     "3": "internal/tools::TestStreamTextFieldIsNotRedacted"
     "4": "internal/bootstrap::TestW3RedactorReachesToolResults"
+- id: "A2/W-A-03"
+  package: "W-A"
+  verdict: done
+  title: "CJK 检索（history_search / SearchMemory / memory_autorecall）"
+  # 审计 P0-3 与 P0-11 同根同落点，此处合并为一条。选 LIKE 回退而不是换
+  # tokenizer 的理由写在 searchMessagesCJK 的 doc 注释里。子句 3 是这次改动
+  # 的护栏而不是特性：全量收口最容易的失败方向是「修好中文顺手改坏英文」，
+  # 那条测试同时断言命中集合与 porter 词干仍在。
+  acceptance: "中文词查询在 history_search 上返回非零命中；SearchMemory 与 memory_autorecall 走同一检索路径因而同时生效；英文查询的命中集合与本改动前逐条一致；CJK 回退路径有结果数上限"
+  evidence:
+    "1": "internal/store::TestSearchMessagesFindsChineseWords"
+    "2": "internal/store::TestSearchMemoryFindsChineseWords"
+    "3": "internal/store::TestSearchMessagesEnglishPathIsUnchanged"
+    "4": "internal/store::TestSearchMessagesCJKFallbackIsBounded"
 
