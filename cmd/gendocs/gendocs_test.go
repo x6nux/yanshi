@@ -272,12 +272,12 @@ func TestSubcommandListMatchesDispatch(t *testing.T) {
 	}
 	// Canonical set pin: yanshiSubcommands must be exactly this. A change here
 	// is intentional and should update both the list and this assertion.
-	want := []string{"yanshi", "serve", "chat", "exec", "app", "goal", "vcs-mcp", "pr", "auth", "doctor"}
+	want := []string{"yanshi", "serve", "chat", "exec", "app", "goal", "vcs-mcp", "init", "daemon", "schedule", "provider", "acp", "pr", "auth", "doctor"}
 	if !reflect.DeepEqual(yanshiSubcommands, want) {
 		t.Errorf("yanshiSubcommands drifted from canonical set:\n got=%v\nwant=%v", yanshiSubcommands, want)
 	}
 	// Every dispatched top-level subcommand must actually appear in main.go.
-	for _, required := range []string{"serve", "chat", "exec", "app", "goal", "vcs-mcp", "pr", "auth", "doctor"} {
+	for _, required := range []string{"serve", "chat", "exec", "app", "goal", "vcs-mcp", "init", "daemon", "schedule", "provider", "acp", "pr", "auth", "doctor"} {
 		if !strings.Contains(src, `case "`+required+`":`) && !strings.Contains(src, `"`+required+`"`) {
 			t.Errorf("required subcommand %q not found in main.go", required)
 		}

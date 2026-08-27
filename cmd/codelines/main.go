@@ -1,9 +1,9 @@
 // Package main implements codelines, a pure-code-line counter for yanshi. It
 // walks internal/ and cmd/ and, for each non-test .go file, counts code lines
 // (excluding blank lines and //-comment lines — the same caliber as the
-// CLAUDE.md 1000-line rule), printing each file's count sorted descending and
-// flagging any over 1000. Used for ad-hoc governance checks; not used at
-// runtime.
+// CLAUDE.md per-file line rule), printing each file's count sorted descending
+// and flagging any over the limit. Used for ad-hoc governance checks; not used
+// at runtime.
 //
 // The walked set MATCHES GOV2's (internal/ + cmd/, non-test files only). It
 // used to stop at internal/, which made this tool quietly blind to exactly the
@@ -22,6 +22,13 @@ import (
 	"sort"
 	"strings"
 )
+
+// pureLineLimit mirrors internal/archtest's own pureLineLimit. It cannot be
+// imported — that constant lives in a _test.go file — so this is a hand-kept
+// copy, pinned by internal/archtest::TestCodelinesLimitMatchesGate. A preflight
+// tool that flags a different threshold than the gate is worse than no
+// preflight: it is confidently wrong in one direction or the other.
+const pureLineLimit = 5000
 
 func main() {
 	root := "."
@@ -60,8 +67,8 @@ func main() {
 	sort.Slice(files, func(i, j int) bool { return files[i].lines > files[j].lines })
 	for _, f := range files {
 		flag := ""
-		if f.lines > 1000 {
-			flag = " *** OVER 1000"
+		if f.lines > pureLineLimit {
+			flag = fmt.Sprintf(" *** OVER %d", pureLineLimit)
 		}
 		fmt.Printf("%-70s %d%s\n", f.path, f.lines, flag)
 	}

@@ -50,14 +50,14 @@ go test ./internal/archtest ./internal/bootstrap  # 架构治理测试（见下�
 GOV7、GOV9 与 GOV8 的对账部分**故意不设任何豁免表**。
 
 - `deps_test.go`（GOV1，`TestR1_NoImportCycle`/`TestR2_PortAllowlist`/`TestR3_W2ConfigMustNotDependOnGuard`/`TestR4_SingleServerCompositionRoot`/`TestR5_PortsMustNotDependOnServiceLayer`）：六边形分层。`portAllowlists` 规定每个 port 包允许的 internal 依赖，已知的临时违规登记在 `portExceptions`（附整改工作包，`TestR2_PortAllowlist` 会把「port 已不再 import 该依赖但条目还在」判为死条目而失败）；`bootstrap` 是唯一组合根。新增跨包依赖前先看这里，否则 CI 直接红。
-- `lines_test.go`（GOV2，`TestPureCodeLineGate`）：`internal/` 与 `cmd/` 下的非测试 `.go` 文件 ≤ 1000 纯代码行（门禁只扫这两个目录，`third_party/`、`sdk/` 与所有 `_test.go` 都不在范围内）。豁免写在 `lineExceptions` map 里，key 是绝对路径（用 `abs("internal/…")`）。用 `go run ./cmd/codelines` 做即时检查 —— 它扫的目录与门禁一致。
+- `lines_test.go`（GOV2，`TestPureCodeLineGate`）：`internal/` 与 `cmd/` 下的非测试 `.go` 文件 ≤ **5000** 纯代码行（门禁只扫这两个目录，`third_party/`、`sdk/` 与所有 `_test.go` 都不在范围内）。豁免写在 `lineExceptions` map 里，key 是绝对路径（用 `abs("internal/…")`），当前为空。用 `go run ./cmd/codelines` 做即时检查 —— 它扫的目录与门禁一致，阈值由 `internal/archtest::TestCodelinesLimitMatchesGate` 钉住两处不漂（那个常量在 `_test.go` 里，`cmd/codelines` 没法 import，只能手抄一份）。**上限原为 1000，S0 之后按项目决定放宽到 5000**：1000 那档已经不再筛选内聚性而是在筛选**碎片化** —— `bootstrap.go` 卡在 984，每加一行接线都被逼进新文件，而 CLAUDE.md 自己称为承重的「组合根装配顺序」正被计数器打散到 `w3wiring.go`/`adaptive.go`/`c1.go`。按行数而不是按职责拆出来的文件更难读。5000 仍然能抓住这道门禁真正要抓的东西（某个文件悄悄变成第二个组合根或上帝对象），日常提醒改由 90% 预警带承担（预警阈值从 `pureLineLimit` 推导，不再是写死的 900 —— 写死的 900 配 5000 会在 18% 处报警，等于对每个文件都报，真正快撞线的那个反而分辨不出来）。
 - `docs_test.go`（GOV3，`TestExportedDocs`）：`internal/` 与 `cmd/` 下所有导出符号必须有 doc 注释；豁免为 `docExceptionPkgs`（整包）与 `docExceptionSymbols`（单符号）。两张表都做死条目检测：被豁免的包里已经没有缺注释的符号（或包已不存在）、被豁免的符号已经补上注释（或已不存在），都判失败。
 - `assembly_test.go`（GOV4，`TestGOV4BuildFunctionsReachable`）：`internal/bootstrap` 里每个导出的 `Build*` 必须能从 `Build` 经同包调用图到达。写完、测绿、却没接进组合根 = 运行时死代码 —— 审计把它定性为**主导失效模式**（「零件造好了，总装线没接上」），但**没给过任何百分比**（`docs/feature-status-audit.md` 里的 53% 是另一回事：94 项里 50 项判为「部分实现」，即 **53% 的条目是部分实现**，不是「53% 的部分实现是装配断裂」）。豁免表 `assemblyExceptions` 的条目被当作**额外的 BFS 根**（而非跳过的节点），这样一次接线能让整条链同时转绿。
 - `internal/bootstrap/wiring_test.go`（GOV5，`TestGOV5ProfileAllowMatchesToolRegistry`/`TestGOV5ProductionProfileHasNoPhantomNames`/`TestGOV5ConditionalToolAuthorizedWhenRegistered`/`TestGOV5OperatorProfileIsNotWidened`）：默认 orchestrator profile 里 allow 的每个工具名都必须真的被注册。幻影名字让 profile 读起来比实际权限宽；两个方向都测（fake 形状与生产形状），豁免表是 `toolWiringExceptions`。
 - `ctxinject_test.go`（GOV6，`TestGOV6ContextInjectorsHaveCallSites`）：每个导出的 `With<X>(ctx, …) context.Context` 注入器都必须有生产调用点，否则整条消费链静默读零值（`registry.WithRole` 曾这样空跑）。豁免表 `ctxInjectExceptions`。
 - `internal/bootstrap/wiring_test.go`（GOV7，`TestGOV7EditToolsAreRegistered`）：guard 的 allow-edits 免提示自动批准集（`guard.EditToolNames()`）里的每个名字必须是已注册工具 —— 这是 GOV5 的消费侧孪生。该集合带**授权语义**，幻影名会白占一个「不弹窗」的槽位（`fs_mkdir` 就这样残留过）。**故意不设豁免表**：往这个集合里加名字是授权变更，该走工作包而不是治理逃生门。
 - `status_test.go` + `status_evidence_test.go` + `acceptance_pin_test.go`（GOV8，`TestFeatureStatusLedgerIntegrity`/`TestLedgerEvidenceIsClauseComplete`/`TestLedgerMarkersAreLive`/`TestLedgerAcceptanceIsPinned`）：`docs/feature-status.yaml` 的终态条目（`done`/`removed`）必须逐句对账 —— evidence 是**子句号 → 测试引用**的映射，key 恰好等于 acceptance 切出的子句数，且只接受测试引用；被引的测试还要在**自己的 doc 注释**里回写 `ledger: <ID>#<n> <子句原文>`（逐字一致），反向扫描则拒绝陈旧标记。**「测试引用」按 `go test` 的口径解析**（`resolveTestRef`），判据统一是「**默认的 `go test ./...` 会不会编译并执行它**」：名字必须是 `Test` + 非小写字母开头、签名必须是 `func(*testing.T)`、包路径必须在 `internal/`/`cmd/` 之内（反向陈旧扫描只走这两个根，指向别处的 marker 永远不会被复查）、**包必须出现在 `go list ./...` 里**（`testdata/`、`_`/`.` 前缀目录是工具链按约定跳过的，`filepath.Glob` 却照收）、**函数体不能以无条件 `t.Skip` 开头**（编译了、跑了、报 pass，却零断言）。**带 build 约束的测试**可以作为**补充**证据，但**不能是某条子句的唯一证据**；「约束」两种形态都算：显式 `//go:build`（如 `e2e_real`，没有任何 CI job 提供那些 tag），以及**文件名后缀**（`foo_windows_test.go` 等价于 `//go:build windows`，却一行注释都没有）。后两条判定**与运行门禁的机器无关**，否则同一份台账会在 CI 矩阵的不同 leg 上给出不同结论。非终态条目的 evidence 是**可选**的，但一旦写了就必须解析得开。**分母也被钉住**：`acceptancePins` 给全部 63 条 acceptance 各存一行「子句数 + SHA-256 前 16 位」，任何改动 acceptance 的编辑都会红，必须显式改写这一行才能转绿 —— 否则「删掉 4 条子句 + 删掉对应 evidence key + 删掉随之陈旧的 marker」这套纯机械三步就能整条绕过 GOV8。看当前台账用 `go run ./cmd/featurestatus`（`-open` 只列未结项）。理由与边界见 [ADR-0011](docs/adr/0011-ledger-clause-level-evidence-handshake.md)。
-- `docsymbols_test.go`（GOV9，`TestGOV9DocSymbolReferencesResolve`）：活文档里每个 `路径::符号` 引用，只要**路径解析得出**，符号就必须真实存在。这道门禁补的是评审清单 F3 规则的另一半 —— 「用符号引用替代行号，因为符号改名时 `grep` 找得回来」只在**有人真去 grep** 时成立，而清单自己的参考实现指针就这样在一次改名后无声作废了 6 个提交。**路径解析不出的引用被故意放过**，这一条同时承担三件事：给必须写幻影名的文档（记录幻影、模板占位、举反例）留自指逃生门、让别的语言的 `::`（Rust 路径、pytest node id）不误伤、让带日期的归档文档不必追改名。因此**故意不设豁免表**（同 GOV7/GOV8 的对账半）：逃生门本身是有原则的，且只要一次编辑。查找是**先文件后同包回退** —— 1000 行上限会逼出文件拆分，符号挪到同包兄弟文件不该判红。扫描范围是全部活 `.md` **外加台账 `docs/feature-status.yaml`**（`docsymbols_test.go::ledgerDoc`，`docsymbols_test.go::TestGOV9ScansTheLedger` 钉住它不被悄悄摘出去）——台账注释里承载着每个未结项的判断依据，引用形态与拆解文档完全一样，把它留在 `.md only` 的过滤器外面等于那批引用一条都没保护，这是评审探针实测出来的。排除 `docs/superpowers/` 下的 plans / notes / specs（有日期的档案，理由同 `d2HistoricalDocs`）与 `reference/`（外部素材）。**这道门禁也扫 `CLAUDE.md` 与评审清单本身。**
+- `docsymbols_test.go`（GOV9，`TestGOV9DocSymbolReferencesResolve`）：活文档里每个 `路径::符号` 引用，只要**路径解析得出**，符号就必须真实存在。这道门禁补的是评审清单 F3 规则的另一半 —— 「用符号引用替代行号，因为符号改名时 `grep` 找得回来」只在**有人真去 grep** 时成立，而清单自己的参考实现指针就这样在一次改名后无声作废了 6 个提交。**路径解析不出的引用被故意放过**，这一条同时承担三件事：给必须写幻影名的文档（记录幻影、模板占位、举反例）留自指逃生门、让别的语言的 `::`（Rust 路径、pytest node id）不误伤、让带日期的归档文档不必追改名。因此**故意不设豁免表**（同 GOV7/GOV8 的对账半）：逃生门本身是有原则的，且只要一次编辑。查找是**先文件后同包回退** —— 大文件上限会逼出文件拆分，符号挪到同包兄弟文件不该判红。扫描范围是全部活 `.md` **外加台账 `docs/feature-status.yaml`**（`docsymbols_test.go::ledgerDoc`，`docsymbols_test.go::TestGOV9ScansTheLedger` 钉住它不被悄悄摘出去）——台账注释里承载着每个未结项的判断依据，引用形态与拆解文档完全一样，把它留在 `.md only` 的过滤器外面等于那批引用一条都没保护，这是评审探针实测出来的。排除 `docs/superpowers/` 下的 plans / notes / specs（有日期的档案，理由同 `d2HistoricalDocs`）与 `reference/`（外部素材）。**这道门禁也扫 `CLAUDE.md` 与评审清单本身。**
 
   **收口条款 —— 排版形态漏检不再构成阻塞。** GOV9 的引用识别有三层排版防线（`docsymbols_test.go::stripMarkdownEmphasis` 的词法剥离、`docsymbols_test.go::docSymbolRefRe` 的首字母锚、`docsymbols_test.go::deglued` 的下划线重锚）。**只有当活文档里真实存在一条因某种排版形态而逃脱的死引用时才修** —— 判据是拿探针在**真实语料**上跑、测该层的**边际召回是否 > 0**，而不是能否在合成模块上造出一个反例。理由：能构造出一种绕过，与「这道已覆盖绝大多数引用、逃生门是设计一部分的门禁存在缺陷」是两件事，前者恒真、后者才需要工作包。
 
@@ -179,7 +179,19 @@ TUI 始终是一个轻量的本地客户端。一个 **session resolver** 通过
 
 ### ACP —— 外部 agent（`internal/acp`）
 
-Agent Client Protocol 适配器，以子进程方式拉起外部 agent CLI，并把 VCS MCP server 与权限策略交付给它们。`e2e_real_test.go` 覆盖真实路径（门禁方式同上）。
+Agent Client Protocol 适配器，以子进程方式拉起外部 agent CLI，并把 VCS MCP server 与权限策略交付给它们。`e2e_real_test.go` 覆盖真实路径（门禁方式同上）。反方向的 server 端（把 yanshi 自己暴露给 Zed 这类宿主）在 `internal/acpserver`，走 stdio、复用 `internal/appserver` 的传输与会话管理约定（诊断走 stderr，stdout 只放协议帧）。
+
+### 运行期工具名 fail-closed（`internal/toolreg`）
+
+GOV5/GOV7 只在**编译期**推理工具名，运行期一个陌生名字仍然能走到「点一下批准」的对话框 —— 实测 `Tools.Allow=["*"]` 且绑了 callback 时，`Authorize` 对一个不存在的工具名会返回 nil 并**真的问用户一次**。`internal/toolreg` 是这条缝的运行期一半：`toolreg.WithRegistered` 由 orchestrator 的 `bindExecutionContext` 绑定「本执行作用域里真实存在的名字」，`toolreg.Check` 在 `internal/tools::Authorize` 与 `internal/tools::AuthorizeApprovalRequired` 的**第一句**执行，未注册即拒且不弹窗。
+
+两点容易踩错：**未绑定集合时它是 no-op**（子代理与大量测试不绑，fail-closed 只在生产装配下生效）；**新增给模型用的工具必须在组合根注册**，否则运行期被这道检查拒掉 —— 症状是工具在 schema 里、模型能调、每次都被拒，而 GOV5 看不见这个方向（GOV5 只校验「allow 的名字必须已注册」，反过来不管）。`internal/bootstrap/w3wiring_test.go` 对**真实装配的 App** 同时断言注册与授权，补的就是这个盲区。
+
+### 循环护栏（`internal/loopguard`）
+
+per-turn 的可插拔停止条件框架：`loopguard.Gate` 观察每次迭代（工具名 + 参数哈希、已用 token、已用 wall-clock、迭代序号），返回 continue / modify_prompt（注入一条纠偏消息）/ stop。`loopguard.NewHandler` 组装成一条链，由 orchestrator 作为 ADK middleware 装进 `runnerFor`。现有闸：重复调用检测（滑窗 + 分级：先纠偏后停止）、per-turn 工具调用预算、wall-clock deadline、turn token 预算。
+
+三条承重设计：**状态在 context 里按 turn 存，不在 middleware 上** —— `runnerFor` 会 memoise runner，一个 middleware 实例服务同一 model 的所有会话，计数器放在它身上就是进程级的，第一个把预算用完的用户会替所有人用完。**token 累加的是 prompt 增量而非 prompt 原值** —— provider 按调用累计上报，直接求和会在长 turn 里高估数倍、让预算在名义值的一个零头处就触发。**零值配置 = 全部关闭**，行为与引入前逐字节一致；一个自作主张打开的停止条件会静默截断 turn，看起来像模型自己放弃了。
 
 ## 本地 fork 说明
 
@@ -187,7 +199,8 @@ Agent Client Protocol 适配器，以子进程方式拉起外部 agent CLI，并
 
 ## 约定
 
-- **单文件不超过 1000 行** —— 这里指**纯代码行**（不含注释行和空行）。任何 `.go` 文件的纯代码行超过 1000 时，先按职责拆分（拆到同包的新文件，或独立的子包）再继续写新代码；不要在超长文件里继续堆叠。这是**全仓约定**，但机器强制的范围更窄：GOV2 只扫 `internal/` 与 `cmd/` 下的**非测试**文件，`_test.go`、`third_party/`、`sdk/` 超标不会让门禁变红 —— 那部分靠自觉。
+- **单文件不超过 5000 行** —— 这里指**纯代码行**（不含注释行和空行）。这是**全仓约定**，但机器强制的范围更窄：GOV2 只扫 `internal/` 与 `cmd/` 下的**非测试**文件，`_test.go`、`third_party/`、`sdk/` 超标不会让门禁变红 —— 那部分靠自觉。
+  **拆分的判据是职责，不是行数。** 5000 是「这个文件已经不是一个东西了」的兜底信号，不是目标值；一个 3000 行的内聚单元不需要拆，两个 200 行但职责无关的东西合在一个文件里就已经该拆了。反过来也成立：为了压住计数器而把一段本该连着读的逻辑（组合根的装配顺序是最典型的例子）切到别的文件，是拿可读性换一个数字。
 - **重复逻辑必须抽成公共函数** —— 发现重复实现的函数或反复出现的相同逻辑片段时，提取为公共函数/辅助函数（同包内，或放进合适的小包）复用；禁止复制粘贴。
 - **注释是承重文档** —— 包和导出符号都带有多段 doc 注释来解释*为什么*（尤其在 ADK、guard、VCS 周围）。在这些区域增改时，请保持同样的注释密度。
 - **Fake 优先于 mock** —— `einollm.FakeModel`、`goalloop.FakePlanner`/`FakeImplementer`、`cli.FakeBackend`、`acp.FakeAgent` 驱动确定性测试，无需 API key 或子进程。优先新增一个 fake，而非引入 mock 框架。

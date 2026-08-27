@@ -14,11 +14,27 @@ storage:
 token: "change-me"
 llm:
   providers:
+    # context_window is OPTIONAL. Omit it and yanshi resolves the window from a
+    # built-in model catalog (routing prefixes like "openrouter/anthropic/...",
+    # "us.anthropic....", "azure/..." are penetrated). Set it to override the
+    # catalog — for a 1M-context beta, a custom deployment, or a local runtime
+    # whose num_ctx you raised. Unknown models fall back to a deliberately
+    # CONSERVATIVE default: guessing the window too high means compaction never
+    # fires and the request dies, guessing low only costs one extra compaction.
+    #
+    # max_tokens / temperature / top_p are OPTIONAL generation parameters.
+    # Omitting a key leaves the provider's own default in force; setting one to
+    # 0 is a real setting (temperature: 0 for deterministic judge calls) and is
+    # sent to the API. Raise max_tokens when the model must emit whole files —
+    # the built-in 4096 default truncates long patches.
     - name: "openai"
       kind: "openai"
       model: "gpt-4o"
       api_key: "${OPENAI_API_KEY}"
       context_window: 128000      # this model's token window; compaction sizes against it
+      # max_tokens: 32000         # cap per response; omit to keep the 4096 default
+      # temperature: 0.2          # omit to keep the provider default; 0 is a valid setting
+      # top_p: 0.95               # tune this OR temperature, not both
       # multimodal: true          # native image input; auto-selects as vision auxiliary (Tier G)
     - name: "claude"
       kind: "anthropic"
@@ -26,6 +42,43 @@ llm:
       api_key: "${ANTHROPIC_API_KEY}"
       context_window: 200000
       multimodal: true            # native image input (Tier G)
+    # Local runtimes (Ollama / LM Studio / vLLM / llama.cpp) are auto-detected
+    # from base_url (loopback, RFC1918, *.local) or from kind, and are NEVER
+    # given a cloud model's window: a local serve truncates at its own num_ctx
+    # and silently drops the prompt head rather than rejecting the request.
+    # Set `local: true` when a local runtime sits behind an unrecognisable
+    # hostname, or `local: false` to opt a LAN-hosted gateway back into the
+    # cloud catalog.
+    # - name: "ollama"
+    #   kind: "openai"
+    #   model: "qwen3-coder:30b"
+    #   api_key: "ollama"
+    #   base_url: "http://127.0.0.1:11434/v1"
+    #   context_window: 32768     # set this to whatever num_ctx you launched with
+
+  # M7 出站限速。qpm: 0（默认）= 不限速，所以省略整块与升级前行为完全一致。
+  # burst 是空闲后允许的连发数；留 0 由 qpm 推导并封顶，免得 `qpm: 600` 变成
+  # 「允许 600 个并发」——那不是任何意义上的限速。单个 provider 可以用它自己的
+  # qpm / burst 覆盖本默认值（限速桶按 model 建，共用一个全局值会让快的那个
+  # provider 被慢的那个拖住）。
+  # rate_limit:
+  #   qpm: 60
+  #   burst: 5
+
+  # M6 工具 JSON Schema 改写策略：
+  #   auto   （默认）只对**确实拒绝过** schema 的模型改写。每个模型每进程付一次
+  #          失败请求的代价，只在需要的地方付改写的有损代价（无法合并的
+  #          oneOf/allOf 会退化成更宽的类型）。
+  #   always 对所有模型都改写。只跟严格网关说话、且不想付那一次 400 时用。
+  #   never  从不改写。用于判断改写器本身是不是问题所在。
+  # 写错的值归一化成 auto 而不是拒绝启动——安全行为同时也是默认行为。
+  # sanitize_tool_schemas: auto
+
+  # M9 启动期模型名自检：向每个 provider 要模型目录，名字不在目录里就告警并给出
+  # 最接近的几个候选。默认开启，且**永远不会**让启动失败或阻塞——所以这个开关
+  # 只有一个用途：让离线/气隙部署不必在每次启动时等那几个必然超时的探测。
+  # preflight: false
+
 agents:
   - name: "orchestrator"
     type: "local"
@@ -59,6 +112,30 @@ compaction:
   cooldown_fraction: 0.05    # token-growth cooldown: 5% of window (MID-TURN ONLY)
   cooldown_duration: ""      # time-based cooldown (optional, e.g. "3s"); "" disables (MID-TURN ONLY)
   hard_force_fraction: 0.95  # force-compact near window edge even inside cooldown (MID-TURN ONLY)
+# Per-turn agent stop conditions. EVERY field is off when zero and Load applies
+# no defaults here — deliberately unlike `compaction:` above. A stop condition
+# that turned itself on with a guessed default would cut turns short on an
+# installation that never asked for a limit, and that failure looks exactly like
+# the model giving up. The whole block below is therefore a no-op as written;
+# uncomment the values you actually want.
+loop_guard:
+  repetition_enabled: false  # detect identical tool calls (name + arguments) repeating
+  repetition_window: 0       # sliding window in tool calls; 0 = loopguard's default
+  repetition_warn_after: 0   # consecutive repeats before the turn is nudged; 0 = default
+  repetition_stop_after: 0   # consecutive repeats before the turn ends; 0 = default
+                             # the three above are inert unless repetition_enabled is true.
+                             # they are left at 0 rather than spelled out because the real
+                             # values live in internal/loopguard (DefaultRepetitionWindow,
+                             # DefaultRepetitionStages) — copying them here would create a
+                             # second source of truth that drifts silently.
+  max_tool_calls: 0          # total tool calls allowed in one turn; 0 = unlimited
+  per_tool_calls: {}         # per-name caps, e.g. {shell_run: 20, agent_spawn: 3}
+                             # a budget refusal reaches the model as a tool RESULT,
+                             # not a Go error, so the turn can adapt instead of aborting
+  turn_timeout: 0s           # wall-clock limit per turn, checked at ReAct iteration
+                             # boundaries only — it bounds the loop, not a single tool
+                             # call. Duration string ("90s", "5m"); 0s = unlimited
+  max_turn_tokens: 0         # accumulated token spend per turn; 0 = unlimited
 # Permission profiles. The MAP KEY is what selects a profile — there is no
 # indirection through the `agents:` block above (agents[].profile has no
 # production reader today; setting it changes nothing and warns about nothing).
@@ -205,6 +282,36 @@ mcp:
   #   url: "http://localhost:3000/mcp"
   #   bearer: "${MCP_BEARER_TOKEN}"
   #   timeout: 30s
+  #
+  # OAuth 2.0（仅 HTTP transport）。省略 oauth 块 = 沿用 bearer（或不鉴权），
+  # 与本字段出现之前的行为逐字节一致。
+  #
+  # grant: client_credentials（默认，省略即此值）—— 机器对机器，无浏览器环节，
+  # 首次调用前自动取 token：
+  # my-oauth-tools:
+  #   enabled: true
+  #   transport: http
+  #   url: "https://mcp.example.com"
+  #   oauth:
+  #     token_url: "https://auth.example.com/oauth/token"
+  #     client_id: "${MCP_CLIENT_ID}"
+  #     client_secret: "${MCP_CLIENT_SECRET}"
+  #     scopes: [read, write]
+  #
+  # grant: authorization_code —— 浏览器 + PKCE，需要额外的 authorization_url，
+  # 并且必须先跑一次 `yanshi auth mcp-login <server>` 建立授权；token 之后自动
+  # 刷新，无需再交互。刷新 token 存在 secrets 后端里（见下方 secrets 块），
+  # 没配 secrets 后端时这一档会在启动时打印告警并禁用，其余 server 不受影响：
+  # my-user-tools:
+  #   enabled: true
+  #   transport: http
+  #   url: "https://mcp.example.com"
+  #   oauth:
+  #     grant: authorization_code
+  #     token_url: "https://auth.example.com/oauth/token"
+  #     authorization_url: "https://auth.example.com/oauth/authorize"
+  #     client_id: "${MCP_CLIENT_ID}"
+  #     scopes: [read, write]
 
 # MEM1 用户 memory:跨会话偏好笔记,启动时作为独立 suffix 注入 system prompt。
 # 默认关闭;显式 enabled: true 后才会加载与注入。
@@ -223,6 +330,10 @@ observability:
     # file: "/var/log/yanshi.log"  # 固定日志文件路径;空 = stderr(或 TUI 模式下的默认文件)
     # TUI 启动时默认把日志重定向到 ~/.yanshi/logs/yanshi.log,避免污染 alt-screen 渲染。
     # stderr_in_tui: true          # 调试 TUI 时设为 true,让日志留在 stderr
+    # O1 日志轮转。日志文件是长跑进程唯一无界的资源——前面没有 logrotate(8) 的
+    # 部署（工作站上的 `yanshi serve`、容器）会被它撑满卷，进而把数据库一起拖垮。
+    # max_size_mb: 10        # 活动文件轮转阈值；0 = 默认 10 MiB；负数 = 从不轮转
+    # max_backups: 5         # 保留几代；0 = 默认 5；负数 = 一代不留（轮转即截断）
   otel:
     enabled: false
     endpoint: "http://127.0.0.1:4318"  # OTLP/HTTP

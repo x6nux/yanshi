@@ -1,8 +1,22 @@
 // Package archtest — architecture governance tests for GOV2 pure code line gate.
 //
-// This file enforces a maximum of 1000 pure code lines (non-comment, non-blank)
+// This file enforces a maximum of 5000 pure code lines (non-comment, non-blank)
 // per .go file. Grandfather exceptions are tracked in lineExceptions and must
 // be removed when the corresponding refactoring task is completed.
+//
+// The ceiling was 1000 through S0. It was raised to 5000 by an explicit project
+// decision after the QwenPaw-parity work: at 1000 the gate had stopped selecting
+// for cohesion and started selecting for *fragmentation* — bootstrap.go sat at
+// 984/1000 with every new wiring line forced into a separate file, and the
+// composition root's assembly order (which CLAUDE.md calls out as load-bearing)
+// was being scattered across w3wiring.go / adaptive.go / c1.go for no reason
+// other than the counter. A limit that splits files by line count rather than by
+// responsibility makes the code harder to read, not easier.
+//
+// 5000 still catches the thing this gate exists to catch — a file that has
+// quietly become a second composition root or a god object — while leaving room
+// for a genuinely cohesive unit to stay in one place. The 90% warning band below
+// is what does the day-to-day nudging now.
 package archtest
 
 import (
@@ -13,7 +27,7 @@ import (
 	"testing"
 )
 
-const pureLineLimit = 1000
+const pureLineLimit = 5000
 
 // lineExceptions: grandfather-ed overlimit files (tracked, must be removed).
 // Keys are ABSOLUTE paths (use abs("internal/…")), matching what goFiles yields.
@@ -26,7 +40,7 @@ const pureLineLimit = 1000
 var lineExceptions = map[string]string{}
 
 // TestPureCodeLineGate verifies that no non-test .go file in the internal/
-// or cmd/ directories exceeds 1000 pure code lines. Grandfathered files (in
+// or cmd/ directories exceeds pureLineLimit pure code lines. Grandfathered files (in
 // lineExceptions) are logged but not failed — unless they now fall below
 // the limit, or no longer exist, either of which is a dead entry that must be
 // removed.
@@ -52,8 +66,13 @@ func TestPureCodeLineGate(t *testing.T) {
 		}
 		if n > pureLineLimit {
 			failed = append(failed, fmt.Sprintf("%s: %d pure code lines (limit %d) — split required", short(f, root), n, pureLineLimit))
-		} else if n > 900 {
-			approaching = append(approaching, fmt.Sprintf("%s: %d pure (approaching limit)", short(f, root), n))
+		} else if n > pureLineLimit*9/10 {
+			// Derived from the limit, not hardcoded: the warning band was a
+			// literal 900 against a literal 1000, and raising the ceiling to
+			// 5000 would have left it warning at 18% — a band that fires on
+			// nearly every file says nothing, and the one that matters (a file
+			// about to trip the gate) would have been indistinguishable.
+			approaching = append(approaching, fmt.Sprintf("%s: %d pure (approaching limit %d)", short(f, root), n, pureLineLimit))
 		}
 	}
 	// Dead-entry check, "subject has vanished" half. The loop above can only

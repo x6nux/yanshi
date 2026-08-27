@@ -157,6 +157,10 @@ C15 TUI 偏好：`keymap`（默认 default）、`theme`（默认 default）、`v
 | key | type | 说明 |
 |---|---|---|
 | llm.providers | []ProviderConfig | |
+| llm.rate_limit.qpm | int | |
+| llm.rate_limit.burst | int | |
+| llm.sanitize_tool_schemas | string | |
+| llm.preflight | *bool | |
 
 ### agents
 
@@ -205,6 +209,19 @@ C15 TUI 偏好：`keymap`（默认 default）、`theme`（默认 default）、`v
 | compaction.cooldown_fraction | float | |
 | compaction.cooldown_duration | string | |
 | compaction.hard_force_fraction | float | |
+
+### loop_guard
+
+| key | type | 说明 |
+|---|---|---|
+| loop_guard.repetition_enabled | bool | |
+| loop_guard.repetition_window | int | |
+| loop_guard.repetition_warn_after | int | |
+| loop_guard.repetition_stop_after | int | |
+| loop_guard.max_tool_calls | int | |
+| loop_guard.per_tool_calls | map[string]int | |
+| loop_guard.turn_timeout | duration | |
+| loop_guard.max_turn_tokens | int | |
 
 ### memory
 
@@ -265,6 +282,8 @@ C15 TUI 偏好：`keymap`（默认 default）、`theme`（默认 default）、`v
 | observability.log.format | string | |
 | observability.log.file | string | |
 | observability.log.stderr_in_tui | bool | |
+| observability.log.max_size_mb | int | |
+| observability.log.max_backups | int | |
 | observability.otel.enabled | bool | |
 | observability.otel.endpoint | string | |
 | observability.otel.service_name | string | |

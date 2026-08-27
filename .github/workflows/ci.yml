@@ -41,6 +41,33 @@ jobs:
           cache: true
       - run: go vet ./...
 
+  # O8. yanshi executes shell commands and spawns subprocesses on the user's
+  # machine, so a CVE anywhere in the dependency chain is a CVE in a security
+  # boundary — and nothing in this repo was watching for one. govulncheck is
+  # the right tool rather than a generic SCA scanner because it is
+  # reachability-based: it reports only vulnerabilities whose affected symbols
+  # this binary actually calls, so the signal does not drown in advisories for
+  # code paths that are compiled in but never entered.
+  #
+  # HARD gate. A soft one would report into a log nobody reads, which is the
+  # failure mode `governance` and `fuzz-seed` were tightened out of in W0. If a
+  # finding is genuinely not actionable, the fix is to record that judgement
+  # (bump, replace, or an explicit -show=... exclusion with a reason) rather
+  # than to let the whole job go advisory.
+  vulncheck:
+    name: vulncheck (govulncheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: scan
+        run: govulncheck ./...
+
   # race is a compiler flag, not a test asset — it works on any Go code, so it
   # is a HARD gate (no soft-enable on E2/RAC1).
   #
@@ -104,6 +131,35 @@ jobs:
         # binary must at least print usage and exit 0.
         shell: bash
         run: ${{ matrix.os == 'windows' && './yanshi.exe -h' || './yanshi -h' }}
+
+      # O9. `-h` proves the binary links; it proves nothing about whether it can
+      # bootstrap. Every failure mode that actually ships — a store schema that
+      # will not open, a composition-root panic, a provider registry that
+      # rejects the example config, a nokeyring build whose secrets backend is
+      # absent — leaves `-h` exiting 0. `exec --fake-model` drives the real
+      # bootstrap chain (config -> store -> model -> tools -> orchestrator) and
+      # a full turn end to end without needing an API key.
+      #
+      # Run from a scratch directory with a copy of the tracked example config:
+      # config.yaml is gitignored, and `exec` refuses to start without one, so
+      # running in the repo root would fail for a reason unrelated to the
+      # artifact. This also exercises the path a new user takes on day one.
+      #
+      # The turn output is asserted, not just the exit code: the fake model is
+      # deterministic, so a bootstrap that comes up but produces no assistant
+      # text is a regression this step must catch.
+      - name: smoke bootstrap (headless turn, fake model)
+        shell: bash
+        run: |
+          set -e
+          bin="$PWD/${{ matrix.os == 'windows' && 'yanshi.exe' || 'yanshi' }}"
+          work="$(mktemp -d)"
+          cp config.example.yaml "$work/config.yaml"
+          cd "$work"
+          "$bin" exec -fake-model -p "hello" -output jsonl -timeout 60s >out.jsonl
+          cat out.jsonl
+          grep -q '"type":"agent_chunk"' out.jsonl
+          grep -q '"type":"done"' out.jsonl
 
   # --- hard gates: archtest governance and fuzz/property ---------------------
   # Both were soft ("continue-on-error") while the E3 and E2 assets were being

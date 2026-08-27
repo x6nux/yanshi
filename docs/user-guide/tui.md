@@ -75,9 +75,15 @@ Usage:
   yanshi app     [-config config.yaml] [-fake-model]
   yanshi goal    [-config config.yaml] [-fake-model] [-workdir DIR] [-agent claudecode] [-max-iters 5] [-max-tokens 0] [-goal "text"] [-tier auto|t0..t4]
   yanshi vcs-mcp (env-driven; spawned by the ACP adapter — YANSHI_DB_PATH/YANSHI_REPO_ID/YANSHI_WT_ID/YANSHI_AGENT/YANSHI_WORKTREE_DIR)
-  yanshi doctor [-config FILE] [-json] [-release]
+  yanshi init    [-config FILE] [-template FILE] [-force]
+  yanshi daemon  status|stop|reload [-root DIR] [-json] [-config FILE] [-timeout 20s]
+  yanshi schedule list|show|pause|resume|run-now|delete [ID] [-root DIR] [-json]
+  yanshi provider add|list [-config FILE] [-name N] [-kind K] [-model M] [-api-key K] [-replace] [-json]
+  yanshi acp     [-config config.yaml] [-fake-model]
+  yanshi doctor [-config FILE] [-json] [-release] [-fix] [-fix-only LIST] [-fix-dry-run]
   yanshi pr      <PR-number> | <full-URL>
   yanshi auth    status|logout|device [-provider NAME] [-account NAME]
+  yanshi auth    mcp-login <server> | mcp-logout <server>
 
 Subcommands:
   (none)   Launch the self-contained TUI. Discovers a running backend for the
@@ -101,14 +107,50 @@ Subcommands:
            so stdout stays parseable. -fake-model needs no API key.
   goal     Run the self-driven goal loop (plan-implement-evaluate-judge).
   vcs-mcp  Run the autoVCS MCP server on stdio (spawned by the ACP adapter).
+  init     Generate a config.yaml from config.example.yaml. Refuses to
+           overwrite an existing config unless -force (which backs it up
+           first). ${VAR} references are left as references — nothing writes
+           a credential to disk — and the summary names every provider
+           environment variable that is still unset.
+  daemon   Operate an already-running backend for this project, found through
+           the same lockfile the TUI uses. status prints pid / address /
+           uptime / readiness (exit 0 only when ready). stop asks it to shut
+           down and waits for the process to go. reload makes it re-read the
+           config, applying what can be applied and REFUSING the rest with a
+           reason — a listen address or a database path cannot change under a
+           running process, and reload says so rather than pretending.
+  schedule  Operate the scheduled automations held by the running daemon: list
+           them with their next fire time, show one with its run history,
+           pause / resume / run-now / delete. Creating an automation stays a
+           model-facing tool; this is the operations surface.
+  provider  Add or list the LLM providers in config.yaml. add prompts for
+           whatever the flags omit (and needs every value as a flag when no
+           terminal is attached, so it scripts). The API key goes into the
+           secrets backend and only a secret:// reference is written to the
+           config, so the file stays safe to copy and to attach to a report.
+           Providers are bound at boot, so a new one needs a restart.
+  acp      Speak the Agent Client Protocol as the AGENT on stdio, exposing
+           yanshi's own orchestrator to an ACP host such as Zed. Protocol
+           frames go to stdout and diagnostics to stderr, the same contract
+           the app subcommand uses. This is the reverse of the ACP CLIENT the goal
+           loop and acp_delegate use to drive somebody else's agent.
   doctor   One-time self-check of config, database, providers, ACP CLIs,
            lockfile, port, directories, and sandbox status. Prints ok/warn/fail
            per check; -json emits machine-readable output. Exit 0 all ok /
-           1 warn / 2 fail. Never prints secrets.
+           1 warn / 2 fail. Never prints secrets. -fix additionally performs a
+           closed allowlist of repairs (missing directories, missing required
+           config blocks, dead lockfiles, over-permissive file modes), backing
+           up every file it edits and refusing the file-editing ones when not
+           attached to a terminal. It never touches provider credentials and
+           never deletes a database.
   pr       Fetch a GitHub pull request into the session as context. Takes a
            PR number (run from the repo directory) or a full URL (any repo).
-  auth     Manage RFC 8628 device-flow sessions (status / logout / device).
-           Never echoes a secret. Provider api_keys are NOT managed here —
-           they live in config.yaml as a literal or a ${VAR} reference.
+  auth     Manage authenticated sessions: RFC 8628 device flow (status /
+           logout / device) and MCP OAuth (mcp-login / mcp-logout, the
+           authorization_code + PKCE flow for an enterprise MCP server; the
+           tokens go to the secrets backend and the refresh token is rotated
+           automatically). Never echoes a secret. Provider api_keys are not
+           managed here — use "yanshi provider add", which puts the key in the
+           secrets backend too.
 ```
 <!-- END GENERATED: help:yanshi -->

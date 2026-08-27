@@ -205,6 +205,12 @@ usage: yanshi auth <status|logout|device> ...
 Usage of doctor:
   -config string
     	path to configuration file (default "config.yaml")
+  -fix
+    	repair an allowlisted set of problems after reporting (see -fix-only for the list)
+  -fix-dry-run
+    	with -fix, report what would be repaired without touching anything
+  -fix-only string
+    	comma-separated subset of repairs to run (default: all allowlisted)
   -json
     	emit machine-readable JSON instead of human-readable text
   -release
