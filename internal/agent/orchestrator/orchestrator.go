@@ -29,6 +29,7 @@ import (
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/sandbox"
 	"github.com/x6nux/yanshi/internal/secproc"
+	"github.com/x6nux/yanshi/internal/secrets"
 	"github.com/x6nux/yanshi/internal/shell"
 	"github.com/x6nux/yanshi/internal/task/work"
 	"github.com/x6nux/yanshi/internal/toolreg"
@@ -51,6 +52,10 @@ type Config struct {
 	Compaction      CompactionConfig
 	Sandbox         sandbox.Sandbox
 	NetworkPolicy   *netpolicy.Policy
+	// Redactor 是进程级 secrets redactor。绑进每个 turn 的执行 context，
+	// 供 GuardedTool.InvokableRun 在结果交给模型之前收口（W-A-02）。
+	// nil 表示不脱敏，行为与引入前逐字节一致。
+	Redactor        *secrets.Redactor
 	Approvals       *approval.Manager
 	ShellManager    *shell.Manager
 	SecureFactory   secproc.Factory
@@ -172,6 +177,7 @@ type Orchestrator struct {
 	approvals       *approval.Manager
 	sandbox         sandbox.Sandbox
 	networkPolicy   *netpolicy.Policy
+	redactor        *secrets.Redactor
 	secureFactory   secproc.Factory
 	shellManager    *shell.Manager
 	subagentMgr     *registry.Manager
@@ -287,6 +293,7 @@ func New(cfg Config) (*Orchestrator, error) {
 		approvals:          cfg.Approvals,
 		sandbox:            cfg.Sandbox,
 		networkPolicy:      cfg.NetworkPolicy,
+		redactor:           cfg.Redactor,
 		secureFactory:      cfg.SecureFactory,
 		shellManager:       cfg.ShellManager,
 		subagentMgr:        cfg.SubagentManager,
@@ -390,6 +397,9 @@ func (o *Orchestrator) bindExecutionContext(ctx context.Context, connectionSessi
 	if o.networkPolicy != nil {
 		ctx = tools.WithNetworkPolicy(ctx, o.networkPolicy)
 	}
+	if o.redactor != nil {
+		ctx = tools.WithRedactor(ctx, o.redactor)
+	}
 	if o.secureFactory != nil {
 		ctx = tools.WithSecureProcessFactory(ctx, o.secureFactory)
 	}
@@ -408,6 +418,15 @@ func (o *Orchestrator) bindExecutionContext(ctx context.Context, connectionSessi
 		ctx = tools.WithBackgroundManager(ctx, o.background)
 	}
 	return ctx
+}
+
+// BindExecutionContextForTest 暴露 bindExecutionContext 给组合根的接线测试。
+//
+// 存在的理由是 GOV6 够不到的那半：GOV6 只证明注入器**有**调用点，证明不了
+// 真实装配出的 App 确实走到了那个调用点。w3wiring_test.go 对真 App 断言，
+// 补的正是这个盲区。
+func (o *Orchestrator) BindExecutionContextForTest(ctx context.Context, connectionSessionID string) context.Context {
+	return o.bindExecutionContext(ctx, connectionSessionID)
 }
 
 // withTurnContext is the single helper for all 4 turn entry points: it binds

@@ -1205,6 +1205,7 @@ func Build(opts Options) (*App, error) {
 		// every tools.With* injection in bindExecutionContext silently no-ops.
 		Sandbox:            sb,
 		NetworkPolicy:      networkPolicy,
+		Redactor:           redactor,
 		Approvals:          approvalMgr,
 		ShellManager:       shellManager,
 		SecureFactory:      secureFactory,

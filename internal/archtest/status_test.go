@@ -39,7 +39,10 @@ import (
 // codex/QwenPaw capability audit (docs/superpowers/notes/2026-08-27-capability-audit.md
 // P0-1), not part of the original S0 scope. This is new scope, deliberately
 // added, not a silent drift.
-const ledgerSize = 64
+//
+// 2026-08-27: +1 for A2/W-A-02, same package and audit, P0-2 (tool output
+// reached the model provider unredacted).
+const ledgerSize = 65
 
 type ledgerEntry struct {
 	ID         string `yaml:"id"`

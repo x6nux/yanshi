@@ -1634,4 +1634,19 @@
     "2": "internal/ctxcompact::TestEstimateTokensImageCostIsIndependentOfPayloadSize"
     "3": "internal/ctxcompact::TestEstimateTokensCountsAllThreeMultimodalFields"
     "4": "internal/ctxcompact::TestEstimateTokensLowDetailCostsLessThanHigh"
+- id: "A2/W-A-02"
+  package: "W-A"
+  verdict: done
+  title: "工具输出脱敏后再进模型"
+  # 收口在 GuardedTool.InvokableRun 而不是每个工具里：ToolChunk 的字段单一归属
+  # 决定了 Result 只在那里汇合。子句 2 钉住「未绑定时逐字节不变」，那是这类
+  # 全量收口最容易造成的回归方向。子句 3 是刻意的不对称：Text 走 TUI，脱敏它
+  # 只会把操作员自己的 key 对他自己藏起来。子句 4 对真实装配断言，补 GOV6
+  # 够不到的那半（GOV6 证明注入器有调用点，证明不了 App 真的走到）。
+  acceptance: "工具结果在返回给编排器之前经过 Redactor；未绑定 Redactor 时工具结果逐字节不变；TUI 路径的 Text 字段不受脱敏影响；真实装配出的 App 其 orchestrator 已绑定 Redactor"
+  evidence:
+    "1": "internal/tools::TestInvokableRunRedactsRegisteredSecrets"
+    "2": "internal/tools::TestInvokableRunWithoutRedactorIsByteIdentical"
+    "3": "internal/tools::TestStreamTextFieldIsNotRedacted"
+    "4": "internal/bootstrap::TestW3RedactorReachesToolResults"
 

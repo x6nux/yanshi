@@ -330,6 +330,10 @@ func (g *GuardedTool) Stream(ctx context.Context, argsJSON string) <-chan ToolCh
 // 错误处理语义保留：权限/操作错误作为工具的 *结果内容*（非 Go error）回喂模型，让
 // 模型改路径重试（capped by MaxIterations）；返回 Go error 会中断整个 turn。连续失败
 // 熔断仍由 errcnt 触发。
+//
+// W-A-02：返回前一律过 redactForModel。这是工具输出通往 provider 的唯一出口，
+// 在这里收口而不是在每个工具里，是因为 Result 只在这里汇合 —— 见 redactctx.go。
+// 两个返回点都要过：错误分支的 result 同样会被回喂给模型。
 func (g *GuardedTool) InvokableRun(ctx context.Context, argsJSON string, _ ...tool.Option) (string, error) {
 	ch := g.Stream(ctx, argsJSON)
 	var result strings.Builder
@@ -356,12 +360,12 @@ func (g *GuardedTool) InvokableRun(ctx context.Context, argsJSON string, _ ...to
 				}
 			}
 		}
-		return result.String(), nil
+		return redactForModel(ctx, result.String()), nil
 	}
 	if c := getErrCounter(ctx); c != nil {
 		*c = 0
 	}
-	return spillIfTooLong(ctx, g.name, result.String()), nil
+	return spillIfTooLong(ctx, g.name, redactForModel(ctx, result.String())), nil
 }
 
 // denyReason extracts the human-readable reason from a DenyErr; other errors
