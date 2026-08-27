@@ -118,7 +118,7 @@ func TestChunkBudgetFor_ModelWindowZero(t *testing.T) {
 // TestBuildCarryRequest_NoCarry covers the no-carry (first chunk) path.
 func TestBuildCarryRequest_NoCarry(t *testing.T) {
 	chunk := []*schema.Message{{Role: schema.User, Content: "hello"}}
-	req := buildCarryRequest("", chunk, 100)
+	req := buildCarryRequest("", chunk, 100, false, SeqRef{}, 0)
 	assert.Equal(t, 2, len(req), "no carry: chunk + instruction")
 	assert.Equal(t, "hello", req[0].Content)
 }
@@ -126,7 +126,7 @@ func TestBuildCarryRequest_NoCarry(t *testing.T) {
 // TestBuildCarryRequest_WithCarry covers the with-carry path.
 func TestBuildCarryRequest_WithCarry(t *testing.T) {
 	chunk := []*schema.Message{{Role: schema.User, Content: "next chunk"}}
-	req := buildCarryRequest("prior summary", chunk, 100)
+	req := buildCarryRequest("prior summary", chunk, 100, true, SeqRef{}, 0)
 	assert.Equal(t, 4, len(req), "with carry: carry + ack + chunk + instruction")
 	assert.Contains(t, req[0].Content, SummarySentinel)
 	assert.Equal(t, "next chunk", req[2].Content)

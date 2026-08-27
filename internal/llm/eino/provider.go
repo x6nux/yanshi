@@ -3,7 +3,6 @@ package eino
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"sort"
 	"strings"
 
@@ -77,11 +76,33 @@ func BuildProviders(cfg *config.Config) (map[string]model.BaseChatModel, []model
 		// queries by cs.model/req.Model (the model id), so the windows key MUST
 		// be the registry key — not p.Name — or the per-model window silently
 		// misses and compaction falls back to the global ContextWindow.
-		if p.ContextWindow > 0 {
-			windows[key] = p.ContextWindow
+		//
+		// M2/M3: the window is RESOLVED, not copied. An omitted
+		// `context_window` used to leave the key absent, so the model inherited
+		// the global 256K fallback and a 128K model's compaction gate never
+		// opened. ResolveContextWindow answers for every provider — explicit
+		// config first, then the static catalog (skipped for local runtimes),
+		// then a conservative default — so the map is now total and the
+		// fallback only applies to models nothing recognises.
+		if w, _ := ResolveContextWindow(providerShape(p), 0); w > 0 {
+			windows[key] = w
 		}
 	}
 	return models, chain, windows, nil
+}
+
+// providerShape projects a config.ProviderConfig onto the minimal shape
+// context-window resolution reads. It is the ONE conversion point, so a new
+// resolution input is added to ProviderShape and mapped here rather than
+// duplicated at each call site.
+func providerShape(p config.ProviderConfig) ProviderShape {
+	return ProviderShape{
+		Kind:          p.Kind,
+		Model:         p.Model,
+		BaseURL:       p.BaseURL,
+		ContextWindow: p.ContextWindow,
+		Local:         p.Local,
+	}
 }
 
 // normalizeKind canonicalizes ProviderConfig.Kind so dispatch is forgiving of
@@ -106,29 +127,74 @@ func normalizeKind(k string) string {
 // per-provider dispatch point extracted from BuildProviders so the chain loop
 // stays readable and each branch is independently testable. See BuildProviders
 // for the no-retry/no-timeout HTTP client rationale.
+//
+// M4: the generation parameters (MaxTokens / Temperature / TopP) are forwarded
+// as POINTERS all the way to the wire. Nil means "the operator said nothing",
+// and every adapter omits the field entirely in that case, so a provider that
+// does not configure them produces the exact request body it produced before.
+// A plain value type would erase the difference between "unset" and "set to 0",
+// and 0 is meaningful for both temperature (deterministic judge calls) and
+// top_p (greedy decoding).
 func buildOne(ctx context.Context, p config.ProviderConfig) (model.BaseChatModel, error) {
 	switch normalizeKind(p.Kind) {
 	case "anthropic":
 		return NewAnthropicModel(ctx, &AnthropicModelConfig{
-			APIKey:  p.APIKey,
-			Model:   p.Model,
-			BaseURL: p.BaseURL,
+			APIKey:      p.APIKey,
+			Model:       p.Model,
+			BaseURL:     p.BaseURL,
+			MaxTokens:   derefOr(p.MaxTokens, 0),
+			Temperature: p.Temperature,
+			TopP:        p.TopP,
 		})
 	case "openai-responses":
 		return NewOpenAIResponsesModel(ctx, &ResponsesConfig{
-			APIKey:  p.APIKey,
-			Model:   p.Model,
-			BaseURL: p.BaseURL,
+			APIKey:          p.APIKey,
+			Model:           p.Model,
+			BaseURL:         p.BaseURL,
+			MaxOutputTokens: derefOr(p.MaxTokens, 0),
+			Temperature:     p.Temperature,
+			TopP:            p.TopP,
 		})
 	default: // "openai" and any unrecognized kind (backward-compat)
-		return openai.NewChatModel(ctx, &openai.ChatModelConfig{
+		inner, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
 			APIKey:  p.APIKey,
 			Model:   p.Model,
 			BaseURL: p.BaseURL,
+			// Pointers forwarded as-is: eino-ext's ChatModelConfig uses the
+			// same nil-means-omit convention, so no translation is needed and
+			// an unconfigured provider keeps its previous request body.
+			MaxTokens:   p.MaxTokens,
+			Temperature: p.Temperature,
+			TopP:        p.TopP,
 			// No Timeout, no retry Transport: see BuildProviders doc comment.
-			HTTPClient: &http.Client{Transport: http.DefaultTransport},
+			// The transport DOES capture failed responses' headers, which is
+			// observation rather than policy — go-openai discards resp.Header
+			// when it builds its error, so without this the Retry-After of
+			// every 429 from an OpenAI-compatible endpoint is unrecoverable
+			// and M1's cooldown degrades to a blind exponential. See
+			// retryafter.go.
+			HTTPClient: newHeaderCaptureClient(),
 		})
+		if err != nil {
+			return nil, err
+		}
+		// The consumer half of the capture: rejoins the captured header to the
+		// error so ClassifyError can read Retry-After from the authoritative
+		// source. Only the openai kind needs it; the other two adapters build
+		// their own HeaderError.
+		return NewHeaderAwareModel(inner), nil
 	}
+}
+
+// derefOr returns *v, or def when v is nil. Used where an adapter config field
+// is a value type whose zero already means "use the adapter default" (Anthropic
+// MaxTokens, Responses MaxOutputTokens), so the nil/zero distinction the config
+// layer preserves is not needed past this point.
+func derefOr[T any](v *T, def T) T {
+	if v == nil {
+		return def
+	}
+	return *v
 }
 
 // SortedModelNames returns the registry keys of a name→model map in sorted

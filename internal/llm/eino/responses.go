@@ -75,6 +75,13 @@ type ResponsesConfig struct {
 	// MaxOutputTokens overrides the default max_output_tokens. Default: 4096.
 	// (The Responses API uses "max_output_tokens" rather than "max_tokens".)
 	MaxOutputTokens int
+	// Temperature is the sampling temperature (M4). nil omits the field from
+	// the request body entirely, leaving the provider default in force — the
+	// pointer is what distinguishes "unset" from a deliberate 0.
+	Temperature *float32
+	// TopP is nucleus sampling mass (M4). nil omits the field; see Temperature
+	// for why this is a pointer.
+	TopP *float32
 	// HTTPClient is the HTTP client used for API calls. If nil, a default
 	// client built on http.DefaultTransport is used (no timeout, no retry —
 	// ResilientChatModel is the single retry authority; see provider.go).
@@ -127,6 +134,8 @@ func NewOpenAIResponsesModel(_ context.Context, cfg *ResponsesConfig) (*openaiRe
 			Model:           cfg.Model,
 			BaseURL:         base,
 			MaxOutputTokens: maxTokens,
+			Temperature:     cfg.Temperature,
+			TopP:            cfg.TopP,
 			HTTPClient:      hc,
 		},
 		client: hc,
@@ -200,6 +209,13 @@ type responsesRequest struct {
 	Stream          bool                 `json:"stream"`
 	MaxOutputTokens int                  `json:"max_output_tokens,omitempty"`
 	Tools           []responsesTool      `json:"tools,omitempty"`
+
+	// Temperature / TopP are the M4 generation parameters. Both are pointers
+	// with omitempty so an unconfigured provider sends a body byte-identical
+	// to the pre-M4 one, while an explicit 0 (deterministic sampling) still
+	// reaches the wire — the exact case a value type would have erased.
+	Temperature *float32 `json:"temperature,omitempty"`
+	TopP        *float32 `json:"top_p,omitempty"`
 
 	// Text, when non-nil, requests provider-enforced structured output for this
 	// turn (Responses API text.format json_schema). nil on text-mode turns so
@@ -321,7 +337,12 @@ func (m *openaiResponsesModel) Generate(ctx context.Context, in []*schema.Messag
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("eino/responses: API error (HTTP %d): %s", resp.StatusCode, string(respBody))
+		// Wrapped in a HeaderError so the retry layer can read Retry-After from
+		// the response headers instead of scraping it out of the body text
+		// (M1). Neither eino nor go-openai surfaces headers on a failed call,
+		// and this adapter is one of the few places that still holds the
+		// *http.Response.
+		return nil, NewHeaderError(resp, fmt.Errorf("eino/responses: API error (HTTP %d): %s", resp.StatusCode, string(respBody)))
 	}
 
 	var apiResp responsesResponse
@@ -403,6 +424,8 @@ func (m *openaiResponsesModel) buildRequest(in []*schema.Message, options *model
 		Model:           m.cfg.Model,
 		Stream:          stream,
 		MaxOutputTokens: m.cfg.MaxOutputTokens,
+		Temperature:     m.cfg.Temperature,
+		TopP:            m.cfg.TopP,
 	}
 	// A12-providers: when the turn declared an output schema (per-call
 	// OutputSchemaOption), request provider-enforced structured output. Empty

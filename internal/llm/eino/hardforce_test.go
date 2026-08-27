@@ -8,6 +8,8 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/x6nux/yanshi/internal/ctxcompact"
 )
 
 // armedCooldownModel returns a CompactingModel that has REALLY compacted once,
@@ -20,22 +22,27 @@ import (
 // by hand. It also means the cooldown under test is the production one.
 func armedCooldownModel(t *testing.T, window int) (*CompactingModel, *recordingModel) {
 	t.Helper()
-	inner := &recordingModel{summary: "summarized", reply: "done", streamOK: true}
+	// The summary has to clear the C10 quality gate; a short placeholder is
+	// rejected and the arming compaction silently does not happen, which
+	// presents as "the cooldown logic is broken".
+	inner := &recordingModel{summary: streamSummaryText, reply: "done", streamOK: true}
 	cm := &CompactingModel{
 		Inner:             inner,
 		Threshold:         0.5,
 		ContextWindow:     window,
 		KeepRecent:        2,
-		CooldownTokens:    100,
+		CooldownTokens:    window / 4,
 		CooldownDuration:  time.Hour,
 		HardForceFraction: 0.95,
 	}
 
-	// ~228 tokens against a 0.5 threshold: over the gate, and with no prior
-	// compaction there is no cooldown yet.
+	// ~57% of the window against a 0.5 threshold: over the gate, and with no
+	// prior compaction there is no cooldown yet. Sized as a FRACTION of the
+	// window so the caller can pick one large enough for a summary to fit.
+	msgTokens := window * 19 / 200
 	first := []*schema.Message{
-		bigMessage(30), bigMessage(30), bigMessage(30),
-		bigMessage(30), bigMessage(30), bigMessage(30),
+		bigMessage(msgTokens), bigMessage(msgTokens), bigMessage(msgTokens),
+		bigMessage(msgTokens), bigMessage(msgTokens), bigMessage(msgTokens),
 	}
 	_, did := cm.maybeCompact(context.Background(), first)
 	require.True(t, did, "the arming compaction did not happen")
@@ -65,13 +72,13 @@ func armedCooldownModel(t *testing.T, window int) (*CompactingModel, *recordingM
 //
 // ledger: F2/CCL1#1 同 turn 不重复压缩
 func TestCooldownIsArmedByARealCompaction(t *testing.T) {
-	cm, inner := armedCooldownModel(t, 400)
+	cm, inner := armedCooldownModel(t, summarizableWindow)
 
 	// The same history again: growth is ~0, well under CooldownTokens, and the
 	// hour-long duration has certainly not elapsed.
 	same := []*schema.Message{
-		bigMessage(30), bigMessage(30), bigMessage(30),
-		bigMessage(30), bigMessage(30), bigMessage(30),
+		bigMessage(190), bigMessage(190), bigMessage(190),
+		bigMessage(190), bigMessage(190), bigMessage(190),
 	}
 	out, did := cm.maybeCompact(context.Background(), same)
 	assert.False(t, did, "compacted again inside the cooldown it had just armed")
@@ -98,16 +105,22 @@ func TestCooldownIsArmedByARealCompaction(t *testing.T) {
 //
 // ledger: F2/CCL1#2 逼近上限仍触发
 func TestHardForceFiresInsideAnArmedCooldown(t *testing.T) {
-	const window = 400
+	// The window has to be large enough that a summary can be produced at all
+	// — the C4 instruction alone costs ~130 tokens — so every threshold below
+	// is derived from it rather than written as a literal.
+	const window = summarizableWindow
 
 	t.Run("at the hard-force fraction it compacts anyway", func(t *testing.T) {
 		cm, inner := armedCooldownModel(t, window)
 
-		// 0.95 × 400 = 380. Four messages of ~108 tokens ≈ 432, past it.
+		// 0.95 × 2000 = 1900. Four messages of ~500 tokens ≈ 2000, past it.
+		const each = 500
 		huge := []*schema.Message{
-			bigMessage(100), bigMessage(100), bigMessage(100), bigMessage(100),
+			bigMessage(each), bigMessage(each), bigMessage(each), bigMessage(each),
 		}
-		require.True(t, cm.inCooldown(4*108),
+		require.GreaterOrEqual(t, ctxcompact.EstimateTokens(huge), int(0.95*float64(window)),
+			"the fixture does not reach the hard-force fraction, so this proves nothing")
+		require.True(t, cm.inCooldown(ctxcompact.EstimateTokens(huge)),
 			"the cooldown is not active, so this would prove nothing about hard-force")
 
 		_, did := cm.maybeCompact(context.Background(), huge)
@@ -120,13 +133,14 @@ func TestHardForceFiresInsideAnArmedCooldown(t *testing.T) {
 	t.Run("below the fraction the cooldown still wins", func(t *testing.T) {
 		cm, inner := armedCooldownModel(t, window)
 
-		// Between the threshold (0.5×400 = 200) and hard-force (380). Without
-		// this twin, a hard-force branch that fired unconditionally — or one
-		// deleted so the cooldown never applied — would pass the case above.
+		// Between the threshold (0.5 × 2000 = 1000) and hard-force (1900).
+		// Without this twin, a hard-force branch that fired unconditionally —
+		// or one deleted so the cooldown never applied — would pass the case
+		// above.
 		mid := []*schema.Message{
-			bigMessage(60), bigMessage(60), bigMessage(60), bigMessage(60),
-		} // ≈ 4 × 68 = 272
-		tokens := 4 * 68
+			bigMessage(340), bigMessage(340), bigMessage(340), bigMessage(340),
+		}
+		tokens := ctxcompact.EstimateTokens(mid)
 		require.Less(t, tokens, int(0.95*float64(window)),
 			"the fixture is already at hard-force, so this is not the negative case")
 		require.GreaterOrEqual(t, tokens, int(0.5*float64(window)),

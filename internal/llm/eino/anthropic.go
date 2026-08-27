@@ -33,6 +33,13 @@ type AnthropicModelConfig struct {
 	BaseURL string
 	// MaxTokens is the default max_tokens sent with every request. Default: 4096.
 	MaxTokens int
+	// Temperature is the sampling temperature (M4). nil omits the field from
+	// the request body entirely, leaving the provider default in force — the
+	// pointer is what distinguishes "unset" from a deliberate 0.
+	Temperature *float32
+	// TopP is nucleus sampling mass (M4). nil omits the field; see Temperature
+	// for why this is a pointer.
+	TopP *float32
 	// HTTPClient is the HTTP client used for API calls.
 	HTTPClient *http.Client
 }
@@ -72,11 +79,13 @@ func NewAnthropicModel(_ context.Context, cfg *AnthropicModelConfig) (*Anthropic
 	}
 	return &AnthropicModel{
 		config: AnthropicModelConfig{
-			APIKey:     cfg.APIKey,
-			Model:      cfg.Model,
-			BaseURL:    base,
-			MaxTokens:  maxTokens,
-			HTTPClient: hc,
+			APIKey:      cfg.APIKey,
+			Model:       cfg.Model,
+			BaseURL:     base,
+			MaxTokens:   maxTokens,
+			Temperature: cfg.Temperature,
+			TopP:        cfg.TopP,
+			HTTPClient:  hc,
 		},
 	}, nil
 }
@@ -142,6 +151,13 @@ type anthropicRequest struct {
 	Messages  []anthropicMessage `json:"messages"`
 	Tools     []anthropicTool    `json:"tools,omitempty"`
 	Stream    bool               `json:"stream"`
+
+	// Temperature / TopP are the M4 generation parameters. Both are pointers
+	// with omitempty so an unconfigured provider sends a body byte-identical
+	// to the pre-M4 one, while an explicit 0 (deterministic sampling) still
+	// reaches the wire — the exact case a value type would have erased.
+	Temperature *float32 `json:"temperature,omitempty"`
+	TopP        *float32 `json:"top_p,omitempty"`
 
 	// OutputConfig, when non-nil, requests provider-enforced structured output
 	// for this turn (Anthropic output_config.format json_schema). nil on
@@ -284,7 +300,12 @@ func (m *AnthropicModel) Generate(ctx context.Context, in []*schema.Message, opt
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("anthropic: API error (HTTP %d): %s", resp.StatusCode, string(respBody))
+		// Wrapped in a HeaderError so the retry layer can read Retry-After from
+		// the response headers instead of scraping it out of the body text
+		// (M1). Neither eino nor go-openai surfaces headers on a failed call,
+		// and this adapter is one of the few places that still holds the
+		// *http.Response.
+		return nil, NewHeaderError(resp, fmt.Errorf("anthropic: API error (HTTP %d): %s", resp.StatusCode, string(respBody)))
 	}
 
 	var anthResp anthropicResponse
@@ -348,9 +369,11 @@ func (m *AnthropicModel) setHeaders(r *http.Request) {
 // buildRequest converts eino messages + options into an Anthropic API request.
 func (m *AnthropicModel) buildRequest(in []*schema.Message, options *model.Options, implOpts *outputSchemaOptions, stream bool) (*anthropicRequest, error) {
 	req := &anthropicRequest{
-		Model:     m.config.Model,
-		MaxTokens: m.config.MaxTokens,
-		Stream:    stream,
+		Model:       m.config.Model,
+		MaxTokens:   m.config.MaxTokens,
+		Temperature: m.config.Temperature,
+		TopP:        m.config.TopP,
+		Stream:      stream,
 	}
 	// A12-providers: when the turn declared an output schema (per-call
 	// OutputSchemaOption), request provider-enforced structured output. Empty

@@ -60,13 +60,25 @@ func TestRunSummary_FailureReturnsError(t *testing.T) {
 // I-3: dynamic budget must SHRINK as carry grows — a fixed-overhead
 // implementation would keep chunk size constant. Large carry reply makes the
 // shrinkage observable.
+//
+// THE WINDOW IS 600, NOT 300, and the difference is not cosmetic. The carry
+// this fake returns is 500 characters; under the C8 estimator that plus the
+// ack and the 500-word instruction frames to ~277 tokens, so a 300-token
+// window leaves chunkBudgetFor returning a NEGATIVE budget on the very first
+// carry and RunSummary correctly refuses with ErrNoWindowRoom before a second
+// chunk exists. That refusal is right — a window that cannot hold its own
+// framing cannot make progress, and TestRunSummary_CarryOverflowReturnsError
+// covers it deliberately — but it means the shrinkage this test is here to
+// observe never gets a chance to happen. 600 leaves ~290 tokens of chunk
+// budget on the first pass, which is several messages' worth and shrinks
+// visibly as the carry grows.
 func TestRunSummary_ChunkBudgetShrinksAsCarryGrows(t *testing.T) {
-	rm := &recordingModel{reply: strings.Repeat("y", 500)} // ~125 tok carry
+	rm := &recordingModel{reply: strings.Repeat("y", 500)}
 	big := []*schema.Message{}
 	for i := 0; i < 40; i++ {
 		big = append(big, &schema.Message{Role: schema.User, Content: strings.Repeat("x", 200)})
 	}
-	_, err := ctxcompact.RunSummary(context.Background(), big, ctxcompact.RunOpts{ModelWindow: 300, ChunkThreshold: 0.9, SummaryWordLimit: 500}, rm, nil)
+	_, err := ctxcompact.RunSummary(context.Background(), big, ctxcompact.RunOpts{ModelWindow: 600, ChunkThreshold: 0.9, SummaryWordLimit: 500}, rm, nil)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, len(rm.inputs), 3, "multiple chunks")
 	// Strip framing (carry+ack prefix on later chunks, instruction suffix on all)

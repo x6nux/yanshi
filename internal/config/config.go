@@ -38,6 +38,43 @@ type MCPServerConfig struct {
 	Bearer    string            `yaml:"bearer,omitempty"`
 	Timeout   string            `yaml:"timeout,omitempty"`
 	Reconnect bool              `yaml:"reconnect,omitempty"`
+
+	// OAuth configures the token grant for an HTTP MCP server. Absent means
+	// the server authenticates with Bearer (or not at all), which is what
+	// every config predating this field meant.
+	OAuth *MCPOAuthConfig `yaml:"oauth,omitempty"`
+}
+
+// MCPOAuthConfig configures OAuth 2.0 token acquisition for one MCP server.
+//
+// This block exists on the config side because internal/mcp.ServerConfig has
+// carried an OAuth field since T10, and nothing projected into it: the grant
+// was reachable from Go but from no YAML an operator could write, so the
+// authorization_code flow and `yanshi auth mcp-login` were unreachable in a
+// real deployment. The two structs are deliberately separate — this one is the
+// YAML surface, mcp.OAuthConfig is the wire/runtime shape — and buildMCPManager
+// is the single projection point.
+//
+// ClientSecret is resolved by Load's ${VAR} expansion, so the usual form is a
+// reference to an environment variable rather than a literal. It must never be
+// logged or placed on a status frame; mcp.OAuthConfig tags it `json:"-"` for
+// exactly that reason.
+type MCPOAuthConfig struct {
+	// TokenURL is the token endpoint. Required for both grants.
+	TokenURL string `yaml:"token_url"`
+	// AuthorizationURL is the authorize endpoint. Required for
+	// authorization_code and ignored for client_credentials.
+	AuthorizationURL string `yaml:"authorization_url,omitempty"`
+	// ClientID identifies this client to the authorization server.
+	ClientID string `yaml:"client_id"`
+	// ClientSecret is the client password, when the server issues one.
+	ClientSecret string `yaml:"client_secret,omitempty"`
+	// Scopes are the OAuth scopes requested.
+	Scopes []string `yaml:"scopes,omitempty"`
+	// Grant selects the flow: "client_credentials" (the default, and what an
+	// absent value means) or "authorization_code", which is established
+	// interactively with `yanshi auth mcp-login <server>`.
+	Grant string `yaml:"grant,omitempty"`
 }
 
 // Config is the top-level yanshi configuration. Zero values are post-processed
@@ -56,15 +93,31 @@ type Config struct {
 	LLM           LLMConfig                          `yaml:"llm"`
 	Agents        []AgentConfig                      `yaml:"agents"`
 	Profiles      map[string]guard.PermissionProfile `yaml:"profiles"`
-	Skills        SkillsConfig                       `yaml:"skills"`
-	VCS           VCSConfig                          `yaml:"vcs"`
-	Batch         BatchConfig                        `yaml:"batch"`
+	// PolicyActive reports that a trusted policy file (S3, policy.go) supplied
+	// the profiles above. It is set by Load and is NOT a YAML key: an agent
+	// that could set it from config.yaml could claim to be policy-governed
+	// while governing itself, which is the inversion this whole mechanism
+	// exists to prevent.
+	PolicyActive bool `yaml:"-"`
+	// PolicyNarrowed names the profiles whose local definition was clamped by
+	// the trusted policy. Reported once at boot so a narrowing that did not
+	// take effect is visible then, rather than inferred from a denial later.
+	PolicyNarrowed []string     `yaml:"-"`
+	Skills         SkillsConfig `yaml:"skills"`
+	VCS            VCSConfig    `yaml:"vcs"`
+	Batch          BatchConfig  `yaml:"batch"`
 	// Compaction configures automatic context-compaction (Task 35b): when the
 	// estimated token count of the conversation history reaches
 	// Threshold*ContextWindow, the older turns are summarized by a remote model
 	// (optionally a dedicated fast Compaction.Model), streaming the summary back
 	// in real time. Defaults are applied in Load.
 	Compaction CompactionConfig `yaml:"compaction"`
+	// LoopGuard configures the per-turn agent stop conditions (doom-loop
+	// detection, tool-call budgets, turn deadline, token budget). Every field
+	// is off when zero and no defaults are applied in Load, so an absent block
+	// leaves turn behaviour byte-identical to before the guard existed. See
+	// LoopGuardConfig for why that asymmetry with Compaction is deliberate.
+	LoopGuard LoopGuardConfig `yaml:"loop_guard"`
 	// Memory configures MEM1 user memory (cross-session preference notes
 	// injected into the system prompt as an independent suffix). All fields
 	// optional; Enabled=false (default) makes bootstrap skip the subsystem.
@@ -201,6 +254,19 @@ type LogConfig struct {
 	// alt-screen render is not corrupted by structured log lines. Set true
 	// only when debugging the TUI itself.
 	StderrInTUI bool `yaml:"stderr_in_tui"`
+	// MaxSizeMB is the size the active log file may reach before it is
+	// rotated into a numbered generation. Zero takes the package default
+	// (obslog.DefaultRotateMaxBytes, 10 MiB); negative disables rotation by
+	// size, turning the log back into a plain append-only file.
+	//
+	// It is expressed in megabytes rather than bytes because that is the unit
+	// an operator sizing a log volume thinks in, and because a bytes field
+	// invites the off-by-1024 that makes a 10 MiB intent into a 10 MB file.
+	MaxSizeMB int `yaml:"max_size_mb"`
+	// MaxBackups is how many rotated generations are kept. Zero takes the
+	// package default (obslog.DefaultRotateMaxBackups, 5); negative keeps
+	// none, truncating on rotation instead of renaming.
+	MaxBackups int `yaml:"max_backups"`
 }
 
 // OTelConfig configures OpenTelemetry export. Enabled=false (default) makes
@@ -343,6 +409,49 @@ type CompactionConfig struct {
 	HardForceFraction float64 `yaml:"hard_force_fraction"`
 }
 
+// LoopGuardConfig configures the per-turn agent stop conditions.
+//
+// Every field is "off when zero" and Load applies NO defaults to this block —
+// deliberately unlike CompactionConfig. A stop condition that switches itself
+// on with a guessed default would silently truncate turns on an installation
+// whose operator never asked for a limit, and the failure mode is
+// indistinguishable from the model simply giving up. Opting in is one line of
+// YAML; diagnosing a turn that was cut short by an unrequested budget is not.
+type LoopGuardConfig struct {
+	// RepetitionEnabled turns on doom-loop detection: identical tool calls
+	// (name plus arguments) repeated within a sliding window first draw a
+	// warning injected into the prompt, then end the turn.
+	RepetitionEnabled bool `yaml:"repetition_enabled"`
+	// RepetitionWindow is the sliding window size in tool calls. 0 selects
+	// loopguard.DefaultRepetitionWindow. The concrete numbers deliberately
+	// live there and are not restated here or in config.example.yaml: a
+	// second copy of a default drifts silently the first time the real one
+	// is tuned.
+	RepetitionWindow int `yaml:"repetition_window"`
+	// RepetitionWarnAfter is the consecutive-repeat count at which the turn is
+	// nudged with a warning. 0 selects loopguard.DefaultRepetitionStages.
+	RepetitionWarnAfter int `yaml:"repetition_warn_after"`
+	// RepetitionStopAfter is the consecutive-repeat count at which the turn
+	// ends. 0 selects loopguard.DefaultRepetitionStages.
+	RepetitionStopAfter int `yaml:"repetition_stop_after"`
+	// MaxToolCalls caps total tool calls in one turn. 0 = unlimited.
+	MaxToolCalls int `yaml:"max_tool_calls"`
+	// PerToolCalls caps calls per tool name in one turn, e.g.
+	// {shell_run: 20, agent_spawn: 3}. Names match exactly; absent names are
+	// unlimited. A budget refusal is returned to the model as a tool RESULT,
+	// not a Go error, so the turn can adapt instead of aborting.
+	PerToolCalls map[string]int `yaml:"per_tool_calls"`
+	// TurnTimeout is the wall-clock limit for one turn, checked only at ReAct
+	// iteration boundaries — it bounds the loop, not any single tool call.
+	// 0 = unlimited.
+	TurnTimeout time.Duration `yaml:"turn_timeout"`
+	// MaxTurnTokens caps accumulated token spend for one turn. Accumulation
+	// counts prompt GROWTH rather than raw per-call prompt totals, because
+	// providers report prompt tokens cumulatively and summing them would fire
+	// the budget at a fraction of its nominal value. 0 = unlimited.
+	MaxTurnTokens int `yaml:"max_turn_tokens"`
+}
+
 // VCSConfig configures the built-in autoVCS tracker. Zero value (no vcs block
 // in config) still enables tracking with defaults — Ignore augments the built-in
 // ignore list, and WorktreeDir overrides where worktree working dirs are created.
@@ -379,6 +488,48 @@ type StorageConfig struct {
 // LLMConfig configures the available LLM providers.
 type LLMConfig struct {
 	Providers []ProviderConfig `yaml:"providers"`
+
+	// RateLimit throttles outgoing model calls (M7). It is the DEFAULT applied
+	// to every model that does not set its own qpm/burst. QPM 0 — the zero
+	// value, and therefore the value an absent block yields — means no limit,
+	// so adding this field changed no existing deployment's behaviour.
+	RateLimit RateLimitConfig `yaml:"rate_limit"`
+
+	// SanitizeToolSchemas selects the M6 tool-schema rewriting policy:
+	//
+	//   "auto"   (default) rewrite only for a model that has actually rejected
+	//            a schema. Costs one failed request per model per process and
+	//            pays the rewrite's lossiness only where it is needed.
+	//   "always" rewrite for every model. For a deployment that talks only to
+	//            a strict gateway and does not want to spend that first 400.
+	//   "never"  never rewrite. For diagnosing whether the rewriter itself is
+	//            the problem.
+	//
+	// An unrecognised value normalises to "auto" rather than failing the load:
+	// a typo here must not stop a server from starting, because the safe
+	// behaviour is also the default behaviour.
+	SanitizeToolSchemas string `yaml:"sanitize_tool_schemas"`
+
+	// Preflight enables the M9 startup model-name check, which asks each
+	// provider for its model catalogue and warns about a name that is not in
+	// it (with the nearest matches). Default true.
+	//
+	// It is a *bool because the default is true: a plain bool cannot express
+	// "the operator explicitly turned this off". The check can never block or
+	// fail a startup — it only logs — so the flag exists to silence a probe
+	// that would time out on every boot of an air-gapped deployment.
+	Preflight *bool `yaml:"preflight"`
+}
+
+// RateLimitConfig bounds how fast yanshi issues model calls. It appears both
+// as the process-wide default (llm.rate_limit) and per provider.
+type RateLimitConfig struct {
+	// QPM is the sustained ceiling in requests per minute. 0 means no limit.
+	QPM int `yaml:"qpm"`
+	// Burst is how many requests may be issued back-to-back after an idle
+	// period. 0 derives it from QPM, capped so a large QPM cannot authorise an
+	// unbounded simultaneous fan-out.
+	Burst int `yaml:"burst"`
 }
 
 // ProviderConfig configures a single LLM provider (kind, model, API key, etc.).
@@ -401,6 +552,46 @@ type ProviderConfig struct {
 	// the first Multimodal==true provider as the vision auxiliary.
 	// Zero value (false) = text-only; valid default.
 	Multimodal bool `yaml:"multimodal"`
+	// Local forces this provider to be treated as locally served, overriding
+	// the BaseURL/Kind heuristic. Set it when a local runtime sits behind a
+	// hostname the heuristic cannot recognise (a reverse proxy, a container
+	// DNS name); set it to an explicit false to opt a LAN-hosted gateway back
+	// into the cloud catalog. *bool so "unset" (heuristic decides) stays
+	// distinguishable from an explicit false. See einollm.IsLocalProvider.
+	Local *bool `yaml:"local"`
+
+	// --- Generation parameters (M4) ----------------------------------------
+	//
+	// All three are POINTERS on purpose: for every one of them zero is a legal
+	// value the operator may genuinely want (temperature 0 for deterministic
+	// judge calls, top_p 0 for greedy decoding), so a plain int/float cannot
+	// distinguish "not configured" from "configured to zero". nil means "leave
+	// the provider default alone" and the field is omitted from the wire body
+	// entirely, keeping an unconfigured provider byte-identical to before.
+
+	// MaxTokens caps the tokens generated per response. nil keeps the adapter
+	// default (4096), which silently truncates long patches — raise it when
+	// the model is expected to emit whole files. Maps to `max_tokens`
+	// (OpenAI Chat Completions, Anthropic Messages) and `max_output_tokens`
+	// (OpenAI Responses).
+	MaxTokens *int `yaml:"max_tokens"`
+	// Temperature is the sampling temperature. nil keeps the provider default.
+	// Lower it (0 .. 0.2) for judgement-shaped calls where a stable verdict
+	// matters more than variety.
+	Temperature *float32 `yaml:"temperature"`
+	// TopP is nucleus sampling mass. nil keeps the provider default. Providers
+	// generally recommend tuning this OR Temperature, not both.
+	TopP *float32 `yaml:"top_p"`
+
+	// QPM caps THIS provider's requests per minute (M7), overriding
+	// llm.rate_limit.qpm. 0 inherits the global default. Set it per provider
+	// when one plan is tighter than the rest — the limiter is keyed by model,
+	// so a shared global would throttle the fast provider at the slow one's
+	// rate.
+	QPM int `yaml:"qpm"`
+	// Burst is this provider's back-to-back allowance after an idle period.
+	// 0 derives it from the effective QPM.
+	Burst int `yaml:"burst"`
 }
 
 // AgentConfig configures a named sub-agent.
@@ -414,12 +605,35 @@ type AgentConfig struct {
 
 // Load reads and parses the YAML config at path. Environment variables in
 // the form ${VAR} are expanded before unmarshalling.
+//
+// It additionally applies the S3 trusted policy (see policy.go): when a policy
+// file exists outside the working directory, it becomes the authority for
+// `profiles:` and the local file may only narrow it.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return LoadBytes(data)
+	cfg, err := LoadBytes(data)
+	if err != nil {
+		return nil, err
+	}
+	// Applied HERE rather than inside LoadBytes because LoadBytes is the pure
+	// bytes→Config function the test suite uses everywhere; reaching for the
+	// environment and the home directory from it would make every one of those
+	// tests depend on the developer's machine.
+	//
+	// A policy that exists but cannot be read or parsed FAILS the load. The
+	// operator wrote it in order to constrain the agent, so falling back to the
+	// unconstrained local profiles would drop the constraint at exactly the
+	// moment it was being asked for.
+	policy, err := LoadPolicy()
+	if err != nil {
+		return nil, err
+	}
+	cfg.PolicyNarrowed = cfg.ApplyPolicy(policy)
+	cfg.PolicyActive = policy != nil && len(policy.Profiles) > 0
+	return cfg, nil
 }
 
 // SupportedSchemaVersion is the current config schema generation. Load rejects

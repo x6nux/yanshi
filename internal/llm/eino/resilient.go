@@ -31,6 +31,23 @@ type ResilientConfig struct {
 	// up. Defaults to 10. Independent of MaxRetries so empty responses get their
 	// own generous cap.
 	MaxEmptyRetries int
+
+	// RateLimitBase / RateLimitMax are the backoff schedule used for RATE-LIMIT
+	// errors only (M1), defaulting to RateLimitBaseDelay / RateLimitMaxDelay.
+	//
+	// They are separate from BaseDelay/MaxDelay rather than derived from them
+	// because the two situations want opposite things. BaseDelay is tuned for
+	// network blips, where retrying almost immediately is correct. A 429 is the
+	// server declaring it is over capacity: retrying on the blip schedule lands
+	// every attempt inside the same throttle bucket, and each one both fails and
+	// counts against the limit, so our own traffic extends the throttle we are
+	// waiting out. Deriving one from the other would mean any future tightening
+	// of the transient schedule silently re-creates that.
+	//
+	// A server-sent Retry-After overrides both (see RateLimitBackoff); only
+	// MaxRetryAfter bounds that.
+	RateLimitBase time.Duration
+	RateLimitMax  time.Duration
 }
 
 // RetryableModelError marks a transient model error (rate limit, timeout, 5xx).
@@ -135,6 +152,12 @@ func NewResilientModel(chain []model.BaseChatModel, cfg ResilientConfig) (*Resil
 	}
 	if cfg.MaxDelay <= 0 {
 		cfg.MaxDelay = 5 * time.Second
+	}
+	if cfg.RateLimitBase <= 0 {
+		cfg.RateLimitBase = RateLimitBaseDelay
+	}
+	if cfg.RateLimitMax <= 0 {
+		cfg.RateLimitMax = RateLimitMaxDelay
 	}
 	return &ResilientChatModel{chain: chain, cfg: cfg}, nil
 }
@@ -358,7 +381,7 @@ func isBlank(msg *schema.Message) bool {
 // is bound, userCancelCtxFrom falls back to ctx, preserving legacy behavior.
 func (r *ResilientChatModel) sleepRetry(ctx context.Context, sw *schema.StreamWriter[*schema.Message],
 	onRetry RetryCallback, attempt, maxAttempts int, err error) bool {
-	delay := r.backoff(attempt)
+	delay := r.backoffFor(attempt, err)
 	if onRetry != nil {
 		onRetry(attempt, maxAttempts, err, delay)
 	}
@@ -378,9 +401,20 @@ func (r *ResilientChatModel) sleepRetry(ctx context.Context, sw *schema.StreamWr
 
 // isRetryableStreamErr reports whether a stream/model error is worth retrying:
 // a dropped or malformed upstream stream (the common gateway failure), a
-// transport error, or a server/rate-limit marker. The openai acl wraps mid-
+// transport error, or a server/rate-limit condition. The openai acl wraps mid-
 // stream Recv failures as "failed to receive stream chunk: <cause>"; "unexpected
 // EOF" and "net/http: request canceled (Client.Timeout …)" are typical causes.
+//
+// The verdict itself comes from ClassifyError (errclass.go), which is a real
+// classifier: typed status first, anchored status patterns second, keywords
+// last. It replaced two flat substring tables whose most visible defect was a
+// bare match on "404" — any error whose BODY mentioned that number was filed as
+// a non-retryable client error, so an upstream 500 quoting a 404 from its own
+// origin gave up without a single retry. The anchored patterns require the
+// digits to be introduced by a status-shaped phrase, so the body text no longer
+// decides.
+//
+// Two conditions still short-circuit ahead of classification:
 //
 // User-initiated cancellation is detected via the user-cancel context (bound by
 // WithUserCancelCtx, falling back to the passed ctx when absent), NOT the error
@@ -392,6 +426,11 @@ func (r *ResilientChatModel) sleepRetry(ctx context.Context, sw *schema.StreamWr
 // don't retry. (Checking errors.Is(err, context.Canceled) instead would wrongly
 // suppress retry on every client-timeout, since the timeout's cancel is wrapped
 // in the error even though the turn itself is fine.)
+//
+// ClassUnknown falls back to the legacy transient markers. Those markers are
+// deliberately looser than the classifier's (a bare "eof", a bare "retry"), and
+// keeping them as a floor means this change can only ever ADD retries relative
+// to the previous behavior, never remove one that used to happen.
 func isRetryableStreamErr(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
@@ -402,14 +441,18 @@ func isRetryableStreamErr(ctx context.Context, err error) bool {
 	if ucCtx := userCancelCtxFrom(ctx); ucCtx.Err() != nil {
 		return false
 	}
-	// Real 4xx client error (bad key, unknown model, malformed request): retry
-	// is pointless and masks the root cause. Checked AFTER user-cancel (so a
-	// user cancel still wins) but BEFORE the transient markers — a wrapped
-	// RetryableModelError carrying a 4xx payload must not slip through via the
-	// "retry" marker or net.Error branches.
-	if isNonRetryableClientErr(err) {
+	switch ClassifyError(err).Class {
+	case ClassTransient, ClassRateLimit:
+		return true
+	case ClassClientError, ClassContextOverflow:
+		// Real 4xx client error (bad key, unknown model, malformed request) or
+		// an over-long prompt: retry is pointless and masks the root cause.
+		// Overflow additionally needs compaction to shrink the context first —
+		// an unchanged retry reproduces the same prompt.
 		return false
 	}
+	// ClassUnknown: fall back to the historical loose markers so nothing that
+	// used to retry stops retrying.
 	if errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
@@ -418,7 +461,7 @@ func isRetryableStreamErr(ctx context.Context, err error) bool {
 		return true
 	}
 	s := strings.ToLower(err.Error())
-	for _, m := range retryableStreamMarkers {
+	for _, m := range legacyTransientMarkers {
 		if strings.Contains(s, m) {
 			return true
 		}
@@ -426,51 +469,28 @@ func isRetryableStreamErr(ctx context.Context, err error) bool {
 	return false
 }
 
-// nonRetryableClientMarkers are substrings (lowercase) that mark a model error
-// as a REAL 4xx client error: bad API key, unknown model, malformed request,
-// authentication failure, etc. Retrying these is pointless (the next attempt
-// will hit the same config bug) and actively harmful (it masks the root cause
-// behind backoff delays and retry noise). The resilient layer short-circuits
-// retry when any marker matches, even if the error is wrapped in
-// RetryableModelError (which would otherwise trigger retries).
+// isNonRetryableClientErr reports whether err is a real 4xx client error or a
+// context overflow — the two conditions on which retry wastes time and masks
+// the underlying problem. Shared by the Generate (retry) and Stream
+// (isRetryableStreamErr) paths so both agree by construction.
 //
-// Kept broad on purpose: providers phrase these failures inconsistently
-// ("invalid_api_key", "Incorrect API key provided", "401 Unauthorized", …), so
-// we match on the most stable substring of each family. Order does not matter.
-var nonRetryableClientMarkers = []string{
-	"invalid_api_key",
-	"incorrect api key",
-	"model_not_found",
-	"invalid_request_error",
-	"authentication",
-	"401",
-	"403",
-	"404",
-	"422",
-}
-
-// isNonRetryableClientErr reports whether err is a real 4xx client error on
-// which retry would waste time and mask the underlying config/auth problem. It
-// inspects the full error string (including wrapped causes) so it works on
-// RetryableModelError-wrapped forms too. Shared by the Generate (retry) and
-// Stream (isRetryableStreamErr) paths — the single chokepoint for the 4xx
-// short-circuit, so adding a marker here fixes both paths at once.
+// It delegates to ClassifyError rather than scanning text itself; see
+// isRetryableStreamErr for what that fixed.
 func isNonRetryableClientErr(err error) bool {
 	if err == nil {
 		return false
 	}
-	s := strings.ToLower(err.Error())
-	for _, m := range nonRetryableClientMarkers {
-		if strings.Contains(s, m) {
-			return true
-		}
-	}
-	return false
+	c := ClassifyError(err).Class
+	return c == ClassClientError || c == ClassContextOverflow
 }
 
-// retryableStreamMarkers are substrings (lowercase) that mark a stream/model
-// error as transient and worth retrying.
-var retryableStreamMarkers = []string{
+// legacyTransientMarkers are the pre-classifier substrings that marked a
+// stream/model error as transient. They are retained as the ClassUnknown
+// FLOOR, not as the primary rule: several are too loose to classify on (a bare
+// "eof" matches any message ending in that word, "retry" matches our own retry
+// bookkeeping), but they only ever run after ClassifyError declined to answer,
+// so a loose match can add a retry and can never suppress one.
+var legacyTransientMarkers = []string{
 	"unexpected eof",
 	"failed to receive stream chunk",
 	"request canceled",
@@ -511,7 +531,7 @@ func (r *ResilientChatModel) retry(ctx context.Context, call func() (*schema.Mes
 			select {
 			case <-ucCtx.Done():
 				return nil, ucCtx.Err()
-			case <-time.After(r.backoff(attempt)):
+			case <-time.After(r.backoffFor(attempt, lastErr)):
 			}
 		}
 		msg, err := call()
@@ -555,6 +575,32 @@ func (r *ResilientChatModel) backoff(attempt int) time.Duration {
 		return r.cfg.MaxDelay
 	}
 	return d
+}
+
+// backoffFor picks the backoff schedule appropriate to WHY the retry is
+// happening (M1). Rate limits get their own schedule; everything else keeps the
+// ordinary exponential.
+//
+// The two cases are not the same problem. A transient network failure wants a
+// fast retry — the connection may already be back, and the config's 200ms/5s
+// pair is tuned for that. A 429 is the server saying it is over capacity, and
+// the ordinary schedule attacks it: ten retries at 200ms..5s all land inside
+// the same one-minute bucket, all fail, and all count against the limit, so a
+// throttle that would have cleared in 30 seconds is extended by our own
+// traffic. RateLimitBackoff honours the server's Retry-After when it sent one
+// (it knows when the bucket refills; guessing shorter only burns another
+// request) and otherwise starts at 5s.
+//
+// The rate-limit delay deliberately ignores cfg.MaxDelay. That cap exists to
+// bound the transient schedule, and applying it here would clamp a server's
+// explicit "wait 30s" back down to 5s — reintroducing the exact hammering this
+// function exists to stop. The rate-limit path has its own ceilings instead:
+// RateLimitMaxDelay for the exponential, MaxRetryAfter for a requested wait.
+func (r *ResilientChatModel) backoffFor(attempt int, err error) time.Duration {
+	if c := ClassifyError(err); c.Class == ClassRateLimit {
+		return RateLimitBackoffWith(attempt, c.RetryAfter, r.cfg.RateLimitBase, r.cfg.RateLimitMax)
+	}
+	return r.backoff(attempt)
 }
 
 var _ model.BaseChatModel = (*ResilientChatModel)(nil)

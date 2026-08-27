@@ -77,15 +77,79 @@ func (r *recordingModel) inputsSnapshot() [][]*schema.Message {
 	return out
 }
 
-// bigMessage builds a message whose content is ~tokens heuristic tokens (each
-// 4 chars ~ 1 token, plus the 8-per-message overhead), so a test can construct
-// an over-threshold history deterministically.
+// summarizableWindow is the smallest ContextWindow at which a compaction can
+// actually produce a summary in this package's fixtures.
+//
+// A compaction is not free of framing: RunSummary appends the C4 structured
+// instruction to whatever it summarizes, and that instruction costs ~130 tokens
+// even in the terse form it falls back to on a small window. A window below
+// that leaves a NEGATIVE chunk budget, so RunSummary refuses with
+// ErrNoWindowRoom — correctly — and the caller reports "did not compact".
+//
+// That refusal is indistinguishable, from a test's point of view, from the
+// compaction logic being broken: both show up as "no summarize call happened".
+// Several fixtures here had windows of 100-220, tuned when the instruction was
+// two sentences, and every one of them started reading as a compaction bug the
+// moment the prompt grew. Naming the floor once, with the reason, is what stops
+// the next prompt change from being diagnosed six times.
+//
+// 2000 is not a boundary value — it is comfortably clear of the floor, because
+// none of these tests is about the floor. The ones that ARE about a boundary
+// compute it from the window explicitly.
+const summarizableWindow = 2000
+
+// streamSummaryText is a summary long enough to clear the C10 quality gate.
+//
+// The gate demands min(MinChars, inputRunes/1000) runes and rejects text that
+// is nothing but an acknowledgement. A short placeholder ("SUM", "ok") fails
+// it, Run returns ErrSummaryRejected, and the caller keeps the original
+// history — a CORRECT refusal that is indistinguishable, from a test, from
+// compaction being broken. Fixtures that need a compaction to succeed use
+// this; the ones testing the gate itself deliberately use a short string.
+const streamSummaryText = "Reviewed the three prior assistant turns and folded " +
+	"them into one continuation summary covering the task, its current state, " +
+	"and the work still outstanding."
+
+// bigMessage builds a message that ctxcompact.EstimateTokens prices at
+// approximately `tokens` tokens (message overhead included), so a test can
+// construct an over- or under-threshold history deterministically.
+//
+// IT CALIBRATES AGAINST THE REAL ESTIMATOR RATHER THAN ASSUMING A RATE. The
+// original form was `tokens * 4` characters of NUL, on the premise that four
+// characters cost one token. C8 replaced that flat rate with a run-classifying
+// estimator, and a run of NUL bytes is a non-word run charged at TWO characters
+// per token — so every fixture in this file silently became worth double its
+// name, and six tests that had tuned ContextWindow to sit just above or just
+// below a boundary landed on the wrong side of it.
+//
+// The lesson is the helper's, not the estimator's: a fixture builder whose name
+// states a token count must MEASURE that count, or it is an assumption about
+// pricing dressed up as a constant. Growing the content until the estimate
+// reaches the target costs a few loop iterations at test time and can never
+// drift again — whatever the estimator decides a character is worth.
 func bigMessage(tokens int) *schema.Message {
-	chars := tokens * 4
-	if chars < 1 {
-		chars = 1
+	if tokens < 1 {
+		tokens = 1
 	}
-	return &schema.Message{Role: schema.Assistant, Content: string(make([]byte, chars))}
+	// Binary search would be premature: the estimate is monotonic in length and
+	// the fixtures are small, so stepping by the current shortfall converges in
+	// two or three passes.
+	chars := tokens
+	for i := 0; i < 32; i++ {
+		m := &schema.Message{Role: schema.Assistant, Content: strings.Repeat("x", chars)}
+		got := ctxcompact.EstimateTokens([]*schema.Message{m})
+		if got >= tokens {
+			return m
+		}
+		// Grow by the shortfall, scaled by the observed characters-per-token,
+		// with a floor so a zero-progress step cannot loop forever.
+		step := (tokens - got) * chars / max(got, 1)
+		if step < 1 {
+			step = 1
+		}
+		chars += step
+	}
+	return &schema.Message{Role: schema.Assistant, Content: strings.Repeat("x", chars)}
 }
 
 // TestCompactingModel_PassthroughUnderThreshold proves that when the estimated
@@ -165,14 +229,20 @@ func TestCompactingModel_CompactsWhenOverThreshold(t *testing.T) {
 // ctxcompact.Run's single-path summary is taken (smaller windows would trip
 // carry-style chunking and turn the recordingModel into a multi-call witness).
 func TestCompactingModel_StreamCompacts(t *testing.T) {
-	inner := &recordingModel{summary: "SUM", reply: "answer", streamOK: true}
+	// The summary text has to clear the C10 quality gate's compression floor
+	// (min(80, inputRunes/1000) runes). A 3-character placeholder like "SUM"
+	// is rejected as too short and the compaction correctly does not happen —
+	// which reads, from here, exactly like the Stream path failing to compact.
+	inner := &recordingModel{summary: streamSummaryText, reply: "answer", streamOK: true}
 	cm := &CompactingModel{
 		Inner:         inner,
 		Threshold:     0.5,
-		ContextWindow: 220, // ≥210 keeps RunSummary single-path with the bigger msgs
+		ContextWindow: summarizableWindow,
 		KeepRecent:    1,
 	}
-	msgs := []*schema.Message{bigMessage(30), bigMessage(30), bigMessage(30)}
+	// Over 0.5*2000 = 1000 tokens, and small enough that RunSummary stays on
+	// its single cache-aligned call, so recordingModel is a 1-call witness.
+	msgs := []*schema.Message{bigMessage(400), bigMessage(400), bigMessage(400)}
 
 	sr, err := cm.Stream(context.Background(), msgs)
 	require.NoError(t, err)
@@ -244,10 +314,10 @@ func TestCompactingModel_OnCompactCallback(t *testing.T) {
 	cm := &CompactingModel{
 		Inner:         nil, // patched below
 		Threshold:     0.5,
-		ContextWindow: 100,
+		ContextWindow: summarizableWindow,
 		KeepRecent:    1,
 	}
-	msgs := []*schema.Message{bigMessage(20), bigMessage(20), bigMessage(20)}
+	msgs := []*schema.Message{bigMessage(400), bigMessage(400), bigMessage(400)}
 
 	// cbModel streams the configured chunks on the FIRST Stream call (the
 	// summarize turn), then replies with a fixed assistant message for every
@@ -310,24 +380,30 @@ func TestWithCompactCallback_NilIsNoop(t *testing.T) {
 //
 // ledger: F2/CCL1#1 同 turn 不重复压缩
 func TestCompactingModel_CooldownDefersReCompact(t *testing.T) {
-	inner := &recordingModel{summary: "summarized", reply: "done", streamOK: true}
+	inner := &recordingModel{summary: streamSummaryText, reply: "done", streamOK: true}
 	cm := &CompactingModel{
-		Inner:             inner,
-		Threshold:         0.5,
-		ContextWindow:     400,
+		Inner:     inner,
+		Threshold: 0.5,
+		// Every quantity below is a FRACTION of this window, so the whole
+		// fixture scales together. It is summarizableWindow rather than the
+		// original 400 because a compaction has to fit the C4 instruction
+		// (~130 tokens) inside the window before it can summarize anything;
+		// at 400 RunSummary refused with ErrNoWindowRoom and the test read
+		// that correct refusal as "the cooldown logic is broken".
+		ContextWindow:     summarizableWindow,
 		KeepRecent:        2,
-		CooldownTokens:    100,
+		CooldownTokens:    500,
 		HardForceFraction: 0.95,
 	}
 	ctx := context.Background()
 
-	// First call: 6 bigMessage(30) ≈ 6×(30+8)=228 tokens, over 0.5×400=200.
-	// KeepRecent=2 → 4 compressible messages summarize to a short summary,
-	// so TokensAfter ≪ TokensBefore.
+	// 6 × 190 ≈ 1140 tokens, over the 0.5 × 2000 = 1000 threshold.
+	// KeepRecent=2 → 4 compressible messages fold into one short summary, so
+	// TokensAfter is well below TokensBefore.
 	msgs := []*schema.Message{
-		bigMessage(30), bigMessage(30), bigMessage(30),
-		bigMessage(30), bigMessage(30), bigMessage(30),
-	} // total ≈ 228 tokens
+		bigMessage(190), bigMessage(190), bigMessage(190),
+		bigMessage(190), bigMessage(190), bigMessage(190),
+	}
 	require.True(t, cm.shouldCompact(msgs), "first set is over threshold")
 	out, didCompact := cm.maybeCompact(ctx, msgs)
 	require.True(t, didCompact, "first call must compact (over threshold)")
@@ -338,26 +414,23 @@ func TestCompactingModel_CooldownDefersReCompact(t *testing.T) {
 	cm.lastCompactAt = time.Now()
 	inner.calls = 0
 
-	// Second call: same 6 messages ≈228 tokens, growth ≈48 < CooldownTokens=100
-	// → cooldown defers.
+	// Second call: the same 6 messages, so growth is ~0, far under
+	// CooldownTokens=500 → the cooldown defers.
 	msgs2 := []*schema.Message{
-		bigMessage(30), bigMessage(30), bigMessage(30),
-		bigMessage(30), bigMessage(30), bigMessage(30),
+		bigMessage(190), bigMessage(190), bigMessage(190),
+		bigMessage(190), bigMessage(190), bigMessage(190),
 	}
 	out2, didCompact2 := cm.maybeCompact(ctx, msgs2)
 	require.False(t, didCompact2, "must NOT compact inside cooldown window")
 	require.Equal(t, 0, inner.calls, "no additional summarize call")
 	require.Equal(t, len(msgs2), len(out2), "cooldown returns original msgs")
 
-	// Third call: roughly same size as first, but we increased lastCompactTokens
-	// to 380 so growth is negative and still within cooldown.
-	// Instead, set lastCompactTokens back and HardForceFraction=0.95 means we
-	// need 0.95×400=380 tokens. Use many bigMessage(100) → ~100+8=108 each.
-	// 4 × bigMessage(100) = 432 tokens > 380 → hard force.
+	// Third call: still inside the cooldown, but now past the hard-force
+	// fraction (0.95 × 2000 = 1900), so it must compact anyway.
 	cm.lastCompactAt = time.Now()
 	inner.calls = 0
 	msgs3 := []*schema.Message{
-		bigMessage(100), bigMessage(100), bigMessage(100), bigMessage(100),
+		bigMessage(500), bigMessage(500), bigMessage(500), bigMessage(500),
 	}
 	_, didCompact3 := cm.maybeCompact(ctx, msgs3)
 	require.True(t, didCompact3, "must compact at hard-force fraction regardless of cooldown")
@@ -376,8 +449,25 @@ func TestCompactingModel_CooldownDefersReCompact(t *testing.T) {
 
 // TestCompactingModel_FirstCompactNoCooldown tests that before any prior compact,
 // the cooldown is a no-op (lastCompactTokens=0 → no cooldown).
+//
+// Two fixture details are load-bearing, and both were wrong until the C10
+// quality gate exposed them by turning a silently-degraded path into a failure.
+//
+// streamOK MUST be true. The summarizer prefers Stream and falls back to
+// Generate, so a fixture without it burns call #1 on the failing Stream --
+// and recordingModel only returns `summary` on call #1. The fallback Generate
+// is call #2, which returns `reply`. The summary therefore never reached the
+// summarizer at all: this was the only fixture in the file that set `summary`
+// without `streamOK`, and all 13 siblings set both.
+//
+// The summary text must be a plausible summary, not "s" or "ok". The
+// compaction core applies ctxcompact.CheckQuality, which rejects a candidate
+// too short to summarize its input or one that is a bare acknowledgement. A
+// rejection surfaces here as didCompact=false, which this test would report as
+// a cooldown bug -- naming the wrong subsystem. Summary CONTENT is incidental
+// to what this test asserts.
 func TestCompactingModel_FirstCompactNoCooldown(t *testing.T) {
-	inner := &recordingModel{summary: "s", reply: "ok"}
+	inner := &recordingModel{summary: "SUMMARY", reply: "ok", streamOK: true}
 	cm := &CompactingModel{
 		Inner:             inner,
 		Threshold:         0.8,

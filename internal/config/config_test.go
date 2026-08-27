@@ -958,3 +958,78 @@ func indentBlock(lines []string, prefix string) string {
 	}
 	return b.String()
 }
+
+// TestProviderGenerationParams_DistinguishUnsetFromZero is the M4 config-layer
+// assertion. All three params are pointers precisely so an explicit 0 stays
+// distinguishable from an omitted key — 0 is a value operators genuinely want
+// (temperature 0 for a deterministic judge call, top_p 0 for greedy decoding),
+// and a value type would collapse the two into "provider default".
+func TestProviderGenerationParams_DistinguishUnsetFromZero(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+llm:
+  providers:
+    - name: "tuned"
+      model: "gpt-4o"
+      max_tokens: 32000
+      temperature: 0.2
+      top_p: 0.95
+    - name: "deterministic"
+      model: "judge"
+      temperature: 0
+      top_p: 0
+      max_tokens: 0
+    - name: "untouched"
+      model: "default-model"
+`))
+	require.NoError(t, err)
+	require.Len(t, cfg.LLM.Providers, 3)
+
+	tuned := cfg.LLM.Providers[0]
+	require.NotNil(t, tuned.MaxTokens)
+	assert.Equal(t, 32000, *tuned.MaxTokens)
+	require.NotNil(t, tuned.Temperature)
+	assert.InDelta(t, 0.2, *tuned.Temperature, 1e-6)
+	require.NotNil(t, tuned.TopP)
+	assert.InDelta(t, 0.95, *tuned.TopP, 1e-6)
+
+	det := cfg.LLM.Providers[1]
+	require.NotNil(t, det.Temperature, "an explicit temperature: 0 must not read as unset")
+	assert.InDelta(t, 0, *det.Temperature, 1e-6)
+	require.NotNil(t, det.TopP, "an explicit top_p: 0 must not read as unset")
+	assert.InDelta(t, 0, *det.TopP, 1e-6)
+	require.NotNil(t, det.MaxTokens)
+	assert.Equal(t, 0, *det.MaxTokens)
+
+	untouched := cfg.LLM.Providers[2]
+	assert.Nil(t, untouched.MaxTokens, "an omitted key must stay nil so the adapter default applies")
+	assert.Nil(t, untouched.Temperature)
+	assert.Nil(t, untouched.TopP)
+}
+
+// TestProviderLocalFlag_DistinguishesUnsetFromFalse covers the M3 override.
+// The three states are all meaningful: unset lets the base_url/kind heuristic
+// decide, true forces local for a runtime behind an unrecognisable hostname,
+// and false opts a LAN-addressed gateway back into the cloud catalog. A plain
+// bool would erase the last one.
+func TestProviderLocalFlag_DistinguishesUnsetFromFalse(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+llm:
+  providers:
+    - name: "heuristic"
+      model: "a"
+    - name: "forced-local"
+      model: "b"
+      local: true
+    - name: "forced-cloud"
+      model: "c"
+      local: false
+`))
+	require.NoError(t, err)
+	require.Len(t, cfg.LLM.Providers, 3)
+
+	assert.Nil(t, cfg.LLM.Providers[0].Local, "omitted local must leave the heuristic in charge")
+	require.NotNil(t, cfg.LLM.Providers[1].Local)
+	assert.True(t, *cfg.LLM.Providers[1].Local)
+	require.NotNil(t, cfg.LLM.Providers[2].Local, "an explicit local: false must not read as unset")
+	assert.False(t, *cfg.LLM.Providers[2].Local)
+}

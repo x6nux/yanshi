@@ -33,53 +33,67 @@ const (
 // RunSummary gutted to `return "", err`.
 var ErrNoWindowRoom = errors.New("compaction: carry + framing leaves no room in the model window")
 
-// summaryInstruction is the final user turn appended to ask for the summary.
-// It names the must-keep facts explicitly so the model doesn't drop them.
-func summaryInstruction(wordLimit int) string {
-	if wordLimit <= 0 {
-		wordLimit = 500
-	}
-	return fmt.Sprintf("Summarize the conversation above in concise but comprehensive form. "+
-		"PRESERVE exactly: file paths, shell commands, error messages, key decisions, and "+
-		"any tool-result facts needed to continue. Tool outputs may be abbreviated only when "+
-		"repetitive. Keep it under %d words.", wordLimit)
-}
-
-// instructionMessage builds the final user turn that asks for the summary.
-// Centralized so the single-path, the carry-path, and the token estimate all
-// construct it identically (no drift between the budgeted size and the actual
-// request).
-func instructionMessage(wordLimit int) *schema.Message {
-	return &schema.Message{Role: schema.User, Content: summaryInstruction(wordLimit)}
-}
-
 // RunSummary produces a text summary of msgs via m. If the estimated token count
-// fits within ChunkThreshold*ModelWindow it makes a single CACHE-ALIGNED call
-// (msgs verbatim as prefix + a trailing instruction) so the summary request hits
-// the prefix cache. Otherwise it runs a CARRY-style rolling summary where each
-// chunk's budget is computed DYNAMICALLY from the current carry:
+// fits within ChunkThreshold*(ModelWindow−OutputReserve) it makes a single
+// CACHE-ALIGNED call (msgs verbatim as prefix + a trailing instruction) so the
+// summary request hits the prefix cache. Otherwise it runs a CARRY-style rolling
+// summary where each chunk's budget is computed DYNAMICALLY from the current
+// carry:
 //
-//	chunkBudget = ModelWindow − carry − ack − instruction
+//	chunkBudget = ModelWindow − OutputReserve − carry − ack − instruction
 //
-// so chunk + carry(prefix) + ack + instruction ≤ ModelWindow.
+// so chunk + carry(prefix) + ack + instruction ≤ ModelWindow − OutputReserve.
 //
 // That inequality holds for the framing, NOT unconditionally for the chunk:
 // takeChunk may exceed its budget, and the excess is bounded by the largest
 // INDIVISIBLE run in the history rather than by any multiple of the window.
 // See takeChunk for the two ways a run becomes indivisible. Retries transient
 // errors.
+//
+// When opts.Redactor is set, the messages are passed through it FIRST, so no
+// registered secret reaches the summary model — and, more importantly, none can
+// be folded into a summary that is then re-sent on every later turn. The
+// redaction applies to a COPY; the caller's slice is untouched. See
+// redactForSummary.
+//
+// The summary it asks for is the five-section structured document described by
+// summaryInstruction. Two things follow from that and are worth stating here,
+// because both are easy to break from this function:
+//
+//   - The INCREMENTAL-UPDATE instruction is selected per call, from whether the
+//     request being built already contains a summary. On the carry path that is
+//     true from chunk 2 onward (the carry IS the prior summary); on the single
+//     path it is true when an earlier compaction's summary has aged out of the
+//     pinned tail and back into the summarize set. Deciding it once up front
+//     would get chunk 1 of the carry loop wrong in one direction or every later
+//     chunk wrong in the other.
+//   - The instruction's token cost is therefore NOT constant across chunks —
+//     the update form is longer than the produce form. instructionTokens is
+//     measured for the form actually about to be sent, so the chunk budget
+//     shrinks to match rather than being computed against a cheaper message
+//     than the one that gets dispatched.
 func RunSummary(ctx context.Context, msgs []*schema.Message, opts RunOpts, m ModelSummarizer, onChunk func(string)) (string, error) {
 	if len(msgs) == 0 {
 		return "", nil
 	}
-	instruction := instructionMessage(opts.SummaryWordLimit)
+	// C11: redact before ANY branch below can reach the model. Placing this at
+	// the top of RunSummary rather than in Run means the direct RunSummary
+	// callers (tests, and any future caller that summarizes without planning)
+	// get the same protection — a redaction that only covers one entry point is
+	// a redaction with a documented hole.
+	msgs = redactForSummary(opts.Redactor, msgs)
+	instruction := instructionMessage(opts.SummaryWordLimit, containsPriorSummary(msgs), opts.CoveredSeq, opts.ModelWindow)
 	instructionTok := estimateMessageTokens(instruction)
 
 	// Single cache-aligned path: messages + instruction fit the threshold budget.
 	if sb := singleBudget(opts); sb > 0 && EstimateTokens(msgs)+instructionTok <= sb {
 		req := append([]*schema.Message{}, msgs...)
 		req = append(req, instruction)
-		return callWithRetry(ctx, m, req, onChunk)
+		s, err := callWithRetry(ctx, m, req, onChunk)
+		if err != nil {
+			return "", err
+		}
+		return redactSummary(opts.Redactor, s), nil
 	}
 
 	// Carry-style chunked. carry grows each iteration, so chunkBudget must shrink
@@ -87,7 +101,17 @@ func RunSummary(ctx context.Context, msgs []*schema.Message, opts RunOpts, m Mod
 	carry := ""
 	remaining := msgs
 	for chunkIdx := 1; len(remaining) > 0; chunkIdx++ {
-		chunkBudget := chunkBudgetFor(opts, carry, instructionTok)
+		// The carry IS a prior summary, so from chunk 2 onward the model is
+		// asked to UPDATE it rather than write a fresh one. That is the whole
+		// point of the carry loop: without it each chunk produces an
+		// independent summary of its own slice and the last one silently wins.
+		hasPrior := carry != "" || containsPriorSummary(remaining)
+		chunkInstructionTok := instructionTok
+		if hasPrior != containsPriorSummary(msgs) {
+			chunkInstructionTok = estimateMessageTokens(
+				instructionMessage(opts.SummaryWordLimit, hasPrior, opts.CoveredSeq, opts.ModelWindow))
+		}
+		chunkBudget := chunkBudgetFor(opts, carry, chunkInstructionTok)
 		if chunkBudget <= 0 {
 			// The carry alone (+framing) fills the window — no safe progress.
 			// Surfaces as an error rather than silently over-running the window.
@@ -96,7 +120,7 @@ func RunSummary(ctx context.Context, msgs []*schema.Message, opts RunOpts, m Mod
 				opts.ModelWindow)
 		}
 		chunk, rest := takeChunk(remaining, chunkBudget)
-		req := buildCarryRequest(carry, chunk, opts.SummaryWordLimit)
+		req := buildCarryRequest(carry, chunk, opts.SummaryWordLimit, hasPrior, opts.CoveredSeq, opts.ModelWindow)
 		s, err := callWithRetry(ctx, m, req, onChunk)
 		if err != nil {
 			return "", fmt.Errorf("compaction chunk %d: %w", chunkIdx, err)
@@ -104,12 +128,25 @@ func RunSummary(ctx context.Context, msgs []*schema.Message, opts RunOpts, m Mod
 		carry = s
 		remaining = rest
 	}
-	return carry, nil
+	return redactSummary(opts.Redactor, carry), nil
 }
 
 // singleBudget is the threshold (ChunkThreshold*ModelWindow) for the single
 // cache-aligned call. Returns 0 when compaction can't be budgeted (ModelWindow
 // unset), which disables the single path.
+//
+// IT IS DELIBERATELY NOT budgetFor. The output reserve belongs to the TURN's
+// budget — how much history the conversation may carry so the assistant can
+// still reply — and this is the SUMMARY CALL's budget, a different request with
+// a different output. Subtracting the turn's reserve here would charge the
+// summary call for a completion it is not the one generating, and the two
+// headrooms would compound: ChunkThreshold (0.9 by default) is already the
+// summary call's own output headroom, so a 0.75 window reserve on top of it
+// leaves 0.675 of the window for input and pushes histories onto the chunked
+// path that fit the single cache-aligned call perfectly well — losing the
+// prefix-cache hit that path exists for.
+//
+// See budgetFor for the budget the reserve DOES apply to.
 func singleBudget(opts RunOpts) int {
 	if opts.ModelWindow <= 0 {
 		return 0
@@ -124,6 +161,9 @@ func singleBudget(opts RunOpts) int {
 // chunk + carry(prefix) + ack + instruction ≤ ModelWindow. overhead shrinks the
 // available budget; carry (which grows each chunk) is counted at its current
 // size, not a fixed estimate — this is what keeps every call in-window.
+//
+// Like singleBudget, this is the SUMMARY CALL's budget and so does not subtract
+// the turn's output reserve — see the note there.
 func chunkBudgetFor(opts RunOpts, carry string, instructionTok int) int {
 	if opts.ModelWindow <= 0 {
 		return 0
@@ -178,14 +218,20 @@ func takeChunk(msgs []*schema.Message, budget int) (chunk, rest []*schema.Messag
 // as a sentinel-prefixed user turn (+ ack), the chunk's messages verbatim, then
 // the instruction. chunk1 has no carry prefix so its prefix == original history
 // opening (cache-aligned for that one block).
-func buildCarryRequest(carry string, chunk []*schema.Message, wordLimit int) []*schema.Message {
+//
+// hasPrior is passed in rather than derived from `carry != ""` because a prior
+// summary can also arrive inside the CHUNK — an earlier compaction's output
+// that has since aged out of the pinned tail. Deriving it here would miss that
+// case on chunk 1, which is precisely the second-compaction path this whole
+// structure exists to get right.
+func buildCarryRequest(carry string, chunk []*schema.Message, wordLimit int, hasPrior bool, covered SeqRef, window int) []*schema.Message {
 	var req []*schema.Message
 	if carry != "" {
 		req = append(req, &schema.Message{Role: schema.User, Content: SummarySentinel + carry})
 		req = append(req, &schema.Message{Role: schema.Assistant, Content: carryAckContent})
 	}
 	req = append(req, chunk...)
-	req = append(req, instructionMessage(wordLimit))
+	req = append(req, instructionMessage(wordLimit, hasPrior, covered, window))
 	return req
 }
 

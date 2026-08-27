@@ -7,9 +7,25 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// TestEstimateTokens_CountsContentAndOverhead pins the per-message envelope
+// cost on top of the content estimate.
+//
+// It asserts the DECOMPOSITION rather than a literal, because the literal is
+// the estimator's calibration and this test is not about calibration. The old
+// form asserted `== 10`, derived by hand from chars/4 + 8; when C8 replaced
+// chars/4 with the structural estimator the test failed for a change that was
+// entirely intended, and the only available repair was to write down whatever
+// number the new code produced — which asserts that the code equals itself.
+// Asserting content + perMessageOverhead instead keeps a real claim (the
+// envelope is charged exactly once per message, and it is not free) that
+// survives every future recalibration and still fails if the overhead is
+// dropped or double-counted.
 func TestEstimateTokens_CountsContentAndOverhead(t *testing.T) {
-	// 8 chars -> 8/4 + 8 = 10
-	assert.Equal(t, 10, EstimateTokens([]*schema.Message{{Content: "12345678"}}))
+	const content = "12345678"
+	got := EstimateTokens([]*schema.Message{{Content: content}})
+	assert.Equal(t, estimateTextTokens(content)+perMessageOverhead, got)
+	assert.Greater(t, got, estimateTextTokens(content),
+		"the message envelope must cost something; a free envelope undercounts every history by 8 tokens per message")
 }
 
 func TestEstimateTokens_CountsToolCalls(t *testing.T) {

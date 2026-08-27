@@ -29,6 +29,16 @@ func longMsgs(n, chars int) []*schema.Message {
 
 func TestMaybeCompact_OverThreshold(t *testing.T) {
 	fm := einollm.NewFakeModel([]string{"SUMMARY"}, nil)
+	// Repeat so the fake answers EVERY summarizer call with "SUMMARY", not just
+	// the first. This test asserts "over threshold ⇒ compaction happened"; how
+	// many chunks RunSummary needs to get there is incidental, and pinning it to
+	// one made the test a hostage of the token estimator. When C8 replaced the
+	// chars/4 estimate the same fixture crossed from the single cache-aligned
+	// call to a two-chunk carry loop, the scripted response ran out on chunk 2,
+	// the carry came back empty, and the empty-summary gate turned a PASSING
+	// compaction into did=false — a failure that says nothing about the
+	// threshold gate this test exists to cover.
+	fm.Repeat = true
 	// user msgs pin verbatim (isUserOriginal); assistant noise gets summarized.
 	msgs := []*schema.Message{
 		{Role: schema.User, Content: "task"},

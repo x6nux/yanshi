@@ -83,6 +83,17 @@ type CompactingModel struct {
 	// fraction of ContextWindow, even when inside a cooldown period. 0 disables
 	// (not recommended — the token budget safety net). Default via config: 0.95.
 	HardForceFraction float64
+	// Redactor strips registered secrets from the copy of the history handed to
+	// the summary model, and from the summary that comes back (C11). nil
+	// disables redaction, which is the historical behaviour.
+	//
+	// The mid-turn path needs this as much as the pre-turn one: a tool_result
+	// carrying an API key gets folded into a PINNED summary message, so the key
+	// is re-sent to the provider on every later turn long after the tool_result
+	// it came from was compacted away. Callers must not assign a typed-nil
+	// *secrets.Redactor here — see ctxcompact.Options.Redactor for why that
+	// would panic rather than disable redaction.
+	Redactor ctxcompact.Redactor
 	// didCompact records whether any compaction has happened yet, replacing a
 	// lastCompactTokens == 0 sentinel.
 	//
@@ -142,7 +153,7 @@ func (c *CompactingModel) maybeCompact(ctx context.Context, msgs []*schema.Messa
 	cb := compactCallback(ctx)
 	res, err := ctxcompact.Run(ctx, msgs,
 		ctxcompact.PlanOpts{KeepRecent: c.planKeepRecent()},
-		ctxcompact.RunOpts{ModelWindow: c.ContextWindow, ChunkThreshold: 0.9},
+		ctxcompact.RunOpts{ModelWindow: c.ContextWindow, ChunkThreshold: 0.9, Redactor: c.Redactor},
 		c.Inner, cb)
 	if err != nil || res.TokensAfter >= res.TokensBefore {
 		// best-effort: forward the original history. If it's over-window, the
