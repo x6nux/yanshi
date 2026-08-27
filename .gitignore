@@ -11,6 +11,7 @@
 /agent-worker
 /autocode
 /yanshi
+/tuidbg
 
 # --- 运行时数据 (SQLite: 任务/会话/记忆) ---
 *.db
