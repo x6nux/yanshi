@@ -184,7 +184,7 @@ foreground:
 	// just saved. runCtx (not turnCtx) because it still carries the work root
 	// and is not cancelled.
 	//
-	// W-A-02 fix round 1: redactForModel must run here too, and BEFORE
+	// W-A-02 fix round 1: the redaction must run here too, and BEFORE
 	// spillIfTooLong for the same reason InvokableRun orders them — spilling
 	// an unredacted result writes the secret to disk where artifact_read
 	// fetches it straight back. This path does not go through InvokableRun:
@@ -194,6 +194,6 @@ foreground:
 	// build it, above) preserves Values from the turn ctx that
 	// bindExecutionContext bound WithRedactor onto — the same mechanism the
 	// comment above already relies on for the work root and profile.
-	handle.Finish(spillIfTooLong(runCtx, g.name, redactForModel(runCtx, result.String())), toolErr)
+	handle.Finish(spillIfTooLong(runCtx, g.name, g.redactResult(runCtx, result.String())), toolErr)
 	p.end(toolErr)
 }

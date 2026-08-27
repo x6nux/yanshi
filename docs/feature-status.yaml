@@ -1642,13 +1642,20 @@
   # 决定了 Result 只在那里汇合。子句 2 钉住「未绑定时逐字节不变」，那是这类
   # 全量收口最容易造成的回归方向。子句 3 是刻意的不对称：Text 走 TUI，脱敏它
   # 只会把操作员自己的 key 对他自己藏起来。子句 4 对真实装配断言，补 GOV6
-  # 够不到的那半（GOV6 证明注入器有调用点，证明不了 App 真的走到）。
-  acceptance: "工具结果在返回给编排器之前经过 Redactor；未绑定 Redactor 时工具结果逐字节不变；TUI 路径的 Text 字段不受脱敏影响；真实装配出的 App 其 orchestrator 已绑定 Redactor"
+  # 够不到的那半（GOV6 证明注入器有调用点，证明不了 App 真的走到）。子句 5 是
+  # spec 原文里有、第一轮却从台账掉了的那句，跨任务评审才看得见：收口在
+  # InvokableRun 意味着 fs_read 也被脱敏，而 secrets.Redact 还跑基于形状的
+  # RedactPatterns，于是 agent 读到的任何文件里的 PEM / JWT / sk- token 都在
+  # 模型看见之前被换成同一个字面量 "[REDACTED]" —— 「比较 .env 和 config.yaml
+  # 里的 key」会让模型确信两者相同。判据是工具意图而不是内容匹配（spec §1.2
+  # INF8 的建议），豁免落在工具值上而不是名字表上，当前只有 fs_read 一个。
+  acceptance: "工具结果在返回给编排器之前经过 Redactor；未绑定 Redactor 时工具结果逐字节不变；TUI 路径的 Text 字段不受脱敏影响；真实装配出的 App 其 orchestrator 已绑定 Redactor；显式读取凭据文件的 fs 工具不因本改动失效"
   evidence:
     "1": "internal/tools::TestInvokableRunRedactsRegisteredSecrets"
     "2": "internal/tools::TestInvokableRunWithoutRedactorIsByteIdentical"
     "3": "internal/tools::TestStreamTextFieldIsNotRedacted"
     "4": "internal/bootstrap::TestW3RedactorReachesToolResults"
+    "5": "internal/tools::TestExplicitCredentialFileReadIsNotRedacted"
 - id: "A2/W-A-03"
   package: "W-A"
   verdict: done

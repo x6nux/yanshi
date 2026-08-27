@@ -88,7 +88,7 @@ var acceptancePins = map[string]acceptancePin{
 	"A2/DT2":     {Clauses: 4, Digest: "2778fd2f7c5598f0"},
 	"A2/G05":     {Clauses: 4, Digest: "5634cfc901b378e7"},
 	"A2/W-A-01":  {Clauses: 4, Digest: "b19d90460e470f18"},
-	"A2/W-A-02":  {Clauses: 4, Digest: "61d11978e7fa9084"},
+	"A2/W-A-02":  {Clauses: 5, Digest: "254775b4f67a683d"},
 	"A2/W-A-03":  {Clauses: 4, Digest: "0647625b4dcb8587"},
 	"A2/W-A-04":  {Clauses: 4, Digest: "b5e1858c89e70f8c"},
 	"A2/W-A-05":  {Clauses: 3, Digest: "cff19c79fdb00fd0"},

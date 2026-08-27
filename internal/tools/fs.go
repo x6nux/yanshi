@@ -51,7 +51,7 @@ func NewFSTools(root string) *FSTools {
 			"end":    {Type: schema.Integer, Desc: "1-based ending line, inclusive"},
 		}),
 		SyncStream(f.runRead),
-	)
+	).withVerbatimResult()
 	f.Write = NewGuardedTool(
 		"fs_write", "Write", "Create or overwrite a file with the given content.",
 		30*time.Second,
