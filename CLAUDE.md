@@ -77,7 +77,7 @@ go run ./cmd/gendocs -config docs/user-guide/configuration.md
 go run ./cmd/gendocs -help-all docs/user-guide/tui.md docs/user-guide/entrypoints.md
 ```
 
-**其余 dev 工具（不参与运行时）：** `cmd/depsanalyze` 打印 internal 包的 fan-in/fan-out、分层与风险标记；`cmd/agent-worker` 是连接 Task API 的独立远程 worker；`cmd/featurestatus` 读 `docs/feature-status.yaml` 打印 S0 功能状态统计（`-open` 只列未结项）；`cmd/covercheck` 按包检查语句覆盖率下限（阈值表在 `cmd/covercheck/main.go::thresholds`，`-v` 打印每个包的实测值）。
+**其余 dev 工具（不参与运行时）：** `cmd/depsanalyze` 打印 internal 包的 fan-in/fan-out、分层与风险标记；`cmd/agent-worker` 是连接 Task API 的独立远程 worker；`cmd/featurestatus` 读 `docs/feature-status.yaml` 打印 S0 功能状态统计（`-open` 只列未结项）；`cmd/covercheck` 按包检查语句覆盖率下限（阈值表在 `cmd/covercheck/main.go::thresholds`，`-v` 打印每个包的实测值）；`cmd/tuidbg` 用 tmux 当终端模拟器驱动 alt-screen TUI（起会话、发按键、把渲染后的屏幕读回成文本，`-png` 可光栅化成图片），用法见 `skills/tui-debug/SKILL.md` —— **这是唯一能真的看见 TUI 渲染结果的手段**，`internal/cli/tui` 的单测断言的是 `Model.Update`/`View` 的返回值，启动崩溃与布局错位在它们全绿时照样复现。
 
 **覆盖率门禁不在 archtest 里，在 `ci.yml` 的 `coverage` job。** 理由是类别不同：GOV1–GOV9 全是对**源码结构**的静态断言（AST / `go list`），覆盖率是测试二进制的**运行产物**。放进 archtest 意味着在 `go test` 里再起 `go test`（范围写 `./...` 直接自我递归，写死包名又是另一张要维护的表），并且会在 `-race` job 下变成嵌套的非 race 运行 —— 而 `bootstrap` 的测试会真起 sqlite 与 `127.0.0.1:0` 监听。**CI job 同样是机器强制的，并不比 archtest 弱。** 阈值取 `max(spec 验收值, 实测 − 3pp)`：spec 的下限（proto 80 / store 75 / bootstrap 50）当前分别有 18/21/44 个百分点的余量，只守它们等于把那么多退化空间免费送出去。
 
