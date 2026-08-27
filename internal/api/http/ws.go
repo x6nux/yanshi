@@ -419,6 +419,17 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 				_, data, rerr := conn.ReadMessage()
 				if rerr != nil {
 					cancelTurn() // disconnect aborts any in-flight turn
+					// ...and cancel the CONNECTION context, not just the turn.
+					// errCh alone only releases the main loop's own select, so
+					// a disconnect was invisible to anything the loop was
+					// blocked INSIDE. handleDistillMemories runs inline on this
+					// loop; without this line its connCtx-derived deadline is
+					// the only thing that can ever end a stalled provider call,
+					// and the whole control channel waits it out. The main
+					// loop's deferred cancel() is not enough for the same
+					// reason: it cannot run until the loop returns. Cancelling
+					// twice is a no-op.
+					cancel()
 					select {
 					case errCh <- rerr:
 					default:
@@ -1179,9 +1190,16 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 			// in a goroutine so a slow model call cannot delay the client
 			// from seeing "done".
 			if s.featuresReg.EnabledOrDefault("memory_distill_after_turn") && s.store != nil && s.distillModel != nil {
-				bgCtx := context.WithoutCancel(turnCtx)
+				// WithoutCancel survives the turn teardown; WithTimeout is
+				// what keeps that from meaning "forever". Against a provider
+				// that connects and then stalls, an unbounded detached call
+				// leaks one goroutine and one in-flight request PER TURN, and
+				// ResilientChatModel's watchdog does not cover Generate.
+				bgCtx, cancelDistill := context.WithTimeout(
+					context.WithoutCancel(turnCtx), distillTimeout)
 				sessionID := cs.sessionID
 				go func() {
+					defer cancelDistill()
 					_, _ = runDistillPass(bgCtx, s.store, s.distillModel, store.MemoryFilter{SessionID: sessionID})
 				}()
 			}
@@ -1274,7 +1292,11 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 					// with memories_distilled; no return — mirroring fork_session's
 					// pattern (no explicit return after the handler call, so the
 					// outer loop continues reading more frames).
-					handleDistillMemories(s, conn, &cs)
+					//
+					// connCtx, not context.Background(): this handler blocks
+					// the frame loop, so its context is the only thing left
+					// that can release the loop when the client disconnects.
+					handleDistillMemories(connCtx, s, conn, &cs)
 				case "enter_side":
 					if err := cs.enterSide(); err != nil {
 						conn.write(proto.NewError("enter_side: " + err.Error()))

@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/gorilla/websocket"
@@ -288,18 +289,45 @@ func runDistillPass(ctx context.Context, st *store.Store, m tools.DistillModel, 
 	return res, nil
 }
 
+// distillTimeout bounds one consolidation pass.
+//
+// It is a var, not a const, only so the wedge regression test can shorten it;
+// nothing in production assigns to it.
+//
+// A distillation pass is one provider call over a bounded candidate set, so
+// minutes is already generous. The bound is not about latency, it is about
+// what an UNbounded call does at each of the two call sites: the interactive
+// one runs synchronously inside the WS frame loop, so a provider that accepts
+// the connection and then says nothing stops every other control frame on that
+// connection — /model, /compact, cancel, permission replies; the post-turn one
+// runs detached under context.WithoutCancel, so it leaks one goroutine and one
+// in-flight request per turn instead. ResilientChatModel's stall watchdog does
+// NOT cover this: W-A-06 wraps Stream, and distillation calls Generate.
+var distillTimeout = 3 * time.Minute
+
 // handleDistillMemories replies to a distill_memories frame by running one
 // consolidation pass over the connSession's stored memories (A2/W-A-05).
 // This is the interactive half of the entry point /distill triggers; see
 // runUserTurn in ws.go for the automatic post-turn half. Both wire up the
 // same previously-uncalled tools.DistillMemories + store.ApplyDistillation
 // chain documented in docs/feature-status.yaml under A2/W-A-05.
-func handleDistillMemories(s *Server, conn *wsConn, cs *connSession) {
+//
+// ctx MUST be the connection context. This handler runs inline on the frame
+// loop, so its context is the only thing that can release the loop when the
+// client goes away: the loop's own `case <-connCtx.Done()` is unreachable
+// while it is blocked in here. The first version passed context.Background(),
+// which cannot be cancelled by anything — closing the client left the whole
+// control channel wedged behind a stalled provider for the life of the
+// process. That is the W-A-06 defect class, reintroduced by W-A-05 one commit
+// later and one scope wider.
+func handleDistillMemories(ctx context.Context, s *Server, conn *wsConn, cs *connSession) {
 	if s.store == nil || s.distillModel == nil {
 		conn.write(proto.NewError("memory distillation is disabled"))
 		return
 	}
-	res, _ := runDistillPass(context.Background(), s.store, s.distillModel, store.MemoryFilter{SessionID: cs.sessionID})
+	ctx, cancel := context.WithTimeout(ctx, distillTimeout)
+	defer cancel()
+	res, _ := runDistillPass(ctx, s.store, s.distillModel, store.MemoryFilter{SessionID: cs.sessionID})
 	conn.write(proto.NewMemoriesDistilled(res.Considered, res.Merged))
 }
 
