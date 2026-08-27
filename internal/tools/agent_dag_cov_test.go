@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -85,4 +86,47 @@ func TestRunDAGWorkflow_MultiStepSuccess(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out, "A1:")
 	assert.Contains(t, out, "B1:")
+}
+
+// TestExecuteLevelAppliesSubAgentIsolation is behavioural coverage for
+// agent_dag.go:208's WithSubAgentIsolation call — the one GOV6 cannot miss
+// (some production call site of WithSubAgentIsolation exists: batch.go's
+// also counts) but also cannot pin to THIS call site. GOV6 only asks "does a
+// production caller exist somewhere"; it would stay green if this exact line
+// were deleted, because batch.go's call site would still satisfy it. This
+// test drives two dependency-free steps through the real
+// runDAGWorkflow -> executeLevel fan-out (not a hand-built ctx) and asserts
+// the marker is actually visible on the ctx the sub-agent runner receives.
+//
+// Two steps with no edge between them land in the same topological level, so
+// both go through executeLevel's goroutine dispatch (line 189-224), not the
+// sequential per-level loop in runDAGWorkflow.
+func TestExecuteLevelAppliesSubAgentIsolation(t *testing.T) {
+	m := einollm.NewFakeModel([]string{"unused"}, nil)
+	at := NewAgentTools(m)
+
+	var mu sync.Mutex
+	var seenPrompts []string
+	var seenIsolated []bool
+	runner := SubAgentRunner(func(ctx context.Context, prompt string, _ []string, _ string) (string, error) {
+		mu.Lock()
+		seenPrompts = append(seenPrompts, prompt)
+		seenIsolated = append(seenIsolated, SubAgentIsolationRequested(ctx))
+		mu.Unlock()
+		return "ok", nil
+	})
+	ctx := WithSubAgentRunner(context.Background(), runner)
+
+	out, err := at.runDAGWorkflow(ctx, json.RawMessage(
+		`{"steps":[{"id":"A1","prompt":"do a"},{"id":"A2","prompt":"do b"}]}`))
+	require.NoError(t, err)
+	assert.Contains(t, out, "A1:")
+	assert.Contains(t, out, "A2:")
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, seenIsolated, 2, "expected both concurrent steps to reach the sub-agent runner")
+	for i, isolated := range seenIsolated {
+		assert.True(t, isolated, "step with prompt %q: isolation marker did not reach the sub-agent runner's ctx", seenPrompts[i])
+	}
 }
