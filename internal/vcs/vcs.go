@@ -76,27 +76,45 @@ type VCS struct {
 	// allowing independent repositories to progress concurrently (CB1).
 	repoLocksMu sync.Mutex
 	repoLocks   map[string]*sync.Mutex
+	// repoFiles holds the retained lock-file descriptor per lane key, backing the
+	// CROSS-PROCESS half of the write lane (V8). repoLocks alone only excludes
+	// goroutines of one process; two yanshi instances on one repo would otherwise
+	// interleave the read-head/build-tree/write-head sequence in commitScope and
+	// lose commits. Guarded by repoLocksMu; see internal/vcs/crossproc.go.
+	repoFiles map[string]*os.File
+	// lockDir overrides the machine-wide lock directory. Empty means
+	// defaultLockDir(). Tests set it so concurrent packages do not contend on a
+	// real user cache dir; production never sets it.
+	lockDir string
+	// sweepOnce bounds the stale-lock-file reclaim to one pass per instance.
+	// See crossproc.go maybeSweep: the accumulation it clears is slow, and a
+	// per-acquisition sweep would put a ReadDir over a large directory in front
+	// of every commit.
+	sweepOnce sync.Once
+
+	// freezeMu guards frozen. It is a SEPARATE mutex from repoLocksMu and from
+	// any repo lane on purpose: checkNotFrozen must be callable BEFORE the lane
+	// is acquired (that is what makes a frozen repo fail fast instead of
+	// queueing), so it cannot be protected by the thing it runs ahead of.
+	freezeMu sync.Mutex
+	// frozen marks repos whose working copy is being rewritten by a restore
+	// (V5). See internal/vcs/freeze.go, including its account of the writers
+	// this flag provably cannot stop.
+	frozen map[string]bool
+	// processAlive is the injected PID-liveness probe backing the V7 orphan
+	// scan. nil means "assume everything is alive", which reports no orphans —
+	// the fail-safe direction. Guarded by freezeMu (it is set once at wiring
+	// time and read per scan; a second mutex for one pointer would be noise).
+	// See internal/vcs/worktreestate.go for why it is injected and not imported.
+	processAlive func(pid int) bool
+	// worktreeStateOnce guards the lazy CREATE TABLE for the V7 lifecycle
+	// sidecar; see ensureWorktreeState.
+	worktreeStateOnce sync.Once
 }
 
-// lockRepo locks the write lane for key and returns its unlock function.
-// repoID is the normal key; InitRepo uses "init:"+canonicalRoot before an id
-// exists. Lock entries intentionally live for the VCS lifetime (repo count is
-// bounded by the process's opened projects; deleting them would create an ABA
-// race with goroutines that already retained the mutex pointer).
-func (v *VCS) lockRepo(key string) func() {
-	v.repoLocksMu.Lock()
-	if v.repoLocks == nil {
-		v.repoLocks = make(map[string]*sync.Mutex)
-	}
-	mu := v.repoLocks[key]
-	if mu == nil {
-		mu = &sync.Mutex{}
-		v.repoLocks[key] = mu
-	}
-	v.repoLocksMu.Unlock()
-	mu.Lock()
-	return mu.Unlock
-}
+// lockRepo moved to internal/vcs/crossproc.go when V8 gave the per-repo write
+// lane a second, cross-process layer. It is not duplicated here: two
+// definitions of a lock is how one of them stops being taken.
 
 // New builds a VCS. worktreeDir is where worktree working dirs are created.
 // Extra ignore patterns are merged with the built-in defaults.
@@ -760,17 +778,25 @@ func (v *VCS) addWorktreeLocked(repoID string, agents []string) (Worktree, error
 	// Canonicalize the stored worktree path so restoreScopeLocked's destDir
 	// comparison matches on all platforms (macOS /var → /private/var).
 	wtPath = canonicalPath(wtPath)
-	// materialize main_head's tree into wtPath (repo-relative layout)
+	// V6: materialize main_head's tree into wtPath through a confined root
+	// handle. A worktree dir is freshly created here, but the tree PATHS come
+	// from stored history, and the dir is agent-writable from the moment it
+	// exists — expanding them with plain Join would let a planted symlink
+	// redirect the expansion.
+	workRoot, err := openWorkRoot(wtPath)
+	if err != nil {
+		return Worktree{}, err
+	}
+	defer workRoot.Close()
 	for path, h := range v.commitTree(r.MainHead) {
+		if err := validateRelPath(path); err != nil {
+			return Worktree{}, err
+		}
 		content, err := v.getBlob(h)
 		if err != nil {
 			continue
 		}
-		dest := filepath.Join(wtPath, filepath.FromSlash(path))
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-			return Worktree{}, err
-		}
-		if err := os.WriteFile(dest, content, 0o644); err != nil {
+		if err := rootWriteFile(workRoot, path, content, 0o644); err != nil {
 			return Worktree{}, err
 		}
 	}
@@ -930,8 +956,16 @@ func (v *VCS) Uncommitted(scopeType, scopeID string) map[string]string {
 }
 
 // RecordEditMain records an edit on the main scope (serialized per repo).
+//
+// V5: refused with ErrWorkingCopyFrozen while a restore is rewriting this
+// repo's working copy. Blocking on the lane instead would let this edit's
+// already-read content land in history AFTER the rollback replaced the file it
+// came from.
 func (v *VCS) RecordEditMain(repoID, agent, absPath string, content []byte) error {
-	unlock := v.lockRepo(repoID)
+	unlock, err := v.lockRepoUnlessFrozen(repoID)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	return v.recordEditMainLocked(repoID, agent, absPath, content)
 }
@@ -1034,8 +1068,16 @@ func (v *VCS) commitScope(scopeType, scopeID, repoID, worktreeID, author, messag
 }
 
 // CommitMain folds main's pending changeset into a new commit (serialized).
+//
+// V5: refused with ErrWorkingCopyFrozen while a restore holds this repo. A
+// commit that queued behind a rollback would fold the pre-rollback changeset
+// into a commit parented on the post-rollback head — reinstating exactly the
+// edits the operator asked to discard.
 func (v *VCS) CommitMain(repoID, author, message string) (string, error) {
-	unlock := v.lockRepo(repoID)
+	unlock, err := v.lockRepoUnlessFrozen(repoID)
+	if err != nil {
+		return "", err
+	}
 	defer unlock()
 	return v.commitScope("main", repoID, repoID, "", author, message)
 }
@@ -1150,126 +1192,6 @@ func (v *VCS) Diff(repoID, refA, refB string) ([]FileDiff, error) {
 	return out, nil
 }
 
-// Restore writes the historical blob into an ACTIVE working copy and records
-// the same bytes in that scope's pending changeset before releasing the repo
-// lane (CB1). The public signature is unchanged; commit ownership identifies
-// repoID and destDir must exactly match that repo's root or an active worktree.
-func (v *VCS) Restore(commitID, path, destDir string) error {
-	repoID, err := v.commitRepoID(commitID)
-	if err != nil {
-		return err
-	}
-	unlock := v.lockRepo(repoID)
-	defer unlock()
-	return v.restoreLocked(repoID, commitID, path, destDir)
-}
-
-func (v *VCS) commitRepoID(commitID string) (string, error) {
-	var repoID string
-	if err := v.store.DB.QueryRow(
-		"SELECT repo_id FROM vcs_commits WHERE id=?", commitID,
-	).Scan(&repoID); err != nil {
-		return "", fmt.Errorf("vcs: resolve commit %s: %w", commitID, err)
-	}
-	return repoID, nil
-}
-
-func (v *VCS) restoreLocked(repoID, commitID, path, destDir string) error {
-	// Re-read ownership while holding the repo lane: closes lookup→lock TOCTOU.
-	lockedRepoID, err := v.commitRepoID(commitID)
-	if err != nil {
-		return err
-	}
-	if lockedRepoID != repoID {
-		return fmt.Errorf("vcs: commit %s changed repository", commitID)
-	}
-	scopeType, scopeID, scopeRoot, err := v.restoreScopeLocked(repoID, destDir)
-	if err != nil {
-		return err
-	}
-
-	cleanRel := filepath.Clean(filepath.FromSlash(path))
-	relSlash := filepath.ToSlash(cleanRel)
-	if cleanRel == "." || filepath.IsAbs(cleanRel) || relSlash == ".." ||
-		strings.HasPrefix(relSlash, "../") {
-		return fmt.Errorf("vcs: unsafe restore path %q", path)
-	}
-	tree := v.commitTree(commitID)
-	h, ok := tree[relSlash]
-	if !ok {
-		return fmt.Errorf("vcs: %s not in commit %s", relSlash, commitID)
-	}
-	content, err := v.getBlob(h)
-	if err != nil {
-		return fmt.Errorf("vcs: read restore blob %s: %w", h, err)
-	}
-	dest := filepath.Join(scopeRoot, cleanRel)
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return err
-	}
-
-	// Snapshot the destination so a recordEdit failure cannot leave an untracked
-	// filesystem mutation. Blob insertion on a failed upsert is harmless dedup data.
-	old, readErr := os.ReadFile(dest)
-	existed := readErr == nil
-	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-		return readErr
-	}
-	if err := os.WriteFile(dest, content, 0o644); err != nil {
-		return err
-	}
-	if err := v.recordEdit(scopeType, scopeID, scopeRoot, dest, content); err != nil {
-		var rollbackErr error
-		if existed {
-			rollbackErr = os.WriteFile(dest, old, 0o644)
-		} else {
-			rollbackErr = os.Remove(dest)
-			if errors.Is(rollbackErr, os.ErrNotExist) {
-				rollbackErr = nil
-			}
-		}
-		return errors.Join(fmt.Errorf("vcs: track restored file: %w", err), rollbackErr)
-	}
-	return nil
-}
-
-func (v *VCS) restoreScopeLocked(repoID, destDir string) (string, string, string, error) {
-	// Canonicalize the destination so it matches the EvalSymlinks-resolved
-	// root_path / worktree paths on all platforms, not just Windows. macOS
-	// temp dirs sit behind /var → /private/var; without resolution the dest
-	// never matches the repo root and every Restore falls through to the
-	// "not an active working copy" error.
-	destAbs := canonicalPath(destDir)
-	r, err := v.getRepo(repoID)
-	if err != nil {
-		return "", "", "", err
-	}
-	if destAbs == r.RootPath {
-		return "main", repoID, r.RootPath, nil
-	}
-	rows, err := v.store.DB.Query(
-		"SELECT id, path FROM vcs_worktrees WHERE repo_id=? AND active=1", repoID)
-	if err != nil {
-		return "", "", "", err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var wtID, wtPath string
-		if err := rows.Scan(&wtID, &wtPath); err != nil {
-			return "", "", "", err
-		}
-		if destAbs == canonicalPath(wtPath) {
-			return "worktree", wtID, wtPath, nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return "", "", "", err
-	}
-	return "", "", "", fmt.Errorf(
-		"vcs: restore destination %s is not an active working copy for repo %s",
-		destAbs, repoID)
-}
-
 // MergeToMain integrates a worktree's tip into main via a tree-level 3-way merge
 // (serialized per repo).
 // base = worktree's base_commit; ours = main_head; theirs = worktree tip.
@@ -1367,6 +1289,20 @@ func (v *VCS) mergeToMainLocked(
 		return nil
 	}); err != nil {
 		return "", conflicts, err
+	}
+	// V7: record that this branch reached main. The ledger is updated by the
+	// operation that makes the fact true, not by a caller who might forget —
+	// a merged worktree that still reads "active" would be reported as an
+	// orphan the moment its owner exits, and the cleanup path would then offer
+	// to delete a branch whose work is already safe.
+	//
+	// A ledger failure is NOT fatal to the merge: the commit is durable, the
+	// head has moved, and refusing here would report a successful merge as an
+	// error. The consequence of the missed write is a false orphan report,
+	// which CleanupOrphanWorktree only ever surfaces, never acts on alone.
+	if err := v.MarkWorktreeMerged(wtID); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"yanshi: vcs merged worktree %s but could not record it: %v\n", wtID, err)
 	}
 	return cid, conflicts, nil
 }

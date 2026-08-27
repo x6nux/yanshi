@@ -51,22 +51,32 @@ func (s *Store) ForkSession(srcID string, fromSeq int) (string, error) {
 		}
 
 		// Load the source messages in the same tx (consistent snapshot).
+		//
+		// The tool_* columns come along: a fork that copied only role+content
+		// would silently drop every tool_call / tool_result row's payload, which
+		// is the exact loss C1's durable log exists to prevent. dedup_key is
+		// deliberately NOT copied — the fork's rows are new identities in a new
+		// session, and re-deriving them is AppendMessages' job, not a copy's.
 		rows, err := tx.Query(
-			"SELECT seq, role, content FROM messages WHERE session_id = ? ORDER BY seq ASC",
+			"SELECT seq, role, content, tool_call_id, tool_name, tool_args FROM messages WHERE session_id = ? ORDER BY seq ASC",
 			srcID,
 		)
 		if err != nil {
 			return fmt.Errorf("ForkSession: load messages: %w", err)
 		}
 		type srcMsg struct {
-			Seq     int
-			Role    string
-			Content string
+			Seq        int
+			Role       string
+			Content    string
+			ToolCallID string
+			ToolName   string
+			ToolArgs   string
 		}
 		var allMsgs []srcMsg
 		for rows.Next() {
 			var m srcMsg
-			if err := rows.Scan(&m.Seq, &m.Role, &m.Content); err != nil {
+			if err := rows.Scan(&m.Seq, &m.Role, &m.Content,
+				&m.ToolCallID, &m.ToolName, &m.ToolArgs); err != nil {
 				rows.Close()
 				return fmt.Errorf("ForkSession: scan message: %w", err)
 			}
@@ -115,8 +125,10 @@ func (s *Store) ForkSession(srcID string, fromSeq int) (string, error) {
 		for _, m := range toCopy {
 			msgID := newID()
 			if _, err := tx.Exec(
-				`INSERT INTO messages (id, session_id, seq, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-				msgID, forkID, m.Seq, m.Role, m.Content, now,
+				`INSERT INTO messages (id, session_id, seq, role, content, tool_call_id, tool_name, tool_args, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				msgID, forkID, m.Seq, m.Role, m.Content,
+				m.ToolCallID, m.ToolName, m.ToolArgs, now,
 			); err != nil {
 				return fmt.Errorf("ForkSession: insert message seq=%d: %w", m.Seq, err)
 			}

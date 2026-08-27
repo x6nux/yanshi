@@ -957,7 +957,6 @@ secrets:
 	assert.Equal(t, exitErr, code)
 }
 
-
 // TestRunAuthSubDeviceNoProvider proves `auth device` without --provider returns
 // exitUsage.
 func TestRunAuthSubDeviceNoProvider(t *testing.T) {

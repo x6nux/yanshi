@@ -20,8 +20,13 @@ import (
 // The repo lock is acquired for consistency with RecordEditMain, ensuring
 // getRepo and the uncommitted upsert are serialized against concurrent
 // CommitMain / MergeToMain.
+// V5: like RecordEditMain, this fails fast with ErrWorkingCopyFrozen while a
+// restore is rewriting the working copy, rather than queueing behind it.
 func (v *VCS) RecordDeleteMain(repoID, agent, absPath string) error {
-	unlock := v.lockRepo(repoID)
+	unlock, err := v.lockRepoUnlessFrozen(repoID)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	return v.recordDeleteMainLocked(repoID, agent, absPath)
 }

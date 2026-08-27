@@ -187,8 +187,13 @@ func TestReplaceFile_ReplacesExistingDestination(t *testing.T) {
 	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := replaceFile(path, []byte("new"), 0o644); err != nil {
-		t.Fatalf("replaceFile: %v", err)
+	root, err := openWorkRoot(dir)
+	if err != nil {
+		t.Fatalf("openWorkRoot: %v", err)
+	}
+	defer root.Close()
+	if err := rootReplaceFile(root, "existing.txt", []byte("new"), 0o644); err != nil {
+		t.Fatalf("rootReplaceFile: %v", err)
 	}
 	got, err := os.ReadFile(path)
 	if err != nil || string(got) != "new" {

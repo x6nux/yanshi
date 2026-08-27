@@ -49,7 +49,13 @@ func newSeamRaceRepo(t *testing.T) (*VCS, string, string) {
 
 // publicRepoWriters is the lock-coverage contract. Tasks 3/4/5 append their new
 // writers before their GREEN run: SealMainTurnSeam, MaterializeMain,
-// ResetMainHead, RevertToSeam.
+// ResetMainHead, RevertToSeam. V1/V2/V4/V7 appended PlanRestore, ApplyRestore,
+// RunGC and CleanupOrphanWorktree.
+//
+// PlanRestore is in the list even though it writes nothing: it reads the head,
+// the stored trees AND the working copy, and a plan assembled across a
+// concurrent commit would describe a state that never existed — which is worse
+// than a lost write, because the operator would then CONFIRM it.
 var publicRepoWriters = []string{
 	"InitRepo", "AddWorktree", "RemoveWorktree", "Restore",
 	"RecordEditMain", "RecordEditWorktree",
@@ -57,6 +63,20 @@ var publicRepoWriters = []string{
 	"SealMainTurnSeam",
 	"MaterializeMain", "ResetMainHead",
 	"RevertToSeam",
+	"PlanRestore", "ApplyRestore", "RunGC", "CleanupOrphanWorktree",
+}
+
+// laneAcquirers are the two ways a public writer may enter the per-repo lane.
+//
+// lockRepoUnlessFrozen is not a second lane, it is lockRepo plus the V5
+// working-copy freeze check taken FIRST (see internal/vcs/freeze.go), so a
+// writer using it satisfies this contract exactly as one calling lockRepo
+// does. Listing it here rather than teaching the matcher to follow the call
+// graph keeps this gate a one-hop syntactic check — the property it can
+// actually decide.
+var laneAcquirers = map[string]bool{
+	"lockRepo":             true,
+	"lockRepoUnlessFrozen": true,
 }
 
 // TestPublicRepoWritersAcquireRepoLane parses production files and requires every
@@ -90,7 +110,7 @@ func TestPublicRepoWritersAcquireRepoLane(t *testing.T) {
 							return true
 						}
 						sel, ok := call.Fun.(*ast.SelectorExpr)
-						if ok && sel.Sel.Name == "lockRepo" {
+						if ok && laneAcquirers[sel.Sel.Name] {
 							locks = true
 						}
 						return true
@@ -101,7 +121,8 @@ func TestPublicRepoWritersAcquireRepoLane(t *testing.T) {
 		if !found {
 			t.Errorf("public writer %s not found", name)
 		} else if !locks {
-			t.Errorf("public writer %s does not acquire lockRepo", name)
+			t.Errorf("public writer %s does not acquire the repo lane "+
+				"(expected a call to lockRepo or lockRepoUnlessFrozen)", name)
 		}
 	}
 }

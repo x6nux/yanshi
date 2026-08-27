@@ -30,6 +30,8 @@ import (
 	"github.com/x6nux/yanshi/internal/cli"
 	"github.com/x6nux/yanshi/internal/cli/tui"
 	"github.com/x6nux/yanshi/internal/config"
+	"github.com/x6nux/yanshi/internal/lockfile"
+	"github.com/x6nux/yanshi/internal/sandbox"
 	"github.com/x6nux/yanshi/internal/secrets"
 	"github.com/x6nux/yanshi/internal/store"
 	"github.com/x6nux/yanshi/internal/vcs"
@@ -47,9 +49,15 @@ Usage:
   yanshi app     [-config config.yaml] [-fake-model]
   yanshi goal    [-config config.yaml] [-fake-model] [-workdir DIR] [-agent claudecode] [-max-iters 5] [-max-tokens 0] [-goal "text"] [-tier auto|t0..t4]
   yanshi vcs-mcp (env-driven; spawned by the ACP adapter — YANSHI_DB_PATH/YANSHI_REPO_ID/YANSHI_WT_ID/YANSHI_AGENT/YANSHI_WORKTREE_DIR)
-  yanshi doctor [-config FILE] [-json] [-release]
+  yanshi init    [-config FILE] [-template FILE] [-force]
+  yanshi daemon  status|stop|reload [-root DIR] [-json] [-config FILE] [-timeout 20s]
+  yanshi schedule list|show|pause|resume|run-now|delete [ID] [-root DIR] [-json]
+  yanshi provider add|list [-config FILE] [-name N] [-kind K] [-model M] [-api-key K] [-replace] [-json]
+  yanshi acp     [-config config.yaml] [-fake-model]
+  yanshi doctor [-config FILE] [-json] [-release] [-fix] [-fix-only LIST] [-fix-dry-run]
   yanshi pr      <PR-number> | <full-URL>
   yanshi auth    status|logout|device [-provider NAME] [-account NAME]
+  yanshi auth    mcp-login <server> | mcp-logout <server>
 
 Subcommands:
   (none)   Launch the self-contained TUI. Discovers a running backend for the
@@ -73,15 +81,51 @@ Subcommands:
            so stdout stays parseable. -fake-model needs no API key.
   goal     Run the self-driven goal loop (plan-implement-evaluate-judge).
   vcs-mcp  Run the autoVCS MCP server on stdio (spawned by the ACP adapter).
+  init     Generate a config.yaml from config.example.yaml. Refuses to
+           overwrite an existing config unless -force (which backs it up
+           first). ${VAR} references are left as references — nothing writes
+           a credential to disk — and the summary names every provider
+           environment variable that is still unset.
+  daemon   Operate an already-running backend for this project, found through
+           the same lockfile the TUI uses. status prints pid / address /
+           uptime / readiness (exit 0 only when ready). stop asks it to shut
+           down and waits for the process to go. reload makes it re-read the
+           config, applying what can be applied and REFUSING the rest with a
+           reason — a listen address or a database path cannot change under a
+           running process, and reload says so rather than pretending.
+  schedule  Operate the scheduled automations held by the running daemon: list
+           them with their next fire time, show one with its run history,
+           pause / resume / run-now / delete. Creating an automation stays a
+           model-facing tool; this is the operations surface.
+  provider  Add or list the LLM providers in config.yaml. add prompts for
+           whatever the flags omit (and needs every value as a flag when no
+           terminal is attached, so it scripts). The API key goes into the
+           secrets backend and only a secret:// reference is written to the
+           config, so the file stays safe to copy and to attach to a report.
+           Providers are bound at boot, so a new one needs a restart.
+  acp      Speak the Agent Client Protocol as the AGENT on stdio, exposing
+           yanshi's own orchestrator to an ACP host such as Zed. Protocol
+           frames go to stdout and diagnostics to stderr, the same contract
+           the app subcommand uses. This is the reverse of the ACP CLIENT the goal
+           loop and acp_delegate use to drive somebody else's agent.
   doctor   One-time self-check of config, database, providers, ACP CLIs,
            lockfile, port, directories, and sandbox status. Prints ok/warn/fail
            per check; -json emits machine-readable output. Exit 0 all ok /
-           1 warn / 2 fail. Never prints secrets.
+           1 warn / 2 fail. Never prints secrets. -fix additionally performs a
+           closed allowlist of repairs (missing directories, missing required
+           config blocks, dead lockfiles, over-permissive file modes), backing
+           up every file it edits and refusing the file-editing ones when not
+           attached to a terminal. It never touches provider credentials and
+           never deletes a database.
   pr       Fetch a GitHub pull request into the session as context. Takes a
            PR number (run from the repo directory) or a full URL (any repo).
-  auth     Manage RFC 8628 device-flow sessions (status / logout / device).
-           Never echoes a secret. Provider api_keys are NOT managed here —
-           they live in config.yaml as a literal or a ${VAR} reference.
+  auth     Manage authenticated sessions: RFC 8628 device flow (status /
+           logout / device) and MCP OAuth (mcp-login / mcp-logout, the
+           authorization_code + PKCE flow for an enterprise MCP server; the
+           tokens go to the secrets backend and the refresh token is rotated
+           automatically). Never echoes a secret. Provider api_keys are not
+           managed here — use "yanshi provider add", which puts the key in the
+           secrets backend too.
 `
 
 func main() {
@@ -93,6 +137,28 @@ func main() {
 // logic (version flag, managed-invocation gating, subcommand dispatch, unknown
 // subcommand usage error) is unit-testable. argv includes argv[0].
 func dispatch(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	// The Landlock re-exec helper, FIRST — before --version, before -h, before
+	// isManagedInvocation. This process was spawned by yanshi's own Linux
+	// sandbox as /proc/self/exe: it must apply the ruleset to itself and then
+	// execve the real program. Landlock can only be applied by the process that
+	// will be confined, and Go cannot run code between fork and exec, so the
+	// re-exec is the only available shape.
+	//
+	// It is deliberately not a case in the switch below: the token starts with
+	// underscores so gendocs' subcommand scanner does not see it (checked by
+	// cmd/gendocs's TestSubcommandListMatchesDispatch), and it is not a
+	// subcommand — no operator should ever type it.
+	//
+	// On success RunLandlockHelper does not return; it has replaced this
+	// process image. Any return is a failure, and it must be a failure exit:
+	// falling through would run the unconfined program that the sandbox was
+	// asked to confine.
+	if len(argv) > 1 && argv[1] == sandbox.LandlockHelperArg() {
+		if err := sandbox.RunLandlockHelper(argv); err != nil {
+			fmt.Fprintf(stderr, "yanshi: %v\n", err)
+		}
+		return exitErr
+	}
 	if len(argv) == 2 && (argv[1] == "--version" || argv[1] == "-version") {
 		fmt.Fprintln(stdout, "yanshi", Version)
 		return exitOK
@@ -129,6 +195,16 @@ func dispatch(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runGoal(argv[2:])
 	case "vcs-mcp":
 		return vcsMcp(argv[2:])
+	case "init":
+		return runInit(argv[2:], stdout, stderr)
+	case "daemon":
+		return runDaemon(argv[2:], stdout, stderr)
+	case "schedule":
+		return runSchedule(argv[2:], stdout, stderr)
+	case "provider":
+		return runProvider(argv[2:], stdin, stdout, stderr)
+	case "acp":
+		return runACPServer(argv[2:], stdin, stdout)
 	case "pr":
 		if len(argv) < 3 {
 			fmt.Fprintln(stderr, "Usage: yanshi pr <PR-number>")
@@ -400,6 +476,12 @@ func runAuthSub(
 			return 1
 		}
 		return 0
+	case "mcp-login", "mcp-logout":
+		// T10: MCP OAuth lives under `auth` because it is the same kind of
+		// thing `auth device` is — a credential a human approves in a browser
+		// — and two commands for one concept diverge in their flags, their
+		// exit codes and their refusal messages.
+		return runMCPAuth(ctx, sub, cfg, fs.Args(), smgr, stdout, safeLog)
 	default:
 		safeLog.Printf("unknown auth subcommand: %s", sub)
 		return 2
@@ -445,10 +527,67 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "yanshi serve: %v\n", err)
 		return exitErr
 	}
+	// Reload diffs against the config the daemon actually booted with. A
+	// failure to re-read it here leaves the baseline nil, which the control
+	// handler treats as "no baseline" and reports every section as changed --
+	// noisy, but never a false claim that something was already applied.
+	bootedConfig, _ := config.Load(*configPath)
 
 	if *addr != "" {
 		app.Server.Addr = *addr
 		app.Addr = *addr
+	}
+
+	// O3: expose the daemon control and schedule endpoints so a second
+	// invocation (`yanshi daemon stop|reload`, `yanshi schedule …`) can reach
+	// this process. Wired here, in package main, because App exposes the
+	// assembled *http.Server rather than the mux underneath it.
+	serveCtx, cancelServe := context.WithCancel(ctx)
+	defer cancelServe()
+	app.Server.Handler = withOpsEndpoints(app.Server.Handler, opsConfig{
+		ConfigPath: *configPath,
+		Current:    bootedConfig,
+		App:        app,
+		Stop:       cancelServe,
+	})
+
+	// Claim the project lockfile. `yanshi serve` calls itself a SHARED daemon
+	// and its help text promises "other yanshi invocations in the same project
+	// discover it" — but discovery reads the lockfile, and until now only
+	// cli.Session.bootstrapOwner (the TUI's embedded backend) ever wrote one.
+	// Measured: with `serve` running and answering /healthz and /readyz with
+	// 200, `yanshi daemon status` reported "no daemon lockfile" and
+	// `yanshi schedule list` reported "no running daemon" — so O3 and O6 were
+	// structurally unreachable against a real daemon, and a TUI in the same
+	// project would silently boot a SECOND backend instead of joining this one.
+	//
+	// Losing the race is not an error: another owner is already serving this
+	// project, which is exactly the state the lockfile exists to produce. We
+	// keep serving on our own address (the operator explicitly asked for this
+	// process) but say so, and do not remove a lockfile we do not own.
+	ownsLock := false
+	if root, rerr := os.Getwd(); rerr == nil {
+		won, lerr := lockfile.Acquire(root, lockfile.Lockfile{
+			PID: os.Getpid(), Addr: app.Addr, Auth: "none", Root: root,
+		})
+		switch {
+		case lerr != nil:
+			// Soft-degrade, consistent with the rest of bootstrap: an
+			// unwritable cache dir must not stop the server from serving.
+			fmt.Fprintf(stderr, "yanshi serve: could not claim the project lockfile: %v "+
+				"(daemon/schedule subcommands will not find this process)\n", lerr)
+		case !won:
+			fmt.Fprintf(stderr, "yanshi serve: another backend already owns %s; "+
+				"serving anyway on %s, but daemon/schedule subcommands will address the owner\n",
+				root, app.Addr)
+		default:
+			ownsLock = true
+			defer func() {
+				if ownsLock {
+					_ = lockfile.Remove(root)
+				}
+			}()
+		}
 	}
 
 	errCh := make(chan error, 1)
@@ -463,9 +602,16 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) int {
 	}()
 
 	select {
-	case <-ctx.Done():
+	case <-serveCtx.Done():
 		fmt.Fprintln(stderr, "\nyanshi shutting down...")
-		if err := app.Shutdown(context.Background()); err != nil {
+		// A bounded shutdown, not context.Background(). An unbounded one lets a
+		// wedged in-flight request hold the process open forever, which is
+		// precisely the state `yanshi daemon stop` exists to escape: its own
+		// wait would then time out and report failure for a shutdown that had
+		// in fact been accepted.
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), daemonStopGrace)
+		defer cancelShutdown()
+		if err := app.Shutdown(shutdownCtx); err != nil {
 			fmt.Fprintf(stderr, "yanshi shutdown error: %v\n", err)
 		}
 		return exitOK
@@ -1087,6 +1233,10 @@ func runVCSMCP(ctx context.Context, dbPath, repoID, wtID, agent, worktreeDir str
 	defer st.Close()
 
 	v := vcs.New(st, worktreeDir)
+	// The MCP server is a short-lived subprocess spawned once per ACP agent, so
+	// it is exactly the shape that used to leave a lock file behind on every
+	// invocation. Close reclaims the ones nobody else holds.
+	defer func() { _ = v.Close() }()
 	srv := vcsmcp.New(v, repoID, wtID, agent)
 	return srv.Serve(ctx, r, w)
 }
@@ -1133,6 +1283,9 @@ func runDoctor(ctx context.Context, args []string, out, errOut io.Writer) int {
 	configPath := fs.String("config", "config.yaml", "path to configuration file")
 	asJSON := fs.Bool("json", false, "emit machine-readable JSON instead of human-readable text")
 	release := fs.Bool("release", false, "promote release-blocking warns to fails (release runbook; see docs/upgrade-guide.md)")
+	fix := fs.Bool("fix", false, "repair an allowlisted set of problems after reporting (see -fix-only for the list)")
+	fixOnly := fs.String("fix-only", "", "comma-separated subset of repairs to run (default: all allowlisted)")
+	fixDryRun := fs.Bool("fix-dry-run", false, "with -fix, report what would be repaired without touching anything")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -1144,6 +1297,62 @@ func runDoctor(ctx context.Context, args []string, out, errOut io.Writer) int {
 		}
 	} else {
 		report.RenderText(out)
+	}
+	if !*fix {
+		return report.ExitCode()
+	}
+	return runDoctorFix(ctx, *configPath, *fixOnly, *fixDryRun, *asJSON, report, out, errOut)
+}
+
+// runDoctorFix performs the repair half of `yanshi doctor -fix` and folds its
+// exit code into the check report's.
+//
+// Interactivity is probed from os.Stdin rather than taken as a flag, because
+// the gate is about who is WATCHING, not about what the caller claims: a CI
+// job that passed -interactive would defeat the whole point, while a human at
+// a terminal never has to pass anything.
+//
+// The two exit codes are combined by taking the worse of them. A repair that
+// failed must not be masked by checks that happened to pass, and checks that
+// failed must not be masked by repairs that succeeded — the second is the
+// likelier direction, since a -fix run that repaired the directories but left
+// a broken provider config would otherwise exit 0.
+func runDoctorFix(
+	ctx context.Context,
+	configPath, fixOnly string,
+	dryRun, asJSON bool,
+	report cli.DoctorReport,
+	out, errOut io.Writer,
+) int {
+	var only []cli.FixAction
+	for _, name := range strings.Split(fixOnly, ",") {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			only = append(only, cli.FixAction(trimmed))
+		}
+	}
+	fixReport, err := cli.RunDoctorFix(ctx, cli.FixOptions{
+		ConfigPath:  configPath,
+		Interactive: cli.StdinIsTerminal(os.Stdin),
+		DryRun:      dryRun,
+		Only:        only,
+	})
+	if err != nil {
+		fmt.Fprintf(errOut, "yanshi doctor -fix: %v\n", err)
+		return 2
+	}
+	if asJSON {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		if encErr := enc.Encode(fixReport); encErr != nil {
+			fmt.Fprintf(errOut, "yanshi doctor -fix: render json: %v\n", encErr)
+			return 2
+		}
+	} else {
+		fmt.Fprintln(out)
+		fixReport.RenderText(out)
+	}
+	if code := fixReport.ExitCode(); code > report.ExitCode() {
+		return code
 	}
 	return report.ExitCode()
 }

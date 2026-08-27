@@ -15,13 +15,26 @@ import (
 var jsonMarshal = json.Marshal
 
 // Message is a stored chat message belonging to a session.
+//
+// Role is one of the store.Role* constants. The four C1 fields are empty for
+// prose messages and for every row written before the durable log existed:
+//   - ToolCallID links a RoleToolResult back to its RoleToolCall.
+//   - ToolName / ToolArgs carry the call itself.
+//   - DedupKey is the row's stable identity within the session; see
+//     AppendMessages for why it exists and store.AssignDedupKeys for how it is
+//     derived. Empty means "written by the legacy single-message path", which
+//     the partial unique index deliberately exempts from deduplication.
 type Message struct {
-	ID        string
-	SessionID string
-	Seq       int
-	Role      string
-	Content   string
-	CreatedAt int64
+	ID         string
+	SessionID  string
+	Seq        int
+	Role       string
+	Content    string
+	ToolCallID string
+	ToolName   string
+	ToolArgs   string
+	DedupKey   string
+	CreatedAt  int64
 }
 
 // CreateSession inserts a new session and returns its id. The title is
@@ -145,25 +158,22 @@ func (s *Store) SessionMessageCount(sessionID string) (int, error) {
 	return count, err
 }
 
-// Messages returns a session's messages ordered by sequence.
+// Messages returns ALL of a session's messages ordered by sequence.
+//
+// Unbounded on purpose: the restore/fork/snapshot paths need the exact whole
+// session and nothing less. Anything a MODEL drives — recall, search, history
+// paging — must use MessagesPage instead, because the durable log is expected
+// to outgrow any context window that could hold it.
 func (s *Store) Messages(sessionID string) ([]Message, error) {
 	rows, err := s.DB.Query(
-		"SELECT id, session_id, seq, role, content, created_at FROM messages WHERE session_id = ? ORDER BY seq ASC",
+		"SELECT "+messageColumns+" FROM messages WHERE session_id = ? ORDER BY seq ASC",
 		sessionID,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Message
-	for rows.Next() {
-		var m Message
-		if err := rows.Scan(&m.ID, &m.SessionID, &m.Seq, &m.Role, &m.Content, &m.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, m)
-	}
-	return out, rows.Err()
+	return scanMessages(rows)
 }
 
 func newID() string {
@@ -232,7 +242,7 @@ func snapshotSessionTx(tx *sql.Tx, sessionID string) (SessionRevertSnapshot, err
 	m.Archived = archived != 0
 	m.CostKnown = costKnown != 0
 	rows, err := tx.Query(
-		`SELECT id, session_id, seq, role, content, created_at
+		`SELECT `+messageColumns+`
 		 FROM messages WHERE session_id=? ORDER BY seq ASC`, sessionID)
 	if err != nil {
 		return SessionRevertSnapshot{}, fmt.Errorf("store: snapshot messages: %w", err)
@@ -240,8 +250,7 @@ func snapshotSessionTx(tx *sql.Tx, sessionID string) (SessionRevertSnapshot, err
 	defer rows.Close()
 	for rows.Next() {
 		var msg Message
-		if err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Seq, &msg.Role,
-			&msg.Content, &msg.CreatedAt); err != nil {
+		if err := rows.Scan(scanTargets(&msg)...); err != nil {
 			return SessionRevertSnapshot{}, fmt.Errorf("store: scan snapshot message: %w", err)
 		}
 		snap.Messages = append(snap.Messages, msg)
@@ -331,9 +340,11 @@ func (s *Store) RestoreSessionAfterFailedRevert(snap SessionRevertSnapshot) erro
 				return fmt.Errorf("store: snapshot message %s belongs to %s", msg.ID, msg.SessionID)
 			}
 			if _, err := tx.Exec(
-				`INSERT INTO messages (id, session_id, seq, role, content, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?)`,
-				msg.ID, msg.SessionID, msg.Seq, msg.Role, msg.Content, msg.CreatedAt,
+				`INSERT INTO messages
+				   (id, session_id, seq, role, content, tool_call_id, tool_name, tool_args, dedup_key, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				msg.ID, msg.SessionID, msg.Seq, msg.Role, msg.Content,
+				msg.ToolCallID, msg.ToolName, msg.ToolArgs, msg.DedupKey, msg.CreatedAt,
 			); err != nil {
 				return fmt.Errorf("store: restore message %s: %w", msg.ID, err)
 			}

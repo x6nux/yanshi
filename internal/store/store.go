@@ -296,6 +296,134 @@ func (s *Store) migrate() error {
 	if err := s.addColumnIfMissing("sessions", "cost_known", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	// C1: the durable conversation log. See migrateMessageLog for why these
+	// four columns, the partial unique index and the FTS index cannot live in
+	// the `schema` string like everything else.
+	if err := s.migrateMessageLog(); err != nil {
+		return err
+	}
+	// C14: memories gain retrieval dimensions. Pre-C14 rows keep '' for both,
+	// which is exactly the value a dimension-less search matches, so old
+	// memories stay visible to an unfiltered query and invisible to a filtered
+	// one — the honest reading of "we do not know which agent wrote this".
+	if err := s.addColumnIfMissing("memories", "session_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing("memories", "agent_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if _, err := s.DB.Exec(
+		"CREATE INDEX IF NOT EXISTS idx_memories_dims ON memories(session_id, agent_id, created_at DESC)",
+	); err != nil {
+		return err
+	}
+	// C13: memory consolidation lineage. A distillation writes a merged row and
+	// marks its inputs superseded — it never deletes — so these three columns
+	// are what make the merge auditable and reversible. Pre-C13 rows default to
+	// '' / 0, i.e. "not distilled, not superseded", which is the truth about
+	// them and leaves every existing memory current.
+	if err := s.addColumnIfMissing("memories", "distilled_from", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing("memories", "superseded_by", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing("memories", "distilled_at", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	// Every default read now carries `superseded_by = ''`, which the dimension
+	// index above does not cover.
+	if _, err := s.DB.Exec(
+		"CREATE INDEX IF NOT EXISTS idx_memories_current ON memories(superseded_by, created_at DESC)",
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
+// messageLogColumns are the C1 additions to `messages`, in the order they are
+// applied. Declared as data rather than four statements so migrateMessageLog
+// and its test cannot disagree about the set.
+var messageLogColumns = []struct{ Col, Decl string }{
+	{"tool_call_id", "TEXT NOT NULL DEFAULT ''"},
+	{"tool_name", "TEXT NOT NULL DEFAULT ''"},
+	{"tool_args", "TEXT NOT NULL DEFAULT ''"},
+	{"dedup_key", "TEXT NOT NULL DEFAULT ''"},
+}
+
+// migrateMessageLog brings a pre-C1 `messages` table up to the durable-log
+// shape: four columns, a partial unique index on the dedup key, and an FTS5
+// index over content + tool_args.
+//
+// It is a Go function rather than more lines in the `schema` string because
+// ORDER MATTERS ACROSS OBJECT KINDS and `schema` is one Exec of CREATE-IF-NOT-
+// EXISTS statements that all run BEFORE addColumnIfMissing. On an existing
+// database the FTS virtual table and its triggers reference tool_args, which
+// does not exist yet at that point — and SQLite accepts both anyway (measured:
+// creating a content= virtual table and a trigger over a missing column both
+// return no error), so the failure would not surface until the first INSERT.
+//
+// The unique index is PARTIAL:
+//
+//	WHERE dedup_key <> ''
+//
+// because every row written by the legacy AppendMessage path carries the empty
+// string, including every row in databases that predate the column. A total
+// unique index would reject the second such row in any session — i.e. it would
+// turn an upgrade into an outage on the next message.
+//
+// The FTS rebuild is conditional on the index not already existing. `rebuild`
+// re-reads the whole table, which is right once on upgrade (so pre-existing
+// messages become searchable) and pure cost on every subsequent open.
+func (s *Store) migrateMessageLog() error {
+	for _, c := range messageLogColumns {
+		if err := s.addColumnIfMissing("messages", c.Col, c.Decl); err != nil {
+			return fmt.Errorf("store: migrate messages.%s: %w", c.Col, err)
+		}
+	}
+	if _, err := s.DB.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedup
+		   ON messages(session_id, dedup_key) WHERE dedup_key <> ''`,
+	); err != nil {
+		return fmt.Errorf("store: migrate messages dedup index: %w", err)
+	}
+
+	var ftsExists int
+	if err := s.DB.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='messages_fts'",
+	).Scan(&ftsExists); err != nil {
+		return fmt.Errorf("store: probe messages_fts: %w", err)
+	}
+	stmts := []string{
+		`CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+		     content, tool_args,
+		     content='messages', content_rowid='rowid',
+		     tokenize='porter unicode61')`,
+		`CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+		     INSERT INTO messages_fts(rowid, content, tool_args)
+		     VALUES (new.rowid, new.content, new.tool_args);
+		 END`,
+		`CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+		     INSERT INTO messages_fts(messages_fts, rowid, content, tool_args)
+		     VALUES('delete', old.rowid, old.content, old.tool_args);
+		 END`,
+		`CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
+		     INSERT INTO messages_fts(messages_fts, rowid, content, tool_args)
+		     VALUES('delete', old.rowid, old.content, old.tool_args);
+		     INSERT INTO messages_fts(rowid, content, tool_args)
+		     VALUES (new.rowid, new.content, new.tool_args);
+		 END`,
+	}
+	for _, q := range stmts {
+		if _, err := s.DB.Exec(q); err != nil {
+			return fmt.Errorf("store: migrate messages fts: %w", err)
+		}
+	}
+	if ftsExists == 0 {
+		if _, err := s.DB.Exec("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')"); err != nil {
+			return fmt.Errorf("store: rebuild messages fts: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -360,15 +488,59 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE TABLE IF NOT EXISTS messages (
-    id         TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    seq        INTEGER NOT NULL,
-    role       TEXT NOT NULL,
-    content    TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
+    id           TEXT PRIMARY KEY,
+    session_id   TEXT NOT NULL,
+    seq          INTEGER NOT NULL,
+    role         TEXT NOT NULL,
+    content      TEXT NOT NULL,
+    tool_call_id TEXT NOT NULL DEFAULT '',
+    tool_name    TEXT NOT NULL DEFAULT '',
+    tool_args    TEXT NOT NULL DEFAULT '',
+    dedup_key    TEXT NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL,
     FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
+
+-- S6: permission decisions. The records auditPermission already built existed
+-- only as stderr log lines, so "who approved that rm last night" was
+-- unanswerable the moment the terminal scrolled. cmd_digest is a REDACTED
+-- summary, never the raw command — see store.AppendPermissionAudit.
+CREATE TABLE IF NOT EXISTS permission_audit (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          INTEGER NOT NULL,
+    session_id  TEXT NOT NULL DEFAULT '',
+    agent_id    TEXT NOT NULL DEFAULT '',
+    tool        TEXT NOT NULL,
+    decision    TEXT NOT NULL,
+    source      TEXT NOT NULL DEFAULT '',
+    reason_code TEXT NOT NULL DEFAULT '',
+    cmd_digest  TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_permission_audit_ts ON permission_audit(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_permission_audit_session ON permission_audit(session_id, ts DESC);
+
+-- M10: per-call token usage. The sessions table's token columns are a running
+-- total overwritten every turn, so "which model burned what on which day" was
+-- destroyed by the same write that recorded it. This ledger is append-only, so
+-- any grouping can be recomputed later instead of being fixed at write time.
+-- See store.AppendUsage / store.AggregateUsage.
+CREATE TABLE IF NOT EXISTS usage_log (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                INTEGER NOT NULL,
+    provider          TEXT NOT NULL DEFAULT '',
+    model             TEXT NOT NULL,
+    session_id        TEXT NOT NULL DEFAULT '',
+    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_tokens     INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens  INTEGER NOT NULL DEFAULT 0,
+    cache_hit         INTEGER NOT NULL DEFAULT 0
+);
+-- The (ts, model) index serves the aggregate query, which always scans a time
+-- range and groups by model; the session index serves per-conversation lookup.
+CREATE INDEX IF NOT EXISTS idx_usage_log_ts_model ON usage_log(ts DESC, model);
+CREATE INDEX IF NOT EXISTS idx_usage_log_session ON usage_log(session_id, ts DESC);
 
 CREATE TABLE IF NOT EXISTS auth_metadata (
     provider   TEXT NOT NULL,

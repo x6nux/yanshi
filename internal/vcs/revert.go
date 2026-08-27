@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -109,6 +108,15 @@ func (v *VCS) materializeMainLockedWithHook(
 		targetBytes[path] = content
 	}
 
+	// V6: every mutation below goes through a confined root handle instead of a
+	// filepath.Join'd absolute path, so a working-copy directory swapped to a
+	// symlink cannot redirect a materialize out of the repo.
+	workRoot, err := openWorkRoot(r.RootPath)
+	if err != nil {
+		return err
+	}
+	defer workRoot.Close()
+
 	// D1: snapshot all tracked paths that this operation may delete/replace.
 	snapshot, err := snapshotWorkingFiles(r.RootPath, paths)
 	if err != nil {
@@ -135,8 +143,7 @@ func (v *VCS) materializeMainLockedWithHook(
 				return compensate(err)
 			}
 		}
-		abs := filepath.Join(r.RootPath, filepath.FromSlash(path))
-		if err := os.Remove(abs); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := rootRemove(workRoot, path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return compensate(fmt.Errorf("vcs: materialize: remove %s: %w", path, err))
 		}
 	}
@@ -152,12 +159,11 @@ func (v *VCS) materializeMainLockedWithHook(
 				return compensate(err)
 			}
 		}
-		abs := filepath.Join(r.RootPath, filepath.FromSlash(path))
 		mode := os.FileMode(0o644)
 		if prior := snapshot[path]; prior.exists {
 			mode = prior.mode
 		}
-		if err := replaceFile(abs, content, mode); err != nil {
+		if err := rootReplaceFile(workRoot, path, content, mode); err != nil {
 			return compensate(fmt.Errorf("vcs: materialize: replace %s: %w", path, err))
 		}
 	}
@@ -180,11 +186,26 @@ func sortedTreeUnion(a, b map[string]string) []string {
 	return paths
 }
 
+// snapshotWorkingFiles captures the pre-operation bytes/existence/mode of every
+// listed tracked path, for the compensation in materializeMainLockedWithHook and
+// RevertToSeam.
+//
+// V6: reads go through a confined root handle and use Lstat, not Stat. With
+// Stat a symlink standing where a tracked file belongs would resolve to its
+// target — the snapshot would capture an OUTSIDE file's bytes, and the
+// compensating restore would then write them back through the link. Lstat sees
+// the link itself, which is not a regular file, so such a path is rejected here
+// rather than laundered into the rollback set.
 func snapshotWorkingFiles(root string, paths []string) (map[string]workingFileSnapshot, error) {
+	workRoot, err := openWorkRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer workRoot.Close()
+
 	out := make(map[string]workingFileSnapshot, len(paths))
 	for _, path := range paths {
-		abs := filepath.Join(root, filepath.FromSlash(path))
-		info, err := os.Stat(abs)
+		info, err := rootLstat(workRoot, path)
 		if errors.Is(err, os.ErrNotExist) {
 			out[path] = workingFileSnapshot{}
 			continue
@@ -195,7 +216,7 @@ func snapshotWorkingFiles(root string, paths []string) (map[string]workingFileSn
 		if !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("vcs: materialize: %s is not a regular file", path)
 		}
-		data, err := os.ReadFile(abs)
+		data, err := rootReadFile(workRoot, path)
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
@@ -204,64 +225,42 @@ func snapshotWorkingFiles(root string, paths []string) (map[string]workingFileSn
 	return out, nil
 }
 
+// restoreWorkingFiles puts every listed path back to its snapshotted state.
+// Confined for the same reason as the forward direction: compensation is a
+// write, and a rollback that follows a symlink is as damaging as the mutation
+// it is undoing.
 func restoreWorkingFiles(
 	root string, paths []string, snapshot map[string]workingFileSnapshot,
 ) error {
+	workRoot, err := openWorkRoot(root)
+	if err != nil {
+		return err
+	}
+	defer workRoot.Close()
+
 	var errs []error
 	for _, path := range paths {
-		abs := filepath.Join(root, filepath.FromSlash(path))
 		prior := snapshot[path]
 		if prior.exists {
-			if err := replaceFile(abs, prior.data, prior.mode); err != nil {
+			if err := rootReplaceFile(workRoot, path, prior.data, prior.mode); err != nil {
 				errs = append(errs, fmt.Errorf("restore %s: %w", path, err))
 			}
 			continue
 		}
-		if err := os.Remove(abs); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := rootRemove(workRoot, path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			errs = append(errs, fmt.Errorf("remove new %s: %w", path, err))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// replaceFile uses same-directory temp+rename. POSIX rename replaces atomically;
-// Windows requires delete-existing-then-rename. The caller's snapshot
-// compensation repairs the delete→rename gap on any returned process error.
-func replaceFile(path string, data []byte, mode os.FileMode) (err error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".yanshi-tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer func() {
-		_ = tmp.Close()
-		if err != nil {
-			_ = os.Remove(tmpName)
-		}
-	}()
-	if _, err = tmp.Write(data); err != nil {
-		return err
-	}
-	if err = tmp.Chmod(mode); err != nil {
-		return err
-	}
-	if err = tmp.Close(); err != nil {
-		return err
-	}
-	if runtime.GOOS == "windows" {
-		if removeErr := os.Remove(path); removeErr != nil &&
-			!errors.Is(removeErr, os.ErrNotExist) {
-			return removeErr
-		}
-	}
-	if err = os.Rename(tmpName, path); err != nil {
-		return err
-	}
-	return nil
-}
+// replaceFile was the unconfined same-directory temp+rename writer. V6 replaced
+// every call site with rootReplaceFile (internal/vcs/rootwrite.go), which does
+// the same temp+rename through an os.Root handle so no component of the path
+// can be a symlink out of the working copy. It is deleted rather than kept
+// "just in case": a working-copy writer that does not go through the root
+// handle is exactly the shape of the bug V6 fixed, and leaving one in the
+// package invites the next call site to use it.
 
 // ResetMainHead is also a public repo-serialized write path (CB1).
 func (v *VCS) ResetMainHead(repoID, commitID string) error {
@@ -319,6 +318,19 @@ func (v *VCS) RevertToSeam(
 	prevHistoryLen, prevTurnSeq int,
 	historySnap *store.SessionRevertSnapshot,
 ) (undoSeamID string, err error) {
+	// V5: raise the working-copy freeze BEFORE taking the lane. Cooperative VCS
+	// writers now fail fast instead of queueing behind the revert and later
+	// committing content they read from a working copy that no longer exists.
+	// Non-VCS writers (a shell_run compile, a background worker) are NOT
+	// stopped by this and cannot portably be — the fingerprint comparison
+	// inside applyRestorePlanLocked is what catches those. See
+	// internal/vcs/freeze.go.
+	thaw, err := v.freezeWorkingCopy(repoID)
+	if err != nil {
+		return "", err
+	}
+	defer thaw()
+
 	unlock := v.lockRepo(repoID)
 	defer unlock()
 
@@ -381,8 +393,20 @@ func (v *VCS) RevertToSeam(
 		return "", fmt.Errorf("vcs: revert: snapshot: %w", err)
 	}
 
-	// (5) Already holding repo lane: call private core, never public wrapper.
-	if err := v.materializeMainLocked(repoID, targetCommit); err != nil {
+	// (5) Materialize through the SAME plan the preview renders (V1). This
+	// used to call materializeMainLocked, which walked the trees itself; the
+	// preview would then have been a second walker, free to drift from what the
+	// revert actually did. planRestoreLocked + applyRestorePlanLocked is one
+	// computation with two consumers — see internal/vcs/preview.go.
+	//
+	// track=false: RevertToSeam moves main_head to targetCommit below, so the
+	// working copy already matches the new head. Recording the same paths as
+	// pending edits would make the next commit a no-op delta against itself.
+	plan, err := v.planRestoreLocked(repoID, targetCommit, nil)
+	if err != nil {
+		return "", fmt.Errorf("vcs: revert: plan: %w", err)
+	}
+	if err := v.applyRestorePlanLocked(plan, false); err != nil {
 		return "", fmt.Errorf("vcs: revert: materialize: %w", err)
 	}
 	keepMaterialized := false
