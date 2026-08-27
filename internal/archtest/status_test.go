@@ -46,7 +46,12 @@ import (
 // 2026-08-27: +1 for A2/W-A-03, same package and audit, P0-3 merged with
 // P0-11 (CJK queries returned zero hits in history_search / SearchMemory /
 // memory_autorecall — the FTS5 tokenizer does not segment Chinese).
-const ledgerSize = 66
+//
+// 2026-08-28: +1 for A2/W-A-04, same package and audit, F9 (the WS restore
+// loop mapped only Role + Content and split role into just user/assistant,
+// dropping every stored ToolCallID/ToolName/ToolArgs and misclassifying
+// tool messages as user).
+const ledgerSize = 67
 
 type ledgerEntry struct {
 	ID         string `yaml:"id"`

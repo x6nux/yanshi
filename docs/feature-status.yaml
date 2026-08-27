@@ -1663,4 +1663,17 @@
     "2": "internal/store::TestSearchMemoryFindsChineseWords; internal/tools::TestAutoRecall_FindsChineseMemory"
     "3": "internal/store::TestSearchMessagesEnglishPathIsUnchanged"
     "4": "internal/store::TestSearchMessagesCJKFallbackIsBounded"
+- id: "A2/W-A-04"
+  package: "W-A"
+  verdict: done
+  title: "会话恢复保真度（工具轮不再丢失）"
+  # 子句 3 是审计没点到的那半：只恢复一半配对不会立刻出错，而是让下一次压缩的
+  # EnforceToolCallPairs fixpoint 把孤儿删掉，表现为「恢复后第一次压缩历史突然
+  # 变短」。子句 4 是护栏：纯文本会话的恢复结果必须逐字节不变。
+  acceptance: "恢复后的历史包含 tool 角色的消息；每条 tool 消息的 ToolCallID 能在同一历史中找到对应的 assistant ToolCalls；恢复后的消息序列通过 EnforceToolCallPairs 不产生删除；非工具消息的恢复结果与本改动前逐字节一致"
+  evidence:
+    "1": "internal/api/http::TestRestoreMessagesKeepsToolRole"
+    "2": "internal/api/http::TestRestoreMessagesPairsToolCallsWithResults"
+    "3": "internal/api/http::TestRestoreMessagesSurvivesPairEnforcement"
+    "4": "internal/api/http::TestRestoreMessagesPlainTurnIsUnchanged"
 

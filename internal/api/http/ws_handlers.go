@@ -83,6 +83,67 @@ func handleSessionList(s *Server, conn *wsConn) {
 	conn.write(proto.NewSessions(s.sessionInfos(sessions)))
 }
 
+// restoreMessages turns a persisted message log back into a ReAct history.
+//
+// This function exists to fix the bug it describes: the restore loop used to
+// map only Role + Content, and it split role into just user/assistant, so
+// the ToolCallID / ToolName / ToolArgs that store.Message already carries
+// were dropped on every restore, and a "tool" message was restored as if the
+// operator had typed it. After a resume the model could not see the tools it
+// had called, and read its own past tool output as user input.
+//
+// Pairing is load-bearing: the assistant side's ToolCalls and the tool
+// side's ToolCallID must both be restored, with matching IDs. Restoring only
+// one side of the pair creates an orphan that the next compaction's
+// ctxcompact.EnforceToolCallPairs fixpoint deletes — a failure with no
+// error and no log, only a history that silently got shorter after resume.
+func restoreMessages(msgs []store.Message) []*schema.Message {
+	out := make([]*schema.Message, 0, len(msgs))
+	for _, m := range msgs {
+		msg := &schema.Message{Role: restoreRole(m.Role), Content: m.Content}
+		switch msg.Role {
+		case schema.Tool:
+			msg.ToolCallID = m.ToolCallID
+			msg.ToolName = m.ToolName
+		case schema.Assistant:
+			// A stored assistant row carries a ToolCallID only when it made a
+			// tool call. The durable log holds one call per row, so this
+			// restores a single-element slice; parallel calls in the same
+			// turn are separate assistant rows in the log.
+			if m.ToolCallID != "" {
+				msg.ToolCalls = []schema.ToolCall{{
+					ID: m.ToolCallID,
+					Function: schema.FunctionCall{
+						Name:      m.ToolName,
+						Arguments: m.ToolArgs,
+					},
+				}}
+			}
+		}
+		out = append(out, msg)
+	}
+	return out
+}
+
+// restoreRole maps a persisted role string back to schema.RoleType.
+//
+// An unknown value falls to User, the fail-safe side: treating an
+// unrecognized row as user input is safer than treating it as assistant
+// (the model would believe it said that itself) or as tool (it would become
+// a pairing orphan).
+func restoreRole(role string) schema.RoleType {
+	switch role {
+	case "assistant":
+		return schema.Assistant
+	case "tool":
+		return schema.Tool
+	case "system":
+		return schema.System
+	default:
+		return schema.User
+	}
+}
+
 // handleRestoreSession replies to a restore_session frame by loading the
 // session from the store and populating the connSession.
 func handleRestoreSession(s *Server, conn *wsConn, cs *connSession, sessionID string) {
@@ -108,16 +169,13 @@ func handleRestoreSession(s *Server, conn *wsConn, cs *connSession, sessionID st
 	}
 
 	// Build history as schema.Message slice (not pointers) for the frame.
-	hist := make([]schema.Message, 0, len(msgs))
-	csHist := make([]*schema.Message, 0, len(msgs))
-	for _, m := range msgs {
-		role := schema.User
-		if m.Role == "assistant" {
-			role = schema.Assistant
-		}
-		msg := schema.Message{Role: role, Content: m.Content}
-		hist = append(hist, msg)
-		csHist = append(csHist, &msg)
+	// hist is copied from csHist so the two stay content-identical by
+	// construction, rather than the old code's independent value/pointer
+	// pair that merely happened to agree.
+	csHist := restoreMessages(msgs)
+	hist := make([]schema.Message, 0, len(csHist))
+	for _, m := range csHist {
+		hist = append(hist, *m)
 	}
 
 	// Populate the connSession with stored meta.
