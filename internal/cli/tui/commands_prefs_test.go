@@ -60,6 +60,12 @@ func TestPreferenceCommandsAreRegistered(t *testing.T) {
 //
 // ledger: D3/C15#4 冲突可诊断
 func TestKeymapDiagnosticsRendersTheConflictReport(t *testing.T) {
+	// The assertions below match the en catalog verbatim, so the locale has to
+	// be pinned: i18n resolves "auto" from LC_ALL/LANG on every bundle load, and
+	// on a zh machine tui.command.keymap.none renders in Chinese and this test
+	// fails for a reason that has nothing to do with keymap diagnostics.
+	t.Setenv("LC_ALL", "C")
+	t.Setenv("LANG", "")
 	withTempPrefs(t)
 	prev := projectBindings
 	// Two spellings of the same key: keymap reports a normalized_duplicate,

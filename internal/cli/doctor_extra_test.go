@@ -71,9 +71,6 @@ func TestExpandHomeDir_TildeAndPlain(t *testing.T) {
 	}
 }
 
-
-
-
 // TestCheckLocaleConfig_InvalidLocaleFails proves an unsupported locale is a fail.
 func TestCheckLocaleConfig_InvalidLocaleFails(t *testing.T) {
 	c := checkLocaleConfig(&config.Config{I18N: config.I18NConfig{UILocale: "klingon-piqad"}}, nil)

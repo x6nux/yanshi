@@ -919,8 +919,16 @@ func pluralCount(n int, singular string) string {
 	return fmt.Sprintf("%d %ss", n, singular)
 }
 
-// skillsEntry renders the list of installed skills (reply to /skills). CB2: the
-// entry interface requires render(width int, sp spinner.Model) string; both
+// pluralProgram renders "it" or "them" for the missing-requirements line, so
+// the sentence reads correctly for both a single missing binary and several.
+func pluralProgram(n int) string {
+	if n == 1 {
+		return "it"
+	}
+	return "them"
+}
+
+// skillsEntry renders the list of installed skills (reply to /skills). CB2: the// entry interface requires render(width int, sp spinner.Model) string; both
 // parameters are intentionally unused here but the signature must still match.
 type skillsEntry struct {
 	skills []proto.SkillInfo
@@ -946,6 +954,16 @@ func (e skillsEntry) render(_ int, _ spinner.Model) string {
 			source = "unknown"
 		}
 		fmt.Fprintf(&b, "  - %s (%s) [%s, %s]\n", sk.Name, source, enabled, trusted)
+		// T5: declared programs the backend could not find on PATH. Printed
+		// with the consequence attached, not as a bare label: a skill in this
+		// state is hidden from the model's listing and refused by skill_use,
+		// so without the sentence the row reads as a cosmetic warning about a
+		// skill the user can still see and reasonably assumes is working.
+		if len(sk.Missing) > 0 {
+			fmt.Fprintf(&b, "      unavailable: missing %s — install %s to use this skill\n",
+				strings.Join(sk.Missing, ", "),
+				pluralProgram(len(sk.Missing)))
+		}
 		// E03: name collisions. Load resolves them first-seen-wins and used to
 		// drop the loser silently, so a project skill hidden behind a
 		// user-level one of the same name was invisible — the name resolved to

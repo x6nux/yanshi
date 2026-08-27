@@ -54,10 +54,30 @@ func TestResolvePermissionMode_AllowEditsDeniesNonEditTool(t *testing.T) {
 // run because the model said ALLOW. That is the design — and it is also the
 // thing to check first if auto ever approves something it should not have,
 // because the fix then belongs in guard.AutoApprovalPrompt, not here.
+//
+// `mkfs.ext4 /dev/sda1` USED to be in this list and now lives in
+// TestResolvePermissionMode_AutoStillCannotCrossTheStructuralGate. It stopped
+// being a policy call: internal/guard/storage.go grades destruction of a raw
+// storage device as catastrophic, alongside `rm -rf /`, so it is refused
+// before the model is consulted. The move is the point — this list is "things
+// Go does not decide", and that command is now one Go does.
+//
+// `sudo rm -rf /etc` made the SAME move, for the same reason, one layer later.
+// It was here because the destructive classifier could not see past the `sudo`
+// prefix: `rm -rf /etc` graded catastrophic and `sudo rm -rf /etc` graded
+// nothing at all, so the more privileged spelling was the one the model got to
+// decide. internal/guard/prefixrunner.go closed that, and the row moved.
+//
+// Two entries migrating out of this list in two rounds is worth naming as a
+// pattern rather than a coincidence: a command sitting here does NOT mean it is
+// safe for the model to judge, only that Go currently declines to. Whenever the
+// structural tier learns to see a shape, the corresponding row belongs in the
+// other test — and the check on this one is whether every remaining row is
+// still a genuine policy call.
 func TestResolvePermissionMode_AutoHasNoStaticOverride(t *testing.T) {
 	for _, shell := range []string{
-		"sudo rm -rf /etc", "systemctl stop nginx", "git push --force",
-		"mkfs.ext4 /dev/sda1", "ssh host uptime",
+		"systemctl stop nginx", "git push --force",
+		"ssh host uptime",
 	} {
 		t.Run(shell, func(t *testing.T) {
 			yesMan := einollm.NewFakeModel([]string{"ALLOW"}, nil)
@@ -73,7 +93,7 @@ func TestResolvePermissionMode_AutoHasNoStaticOverride(t *testing.T) {
 	// ...and the same commands prompt when the model says so, which is what
 	// makes the case above a statement about the design rather than about a
 	// broken gate.
-	for _, shell := range []string{"sudo rm -rf /etc", "git push --force"} {
+	for _, shell := range []string{"systemctl stop nginx", "git push --force"} {
 		t.Run(shell+" (model asks)", func(t *testing.T) {
 			cautious := einollm.NewFakeModel([]string{"ASK"}, nil)
 			models := map[string]model.BaseChatModel{"default": cautious}
@@ -88,17 +108,44 @@ func TestResolvePermissionMode_AutoHasNoStaticOverride(t *testing.T) {
 }
 
 // TestResolvePermissionMode_AutoStillCannotCrossTheStructuralGate proves what
-// the model does NOT get to decide. Catastrophic mass deletion is refused
-// before the model is consulted, so an ALLOW cannot buy it.
+// the model does NOT get to decide. Catastrophic destruction is refused before
+// the model is consulted, so an ALLOW cannot buy it.
+//
+// Both families are listed because they reach the same tier by different
+// routes: mass DELETION through the rm-family classifier, and raw-STORAGE
+// destruction through internal/guard/storage.go. A verification run measured
+// the second one executing under a permissive profile — the tier table it was
+// checked against only ever listed deletion programs, so table and gate agreed
+// with each other while both were narrower than the threat.
+//
+// The `sudo`/`timeout` rows are the third route, and the one that mattered
+// most: internal/guard/prefixrunner.go. A later verification run measured
+// `sudo rm -rf /` reaching Allow outright while the un-prefixed spelling was
+// refused — the more privileged form was the one that got through. Every row
+// here is a shape a prior round of this same test asserted was the model's to
+// judge.
 func TestResolvePermissionMode_AutoStillCannotCrossTheStructuralGate(t *testing.T) {
-	yesMan := einollm.NewFakeModel([]string{"ALLOW"}, nil)
-	models := map[string]model.BaseChatModel{"default": yesMan}
-	cs := &connSession{perm: &permModeState{}, defaultModel: "default"}
-	cs.perm.set(guard.ModeAuto)
-	d, ok := resolvePermissionMode(context.Background(), cs, models,
-		tools.PermissionRequest{Tool: "shell_run", Shell: "rm -rf /", Workdir: "/proj"})
-	assert.True(t, ok, "catastrophic deletion resolves without asking the user")
-	assert.Equal(t, tools.PermissionDeny, d, "and it resolves to DENY, whatever the model said")
+	for _, shell := range []string{
+		"rm -rf /",
+		"mkfs.ext4 /dev/sda1",
+		"dd if=/dev/zero of=/dev/disk0",
+		`bash -c "dd if=/dev/zero of=/dev/disk0"`,
+		"sudo rm -rf /",
+		"sudo rm -rf /etc",
+		"timeout 5 rm -rf /",
+		"sudo dd if=/dev/zero of=/dev/disk0",
+	} {
+		t.Run(shell, func(t *testing.T) {
+			yesMan := einollm.NewFakeModel([]string{"ALLOW"}, nil)
+			models := map[string]model.BaseChatModel{"default": yesMan}
+			cs := &connSession{perm: &permModeState{}, defaultModel: "default"}
+			cs.perm.set(guard.ModeAuto)
+			d, ok := resolvePermissionMode(context.Background(), cs, models,
+				tools.PermissionRequest{Tool: "shell_run", Shell: shell, Workdir: "/proj"})
+			assert.True(t, ok, "catastrophic destruction resolves without asking the user")
+			assert.Equal(t, tools.PermissionDeny, d, "and it resolves to DENY, whatever the model said")
+		})
+	}
 }
 
 // TestResolvePermissionMode_AutoAsksTheModel covers stage 2: for calls the
@@ -537,18 +584,21 @@ func TestEnsureSession_CreateSessionError(t *testing.T) {
 
 func TestPersistMessages_NilStore(t *testing.T) {
 	cs := &connSession{perm: &permModeState{}}
-	cs.persistMessages(&Server{}, "user msg", "assistant msg")
+	cs.history = []*schema.Message{schema.UserMessage("user msg")}
+	cs.persistMessages(&Server{})
 }
 
 func TestPersistMessages_RecordingSuppressed(t *testing.T) {
 	cs := &connSession{perm: &permModeState{}, sessionID: "s1"}
 	cs.sideStack = []sideSnapshot{{}}
-	cs.persistMessages(&Server{}, "user", "assistant")
+	cs.history = []*schema.Message{schema.UserMessage("user")}
+	cs.persistMessages(&Server{})
 }
 
 func TestPersistMessages_AppendError(t *testing.T) {
 	cs := &connSession{perm: &permModeState{}, sessionID: "nonexistent"}
-	cs.persistMessages(&Server{}, "user", "assistant")
+	cs.history = []*schema.Message{schema.UserMessage("user")}
+	cs.persistMessages(&Server{})
 }
 
 // ---------------------------------------------------------------------------

@@ -73,6 +73,10 @@ type Config struct {
 	// SkillsCloner is an optional test seam. nil means Install's production
 	// realClone; bootstrap intentionally leaves it nil.
 	SkillsCloner skills.CloneImpl
+	// SkillsFetcher is the test seam for the HTTP direct-install path (T8),
+	// the counterpart of SkillsCloner. nil means InstallFromURL's production
+	// realFetch; bootstrap intentionally leaves it nil.
+	SkillsFetcher skills.Fetcher
 	// PriceTab is the per-model USD pricing table (COST1). When non-nil,
 	// status/turn-end code uses it to compute the per-session cost estimate;
 	// when nil, /cost renders "N/A". Populated by bootstrap via
@@ -87,6 +91,15 @@ type Config struct {
 	// WS and SSE handlers pass it to writeSSEFrame / wsConn.write so secret
 	// substrings never cross the wire. nil disables redaction (tests only).
 	Redactor *secrets.Redactor
+	// PermissionTimeout bounds how long an interactive permission prompt waits
+	// for a human, and after how many consecutive unanswered prompts the
+	// connection is treated as unattended (prompts then deny immediately
+	// instead of waiting). The zero value applies the package defaults; see
+	// PermissionTimeoutPolicy.
+	//
+	// WS-only: the SSE path installs no permission callback and already fails
+	// closed without waiting, so there is nothing there for a deadline to bound.
+	PermissionTimeout PermissionTimeoutPolicy
 }
 
 // CompactionConfig is the http-layer mirror of config.CompactionConfig. It is
@@ -142,7 +155,10 @@ type Server struct {
 	skillsDstRoot  string
 	// skillsCloner is nil in production (Install uses real git); tests inject
 	// CloneStub so handler-level WS tests are deterministic and offline.
-	skillsCloner   skills.CloneImpl
+	skillsCloner skills.CloneImpl
+	// skillsFetcher is nil in production (InstallFromURL uses real HTTP);
+	// tests inject a byte-serving stub for the same reason as skillsCloner.
+	skillsFetcher  skills.Fetcher
 	controlProfile guard.PermissionProfile
 	// workRoot is the orchestrator's project root, captured alongside
 	// controlProfile. @path attachments are resolved against it before the
@@ -156,6 +172,10 @@ type Server struct {
 	// redactor is the process-wide secrets redactor (S10). nil disables
 	// redaction (pre-D3 behaviour; tests that don't wire a Redactor).
 	redactor *secrets.Redactor
+	// permTimeout is the resolved approval-countdown + unattended-latch policy
+	// (S5). Stored resolved so every connection reads the same numbers the
+	// countdown on the wire advertises.
+	permTimeout PermissionTimeoutPolicy
 }
 
 // New creates a Server with the given configuration.
@@ -177,9 +197,11 @@ func New(cfg Config) *Server {
 		skillsLoader:   cfg.SkillsLoader,
 		skillsDstRoot:  cfg.SkillsDstRoot,
 		skillsCloner:   cfg.SkillsCloner,
+		skillsFetcher:  cfg.SkillsFetcher,
 		priceTab:       cfg.PriceTab,
 		featuresReg:    cfg.FeaturesReg,
 		redactor:       cfg.Redactor,
+		permTimeout:    cfg.PermissionTimeout.resolve(),
 	}
 }
 
@@ -194,13 +216,22 @@ func (s *Server) HandleFunc(pattern string, h func(http.ResponseWriter, *http.Re
 	s.mux.HandleFunc(pattern, h)
 }
 
-// auth wraps next with token authentication. /healthz is public. Connections
-// from loopback (127.0.0.1 / ::1) are trusted without a token — this is what
-// lets the local CLI and the in-process TUI talk to a local backend without a
-// token. Non-loopback clients still require a matching Bearer token.
+// auth wraps next with token authentication. /healthz and /readyz are public.
+// Connections from loopback (127.0.0.1 / ::1) are trusted without a token —
+// this is what lets the local CLI and the in-process TUI talk to a local
+// backend without a token. Non-loopback clients still require a matching
+// Bearer token.
+//
+// /readyz is exempted for the same reason /healthz is, and the reason is not
+// "they are both health-ish". A readiness probe is run by whatever supervises
+// the process — a container orchestrator, a load balancer, a monitoring check
+// — and none of those hold a session token. Requiring one turns every remote
+// readiness probe into a 401, which reads as "not ready" forever and takes the
+// backend out of rotation permanently. Neither endpoint discloses anything:
+// both answer with a status code and an empty body.
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/healthz/") {
+		if isPublicProbePath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -215,6 +246,22 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isPublicProbePath reports whether p is one of the two unauthenticated probe
+// endpoints (liveness and readiness), including their sub-paths.
+//
+// The sub-path prefix match is kept from the original /healthz rule: a probe
+// configured as /healthz/db must not become a 401 just because someone
+// appended a segment, and neither endpoint routes anything below itself, so a
+// sub-path is a 404 rather than a disclosure.
+func isPublicProbePath(p string) bool {
+	for _, base := range []string{"/healthz", "/readyz"} {
+		if p == base || strings.HasPrefix(p, base+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // isLoopback reports whether addr (host:port) is a loopback source.

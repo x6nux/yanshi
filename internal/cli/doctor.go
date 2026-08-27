@@ -160,6 +160,11 @@ func RunDoctor(ctx context.Context, opts DoctorOptions) DoctorReport {
 	checks = append(checks, checkMCP(cfg, cfgErr))
 	checks = append(checks, checkLSP(ctx, root))
 	checks = append(checks, checkPermissions(cfg, cfgErr))
+	// S3: is the file that decides what the agent may do sitting where the
+	// agent can write it? See doctorpolicy.go for why this is a warn and not a
+	// startup refusal.
+	checks = append(checks, checkPolicyScope(cfg, cfgErr, opts.ConfigPath, root))
+	checks = append(checks, checkPolicyFilePerms(opts.ConfigPath))
 	// D3 (S10/O03/I18N1/C15) doctor checks: surface locale, keymap, vim, and
 	// high-contrast posture. Each check returns a fixed safe string; raw error
 	// text or API key values are never echoed because the underlying

@@ -15,30 +15,32 @@ import (
 	"github.com/x6nux/yanshi/internal/proto"
 )
 
-// TestHealthz_TrueOn200AndFalseOtherwise proves healthz returns true for a 200
-// healthz and false for an unreachable host, a bad URL, and a non-200 reply.
-func TestHealthz_TrueOn200AndFalseOtherwise(t *testing.T) {
+// TestReady_TrueOn200AndFalseOtherwise proves ready returns true for a backend
+// that answers 200 and false for an unreachable host, a bad URL, and a non-200
+// reply. These servers expose only /healthz, so each case also exercises the
+// 404 fallback path.
+func TestReady_TrueOn200AndFalseOtherwise(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
-	assert.True(t, healthz(context.Background(), ts.URL))
+	assert.True(t, ready(context.Background(), ts.URL))
 
 	// Non-200.
 	mux2 := http.NewServeMux()
 	mux2.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(503) })
 	ts2 := httptest.NewServer(mux2)
 	t.Cleanup(ts2.Close)
-	assert.False(t, healthz(context.Background(), ts2.URL))
+	assert.False(t, ready(context.Background(), ts2.URL))
 
 	// Unreachable host (connection refused).
-	assert.False(t, healthz(context.Background(), "http://127.0.0.1:1"))
+	assert.False(t, ready(context.Background(), "http://127.0.0.1:1"))
 
 	// Malformed URL -> NewRequest error -> false.
-	assert.False(t, healthz(context.Background(), "http://[::1"))
+	assert.False(t, ready(context.Background(), "http://[::1"))
 
 	// Empty base URL also yields a request error path.
-	assert.False(t, healthz(context.Background(), ""))
+	assert.False(t, ready(context.Background(), ""))
 }
 
 // TestReadHeadlessInputs_NilReader proves a nil reader is rejected.

@@ -89,13 +89,18 @@ func TestSSEBackend_AdoptsCompactedHistory(t *testing.T) {
 	// verbatim) still leaves the assistant turn large enough for compaction
 	// to actually shrink tokens. SUMMARY = compaction summary; a3 = post-
 	// compact turn reply (kept short to keep the assertion focused).
-	longReply := strings.Repeat("r", 100)
+	longReply := strings.Repeat("r", 2200)
 	fm := einollm.NewFakeModel([]string{longReply, longReply, "SUMMARY", "a3"}, nil)
 	o, _ := orchestrator.New(orchestrator.Config{Model: fm})
 	s := http.New(http.Config{
 		Token: "t",
 		Compaction: http.CompactionConfig{
-			Threshold: 0.5, ContextWindow: 100, KeepRecent: 1,
+			// The window has to clear the summary INSTRUCTION's own cost. The
+			// C4 structured prompt runs ~130 tokens even in its terse form, so
+			// the previous 100-token fixture left a negative chunk budget and
+			// RunSummary refused with ErrNoWindowRoom — did=false, and no
+			// compact_chunk was ever streamed.
+			Threshold: 0.5, ContextWindow: 2000, KeepRecent: 1,
 		},
 	})
 	// Register the fake model so the server's compactionModel can pick it
@@ -108,7 +113,7 @@ func TestSSEBackend_AdoptsCompactedHistory(t *testing.T) {
 	b := newSSEBackend(ts.URL)
 	defer b.Close()
 
-	long := strings.Repeat("a", 100)
+	long := strings.Repeat("a", 2200)
 	// Sends 1 and 2 build up history below the split guard; Send 3 trips it.
 	drainKinds := func(text string) []string {
 		ch, err := b.Send(context.Background(), text)

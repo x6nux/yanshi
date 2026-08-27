@@ -24,6 +24,13 @@ const (
 	cmdMCPTool                     // MCP 工具条目（name=qualified 运行时名）
 	cmdMCPGroup                    // 分组标题（不可选）
 	cmdAtPath                      // UX4：@path 文件补全条目（name=相对路径）
+	// cmdKindSkillRun is a skill-declared command offered under `/skill run`
+	// (T11). It is a distinct kind because completion must insert the whole
+	// `/skill run <name>` line: inserting the bare name would produce input
+	// runCommand then rejects as an unknown top-level command, i.e. the
+	// palette would advertise something the parser does not accept. See
+	// commands_skillrun.go for why skills do not get top-level names.
+	cmdKindSkillRun
 )
 
 // command describes one slash command or palette entry. kind distinguishes
@@ -87,7 +94,7 @@ var commandTable = []command{
 	{name: "btw", help: "alias for /side", run: cmdSide},
 	{name: "main", help: "exit current side conversation (discard; keep is future polish)", run: cmdMain},
 	{name: "skills", help: "list installed skills", run: cmdSkills},
-	{name: "skill", help: "manage: /skill install|uninstall|trust|untrust|enable|disable|validate", run: cmdSkill},
+	{name: "skill", help: "manage: /skill run|install|uninstall|trust|untrust|enable|disable|validate", run: cmdSkill},
 	{name: "review", help: "run code review on a PR diff: /review <diff text or PR URL>", run: cmdReview},
 	// C15 + I18N1 preference commands. Handlers live in commands_prefs.go so
 	// this file stays under the GOV2 cap; only the rows belong here.
@@ -153,6 +160,13 @@ func (m *model) updatePalette() {
 		m.paletteSel = 0
 		return
 	}
+	// T11: `/skill run <name>` completes installed skill names. It is checked
+	// BEFORE the "contains a space means we are past the command name" bail
+	// below, which is exactly the branch that would otherwise close the
+	// palette on the space after `run`.
+	if m.updateSkillRunPalette(v) {
+		return
+	}
 	prefix := strings.TrimPrefix(v, "/")
 	if strings.Contains(prefix, " ") {
 		m.paletteItems = nil
@@ -201,6 +215,15 @@ func (m model) paletteBlock() string {
 			}
 		case cmdAtPath:
 			line = fmt.Sprintf("  @%-30s %s", c.name, toolMeta.Render(c.help))
+		case cmdKindSkillRun:
+			if c.disabled {
+				// Marked as well as dimmed: colour is absent on a non-TTY and
+				// in a pasted transcript, and an unusable row has to read as
+				// unusable in both.
+				line = toolMeta.Render(fmt.Sprintf("  %-16s %s  (unavailable)", c.name, c.help))
+			} else {
+				line = fmt.Sprintf("  %-16s %s", c.name, toolMeta.Render(c.help))
+			}
 		default:
 			line = fmt.Sprintf("  /%-7s  %s", c.name, toolMeta.Render(localizedHelp(m.bundle, c)))
 		}
@@ -252,6 +275,14 @@ func (m *model) paletteComplete() {
 		m.input.SetValue(sel.name)
 	case cmdMCPGroup:
 		return // not selectable
+	case cmdKindSkillRun:
+		if sel.disabled {
+			// Same rule as an MCP tool on a dead server: inserting the name
+			// would produce a line that fails for a reason the row already
+			// stated, with nothing tying the two together.
+			return
+		}
+		m.input.SetValue(skillRunPrefix + sel.name + " ")
 	default:
 		m.input.SetValue("/" + sel.name + " ")
 	}
@@ -280,6 +311,14 @@ func (m model) permissionPopup() string {
 	// Queue depth badge: shows how many prompts are stacked behind this one.
 	if n := len(m.pendingPermissions); n > 1 {
 		b.WriteString("  " + warnStyle.Render(fmt.Sprintf("(%d queued)", n-1)))
+	}
+	// Expiry countdown (S5). The server denies an unanswered prompt when its
+	// deadline passes, so the popup has to say so: without it the prompt simply
+	// vanishes and the tool call fails for no visible reason. The 5s repaint
+	// heartbeat (repaintTick) is what keeps this number moving while the user
+	// stares at it — no extra timer is armed for the popup.
+	if left := pe.secondsLeft(time.Now()); left >= 0 {
+		b.WriteString("  " + warnStyle.Render(fmt.Sprintf("%ds left", left)))
 	}
 	b.WriteString("\n")
 	if pe.reason != "" {
@@ -1198,6 +1237,41 @@ func formatSessionAck(action, id, title string) string {
 type permissionEntry struct {
 	id, tool, args, reason string
 	mandatory              bool
+	// expiresAt is when the SERVER will give up on this prompt and deny it
+	// (S5). Zero means the server advertised no deadline — an older backend,
+	// or a policy with none — and the popup then shows no countdown rather
+	// than inventing one.
+	//
+	// It is stored as a local instant computed from the timeout the frame
+	// carried, not from the server's absolute clock value: the two are the same
+	// host in the normal case, but a countdown driven by someone else's clock
+	// jumps when they disagree, and a wrong number here is worse than none.
+	expiresAt time.Time
+}
+
+// permissionDeadline converts the wire countdown into a local expiry instant.
+// now is the receipt time. A non-positive timeout yields the zero time, which
+// secondsLeft reports as "no countdown".
+func permissionDeadline(now time.Time, timeoutSecs int) time.Time {
+	if timeoutSecs <= 0 {
+		return time.Time{}
+	}
+	return now.Add(time.Duration(timeoutSecs) * time.Second)
+}
+
+// secondsLeft returns whole seconds until the prompt expires, or -1 when no
+// deadline was advertised. It clamps at 0 rather than going negative: an
+// expired prompt is one the server has already denied, and a popup counting
+// down past zero would suggest the user still has time.
+func (pe *permissionEntry) secondsLeft(now time.Time) int {
+	if pe == nil || pe.expiresAt.IsZero() {
+		return -1
+	}
+	d := pe.expiresAt.Sub(now)
+	if d <= 0 {
+		return 0
+	}
+	return int(d.Round(time.Second) / time.Second)
 }
 
 // thinkingEntry is a Claude.ai-style reasoning block. While the model streams

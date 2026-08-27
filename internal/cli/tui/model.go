@@ -161,6 +161,15 @@ type model struct {
 	// paletteMCPServers is the MCP server status snapshot used to populate
 	// palette MCP tool entries. Updated when an mcp_status frame arrives.
 	paletteMCPServers []proto.MCPServerStatus
+	// skillCommands is the installed-skill snapshot backing `/skill run`
+	// completion (T11), refreshed on every skills_list frame.
+	skillCommands []skillCommand
+	// skillsLoaded records that a skills_list frame has arrived at least once.
+	// It exists so `/skill run` can distinguish "no skills installed" from
+	// "the list has not come back yet" — the first needs `/skill install` and
+	// the second resolves itself, and one message for both sends the user to
+	// fix a problem they do not have.
+	skillsLoaded bool
 
 	// Phase-10 session state (T33), populated by status replies and shown in
 	// the header.
@@ -452,6 +461,7 @@ func (m model) Init() tea.Cmd {
 		m.spinner.Tick,
 		m.fetchInitialStatus(),
 		m.fetchInitialMCP(),
+		m.fetchInitialSkills(),
 		m.syncSavedMode(),
 		repaintTick(),
 		watchGitHead(m.rootPath),
@@ -1007,6 +1017,12 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 		// assistant chunk.
 		m.flushAssistant()
 		m.entries = append(m.entries, skillsEntry{skills: ev.Skills})
+		// T11: the same frame feeds `/skill run` completion. Capturing it here
+		// rather than in a second request keeps one source of truth for what
+		// is installed, so the palette can never offer a skill the /skills
+		// listing does not show.
+		m.skillCommands = skillCommandsFrom(ev.Skills)
+		m.skillsLoaded = true
 	case "features":
 		// OBS3: reply to /features. Render the feature flag table as a transcript
 		// block. The features frame is a control reply (see isControlReply), so it
@@ -1193,7 +1209,14 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 		// forcePromptTools, revert_turn via RequireApproval). Both must keep the
 		// popup alive across a mode switch and both must hide the sticky-allow
 		// options — the server discards a sticky answer for them anyway.
-		m.pendingPermissions = append(m.pendingPermissions, &permissionEntry{id: ev.ID, tool: ev.ToolName, args: ev.ToolArgs, reason: ev.Reason, mandatory: ev.ApprovalRequired || ev.ForcePrompt})
+		m.pendingPermissions = append(m.pendingPermissions, &permissionEntry{
+			id: ev.ID, tool: ev.ToolName, args: ev.ToolArgs, reason: ev.Reason,
+			mandatory: ev.ApprovalRequired || ev.ForcePrompt,
+			// S5: the deadline is anchored to RECEIPT time, not to the
+			// server's absolute instant, so the countdown is driven by the
+			// clock the user is watching it on.
+			expiresAt: permissionDeadline(time.Now(), ev.PermTimeoutSecs),
+		})
 		m.permSel = 0
 	case "done":
 		m.flushAssistant()

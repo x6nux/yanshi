@@ -266,6 +266,14 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 		// permTracker for why this is split across goroutines.
 		pt := newPermTracker()
 
+		// S5: the wall-clock half of interactive permissions. Prompts expire
+		// (DENIED — never allowed), and a run of expiries with no client
+		// traffic latches the connection as unattended so later prompts deny
+		// immediately instead of costing a full timeout each. It lives at
+		// connection scope because the latch must outlive the request that set
+		// it and be resettable from the reader goroutine. See unattendedState.
+		unattended := newUnattendedState(s.permTimeout)
+
 		// Per-connection approval manager: an always_allow / allow_session /
 		// allow_persistent in one turn must suppress the prompt for the
 		// identical action in later turns. Installed on the connection context
@@ -288,6 +296,14 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 			}
 		}
 		connCtx = tools.WithApprovalManager(connCtx, approvalManager, connectionSessionID)
+
+		// S9: the connection's approval rule set is created lazily on first
+		// approval and MUST be dropped here. Without this defer the
+		// orchestrator's map grows by one RuleSet per WebSocket connection for
+		// the life of the process, each holding the execpolicy rules of a
+		// conversation that ended hours ago. Deferred at the same place the
+		// approval manager is installed so the two lifetimes cannot drift.
+		defer o.ReleaseSession(connectionSessionID)
 
 		// Subagent relay: forwards lifecycle events while the connection is open.
 		// Detach on handler exit so background agents don't hold a reference to the
@@ -414,6 +430,25 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 					// error so the main loop can report it.
 					cf = proto.ClientFrame{Text: jerr.Error()}
 				}
+				// S5: ANY decoded frame proves a client is acting on this
+				// connection, so it clears the unattended latch. Placed before
+				// the type switch on purpose — a cancel, a mode switch or a new
+				// message answers "is anyone there" as well as an approval
+				// does, and a reset scoped to permission_response would leave a
+				// user who just typed a message still auto-denied on their next
+				// tool call, which reads as the server ignoring them.
+				//
+				// user_message is deliberately included even though an
+				// automated driver (the goal loop) emits it unattended. That
+				// bounds the latch's scope to WITHIN a turn rather than across
+				// the session, which is where the wedge it exists to prevent
+				// actually happens: one turn can raise many prompts, and it was
+				// a single unanswered one that used to stall the whole thing.
+				// Excluding user_message would buy an unattended loop a few
+				// timeouts per turn at the price of silently auto-denying a
+				// human's next request after they stepped away once — a
+				// correctness bug traded for a latency saving.
+				unattended.noteInteraction()
 				if cf.Type == "cancel" {
 					cancelTurn()
 					continue
@@ -491,6 +526,22 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 			if pre := attachmentPreamble(resolveAttachments(s.workRoot, s.controlProfile, cf.Attachments)); pre != "" {
 				query = pre + query
 			}
+			// C12: automatic memory recall. Anything the store holds that
+			// strongly matches this question is prepended as background, so a
+			// memory written last week is usable by a model that does not know
+			// it exists — which is the whole reason memory_search alone was not
+			// enough (see internal/tools/memory_autorecall.go).
+			//
+			// It runs HERE, after the skill prefix and attachments and before
+			// the message enters cs.history, so exactly one text is used for the
+			// model, the transcript and the durable log. Placing it later would
+			// mean the model saw something the log does not record.
+			//
+			// lastUserText is deliberately NOT changed: the recalled block is
+			// retrieved context, not something the user typed, and persisting it
+			// would make the next turn's recall run against the previous turn's
+			// injection. The session title comes from lastUserText too.
+			query = withRecalledMemories(s, &cs, query)
 			cs.history = append(cs.history, &schema.Message{Role: schema.User, Content: query})
 
 			// Auto-create the DB session on the first user message.
@@ -608,7 +659,7 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 			// (delivered by the reader goroutine). While blocked, the
 			// turn runner is paused — the reader goroutine is separate,
 			// so it can still read permission_response. Default-deny on
-			// turn cancel / disconnect / 60s timeout. When the static
+			// turn cancel / disconnect / prompt expiry. When the static
 			// profile already allows the action the callback is never
 			// invoked, so this is a no-op for ordinary tool calls. SSE
 			// installs no callback and stays on the static profile.
@@ -625,6 +676,12 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 				askMode := cs.perm.get()
 				pt.register(id, ch, req, askMode)
 				defer pt.take(id) // remove the entry on every return path
+				// S5: the deadline is computed BEFORE the frame goes out and
+				// then used for the wait, so the countdown the user watches and
+				// the instant the server gives up are the same number. Deriving
+				// them separately is how a client ends up showing "3s left" on a
+				// prompt the server abandoned a second ago.
+				deadline := time.Now().Add(unattended.timeout())
 				// req.ForcePrompt (forcePromptTools) and req.Force
 				// (RequireApproval) both mean "no auto-approval, ever".
 				// They MUST go on the wire: resolvePermissionMode already
@@ -632,15 +689,28 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 				// own auto-approve pass when the user switches to YOLO, and
 				// that pass can only honour flags it can see.
 				conn.write(proto.NewPermissionRequest(id, req.Tool, req.Args, req.Reason,
-					req.ApprovalRequired, forcePromptFlag(req)))
-				select {
-				case d := <-ch:
-					return d
-				case <-turnCtx.Done():
-					return tools.PermissionDeny
-				case <-time.After(60 * time.Second):
-					return tools.PermissionDeny
+					req.ApprovalRequired, forcePromptFlag(req)).
+					WithPermDeadline(unattended.timeout(), deadline))
+				decision, outcome := unattended.awaitDecision(turnCtx, ch, deadline)
+				// An auto-deny is announced, an answered prompt is not. The
+				// notice is the only record that distinguishes "the user
+				// refused" from "nobody was there to ask" — without it an
+				// unattended goal run produces a transcript full of denied tool
+				// calls and no stated reason for any of them.
+				if notice := permDenyNotice(outcome, req.Tool, unattended.policy()); notice != "" {
+					conn.write(proto.NewError(notice))
+					slog.WarnContext(turnCtx, "permission auto-denied",
+						"tool", req.Tool,
+						"unattended", outcome == permRefusedUnattended,
+					)
 				}
+				// S9: feed the answer back into this connection's approval rule
+				// set, so an approved `go test ./a` stops the next prompt for
+				// `go test ./b`. Shell prompts only; see recordSessionApproval
+				// for the mapping and for the scope caveat (no-op on profiles
+				// without shell.rules).
+				recordSessionApproval(o, connectionSessionID, req, decision)
+				return decision
 			})
 
 			// Mid-turn compaction progress (Task 35c): the CompactingModel
@@ -817,9 +887,9 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 			// Stop-judge auto-continue. The model ends a turn by stopping
 			// naturally; after each attempt JudgeCompletion asks the main
 			// model whether the turn fully addressed the user's request.
-			// When the judge says incomplete, the loop retries up to
-			// maxIncompleteRetries times so the model gets another chance,
-			// with the judge's reason injected as a reminder.
+			// When the judge says incomplete, the loop CONTINUES the turn up
+			// to maxIncompleteRetries times, with the judge's reason injected
+			// as a reminder.
 			//
 			// Break conditions (checked in order after each attempt):
 			//   - judge says complete → completed, break.
@@ -832,15 +902,24 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 			//   - cap exhausted → accept the last attempt's output and emit
 			//     an error marker so the user knows the turn ended abnormally.
 			//
-			// SIDE-EFFECT CAVEAT: retrying re-runs the turn, which may
-			// re-execute side-effecting tools (shell_run, fs_write) the
-			// model already called on a prior attempt. This is the inherent
-			// trade-off of the stop judge (completeness over idempotency).
-			// No de-duplication is performed (out of scope). The frames from
-			// earlier attempts have already been forwarded to the client, so
-			// the user may see duplicate streamed output across retries. The
-			// same caveat applies to schema-validation retries (A12-core): a
-			// retried turn re-runs the model and any tools it calls.
+			// SIDE EFFECTS ARE NOT REPLAYED (L5). A continued attempt resumes
+			// from what already happened rather than restarting the turn: the
+			// history it runs on is the conversation the ADK recorder captured
+			// — every assistant message AND every tool_call/tool_result pair
+			// the previous attempt produced — with the nudge appended at the
+			// tail. The model therefore sees its own completed tool calls as
+			// already done and has no reason to reissue them.
+			//
+			// This replaces a genuine data-corruption risk: the loop used to
+			// re-send the turn's STARTING history, so a model that wrote a file
+			// and then stopped early was asked to do the whole turn again, and
+			// the same fs_write ran twice. buildContinuationHistory documents
+			// the fallback for the case where no capture exists (nothing ran,
+			// so nothing can be double-run) and why that fallback is safe.
+			//
+			// What DOES repeat is streamed output: frames from earlier attempts
+			// already reached the client, so the user may see the assistant's
+			// text extended across attempts. That is display, not side effect.
 			const maxIncompleteRetries = 3
 			// retryCap covers whichever path is active: stop-judge
 			// completion (maxIncompleteRetries) or schema validation
@@ -859,6 +938,17 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 			// (no break), so breaks don't leak partial output into a
 			// subsequent iteration's reminder.
 			var prevAssistantText string
+			// prevRecorded is the ADK-captured conversation of the attempt that
+			// just ran — the base history plus every assistant message and
+			// tool_call/tool_result pair. It is what a continued attempt
+			// resumes FROM, so the model is never asked to redo a tool call it
+			// already made (L5).
+			//
+			// Captured immediately before each `continue`, not after the loop:
+			// the recorder is per-turn and overwritten by the next attempt's
+			// first model call, so reading it any later would return the new
+			// attempt's state and the continuation would resume from itself.
+			var prevRecorded []*schema.Message
 			// reminder is set on the retry path that caused the loop to
 			// continue: schema retries carry the validation error (so the
 			// model knows what to fix); stop-judge retries carry the judge's
@@ -877,40 +967,29 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 				retryReset.Store(false)
 
 				// Build the history for this attempt. Attempt 0 uses
-				// cs.history unchanged. attempt > 0 extends a COPY of
-				// cs.history with the previous attempt's assistant output
-				// (as an assistant message) plus a user reminder. The
-				// reminder differs by path: schema retries carry the
-				// validation error (so the model knows what to fix),
-				// task_end retries use the default nudge telling the model
-				// to call task_end. Without this extension every retry
-				// would re-send the SAME history, the model would reproduce
-				// the same behavior, and the retry would be useless.
+				// cs.history unchanged. attempt > 0 CONTINUES from what the
+				// previous attempt actually did (the ADK recorder's capture:
+				// assistant messages plus every tool_call/tool_result pair)
+				// with the nudge appended at the tail — it does not rewind to
+				// cs.history and re-derive the turn, which is what used to
+				// re-execute shell_run / fs_write. See
+				// buildContinuationHistory for the fallback when no capture
+				// exists and why that fallback cannot double-run anything.
 				//
-				// The copy is mandatory: Go append may share cs.history's
-				// backing array, and mutating it would leak the reminder
-				// into the persistent session history (the post-loop
-				// cs.history append would then double-count turns and
-				// corrupt multi-turn memory).
+				// The result is always a fresh slice, so cs.history never
+				// gains the synthetic nudge: leaking it would put a fabricated
+				// user turn into the persisted session and into every
+				// subsequent turn's context.
 				//
-				// prevAssistantText may be empty (e.g. a turn that only
-				// streamed tool_call frames with no assistant text); in
-				// that case the assistant echo is skipped but the reminder
-				// is still added so the model is guided toward completion.
+				// The reminder differs by path: schema retries carry the
+				// validation error (so the model knows what to fix), stop-judge
+				// retries carry the judge's reason. Without one, every attempt
+				// would re-send the same prompt and reproduce the same
+				// behaviour.
 				history := cs.history
 				if attempt > 0 {
-					extra := make([]*schema.Message, 0, 2)
-					if prevAssistantText != "" {
-						extra = append(extra, schema.AssistantMessage(prevAssistantText, nil))
-					}
-					msg := reminder
-					if msg == "" {
-						msg = "Continue and finish addressing the user's request."
-					}
-					extra = append(extra, schema.UserMessage(msg))
-					history = make([]*schema.Message, 0, len(cs.history)+len(extra))
-					history = append(history, cs.history...)
-					history = append(history, extra...)
+					history = buildContinuationHistory(cs.history, prevRecorded,
+						prevAssistantText, reminder)
 				}
 
 				iter := o.EventsWithHistoryOpts(turnCtx, history, opts)
@@ -973,6 +1052,7 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 						break
 					}
 					prevAssistantText = assistantText
+					prevRecorded = orchestrator.RecordedTurnMessages(turnCtx)
 					reminder = schemaRetryReminder(assistantText, verr)
 					continue
 				}
@@ -1001,10 +1081,13 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 					conn.write(proto.NewError(turnErr.Error()))
 					break
 				}
-				// About to retry: capture this attempt's assistant text and
-				// set the reminder to the judge's reason so the next attempt
-				// addresses it.
+				// About to continue: capture this attempt's assistant text AND
+				// the conversation it actually produced (tool calls included),
+				// then set the reminder to the judge's reason so the next
+				// attempt addresses it. The recorder must be read here, before
+				// the next attempt's first model call overwrites it.
 				prevAssistantText = assistantText
+				prevRecorded = orchestrator.RecordedTurnMessages(turnCtx)
 				reminder = orchestrator.JudgeRetryNudge(reason)
 			}
 
@@ -1050,7 +1133,7 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 				cs.history = append(cs.history, &schema.Message{Role: schema.Assistant, Content: assistantText})
 			}
 			// Persist the turn to the DB (best-effort).
-			cs.persistMessages(s, lastUserText, assistantText)
+			cs.persistMessages(s)
 			// Persist session meta (model, thinking, token counters).
 			if s.store != nil && cs.sessionID != "" && !cs.recordingSuppressed() {
 				_ = s.store.UpdateSessionMeta(cs.sessionID, cs.model, cs.thinking, cs.tokensIn, cs.tokensOut, cs.turns, cs.cachedTokens, cs.reasoningTokens, cs.billingMeta())

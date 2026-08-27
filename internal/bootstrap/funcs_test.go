@@ -13,6 +13,7 @@ import (
 
 	"github.com/x6nux/yanshi/internal/auth"
 	"github.com/x6nux/yanshi/internal/config"
+	obslog "github.com/x6nux/yanshi/internal/observe/log"
 	"github.com/x6nux/yanshi/internal/secrets"
 )
 
@@ -310,6 +311,9 @@ func TestBuildDeviceProviders_ProviderCreateError(t *testing.T) {
 // --- buildMCPManager ---
 
 func TestBuildMCPManager_TimeoutParsing(t *testing.T) {
+	// A nil secrets manager is the shape of every deployment without a
+	// credential backend: bindMCPTokenStore must warn and continue, leaving
+	// bearer/client_credentials servers working, rather than panic.
 	mgr := buildMCPManager(&config.Config{
 		MCP: config.MCPConfig{
 			Servers: map[string]*config.MCPServerConfig{
@@ -320,7 +324,7 @@ func TestBuildMCPManager_TimeoutParsing(t *testing.T) {
 				},
 			},
 		},
-	})
+	}, nil)
 	if mgr == nil {
 		t.Fatal("MCP manager must be non-nil")
 	}
@@ -330,7 +334,7 @@ func TestBuildMCPManager_TimeoutParsing(t *testing.T) {
 func TestBuildMCPManager_EmptyConfig(t *testing.T) {
 	mgr := buildMCPManager(&config.Config{
 		MCP: config.MCPConfig{Servers: map[string]*config.MCPServerConfig{}},
-	})
+	}, nil)
 	if mgr == nil {
 		t.Fatal("MCP manager must be non-nil even with empty config")
 	}
@@ -350,7 +354,7 @@ func TestBuildMCPManager_ValidTimeout(t *testing.T) {
 				},
 			},
 		},
-	})
+	}, nil)
 	if mgr == nil {
 		t.Fatal("MCP manager must be non-nil")
 	}
@@ -523,20 +527,30 @@ func TestResolveLogWriter_TUIMode(t *testing.T) {
 func TestOpenLogFile_ValidPath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "subdir", "test.log")
-	w, err := openLogFile(path)
+	w, err := openLogFile(path, config.LogConfig{})
 	if err != nil {
 		t.Fatalf("openLogFile: %v", err)
 	}
 	if w == nil {
 		t.Fatal("expected non-nil writer")
 	}
-	if f, ok := w.(*os.File); ok {
-		f.Close()
+	// O1: the log sink is a ROTATING writer, not a bare file. Asserted on the
+	// concrete type because that is the whole of the wiring: resolveLogWriter
+	// returns an io.Writer, so a regression to a plain os.OpenFile would
+	// satisfy every other assertion here and leave the log unbounded again —
+	// with nothing to say so until a disk fills.
+	rw, ok := w.(*obslog.RotatingWriter)
+	if !ok {
+		t.Fatalf("expected *obslog.RotatingWriter, got %T", w)
+	}
+	defer rw.Close()
+	if _, err := rw.Write([]byte("line\n")); err != nil {
+		t.Fatalf("write: %v", err)
 	}
 }
 
 func TestOpenLogFile_InvalidPath(t *testing.T) {
-	_, err := openLogFile(string([]byte{0}))
+	_, err := openLogFile(string([]byte{0}), config.LogConfig{})
 	if err == nil {
 		t.Fatal("expected error for invalid path")
 	}
@@ -558,7 +572,7 @@ func TestDefaultLogDir(t *testing.T) {
 
 func TestOpenLogFile_InvalidAbsPath(t *testing.T) {
 	// A path with null bytes causes filepath.Abs to fail on some platforms.
-	_, err := openLogFile(string([]byte{0}))
+	_, err := openLogFile(string([]byte{0}), config.LogConfig{})
 	if err == nil {
 		t.Log("openLogFile with null path did not error (platform-dependent)")
 	}

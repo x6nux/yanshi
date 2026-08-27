@@ -189,7 +189,7 @@ func skillInfo(sk *skills.Skill) *proto.SkillInfo {
 	}
 	return &proto.SkillInfo{
 		Name: sk.Name, Description: sk.Description, Source: sk.Source,
-		Enabled: sk.Enabled, Trusted: sk.Trusted,
+		Enabled: sk.Enabled, Trusted: sk.Trusted, Missing: sk.Missing,
 	}
 }
 
@@ -263,12 +263,17 @@ func handleListSkills(s *Server, conn *wsConn) {
 // handleInstallSkill publishes into the writable user root, then Reloads via
 // the ORIGINAL all-roots loader (FN1). Registry/list/explicit skill_use update
 // immediately; the running orchestrator's baked discovery prompt needs restart.
+//
+// Routing between the two registries (github: via git, https:// via archive
+// download) happens inside skills.InstallAny rather than here, so the WS layer
+// has one install verb and cannot come to disagree with the TUI or the docs
+// about which sources exist.
 func handleInstallSkill(s *Server, conn *wsConn, src string) {
 	if s.skillsRegistry == nil || s.skillsLoader == nil || s.skillsDstRoot == "" {
 		conn.write(proto.NewSkillAck("installed", nil, "skill install is disabled (registry/loader/dstRoot unavailable)"))
 		return
 	}
-	name, err := skills.Install(src, s.skillsDstRoot, s.skillsCloner)
+	name, err := skills.InstallAny(src, s.skillsDstRoot, s.skillsCloner, s.skillsFetcher)
 	if err != nil {
 		conn.write(proto.NewSkillAck("installed", nil, err.Error()))
 		return

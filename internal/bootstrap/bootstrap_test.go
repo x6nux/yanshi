@@ -1057,7 +1057,6 @@ func TestBuild_APIKeysAreUsedVerbatimAndRedacted(t *testing.T) {
 	}
 }
 
-
 // TestBuild_DeviceProviderInjection (structural fix #2) covers both sources:
 //
 //	(a) cfg-driven providers get NewGenericRFC8628Provider validation, and a
@@ -1245,10 +1244,6 @@ storage:
 	defer app.Shutdown(context.Background())
 	require.Nil(t, app.VisionAux)
 }
-
-
-
-
 
 // TestOTelExportIsOffUnlessBothSwitchesAgree closes the gap the old ledger note
 // named and the previous test could not: TestBuildSetsUpOTelAndShutsDown drives

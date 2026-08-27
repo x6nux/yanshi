@@ -72,12 +72,19 @@ func (s *Session) setForced(remote string, inProcess bool) {
 	s.forcedInProc = inProcess
 }
 
-// Resolve discovers a backend (lockfile + healthz) and connects; if none is
-// live, bootstraps one in-process, binds 127.0.0.1:0, writes a lockfile, and
-// marks this session as the owner. Always selects WS->SSE transport.
+// Resolve discovers a backend (lockfile + readiness probe) and connects; if
+// none is live, bootstraps one in-process, binds 127.0.0.1:0, writes a
+// lockfile, and marks this session as the owner. Always selects WS->SSE
+// transport.
 //
 // Order: forcedInProc → forcedRemote → discovery (lockfile.Read → Alive &&
-// healthz → connectRemote; stale → Remove → fall through) → bootstrapOwner.
+// ready → connectRemote; stale → Remove → fall through) → bootstrapOwner.
+//
+// The probe is READINESS, not liveness: a process that has claimed the
+// lockfile but is still assembling its store / VCS answers /healthz with 200
+// long before it can serve a turn, so a second window that trusted liveness
+// would connect to a backend that is not there yet. See cli.ready for the
+// 404 fallback that keeps this working against an older owner.
 func (s *Session) Resolve(ctx context.Context) error {
 	// 1. Forced in-process: skip discovery, always bootstrap.
 	if s.forcedInProc {
@@ -91,10 +98,10 @@ func (s *Session) Resolve(ctx context.Context) error {
 	// 3. Discovery via lockfile.
 	lf, err := lockfile.Read(s.root)
 	if err == nil {
-		if lf.Alive() && healthz(ctx, "http://"+lf.Addr) {
+		if lf.Alive() && ready(ctx, "http://"+lf.Addr) {
 			return s.connectRemote(ctx, "http://"+lf.Addr)
 		}
-		_ = lockfile.Remove(s.root) // stale: dead PID or unreachable healthz
+		_ = lockfile.Remove(s.root) // stale: dead PID or unready backend
 	}
 
 	// 4. Bootstrap in-process and become the owner.

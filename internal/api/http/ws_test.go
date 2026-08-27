@@ -191,13 +191,16 @@ func TestChatWS_AutoCompaction_StreamsChunksAndStatus(t *testing.T) {
 	// the new Plan — which pins user messages verbatim — still leaves the
 	// assistant turns large enough for compaction to actually shrink tokens),
 	// then the compaction summary, then the over-threshold turn reply.
-	longReply := strings.Repeat("a", 100)
+	longReply := strings.Repeat("a", 2200)
 	fm := einollm.NewFakeModel([]string{longReply, longReply, "COMPACTIONSUMMARY", "r3"}, nil)
 	o, err := orchestrator.New(orchestrator.Config{Model: fm})
 	require.NoError(t, err)
-	// Small budget so a handful of 100-char messages exceed it; KeepRecent=1
-	// keeps the last pair (so len > 3 triggers a split on the 3rd turn).
-	s := New(Config{Token: "t", Compaction: CompactionConfig{Threshold: 0.5, ContextWindow: 100, KeepRecent: 1}})
+	// The window has to clear the summary INSTRUCTION's own token cost. The C4
+	// structured prompt is ~130 tokens even in its terse form, so the previous
+	// 100-token fixture left a negative chunk budget and RunSummary refused
+	// with ErrNoWindowRoom — did=false, and no status{compacted} ever came.
+	// KeepRecent=1 keeps the last pair (so len > 3 triggers a split).
+	s := New(Config{Token: "t", Compaction: CompactionConfig{Threshold: 0.5, ContextWindow: 2000, KeepRecent: 1}})
 	// Register the fake model so compactionModel can pick it (the new
 	// MaybeCompact signature takes a model directly, not the orchestrator).
 	models := map[string]model.BaseChatModel{"fm": fm}
@@ -208,7 +211,7 @@ func TestChatWS_AutoCompaction_StreamsChunksAndStatus(t *testing.T) {
 	c := dial(t, "ws"+strings.TrimPrefix(ts.URL, "http")+"/api/v1/chat/ws")
 	defer c.Close()
 
-	long := strings.Repeat("u", 100) // ~33 tokens each
+	long := strings.Repeat("u", 2200) // sized against the 2000-token window above
 
 	// Turn 1: history=[u1]. Below both the threshold and the split guard.
 	require.NoError(t, c.WriteJSON(proto.NewUserMessage(long)))

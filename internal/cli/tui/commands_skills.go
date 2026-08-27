@@ -16,7 +16,9 @@ func cmdSkills(m model, _ []string) (tea.Model, tea.Cmd) {
 
 // cmdSkill is the entry for /skill <subcommand> [args]. Subcommands:
 //
+//	run <name> [text]  run an installed skill as a user turn (T11)
 //	install <source>   install a skill from github:owner/repo[/subdir]
+//	                   or from an https:// URL to a .tar.gz / .zip pack
 //	uninstall <name>   remove an installed skill
 //	trust <name>       mark a skill as reviewed (writes .trusted)
 //	untrust <name>     revoke trust
@@ -29,7 +31,7 @@ func cmdSkills(m model, _ []string) (tea.Model, tea.Cmd) {
 func cmdSkill(m model, args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
 		m.entries = append(m.entries, errorEntry{
-			text: "usage: /skill install|uninstall|trust|untrust|enable|disable ...",
+			text: "usage: /skill run|install|uninstall|trust|untrust|enable|disable ...",
 		})
 		m.refresh()
 		m.viewport.GotoBottom()
@@ -38,9 +40,16 @@ func cmdSkill(m model, args []string) (tea.Model, tea.Cmd) {
 	sub := args[0]
 	rest := args[1:]
 	switch sub {
+	case "run":
+		// T11: the one subcommand that starts a MODEL TURN rather than a
+		// backend control frame. Skill bodies live on the backend and are
+		// fetched by the model through skill_use; see commands_skillrun.go.
+		return cmdSkillRun(m, rest)
 	case "install":
 		if len(rest) == 0 {
-			m.entries = append(m.entries, errorEntry{text: "usage: /skill install github:owner/repo[/subdir]"})
+			m.entries = append(m.entries, errorEntry{
+				text: "usage: /skill install github:owner/repo[/subdir] | https://host/pack.tar.gz",
+			})
 			m.refresh()
 			m.viewport.GotoBottom()
 			return m, nil

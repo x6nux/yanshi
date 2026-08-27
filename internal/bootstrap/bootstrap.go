@@ -30,6 +30,7 @@ import (
 	"github.com/x6nux/yanshi/internal/imagestore"
 	"github.com/x6nux/yanshi/internal/instruct"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
+	"github.com/x6nux/yanshi/internal/lockfile"
 	"github.com/x6nux/yanshi/internal/lsp"
 	"github.com/x6nux/yanshi/internal/mcp"
 	"github.com/x6nux/yanshi/internal/memory"
@@ -97,6 +98,11 @@ type App struct {
 	// profile allowing nine shell tools that were never registered.
 	ToolNames []string
 
+	// Background owns tool calls moved to the background when they hit their
+	// foreground deadline (T3). Closed by Shutdown; a wedged subprocess would
+	// otherwise outlive the process that spawned it.
+	Background *tools.BackgroundManager
+
 	// ToolTimeouts maps each registered tool's name to the default execution
 	// timeout it was constructed with. Taken from the assembled registry
 	// rather than from the source, for the same reason ToolNames is: a
@@ -128,6 +134,33 @@ type App struct {
 	SubagentManager *agentregistry.Manager
 	// AgentTools carries all 12 agent tools (4 legacy + 8 lifecycle).
 	AgentTools *tools.AgentTools
+	// ToolBatch is the T12 batch tool (tool_batch). Exposed for the same
+	// reason ToolNames is: its registration is two-step (construct before the
+	// name snapshot, Bind after it), and only the assembled value can show
+	// that the second step happened. A tool_batch present in ToolNames but
+	// never bound answers every call with a wiring error — a failure the
+	// registry snapshot alone cannot distinguish from a working tool.
+	ToolBatch *tools.ToolBatchTool
+
+	// Automation is the C1 scheduled-task manager, or nil when C1 soft-degraded.
+	//
+	// Exposed because `yanshi schedule` must operate through THIS instance:
+	// Manager serialises its read-modify-write with an in-process mutex, so a
+	// second process reading the tables directly would race the scheduler's own
+	// tick and produce a listing that is only correct until the next one. The
+	// operator cannot tell that apart from a scheduler bug, which is why the
+	// CLI fails loudly against a daemon that has none rather than falling back
+	// to a direct read.
+	Automation *automation.Manager
+
+	// BootConfig is the configuration this App was assembled from.
+	//
+	// Exposed so `yanshi daemon reload` can diff a freshly loaded config
+	// against what is actually running and report only genuinely changed
+	// sections. Without a baseline the control handler must call every section
+	// changed — noisy, and it teaches operators to ignore the output.
+	BootConfig *config.Config
+
 	// LSP is the post-edit diagnostics manager (soft-degrade: may be Enabled()==false).
 	// Shutdown closes it to avoid gopls etc. sub-process leaks.
 	LSP *lsp.Manager
@@ -511,6 +544,16 @@ func Build(opts Options) (*App, error) {
 		worktreeDir,
 		cfg.VCS.Ignore...,
 	)
+	// V7: hand the VCS the platform PID-liveness probe. internal/vcs is a port
+	// package and GOV1's allowlist does not admit internal/lockfile, so the
+	// probe is INJECTED rather than imported (see internal/vcs/worktreestate.go).
+	// Without this line the orphan scan reports nothing at all — fail-safe, so
+	// nothing is ever deleted wrongly, but the whole feature is inert and the
+	// inertness is invisible: an empty orphan list is exactly what a healthy
+	// repo also returns.
+	vcsInstance.SetProcessAlive(func(pid int) bool {
+		return lockfile.Lockfile{PID: pid}.Alive()
+	})
 	vcsRepoID, vcsErr := vcsInstance.InitRepo(workRoot)
 	if vcsErr != nil {
 		obslog.WarnErr(context.Background(), "vcs initialization failed; tracking disabled", vcsErr)
@@ -578,6 +621,11 @@ func Build(opts Options) (*App, error) {
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap: build providers: %w", err)
 		}
+		// M5/M6/M7/M10/C6: decorate each provider BEFORE the failover chain is
+		// assembled. See BuildAdaptiveModels for why inside and not outside.
+		named, chain = BuildAdaptiveModels(named, chain, adaptiveDeps{
+			Cfg: cfg, Store: st, Windows: windows, Redactor: redactor,
+		})
 		rm, err := einollm.NewResilientModel(chain, einollm.ResilientConfig{})
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap: resilient model: %w", err)
@@ -585,6 +633,13 @@ func Build(opts Options) (*App, error) {
 		chatModel = rm
 		providerModels = named
 		providerWindows = windows
+		// M9: warn about a model name the provider does not list, naming the
+		// nearest matches. Non-blocking by construction — see RunPreflight.
+		// It takes context.Background() rather than the app's root context
+		// because that context does not exist yet at this point in Build, and
+		// because RunPreflight imposes its own timeout: the probe must be
+		// bounded by how long a boot may pause, not by the process lifetime.
+		RunPreflight(context.Background(), cfg)
 	}
 
 	// Tier G: multimodal map + vision aux.
@@ -619,6 +674,7 @@ func Build(opts Options) (*App, error) {
 	imageStore := imagestore.New(imagestore.Config{MaxItems: 20, MaxBytes: 100 << 20})
 
 	// Build tools.
+	backgroundMgr := BuildBackgroundManager()
 	memTools := tools.NewMemoryTools(st)
 	webTools := tools.NewWebTools(0, 0) // 0 → defaults: 1 MiB body, 30s timeout
 
@@ -628,6 +684,34 @@ func Build(opts Options) (*App, error) {
 	for _, t := range memTools.Tools() {
 		allTools = append(allTools, t)
 	}
+
+	// C2: session-history recall. The durable conversation log (C1) is written
+	// by the WS layer before compaction evicts anything; without these tools
+	// the model has no way to read it back, so eviction stays forgetting
+	// instead of becoming paging. S8 also requires the registration — an
+	// unregistered name is refused by toolreg.Check at runtime.
+	for _, t := range tools.NewHistoryTools(st).Tools() {
+		allTools = append(allTools, t)
+	}
+
+	// S6: give permission decisions a durable sink. Before this they reached
+	// slog only, so under yolo/auto "what did it approve last night" was
+	// unanswerable once the terminal scrolled. A write failure is swallowed by
+	// the sink — the archive must never be able to change a guard verdict.
+	tools.SetPermissionAuditSink(&tools.StoreAuditSink{
+		Append: func(rec tools.PermissionAuditRecord) error {
+			return st.AppendPermissionAudit(store.PermissionAudit{
+				SessionID:  rec.SessionID,
+				AgentID:    rec.AgentID,
+				Tool:       rec.Tool,
+				Decision:   rec.Decision,
+				Source:     rec.Source,
+				ReasonCode: rec.ReasonCode,
+				CmdDigest:  rec.CmdDigest,
+			})
+		},
+	})
+
 	allTools = append(allTools, webTools.Fetch, webTools.Search) // B3: web_fetch + web_search
 
 	// M7: filesystem, shell, and time tools.
@@ -664,6 +748,20 @@ func Build(opts Options) (*App, error) {
 	allTools = append(allTools, gitTools.Status, gitTools.Diff)
 	allTools = append(allTools, tools.NewTestRunTool())
 	allTools = append(allTools, tools.NewDiagnosticsTool(nil))
+
+	// T1: LSP code navigation. Registered UNCONDITIONALLY — deliberately not
+	// gated on lspMgr.Enabled(). The tools read the manager from the turn
+	// context and, when none is bound or none is enabled, return a
+	// model-facing "unavailable, use fs_search instead" RESULT rather than a
+	// Go error. Gating registration would make the schema itself differ
+	// between machines that happen to have gopls installed and machines that
+	// do not, so a model trained on the former hallucinates the names on the
+	// latter — and a hallucinated name is a worse failure than an honest
+	// "unavailable", because it aborts the turn instead of redirecting it.
+	for _, t := range tools.NewLSPNavTools().Tools() {
+		allTools = append(allTools, t)
+	}
+
 	ghTools := tools.NewGitHubTools(nil)
 	allTools = append(allTools, ghTools.PRContext, ghTools.Comment, ghTools.Approve, ghTools.Merge)
 	allTools = append(allTools, agentTools.Review)
@@ -758,6 +856,15 @@ func Build(opts Options) (*App, error) {
 		return nil, fmt.Errorf("bootstrap: load skills: %w", err)
 	}
 	allTools = append(allTools, tools.NewSkillUseTool(registry))
+	// T7: let the model record a reusable procedure as a skill. Nil when there
+	// is no user skills dir to write into (see BuildSkillWriteTool).
+	if swt := BuildSkillWriteTool(userSkillsDir, registry, skillLoader); swt != nil {
+		allTools = append(allTools, swt)
+	}
+	// T3 background query surface, C7 milestones, T9 ACP delegation.
+	allTools = append(allTools, BuildBackgroundTools()...)
+	allTools = append(allTools, BuildMilestoneTools(st)...)
+	allTools = append(allTools, BuildACPDelegateTool(cfg.Storage.SQLitePath, worktreeDir))
 
 	// MEM1: remember tool — appends to user/project memory file. Paths are
 	// fixed at construction so the model cannot redirect writes via args.
@@ -774,7 +881,10 @@ func Build(opts Options) (*App, error) {
 		return nil, fmt.Errorf("bootstrap: work store: %w", err)
 	}
 	dispRef := &work.DispatcherRef{}
-	workMgr := work.NewManager(workStore, dispRef, work.ArtifactPolicy{})
+	// L7: WithVerifyRoot makes file_exists checklist conditions resolvable. An
+	// empty root leaves every such condition unsatisfied by design, which
+	// blocks task completion rather than silently passing it.
+	workMgr := work.NewManager(workStore, dispRef, work.ArtifactPolicy{}).WithVerifyRoot(workRoot)
 
 	// The broker, the root context and the dispatcher binding are created HERE
 	// rather than next to srv.TaskAPI further down, because C1's A2Adapter
@@ -846,7 +956,7 @@ func Build(opts Options) (*App, error) {
 	// A3: MCP connection manager — soft-degrade: empty config yields a disabled
 	// manager (Enabled()==false), tools.NewMCPTools returns nil, the orchestrator
 	// skips context injection. Startup failures log to stderr but do not block.
-	mcpManager := buildMCPManager(cfg)
+	mcpManager := buildMCPManager(cfg, secretMgr)
 	// The loop runs for the process lifetime; its cancel is invoked from
 	// App.Shutdown alongside MCP.Shutdown.
 	mcpHealthCancel := mcpManager.StartHealthLoop(context.Background())
@@ -864,13 +974,23 @@ func Build(opts Options) (*App, error) {
 	// C1: automation_* (8) + agent_batch + rlm_query. Soft-degrade like VCS
 	// and plugins — a C1 build failure disables the capability and logs, it
 	// does not reject the boot. See wireC1 for the warning/error split.
-	c1Tools, c1Scheduler, c1Err := wireC1(
+	c1Tools, c1Scheduler, c1Manager, c1Err := wireC1(
 		ctx, *cfg, st, workMgr, broker, subagentManager, providerModels, fakeChatModel)
 	if c1Err != nil {
 		fmt.Fprintf(os.Stderr,
 			"yanshi: C1 disabled (automation/agent_batch/rlm_query unavailable): %v\n", c1Err)
 	}
 	allTools = append(allTools, c1Tools...)
+
+	// T12: tool_batch dispatches over the assembled registry, so it is a
+	// member of the list it reads. Construction must happen BEFORE the
+	// toolNames snapshot (so GOV5 sees the name and the profile entry is not
+	// a phantom) and Bind must happen AFTER it (so the table is complete).
+	// Splitting the two is what makes the cycle resolvable; an unbound
+	// tool_batch refuses every call with a wiring error rather than reporting
+	// eight phantom "unknown tool" failures that read like a model mistake.
+	batchTool := tools.NewToolBatchTool()
+	allTools = append(allTools, batchTool.Tool)
 
 	// GOV5 seam: snapshot the registered tool names while allTools is still
 	// in scope. Info() is pure metadata on every tool implementation, so the
@@ -899,6 +1019,12 @@ func Build(opts Options) (*App, error) {
 			toolTimeouts[info.Name] = ct.DefaultTimeout()
 		}
 	}
+
+	// T12 second half: the registry is final, so tool_batch can now see every
+	// tool it may be asked to dispatch to. Bind is placed after the snapshot
+	// loop and not inside it because a partially-built table would silently
+	// make whichever tools were appended later unreachable from a batch.
+	batchTool.Bind(allTools)
 
 	// Authorize the conditionally-registered tools that this boot actually
 	// got. Derived from the snapshot above, so the allow list cannot name a
@@ -1069,6 +1195,10 @@ func Build(opts Options) (*App, error) {
 		TaskManager:     workMgr,
 		SubagentManager: subagentManager,
 		AvailableModels: availableModels,
+		// T3: the process-wide background manager. Bound into every turn ctx
+		// by bindExecutionContext; without it the three background_* tools
+		// find no manager and offload has no registry to record runs in.
+		Background: backgroundMgr,
 		// Security posture (Task 10/13/21). These MUST be part of the literal:
 		// orchestrator.New takes Config by value and the package has no
 		// setters, so assigning them after New writes to a discarded copy and
@@ -1091,6 +1221,29 @@ func Build(opts Options) (*App, error) {
 			CooldownDuration:  parseCooldownDuration(cfg.Compaction.CooldownDuration),
 			HardForceFraction: cfg.Compaction.HardForceFraction,
 			ProviderWindows:   providerWindows,
+			// C11: mid-turn compaction redacts its summarizer input. The
+			// pre-turn/SSE path is wired separately via httpCfg.Redactor;
+			// without this line only that half would be covered and secrets
+			// captured between ReAct iterations would still reach the
+			// summarizer. redactor is documented always non-nil here, so the
+			// typed-nil-in-interface hazard that compactionOptions guards
+			// against does not apply.
+			Redactor: redactor,
+		},
+		// L1-L4 per-turn stop conditions. Like Compaction above, this MUST be
+		// part of the literal: orchestrator.New takes Config by value, so a
+		// post-New assignment writes to a discarded copy and every gate would
+		// silently never install. The zero config installs nothing, so an
+		// operator who never writes a loop_guard block keeps today's behaviour.
+		LoopGuard: orchestrator.LoopGuardConfig{
+			RepetitionEnabled:   cfg.LoopGuard.RepetitionEnabled,
+			RepetitionWindow:    cfg.LoopGuard.RepetitionWindow,
+			RepetitionWarnAfter: cfg.LoopGuard.RepetitionWarnAfter,
+			RepetitionStopAfter: cfg.LoopGuard.RepetitionStopAfter,
+			MaxToolCalls:        cfg.LoopGuard.MaxToolCalls,
+			PerToolCalls:        cfg.LoopGuard.PerToolCalls,
+			TurnTimeout:         cfg.LoopGuard.TurnTimeout,
+			MaxTurnTokens:       cfg.LoopGuard.MaxTurnTokens,
 		},
 	}
 	// Wire the main scope (Agent="orchestrator") so chat/orchestrator edits
@@ -1204,6 +1357,23 @@ func Build(opts Options) (*App, error) {
 		w.WriteHeader(http.StatusOK)
 	})
 
+	// O7 readiness. Registered HERE — after every subsystem above has been
+	// assembled and immediately before Build returns — because the ONLY thing
+	// that distinguishes it from /healthz is its position in this function.
+	//
+	// /healthz answers "a process is listening". That is true from the moment
+	// net/http binds, which is before the store is migrated, before the VCS
+	// repo is initialised, and before the tool registry is populated. A
+	// discovery client that trusts it adopts a backend that will fail the
+	// first real request, and a supervisor that trusts it routes traffic
+	// there. /readyz answers the question they were both actually asking:
+	// "did Build finish". Moving this registration earlier does not weaken the
+	// endpoint, it deletes it — the route would answer 200 for exactly the
+	// window it exists to report on.
+	srv.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
 	addr := cfg.Server.HTTPAddr
 	if addr == "" {
 		addr = "127.0.0.1:8080"
@@ -1245,6 +1415,9 @@ func Build(opts Options) (*App, error) {
 		NetworkPolicy:   networkPolicy,
 		SubagentManager: subagentManager,
 		AgentTools:      agentTools,
+		ToolBatch:       batchTool,
+		Automation:      c1Manager,
+		BootConfig:      cfg,
 		LSP:             lspMgr,
 		MCP:             mcpManager,
 		C1Scheduler:     c1Scheduler,
@@ -1257,6 +1430,7 @@ func Build(opts Options) (*App, error) {
 		Redactor:        redactor,
 		Auth:            authMgr,
 		LogPath:         logPath,
+		Background:      backgroundMgr,
 		cancel:          cancel,
 	}, nil
 }
@@ -1270,7 +1444,7 @@ func Build(opts Options) (*App, error) {
 // surfaced on the status frame so the TUI /logs command tails the right file.
 func resolveLogWriter(cfg config.LogConfig, tuiMode bool) (io.Writer, string) {
 	if cfg.File != "" {
-		w, err := openLogFile(cfg.File)
+		w, err := openLogFile(cfg.File, cfg)
 		if err == nil {
 			return w, cfg.File
 		}
@@ -1283,7 +1457,7 @@ func resolveLogWriter(cfg config.LogConfig, tuiMode bool) (io.Writer, string) {
 		if err == nil {
 			path := filepath.Join(dir, "yanshi.log")
 			if mkErr := os.MkdirAll(dir, 0755); mkErr == nil {
-				if w, oErr := openLogFile(path); oErr == nil {
+				if w, oErr := openLogFile(path, cfg); oErr == nil {
 					return w, path
 				}
 			}
@@ -1292,22 +1466,31 @@ func resolveLogWriter(cfg config.LogConfig, tuiMode bool) (io.Writer, string) {
 	return nil, ""
 }
 
-// openLogFile opens path for append, creating it (and its parent dir) if
-// missing. The caller owns closing; bootstrap never closes the log file so
-// it lives for the process lifetime and flushes naturally on exit.
-func openLogFile(path string) (io.Writer, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return nil, err
+// openLogFile opens path as a SIZE-ROTATING append log, creating it (and its
+// parent dir) if missing. The caller owns closing; bootstrap never closes the
+// log file so it lives for the process lifetime.
+//
+// It returns obslog.RotatingWriter rather than a bare *os.File because the
+// long-running shape here is `yanshi serve` on a workstation or a container
+// with no logrotate(8) in front of it, where an unbounded structured log is
+// the process's only unbounded resource — it fills the volume and takes the
+// database down with it. Rotation is failure-tolerant by construction: a
+// rotate that cannot rename keeps writing to the handle it already holds and
+// records the error on RotateError(), so retention degrading never becomes
+// logging failing.
+func openLogFile(path string, cfg config.LogConfig) (io.Writer, error) {
+	// MaxSizeMB is megabytes on the operator's side and bytes here. A
+	// negative value is passed through as negative rather than clamped: that
+	// is RotateConfig's "never rotate by size" sentinel, and clamping it to
+	// zero would silently mean "use the default" — the opposite request.
+	maxBytes := int64(cfg.MaxSizeMB)
+	if maxBytes > 0 {
+		maxBytes *= 1 << 20
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(abs, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return nil, err
-	}
-	return f, nil
+	return obslog.NewRotatingWriter(path, obslog.RotateConfig{
+		MaxBytes:   maxBytes,
+		MaxBackups: cfg.MaxBackups,
+	})
 }
 
 // defaultLogDir returns the canonical yanshi log directory under the OS
@@ -1484,6 +1667,44 @@ func (a *App) Shutdown(ctx context.Context) error {
 			errs = append(errs, err)
 		}
 	}
+	// T3: cancel every offloaded tool run and wait, bounded. This runs BEFORE
+	// the store close because a run finishing here still writes its result,
+	// and spillIfTooLong touches the work root on the way out. A false return
+	// means at least one subprocess outlived the close grace period — worth
+	// reporting, but never a reason to block process exit.
+	if a.Background != nil && !a.Background.Close() {
+		errs = append(errs, errors.New("bootstrap: background runs did not unwind within the close grace period"))
+	}
+	// Close the sandbox AFTER the graceful background unwind above, because on
+	// Windows this call IS the kill: the Job Object is created with
+	// KILL_ON_JOB_CLOSE, so closing the handle terminates every process still
+	// assigned to it — including double-forked grandchildren that no pid we
+	// hold can reach. Doing it first would shoot runs that were about to finish
+	// writing their results.
+	//
+	// It was previously not called at all. On darwin and Linux that is
+	// invisible (Seatbelt and bwrap hold no such handle and Close is a no-op),
+	// which is exactly why it stayed missing: the one platform where it matters
+	// is the one nobody runs during development. The kernel does close the
+	// handle at process exit either way, so this is about deterministic reaping
+	// at shutdown rather than about whether the children eventually die.
+	if a.Sandbox != nil {
+		if cerr := a.Sandbox.Close(); cerr != nil {
+			errs = append(errs, cerr)
+		}
+	}
+	// Release the autoVCS cross-process lock-file descriptors and reclaim the
+	// files nobody else holds. Before this, every process that opened a repo
+	// left one zero-byte file in the user's cache directory forever; a
+	// measurement on this repository found 27,968 of them. It runs BEFORE the
+	// store close only for tidiness — the lock files are independent of the
+	// database — and its error is reported rather than swallowed so a cache
+	// directory that cannot be tidied is visible.
+	if a.VCS != nil {
+		if cerr := a.VCS.Close(); cerr != nil {
+			errs = append(errs, cerr)
+		}
+	}
 	if a.Store != nil {
 		if cerr := a.Store.Close(); cerr != nil {
 			errs = append(errs, cerr)
@@ -1596,43 +1817,4 @@ func lspLanguages(overrides map[string]config.LanguageServerSpec) map[string]lsp
 // table -- Build already holds the one that matters.
 func LSPLanguagesForTest(overrides map[string]config.LanguageServerSpec) map[string]lsp.LanguageServer {
 	return lspLanguages(overrides)
-}
-
-func buildMCPManager(cfg *config.Config) *mcp.Manager {
-	servers := make(map[string]*mcp.ServerConfig, len(cfg.MCP.Servers))
-	for name, sc := range cfg.MCP.Servers {
-		d := 30 * time.Second
-		if sc.Timeout != "" {
-			if parsed, err := time.ParseDuration(sc.Timeout); err == nil {
-				d = parsed
-			}
-		}
-		transport := mcp.TransportStdio
-		if sc.Transport == "http" {
-			transport = mcp.TransportHTTP
-		}
-		servers[name] = &mcp.ServerConfig{
-			Name: name, Enabled: sc.Enabled, Transport: transport,
-			Command: sc.Command, Args: sc.Args, Env: sc.Env,
-			URL: sc.URL, Bearer: sc.Bearer, Timeout: d, Reconnect: sc.Reconnect,
-		}
-	}
-	mgr := mcp.NewManager(servers)
-	for _, st := range mgr.StartAll(context.Background()) {
-		if st.Status == mcp.StatusFailed {
-			slog.Warn("mcp server failed to start", "server", st.Name, "error", st.Error)
-		}
-	}
-	// internal/mcp/health.go shipped complete, tested, and with ZERO non-test
-	// callers: SetHealthConfig, StartHealthLoop and CallToolRetry were all
-	// written and never wired. A server that died after StartAll stayed Ready
-	// forever, its tools kept being advertised to the model, and every call to
-	// them failed with no reconnect attempted.
-	//
-	// GOV4 does not catch this shape. It asserts bootstrap's exported Build*
-	// functions are reachable from Build, and buildMCPManager IS reachable;
-	// what went unwired is a method on a component the composition root
-	// already holds -- one level below where the gate looks.
-	mgr.SetHealthConfig(mcp.DefaultHealthConfig())
-	return mgr
 }

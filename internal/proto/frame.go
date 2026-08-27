@@ -295,7 +295,7 @@ type SeamInfo struct {
 //	done                (turn complete)
 //	models              Names (available provider names; reply to list_models)
 //	status              Model, Thinking, TokensIn, TokensOut, CachedTokens, ReasoningTokens, Turns, ContextWindow (reply to get_status / sent after control frames)
-//	permission_request  ID, ToolName, ToolArgs, Reason (asks the user to approve a tool call)
+//	permission_request  ID, ToolName, ToolArgs, Reason, PermTimeoutSecs, PermDeadlineUnix (asks the user to approve a tool call, with the expiry countdown)
 //	mcp_list            Servers (MCP server names)
 //	compact_chunk       Text (one delta of an in-progress compaction summary — Task 35b)
 //	history_replaced    Messages (compacted history for SSE clients to adopt — Task 35b)
@@ -349,8 +349,21 @@ type ServerFrame struct {
 	// counts. Without it on the wire the server's refusal to auto-resolve is
 	// silently undone client-side (the TUI's autoResolvePendingByMode answered
 	// "allow" on the user's behalf the moment they switched to YOLO).
-	ForcePrompt bool     `json:"force_prompt,omitempty"` // permission_request: cannot be auto-approved or pre-approved
-	Servers     []string `json:"servers,omitempty"`      // mcp_list
+	ForcePrompt bool `json:"force_prompt,omitempty"` // permission_request: cannot be auto-approved or pre-approved
+	// PermTimeoutSecs / PermDeadlineUnix carry the approval countdown on a
+	// permission_request. The server does not wait forever: an unanswered
+	// prompt expires and is DENIED (fail-closed), so a client that renders no
+	// countdown leaves the user watching a prompt that silently dies.
+	//
+	// Both are sent because neither alone is sufficient. PermDeadlineUnix is
+	// the server's absolute wall clock, which is exact for the same-host case
+	// this transport is built for but drifts when the two clocks disagree;
+	// PermTimeoutSecs is the duration granted, from which a client can compute
+	// its own deadline off its own receipt time. A renderer should prefer the
+	// duration and use the absolute value only to reconcile.
+	PermTimeoutSecs  int      `json:"perm_timeout_secs,omitempty"`  // permission_request
+	PermDeadlineUnix int64    `json:"perm_deadline_unix,omitempty"` // permission_request
+	Servers          []string `json:"servers,omitempty"`            // mcp_list
 	// Compaction fields (Task 35b). Compacted is set on a status frame after a
 	// compaction completed; TokensBefore/After carry the estimated token counts
 	// across the compaction so the client can render "compacted (X → Y tokens)".
@@ -596,6 +609,37 @@ func NewStatusWithMode(model, thinking string, in, out, turns, contextWindow int
 // happily answer on the user's behalf.
 func NewPermissionRequest(id, tool, args, reason string, approvalRequired, forcePrompt bool) ServerFrame {
 	return ServerFrame{Type: "permission_request", ID: id, ToolName: tool, ToolArgs: args, Reason: reason, ApprovalRequired: approvalRequired, ForcePrompt: forcePrompt}
+}
+
+// WithPermDeadline stamps an approval countdown onto a permission_request
+// frame: timeout is the whole budget granted to the user, deadline the server's
+// absolute expiry instant. It is a builder method rather than two more
+// positional parameters on NewPermissionRequest because the countdown is
+// transport policy (only the WebSocket handler runs an expiry clock — the SSE
+// path installs no callback and fails closed immediately), while the
+// constructor states the request itself.
+//
+// A non-positive timeout or a zero deadline leaves the frame untouched, so a
+// caller with no expiry policy does not have to branch.
+//
+// The seconds field rounds UP, so any positive budget advertises at least 1.
+// Truncating instead is what a first cut did, and a sub-second policy then
+// produced PermTimeoutSecs=0 — which omitempty drops, so the frame looked
+// exactly like one from a server with no expiry at all while a clock was in
+// fact running. Over-stating a 300ms budget as 1s is a rendering imprecision;
+// under-stating it as "no deadline" is a lie about whether the prompt will
+// die. PermDeadlineUnix carries the unrounded instant for callers that care.
+func (f ServerFrame) WithPermDeadline(timeout time.Duration, deadline time.Time) ServerFrame {
+	if timeout <= 0 || deadline.IsZero() {
+		return f
+	}
+	secs := int(timeout / time.Second)
+	if timeout%time.Second != 0 {
+		secs++
+	}
+	f.PermTimeoutSecs = secs
+	f.PermDeadlineUnix = deadline.Unix()
+	return f
 }
 
 // NewCompactChunk builds a compact_chunk frame carrying one delta of an
@@ -905,6 +949,17 @@ type SkillInfo struct {
 	// nothing in the product could say so. Empty on the common no-conflict
 	// path, and omitempty keeps it off the wire there.
 	Shadowed []ShadowedSkill `json:"shadowed,omitempty"`
+	// Missing names the programs this skill declared in its SKILL.md
+	// `requires:` block that are not on the backend's PATH (T5). It is carried
+	// on the wire rather than recomputed client-side because the probe is of
+	// the BACKEND's PATH: in remote mode the TUI runs on a different machine
+	// entirely, and a client-side exec.LookPath would answer a question nobody
+	// asked. Empty on the common everything-present path.
+	//
+	// A skill with a non-empty Missing is withheld from the model's skill
+	// listing and refused by skill_use, so the /skills row is the one place a
+	// user can find out WHY a skill they installed is not being used.
+	Missing []string `json:"missing,omitempty"`
 }
 
 // ShadowedSkill is one skill that lost a name collision. The directory is

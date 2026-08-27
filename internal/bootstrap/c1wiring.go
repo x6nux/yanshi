@@ -17,12 +17,17 @@ import (
 
 // wireC1 assembles the C1 capability — the eight automation_* tools,
 // agent_batch, and (when a cheap provider is available) rlm_query — and
-// returns the tools to register plus the scheduler goroutine that
-// App.Shutdown must Wait() on.
+// returns the tools to register, the scheduler goroutine that App.Shutdown
+// must Wait() on, and the automation Manager that `yanshi schedule` operates
+// through.
 //
-// This lives in its own file rather than in bootstrap.go because bootstrap.go
-// is close to the 1000-code-line GOV2 ceiling and lineExceptions is an empty,
-// removal-only map: there is no exemption left to spend on it.
+// This lives in its own file rather than in bootstrap.go because C1 assembly
+// is a self-contained responsibility with its own soft-degrade policy, not
+// because of a line count — the GOV2 ceiling is 5000 now and bootstrap.go is
+// nowhere near it. The original reason recorded here (bootstrap.go being within
+// a few lines of a 1000-line cap) stopped being true when the cap was raised,
+// and a stale justification invites the next person to undo a split that is
+// still correct on its merits.
 //
 // Division of responsibility for failures, mirroring the VCS/LSP/plugin paths:
 //
@@ -45,11 +50,11 @@ func wireC1(
 	registryMgr *registry.Manager,
 	models map[string]model.BaseChatModel,
 	fakeModel model.BaseChatModel,
-) ([]orchestrator.BaseTool, *automation.Scheduler, error) {
+) ([]orchestrator.BaseTool, *automation.Scheduler, *automation.Manager, error) {
 	adapter := NewA2Adapter(workMgr, broker, db)
 	comps, err := BuildC1(parent, cfg, db, adapter, registryMgr, models, fakeModel)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	for _, w := range comps.Warnings {
 		fmt.Fprintf(os.Stderr, "yanshi: %s\n", w)
@@ -76,8 +81,18 @@ func wireC1(
 	}
 
 	var scheduler *automation.Scheduler
+	var manager *automation.Manager
 	if comps.Automation != nil {
 		scheduler = comps.Automation.Scheduler
+		// The manager is returned alongside the scheduler because `yanshi
+		// schedule` needs the SAME instance: Manager serialises its
+		// read-modify-write with an in-process mutex, so a second reader
+		// talking to the database directly would race the scheduler's own
+		// tick. Until this was returned, the ops endpoint had no way to reach
+		// it and every `yanshi schedule` call answered "this daemon was
+		// assembled without the automation scheduler" — a true sentence about
+		// a wiring gap, which reads exactly like a legitimate build variant.
+		manager = comps.Automation.Manager
 	}
-	return out, scheduler, nil
+	return out, scheduler, manager, nil
 }

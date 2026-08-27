@@ -17,6 +17,14 @@ type Config struct {
 	WorkRoot  string
 	Languages map[string]LanguageServer
 	Timeout   time.Duration // 诊断等待上限,0 用默认 800ms
+	// NavTimeout bounds one navigation request (definition/references/hover/
+	// symbols). 0 uses DefaultNavTimeout.
+	//
+	// It is separate from Timeout because the two have opposite failure costs:
+	// an expired diagnostics wait costs the model an empty garnish, while an
+	// expired navigation request is indistinguishable from "that symbol does
+	// not exist". See DefaultNavTimeout.
+	NavTimeout time.Duration
 	// Dial 非空时,clientFor 用它取代 exec.Command 拿到 server 的读写端 + closer。
 	// 生产留 nil(走 exec);测试注入 net.Pipe 一端连 fake server(评审 #20)。
 	Dial func(lang string) (io.Reader, io.Writer, func() error, error)

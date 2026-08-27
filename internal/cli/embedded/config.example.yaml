@@ -1,0 +1,449 @@
+# schema_version is the config schema generation. Omit on existing configs to
+# keep them forward-compatible (treated as the current version). yanshi rejects
+# a value higher than it supports — upgrade yanshi first. See
+# docs/upgrade-guide.md.
+schema_version: 1
+server:
+  http_addr: "127.0.0.1:8080"
+  task_addr: "127.0.0.1:8081"
+storage:
+  sqlite_path: "yanshi.db"
+  wal_max_open_conns: 4       # F1: read pool size (1=legacy serial, 4+ for concurrent reads)
+  busy_timeout_ms: 5000       # F1: cross-process lock retry window (ms)
+  wal_auto_checkpoint: 1000   # F1: WAL auto-checkpoint page threshold
+token: "change-me"
+llm:
+  providers:
+    # context_window is OPTIONAL. Omit it and yanshi resolves the window from a
+    # built-in model catalog (routing prefixes like "openrouter/anthropic/...",
+    # "us.anthropic....", "azure/..." are penetrated). Set it to override the
+    # catalog — for a 1M-context beta, a custom deployment, or a local runtime
+    # whose num_ctx you raised. Unknown models fall back to a deliberately
+    # CONSERVATIVE default: guessing the window too high means compaction never
+    # fires and the request dies, guessing low only costs one extra compaction.
+    #
+    # max_tokens / temperature / top_p are OPTIONAL generation parameters.
+    # Omitting a key leaves the provider's own default in force; setting one to
+    # 0 is a real setting (temperature: 0 for deterministic judge calls) and is
+    # sent to the API. Raise max_tokens when the model must emit whole files —
+    # the built-in 4096 default truncates long patches.
+    - name: "openai"
+      kind: "openai"
+      model: "gpt-4o"
+      api_key: "${OPENAI_API_KEY}"
+      context_window: 128000      # this model's token window; compaction sizes against it
+      # max_tokens: 32000         # cap per response; omit to keep the 4096 default
+      # temperature: 0.2          # omit to keep the provider default; 0 is a valid setting
+      # top_p: 0.95               # tune this OR temperature, not both
+      # multimodal: true          # native image input; auto-selects as vision auxiliary (Tier G)
+    - name: "claude"
+      kind: "anthropic"
+      model: "claude-opus-4-8"
+      api_key: "${ANTHROPIC_API_KEY}"
+      context_window: 200000
+      multimodal: true            # native image input (Tier G)
+    # Local runtimes (Ollama / LM Studio / vLLM / llama.cpp) are auto-detected
+    # from base_url (loopback, RFC1918, *.local) or from kind, and are NEVER
+    # given a cloud model's window: a local serve truncates at its own num_ctx
+    # and silently drops the prompt head rather than rejecting the request.
+    # Set `local: true` when a local runtime sits behind an unrecognisable
+    # hostname, or `local: false` to opt a LAN-hosted gateway back into the
+    # cloud catalog.
+    # - name: "ollama"
+    #   kind: "openai"
+    #   model: "qwen3-coder:30b"
+    #   api_key: "ollama"
+    #   base_url: "http://127.0.0.1:11434/v1"
+    #   context_window: 32768     # set this to whatever num_ctx you launched with
+
+  # M7 出站限速。qpm: 0（默认）= 不限速，所以省略整块与升级前行为完全一致。
+  # burst 是空闲后允许的连发数；留 0 由 qpm 推导并封顶，免得 `qpm: 600` 变成
+  # 「允许 600 个并发」——那不是任何意义上的限速。单个 provider 可以用它自己的
+  # qpm / burst 覆盖本默认值（限速桶按 model 建，共用一个全局值会让快的那个
+  # provider 被慢的那个拖住）。
+  # rate_limit:
+  #   qpm: 60
+  #   burst: 5
+
+  # M6 工具 JSON Schema 改写策略：
+  #   auto   （默认）只对**确实拒绝过** schema 的模型改写。每个模型每进程付一次
+  #          失败请求的代价，只在需要的地方付改写的有损代价（无法合并的
+  #          oneOf/allOf 会退化成更宽的类型）。
+  #   always 对所有模型都改写。只跟严格网关说话、且不想付那一次 400 时用。
+  #   never  从不改写。用于判断改写器本身是不是问题所在。
+  # 写错的值归一化成 auto 而不是拒绝启动——安全行为同时也是默认行为。
+  # sanitize_tool_schemas: auto
+
+  # M9 启动期模型名自检：向每个 provider 要模型目录，名字不在目录里就告警并给出
+  # 最接近的几个候选。默认开启，且**永远不会**让启动失败或阻塞——所以这个开关
+  # 只有一个用途：让离线/气隙部署不必在每次启动时等那几个必然超时的探测。
+  # preflight: false
+
+agents:
+  - name: "orchestrator"
+    type: "local"
+    chain: ["openai", "claude"]
+    profile: "orchestrator"
+    capabilities: []
+skills:
+  builtin_dir: ./skills
+  user_dir: ~/.yanshi/skills
+  plugin_dir: ~/.yanshi/plugins
+vcs:
+  ignore: ["coverage", ".cache"]          # extra ignore patterns (merged with defaults)
+  worktree_dir: "~/.yanshi/worktrees"   # where worktree working dirs live
+compaction:
+  threshold: 0.8        # compact when est. tokens >= threshold * context_window
+  keep_recent: 4        # trailing messages kept verbatim mid-turn; PAIRS pre-turn
+                        # ⚠️ the unit differs by path: pre-turn (WS//compact/SSE) reads
+                        # this as PAIRS and pins 2x this many messages, mid-turn reads it
+                        # as MESSAGES and halves it into pairs. 4 pins 8 messages on one
+                        # path and 4 on the other. See docs/compaction.md.
+  context_window: 256000 # fallback window when a provider has no context_window
+  model: ""             # optional fast summary model; empty = active session model
+                        # ⚠️ honoured PRE-TURN ONLY (WS//compact/SSE). Mid-turn
+                        # compaction always summarises with the active session model,
+                        # so setting this does not reduce mid-turn cost. See
+                        # docs/compaction.md.
+  chunk_threshold: 0.9  # carry-style chunking when summary input >= chunk_threshold * window
+                        # ⚠️ CURRENTLY INERT: all three call sites hardcode 0.9
+                        # (internal/llm/eino/compacting.go, internal/ctxcompact/compact.go x2).
+                        # Setting another value changes nothing. See docs/compaction.md.
+  cooldown_fraction: 0.05    # token-growth cooldown: 5% of window (MID-TURN ONLY)
+  cooldown_duration: ""      # time-based cooldown (optional, e.g. "3s"); "" disables (MID-TURN ONLY)
+  hard_force_fraction: 0.95  # force-compact near window edge even inside cooldown (MID-TURN ONLY)
+# Per-turn agent stop conditions. EVERY field is off when zero and Load applies
+# no defaults here — deliberately unlike `compaction:` above. A stop condition
+# that turned itself on with a guessed default would cut turns short on an
+# installation that never asked for a limit, and that failure looks exactly like
+# the model giving up. The whole block below is therefore a no-op as written;
+# uncomment the values you actually want.
+loop_guard:
+  repetition_enabled: false  # detect identical tool calls (name + arguments) repeating
+  repetition_window: 0       # sliding window in tool calls; 0 = loopguard's default
+  repetition_warn_after: 0   # consecutive repeats before the turn is nudged; 0 = default
+  repetition_stop_after: 0   # consecutive repeats before the turn ends; 0 = default
+                             # the three above are inert unless repetition_enabled is true.
+                             # they are left at 0 rather than spelled out because the real
+                             # values live in internal/loopguard (DefaultRepetitionWindow,
+                             # DefaultRepetitionStages) — copying them here would create a
+                             # second source of truth that drifts silently.
+  max_tool_calls: 0          # total tool calls allowed in one turn; 0 = unlimited
+  per_tool_calls: {}         # per-name caps, e.g. {shell_run: 20, agent_spawn: 3}
+                             # a budget refusal reaches the model as a tool RESULT,
+                             # not a Go error, so the turn can adapt instead of aborting
+  turn_timeout: 0s           # wall-clock limit per turn, checked at ReAct iteration
+                             # boundaries only — it bounds the loop, not a single tool
+                             # call. Duration string ("90s", "5m"); 0s = unlimited
+  max_turn_tokens: 0         # accumulated token spend per turn; 0 = unlimited
+# Permission profiles. The MAP KEY is what selects a profile — there is no
+# indirection through the `agents:` block above (agents[].profile has no
+# production reader today; setting it changes nothing and warns about nothing).
+# Two keys are actually looked up:
+#   * "orchestrator" — the chat/TUI orchestrator reads this exact key. Absent,
+#     it falls back to the built-in DefaultOrchestratorProfile.
+#   * <worker name>  — the task API serves GET /api/v1/agent/profile?worker=<n>
+#     by looking up key <n>. So the "coding" profile below reaches a worker
+#     started as `agent-worker -name coding`, and nothing else. Unknown workers
+#     get a fail-closed deny-all profile.
+#
+# shell.policy accepts exactly four values: "" (== "allowlist"), "allowlist",
+# "deny", "denylist". There is NO "allow" — an unrestricted shell is a
+# "denylist" with no patterns. An unrecognized value is rejected at startup,
+# because at runtime it would be a STRUCTURAL HardDeny that not even yolo/auto
+# can override.
+#
+# That startup check only looks at profiles whose shell.rules is EMPTY. A rules
+# table takes the shell dimension over completely and the policy switch is
+# never reached, so a stale policy sitting next to rules is inert and is left
+# alone rather than made into a boot failure. Empty the rules table and the
+# same value becomes live — and is rejected on that reload.
+profiles:
+  orchestrator:
+    fs: { read: ["**"], write: [] }
+    tools: { allow: ["*"] }
+    # Empty or absent mcp.allow denies every mcp_<server>_<tool>, even though
+    # tools.allow contains "*". Opt in per trusted server/tool.
+    mcp: { allow: [] }
+    shell: { policy: "deny" }
+    net: { allow: false }
+  # A coding agent: all tools, one MCP server, read/write the repo, an
+  # allowlisted shell, and outbound network. Reached only by a task worker
+  # named "coding" (see the note above the profiles block) — rename the key to
+  # "orchestrator" if you want the chat session to run under it.
+  coding:
+    tools: { allow: ["*"] }
+    # Example: permit only tools discovered from server "github".
+    mcp:   { allow: ["mcp_github_*"] }
+    fs:    { read: ["**"], write: ["**"] }
+    shell: { policy: "allowlist", patterns: ["git *", "go test", "go test *", "cargo test", "cargo test *", "npm test", "npm test *"] }
+    net:   { allow: true, hosts: ["*"] }
+    #
+    # shell.rules is the structured alternative to policy/patterns above. When
+    # rules is non-empty it REPLACES them: checkShell evaluates the rules and
+    # returns, so policy and patterns are not consulted at all. Rules match on
+    # program + argument prefix and can deny on a specific flag, which glob
+    # patterns cannot express.
+    #
+    # Left commented out on purpose. A live deny rule refuses commands that
+    # work today, and an operator should choose that deliberately.
+    #
+    # rules:
+    #   # Order matters: the first matching rule wins, so put denials first.
+    #   - id: no-real-e2e
+    #     program: go
+    #     prefix: ["test"]
+    #     deny_flags: ["-tags=e2e_real"]
+    #     decision: deny
+    #     justification: "real E2E spawns external agent CLIs; require explicit approval"
+    #   - id: go-test
+    #     program: go
+    #     prefix: ["test"]
+    #     decision: allow
+    #     justification: "ordinary Go tests are safe"
+    #
+    # deny_flags matches the flag however it is spelled -- `-tags=e2e_real`,
+    # `-tags e2e_real`, `--tags=e2e_real` and `-tags=e2e_real,other` all hit
+    # the rule above. Verified by
+    # internal/execpolicy::TestDenyFlagsSurviveFlagSpelling, which also pins
+    # that the rule does NOT reach an ordinary `go test ./...`.
+
+# Security (A1). Sandbox / network / shell posture. Defaults (applied when the
+# block is absent): sandbox on + read-only tier + network default-deny + shell
+# 1 MiB output cap + 30 min idle timeout. Override per deployment below.
+security:
+  sandbox:
+    enabled: true              # *bool semantics: omit = default (true); false = opt-out
+    tier: read-only            # read-only | workspace-write | full-access
+    network_deny: true         # Phase 0 hint for the future OS-isolation backend
+  # ⚠️ Scope: these four keys govern yanshi's OWN in-process HTTP (web_fetch /
+  # web_search) AND, since W5, subprocesses launched through the shell/secproc
+  # factories — bootstrap starts a real loopback proxy and publishes its
+  # address as http_proxy/https_proxy (both cases). `allow` therefore does
+  # something now: a widened list genuinely admits egress for shell_run /
+  # run_tests / github_* / git_*.
+  #
+  # (This block used to say the proxy "is written but never started" and that a
+  # dead port http://127.0.0.1:0 was published unconditionally. That was true
+  # before W5 and is no longer; if you are copying an older config.yaml, the
+  # symptom "Failed to connect to 127.0.0.1 port 0" is gone.)
+  #
+  # What it still does NOT cover — the boundary has not moved as far as it
+  # looks (see docs/adr/0014-managed-proxy-is-the-only-governed-egress-channel.md):
+  #   * Only proxy-AWARE clients obey it (curl, gh, git-over-HTTP, go mod
+  #     download, npm). A subprocess that ignores http_proxy and calls
+  #     connect() directly, or opens a raw socket, is unaffected. Blocking
+  #     those needs OS-level enforcement (seccomp / Seatbelt / AppContainer)
+  #     and is S1 work. Treat the guard layer as the containment boundary.
+  #   * ACP agent CLIs, stdio MCP servers and LSP servers are spawned with the
+  #     host environment: they get NO managed proxy and DO inherit whatever
+  #     http_proxy/https_proxy the operator's shell had. If that upstream proxy
+  #     is untrusted, those subprocesses route through it.
+  #   * If the proxy fails to start, bootstrap prints
+  #     "subprocess egress is UNFILTERED" on stderr and continues.
+  network:
+    default: deny              # deny-wins posture (see the scope note above)
+    allow: []                  # glob host patterns admitted (e.g. "*.github.com")
+    deny: []                   # glob host patterns always rejected (deny wins)
+    allow_private: false       # admit loopback / RFC1918 / link-local (SSRF risk)
+  shell:
+    max_output_bytes: 1048576  # ring buffer cap per session (1 MiB)
+    idle_timeout: 30m          # session reaped after this idle window
+
+# Batch C1: RLM fan-out, automation scheduling, and agent batch jobs.
+# RLM needs a cheap provider (cost_class: cheap) for rlm_query fan-out.
+batch:
+  rlm_model: cheap-provider         # provider name (must have cost_class: cheap)
+  rlm_max_concurrency: 16           # <= 16, clamped otherwise
+  automation_tick_seconds: 60       # scheduler interval, default 60s if <= 0
+
+# Batch B1: 受管子代理运行时。agent_start / analysis / workflow 拉起的子代理都
+# 由同一个 registry manager 统一记账,所以并发上限是全局共享的。
+subagents:
+  limit: 10                            # 同时在跑的子代理上限,合法范围 1..20,0/缺省 = 10
+  persistence_path: ~/.yanshi/subagents.v1.json  # 子代理登记表落盘位置(跨会话恢复)
+
+# B2-LSP1: post-edit diagnostics. When enabled, yanshi queries language servers
+# after fs_write/fs_edit/apply_patch and feeds the diagnostics back to the model.
+# Servers not found in PATH are silently skipped (soft-degrade).
+lsp:
+  enabled: true            # edit后自动查语言服务器诊断回喂模型;false 关闭
+  diag_timeout: "800ms"    # 单文件诊断等待上限
+  languages: {}            # 覆盖/扩展语言表;空 = 用内置 {go: gopls, python: pyright-langserver}
+
+# MCP (A3): MCP server connections. Tools are registered as
+# mcp_<server>_<tool> and are deny-by-default (see profiles.mcp.allow).
+# Transport can be "http" (streamable HTTP) or "stdio" (subprocess).
+mcp:
+  servers: {}
+  # my-tools:
+  #   enabled: true
+  #   transport: http
+  #   url: "http://localhost:3000/mcp"
+  #   bearer: "${MCP_BEARER_TOKEN}"
+  #   timeout: 30s
+  #
+  # OAuth 2.0（仅 HTTP transport）。省略 oauth 块 = 沿用 bearer（或不鉴权），
+  # 与本字段出现之前的行为逐字节一致。
+  #
+  # grant: client_credentials（默认，省略即此值）—— 机器对机器，无浏览器环节，
+  # 首次调用前自动取 token：
+  # my-oauth-tools:
+  #   enabled: true
+  #   transport: http
+  #   url: "https://mcp.example.com"
+  #   oauth:
+  #     token_url: "https://auth.example.com/oauth/token"
+  #     client_id: "${MCP_CLIENT_ID}"
+  #     client_secret: "${MCP_CLIENT_SECRET}"
+  #     scopes: [read, write]
+  #
+  # grant: authorization_code —— 浏览器 + PKCE，需要额外的 authorization_url，
+  # 并且必须先跑一次 `yanshi auth mcp-login <server>` 建立授权；token 之后自动
+  # 刷新，无需再交互。刷新 token 存在 secrets 后端里（见下方 secrets 块），
+  # 没配 secrets 后端时这一档会在启动时打印告警并禁用，其余 server 不受影响：
+  # my-user-tools:
+  #   enabled: true
+  #   transport: http
+  #   url: "https://mcp.example.com"
+  #   oauth:
+  #     grant: authorization_code
+  #     token_url: "https://auth.example.com/oauth/token"
+  #     authorization_url: "https://auth.example.com/oauth/authorize"
+  #     client_id: "${MCP_CLIENT_ID}"
+  #     scopes: [read, write]
+
+# MEM1 用户 memory:跨会话偏好笔记,启动时作为独立 suffix 注入 system prompt。
+# 默认关闭;显式 enabled: true 后才会加载与注入。
+# memory:
+#   enabled: true
+#   user_path: ~/.yanshi/memory.md      # 默认值
+#   project_path: .yanshi/memory.md     # 默认值,相对工作区根
+#   max_size: 32768                     # 32 KiB,0 = 默认
+
+# C4 可观测性:结构化日志 + OpenTelemetry。日志默认 info/json 走 stderr;OTel
+# 默认关闭,开启时 sample_ratio 缺省 1.0(全量采样)。
+observability:
+  log:
+    level: info              # debug | info | warn | error
+    format: json             # json | text
+    # file: "/var/log/yanshi.log"  # 固定日志文件路径;空 = stderr(或 TUI 模式下的默认文件)
+    # TUI 启动时默认把日志重定向到 ~/.yanshi/logs/yanshi.log,避免污染 alt-screen 渲染。
+    # stderr_in_tui: true          # 调试 TUI 时设为 true,让日志留在 stderr
+    # O1 日志轮转。日志文件是长跑进程唯一无界的资源——前面没有 logrotate(8) 的
+    # 部署（工作站上的 `yanshi serve`、容器）会被它撑满卷，进而把数据库一起拖垮。
+    # max_size_mb: 10        # 活动文件轮转阈值；0 = 默认 10 MiB；负数 = 从不轮转
+    # max_backups: 5         # 保留几代；0 = 默认 5；负数 = 一代不留（轮转即截断）
+  otel:
+    enabled: false
+    endpoint: "http://127.0.0.1:4318"  # OTLP/HTTP
+    service_name: yanshi
+    sample_ratio: 1.0
+
+# OBS3 特性注册表。Strict=true 时未知 flag 名直接 error(防拼写);overrides
+# 是 operator 种子值,覆盖 registry 内置 default。
+#
+# 内置的三个 flag（权威定义在 internal/features/features.go 的 DefaultSpecs；
+# 名字与这里的对账由 internal/features::TestExampleConfigNamesEveryFlag 守住，
+# 加了新 flag 而没写进这里会让测试变红):
+#
+#   observe.slog_trace_id   stable, 默认 true
+#     日志与 OTel span 上的关联 ID(trace_id / session_id / turn_id)。
+#     关掉是**整轮**关掉:编排器本来会给缺 ID 的一轮补铸一套,所以关闭走的是
+#     单向抑制,下游工具审计以外的地方都不会再冒出 ID。
+#     注意 tools.ThreadLink 是另一条通道,喂的是工具审计记录,不受此开关影响 ——
+#     把一个日志偏好变成问责缺口不是这个开关该干的事。
+#
+#   observe.otel_export     experimental, 默认 false
+#     与上面 observability.otel.enabled 取**与**:两个都为真才导出。
+#
+#   observe.cost_in_status  beta, 默认 true
+#     status 帧、会话列表(/stats 渲染它)与 session_restored 上的 USD 成本字段。
+#     关掉只影响**显示**:入库的账本照记,开回来能看到完整历史。
+#
+# 运行时还能用 TUI 的 /features 临时切换(不落盘)。
+features:
+  strict: false
+  overrides: {}
+
+# COST1 模型单价表覆盖。键为模型名,值为 USD per million tokens。
+# bootstrap 把这些转成 einollm.ModelPricing 注入价格表;未知模型走 N/A。
+# COST1 每模型价格。内置表**只覆盖 claude-***（来源见 internal/llm/eino/pricing.go
+# 的包头，含抓取日期）。用别家 provider 时 /status 与 /stats 的成本会显示 N/A ——
+# 那是诚实的"没有价格数据"，不是坏了。
+#
+# 为什么不内置别家的价目：一张写死在代码里的第三方价目表会安静地腐烂，而腐烂后的
+# 症状比 N/A 糟得多 —— 用户看到一个像模像样的数字，没有任何迹象表明它是按去年的
+# 单价算的。N/A 会让人去查，错的数字不会。
+#
+# 单价按**每百万 token** 计。cache_hit_per_m 省略则回落到 input_per_m。
+# pricing:
+#   overrides:
+#     gpt-4o:
+#       input_per_m: 2.50
+#       cache_hit_per_m: 1.25
+#       output_per_m: 10.00
+pricing:
+  overrides: {}
+
+# D3-S10 安全凭据存储。**只存 RFC 8628 device-flow token** —— provider 的
+# api_key 不走这里(见上方 llm.providers,写字面量或 ${VAR})。
+# auto = 优先 OS keyring (zalando/go-keyring),失败软降级到加密文件
+# (Argon2id + AES-256-GCM);keyring = 强制 OS keyring;file = 强制加密文件;
+# none = 关闭密钥存储(device flow 无法保存 token)。
+# file_path 为空 => os.UserConfigDir()/yanshi/secrets.enc
+# passphrase_env 为空且 backend=auto 时,fileStore 被跳过。
+secrets:
+  backend: auto
+  file_path: ""
+  passphrase_env: YANSHI_PASSPHRASE
+
+# D3-O03 provider-neutral 认证。只配置 RFC 8628 device authorization;启用
+# 前必须用 HTTPS-only 的 device_url/token_url(loopback HTTP 仅供 e2e 测试)。
+# api_key 不在这里管 —— 它在 llm.providers[].api_key 里写死或用 ${VAR}。
+auth:
+  device:
+    device_auth_enabled: false
+    client_id: ""
+    providers: []
+
+# D3-I18N1 国际化。ui_locale=auto 时每次启动按 LC_ALL > LANG 重算(不持久化);
+# output_language 独立控制模型回复语言,空字符串表示不注入 system-prompt 指令。
+i18n:
+  ui_locale: auto
+  output_language: ""
+
+# D3-C15 TUI 键位/主题偏好。bindings 的方向固定为 key: action(与 keymap
+# 内置 builder 一致)。
+#
+# 接线现状(照抄本文件建 config.yaml 前先读这段):本块四个键当前只被
+# `yanshi doctor` 消费(internal/cli/doctor.go 的 checkKeymapConfig /
+# checkHighContrastConfig),TUI 不读它们——主题与键位都是硬编码默认值;
+# 没有任何运行时命令回写它们,也不加载任何 preferences 文件。也就是说:
+# 这几个键会被校验和体检报告,但不会被应用。vim/high_contrast 是 *bool,
+# 省略与显式 false 在配置层可区分,但目前两者的运行时效果相同(都不生效)。
+# 权威说明见 internal/config.TUIConfig 的 doc 注释。
+tui:
+  keymap: default
+  theme: default
+  vim: false
+  high_contrast: false
+  # UX4：@path 补全的「最近用过的文件排前面」排序。默认 true。
+  # 设为 false **同时**停掉排序与记录 —— 关掉这个功能的人要的不是一份安静
+  # 一点的文件使用画像。存储位置与 prefs.json 同目录（全局单文件），项目隔离
+  # 是读取时按 work root 过滤，不是每项目一个文件。
+  frecency: true
+  bindings:
+    enter: send
+    ctrl+enter: newline
+
+# 自驱动目标循环（yanshi goal）的预算。两项都是 0 = 不限。
+#
+# 显式传入的命令行 flag 永远优先，包括显式传 0 —— `-max-tokens 0` 是「这一次
+# 解除限制」的意思，不会被这里的值悄悄恢复。
+#
+# max_tokens 只能约束真的上报 token 用量的 agent。不上报的 agent 是无法计量的
+# （goalloop 检测到会打 warn），对它生效的是 max_iterations。
+goal:
+  max_tokens: 0
+  max_iterations: 0

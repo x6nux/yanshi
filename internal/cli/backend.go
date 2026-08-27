@@ -28,10 +28,15 @@ type StreamEvent struct {
 
 	// Phase-10 control-reply fields (T32-T35). Populated by toStreamEvent for
 	// the corresponding server frames; zero for ordinary turn events.
-	ID               string                  // permission_request: id to echo back in the response
-	Reason           string                  // permission_request: why the static profile would deny
-	ApprovalRequired bool                    // permission_request: must be explicit one-shot allow/deny (no always_allow)
-	ForcePrompt      bool                    // permission_request: force-prompt / destructive — cannot be auto-approved or pre-approved
+	ID               string // permission_request: id to echo back in the response
+	Reason           string // permission_request: why the static profile would deny
+	ApprovalRequired bool   // permission_request: must be explicit one-shot allow/deny (no always_allow)
+	ForcePrompt      bool   // permission_request: force-prompt / destructive — cannot be auto-approved or pre-approved
+	// PermTimeoutSecs / PermDeadlineUnix are the approval countdown (S5). The
+	// server denies an unanswered prompt when the deadline passes, so a client
+	// that ignores these renders a prompt with no hint that it is dying.
+	PermTimeoutSecs  int                     // permission_request: seconds granted to answer
+	PermDeadlineUnix int64                   // permission_request: server's absolute expiry instant
 	Model            string                  // status / session_restored: active model name
 	Thinking         string                  // status / session_restored: active reasoning effort
 	PermMode         string                  // status: permission mode (default|allow-edits|yolo|auto)

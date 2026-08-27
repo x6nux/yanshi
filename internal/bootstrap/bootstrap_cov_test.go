@@ -18,14 +18,14 @@ import (
 func TestCov_OpenLogFile_MkdirAllError(t *testing.T) {
 	tmp := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(tmp, "blocked"), []byte("x"), 0o644))
-	_, err := openLogFile(filepath.Join(tmp, "blocked", "app.log"))
+	_, err := openLogFile(filepath.Join(tmp, "blocked", "app.log"), config.LogConfig{})
 	assert.Error(t, err)
 }
 
 // TestCov_OpenLogFile_OpenFileError covers the OpenFile-error branch (the path
 // is a directory, which cannot be opened for append).
 func TestCov_OpenLogFile_OpenFileError(t *testing.T) {
-	_, err := openLogFile(t.TempDir())
+	_, err := openLogFile(t.TempDir(), config.LogConfig{})
 	assert.Error(t, err)
 }
 

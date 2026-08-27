@@ -42,6 +42,22 @@ type Client struct {
 	editGen map[string]int64        // uri → 编辑 generation(notifyChange 递增;Task 4)
 	pubGen  map[string]int64        // uri → 已收到 publication 的 generation(readLoop storeDiags 盖写;Task 4)
 
+	// opened / docVer track the LSP document lifecycle, which is NOT the same
+	// thing as editGen. A server must be told didOpen exactly once per uri and
+	// then didChange for every subsequent version; sending a second didOpen is
+	// a protocol violation that gopls answers by dropping the document.
+	//
+	// Navigation (nav.go) opens files it only READS, so the open set had to be
+	// separated from the edit counter: reusing editGen for both would make
+	// merely looking at a file count as an edit, and Diagnostics would then
+	// block waiting for a publication that a read never triggers.
+	//
+	// docVer is the wire version, monotonic per uri across opens and changes.
+	// editGen records the docVer of the last real EDIT, so a publication whose
+	// version reaches editGen is known to describe the current text.
+	opened map[string]bool  // uri → didOpen already sent
+	docVer map[string]int64 // uri → last version number put on the wire
+
 	done      chan struct{} // readLoop 退出时 close(让 request 的 select 解除阻塞)
 	closeOnce sync.Once
 }
@@ -57,6 +73,8 @@ func newClient(r io.Reader, w io.Writer, timeout time.Duration) *Client {
 		diags:   map[string][]Diagnostic{},
 		editGen: map[string]int64{},
 		pubGen:  map[string]int64{},
+		opened:  map[string]bool{},
+		docVer:  map[string]int64{},
 		done:    make(chan struct{}),
 	}
 }
@@ -119,6 +137,23 @@ func (c *Client) handleNotification(msg map[string]any) {
 // request 写一条带 id 的请求并等待响应。响应经 readLoop → deliver → pending[id]
 // channel 送达。超时(默认 timeout,可被 ctx 截断)或 done(Client 关闭)时返回错误。
 func (c *Client) request(ctx context.Context, method string, params any) (map[string]any, error) {
+	return c.requestWithin(ctx, c.timeout, method, params)
+}
+
+// requestUnbounded 只受 ctx deadline 约束,不受 c.timeout 约束。
+//
+// 存在的理由是 c.timeout 对导航请求是错误的上限:它是握手/诊断的预算(exec 路径
+// 5s、Dial 路径按配置),而 requestWithin 取的是 c.timeout 与 ctx deadline 的
+// **较小值** —— 调用方传一个更长的 deadline 抬不高天花板,只能从这里绕过。
+// 调用方(nav.go 的 requestNav)必须自己带 deadline;不带 deadline 的 ctx 会让
+// 这个请求只能靠 Close 唤醒。
+func (c *Client) requestUnbounded(ctx context.Context, method string, params any) (map[string]any, error) {
+	return c.requestWithin(ctx, 0, method, params)
+}
+
+// requestWithin 是 request/requestUnbounded 的共同实现。max<=0 表示"只受 ctx
+// 约束"。
+func (c *Client) requestWithin(ctx context.Context, max time.Duration, method string, params any) (map[string]any, error) {
 	id := atomic.AddInt64(&c.nextID, 1)
 	ch := make(chan map[string]any, 1)
 	c.mu.Lock()
@@ -139,11 +174,20 @@ func (c *Client) request(ctx context.Context, method string, params any) (map[st
 		return nil, err
 	}
 
-	timeout := c.timeout
-	if dl, ok := ctx.Deadline(); ok {
-		if rem := time.Until(dl); rem > 0 && rem < timeout {
-			timeout = rem
+	// timeoutC stays nil when max<=0. A receive on a nil channel blocks
+	// forever, which is precisely "no timeout arm" — the select then rests on
+	// ctx.Done and c.done alone.
+	var timeoutC <-chan time.Time
+	if max > 0 {
+		timeout := max
+		if dl, ok := ctx.Deadline(); ok {
+			if rem := time.Until(dl); rem > 0 && rem < timeout {
+				timeout = rem
+			}
 		}
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		timeoutC = timer.C
 	}
 	select {
 	case resp := <-ch:
@@ -151,7 +195,7 @@ func (c *Client) request(ctx context.Context, method string, params any) (map[st
 			return nil, fmt.Errorf("lsp: %s: %v", method, e)
 		}
 		return resp, nil
-	case <-time.After(timeout):
+	case <-timeoutC:
 		return nil, fmt.Errorf("lsp: %s timeout", method)
 	case <-c.done:
 		return nil, errClosed
@@ -289,24 +333,32 @@ func parseDiagnostic(d map[string]any) Diagnostic {
 	return di
 }
 
-// notifyChange 告知某 uri 的全文内容变更。首次对该 uri 发 textDocument/didOpen
-// (version=1),之后发 textDocument/didChange(version 单调递增,全量替换)。
+// notifyChange 告知某 uri 的全文内容变更。首次对该 uri 发 textDocument/didOpen,
+// 之后发 textDocument/didChange(version 单调递增,全量替换)。
 // 全量比增量简单且足够——模型编辑后我们总能给全文(评审 #4)。
 //
-// 同时递增 editGen[uri](评审 #5):Diagnostics 会等到 pubGen>=editGen 的本次
-// publication,避免回喂上一版残留诊断。version 复用 editGen(1-based 单调)。
+// 同时把 editGen[uri] 推到本次 wire version(评审 #5):Diagnostics 会等到
+// pubGen>=editGen 的本次 publication,避免回喂上一版残留诊断。
+//
+// "首次" 由 opened 判定而不是由 editGen==1 判定:navigation 会为只读请求打开
+// 文件(ensureOpen),此后一次编辑若仍按 editGen 判首次,就会对同一个 uri 发出
+// 第二条 didOpen —— 协议违规,gopls 的反应是丢掉这个文档,于是那个文件之后再也
+// 拿不到诊断,且没有任何报错。
 func (c *Client) notifyChange(uri, text string) error {
 	c.diagMu.Lock()
-	c.editGen[uri]++
-	gen := c.editGen[uri]
+	c.docVer[uri]++
+	gen := c.docVer[uri]
+	c.editGen[uri] = gen
+	first := !c.opened[uri]
+	c.opened[uri] = true
 	c.diagMu.Unlock()
 
-	if gen == 1 {
+	if first {
 		return c.notify("textDocument/didOpen", map[string]any{
 			"textDocument": map[string]any{
 				"uri":        uri,
 				"languageId": languageID(uri),
-				"version":    1,
+				"version":    gen,
 				"text":       text,
 			},
 		})

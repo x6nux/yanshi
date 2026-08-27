@@ -226,6 +226,28 @@ func (m model) fetchInitialMCP() tea.Cmd {
 	}
 }
 
+// fetchInitialSkills asks for the installed-skill snapshot at launch, so
+// `/skill run ` offers completions before the user has ever typed /skills.
+//
+// It is the exact shape fetchInitialMCP exists for, and the same failure it
+// avoids: a palette that is empty until the user happens to run the listing
+// command teaches them the feature does not work. A nil reply is fine (SSE
+// installs no control-frame path); skillsLoaded stays false and `/skill run`
+// says the list has not arrived rather than claiming nothing is installed.
+func (m model) fetchInitialSkills() tea.Cmd {
+	ch := m.sess.SendFrame(proto.NewListSkills())
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ev, ok := <-ch
+		if !ok || ev.Kind != "skills_list" {
+			return nil
+		}
+		return streamMsg{ev: ev}
+	}
+}
+
 // syncSavedMode applies the locally persisted permission mode to the server
 // when a new TUI connection is opened. Without this, the footer can show the
 // saved mode while the server still evaluates permission requests as default.

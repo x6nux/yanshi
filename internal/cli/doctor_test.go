@@ -76,8 +76,15 @@ auth:
 	if c := findCheck(t, rep, "providers"); c.Status != StatusOK {
 		t.Errorf("providers: got %s (%s)", c.Status, c.Message)
 	}
-	if c := findCheck(t, rep, "sandbox"); c.Status != StatusWarn {
-		t.Errorf("sandbox: got %s, want warn", c.Status)
+	// The sandbox row tracks whichever backend this platform actually has.
+	// It used to be pinned to warn, which encoded "no platform enforces
+	// anything" -- true in Phase 0, false the moment darwin grew a real
+	// Seatbelt backend, and the assertion then failed on macOS for a posture
+	// that was correct. ok (enforcing) and warn (degraded/disabled) are both
+	// legitimate; fail is not, because checkSandbox has no fail path and a
+	// fail here would mean the check itself broke.
+	if c := findCheck(t, rep, "sandbox"); c.Status != StatusOK && c.Status != StatusWarn {
+		t.Errorf("sandbox: got %s (%s), want ok or warn", c.Status, c.Message)
 	}
 }
 
@@ -337,9 +344,11 @@ auth:
 			t.Errorf("%s: got %s (%s), want ok or warn", name, c.Status, c.Message)
 		}
 	}
-	// Sandbox must remain warn (S08 not done).
-	if c := findCheck(t, rep, "sandbox"); c.Status != StatusWarn {
-		t.Errorf("sandbox: got %s, want warn", c.Status)
+	// The sandbox row reflects this platform's real backend, so ok and warn
+	// are both legitimate -- see TestRunDoctor_HappyPath for why this is not
+	// pinned to warn any more.
+	if c := findCheck(t, rep, "sandbox"); c.Status != StatusOK && c.Status != StatusWarn {
+		t.Errorf("sandbox: got %s (%s), want ok or warn", c.Status, c.Message)
 	}
 }
 

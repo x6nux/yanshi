@@ -13,11 +13,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"time"
 
 	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
 
 	"github.com/x6nux/yanshi/internal/agent/orchestrator"
 	"github.com/x6nux/yanshi/internal/approval"
@@ -267,24 +269,105 @@ func (cs *connSession) ensureSession(s *Server, firstMsg string) {
 	cs.seq = 0
 }
 
-// persistMessages writes the user and assistant messages from a completed turn
-// to the DB. No-op when recording is disabled.
-func (cs *connSession) persistMessages(s *Server, userText, assistantText string) {
-	if s.store == nil || cs.sessionID == "" || cs.recordingSuppressed() {
-		return
-	}
-	// Persist user message.
-	if err := s.store.AppendMessage(cs.sessionID, cs.seq, "user", userText); err != nil {
-		return
-	}
-	cs.seq++
-	// Persist assistant message.
-	if assistantText != "" {
-		if err := s.store.AppendMessage(cs.sessionID, cs.seq, "assistant", assistantText); err != nil {
-			return
+// storeMessagesFor converts a live context window into durable-log rows.
+//
+// The mapping is deliberately lossy in one direction only: everything the model
+// SAW becomes a row, and nothing that was never in the window is invented. An
+// assistant message carrying tool calls yields its prose row (when it has prose)
+// plus one store.RoleToolCall row per call; a tool message yields one
+// store.RoleToolResult row linked by ToolCallID. The system message is skipped —
+// it is regenerated from the prompt on every turn, so persisting it would store
+// a copy of configuration as if it were conversation.
+//
+// Empty prose with no tool calls yields nothing rather than an empty row.
+func storeMessagesFor(hist []*schema.Message) []store.Message {
+	out := make([]store.Message, 0, len(hist))
+	for _, m := range hist {
+		if m == nil || m.Role == schema.System {
+			continue
 		}
-		cs.seq++
+		switch m.Role {
+		case schema.Tool:
+			out = append(out, store.Message{
+				Role:       store.RoleToolResult,
+				Content:    m.Content,
+				ToolCallID: m.ToolCallID,
+				ToolName:   m.ToolName,
+			})
+		case schema.Assistant:
+			if m.Content != "" {
+				out = append(out, store.Message{
+					Role:    store.RoleAssistant,
+					Content: m.Content,
+				})
+			}
+			for _, tc := range m.ToolCalls {
+				out = append(out, store.Message{
+					Role:       store.RoleToolCall,
+					ToolCallID: tc.ID,
+					ToolName:   tc.Function.Name,
+					ToolArgs:   tc.Function.Arguments,
+				})
+			}
+		default:
+			if m.Content == "" {
+				continue
+			}
+			out = append(out, store.Message{
+				Role:    store.RoleUser,
+				Content: m.Content,
+			})
+		}
 	}
+	return out
+}
+
+// flushHistory persists the ENTIRE live window to the durable log and reports
+// whether it is now safe to discard any of it.
+//
+// Returns true when the window is durable — including the cases where there is
+// nothing to persist (recording disabled, side conversation, empty window),
+// because "nothing was lost" is the same answer for the caller as "everything
+// was saved".
+//
+// Flushing the whole window rather than a delta is what makes this correct
+// without a watermark: store.AppendMessages deduplicates on a per-session key,
+// so rows already durable are skipped and only genuinely new messages are
+// inserted. A watermark would have to track a live slice that compaction
+// rewrites underneath it — which is exactly the bookkeeping that gets a message
+// dropped.
+func (cs *connSession) flushHistory(s *Server) bool {
+	if s.store == nil || cs.sessionID == "" || cs.recordingSuppressed() {
+		return true
+	}
+	rows := storeMessagesFor(cs.history)
+	if len(rows) == 0 {
+		return true
+	}
+	_, next, err := s.store.AppendMessages(cs.sessionID, rows)
+	if err != nil {
+		slog.Warn("history flush failed; context will not be evicted",
+			"session", cs.sessionID, "messages", len(rows), "error", err)
+		return false
+	}
+	cs.seq = next
+	return true
+}
+
+// persistMessages makes the completed turn durable.
+//
+// It takes NO message arguments any more. It used to take the user text and the
+// assistant text and write exactly those two rows, which is why every tool call
+// and every tool result a turn produced — the test output, the diffs, the
+// compiler errors, i.e. most of what the turn actually learned — was never
+// written anywhere. Compaction then removed them from the window, and they were
+// gone for good.
+//
+// The turn's messages are already in cs.history by the time this runs, so
+// flushing the window IS persisting the turn, and it captures the tool rows the
+// two-argument form could not see.
+func (cs *connSession) persistMessages(s *Server) {
+	cs.flushHistory(s)
 }
 
 // loadSession populates the connSession from a stored session. It loads the
@@ -329,10 +412,41 @@ func (cs *connSession) loadSession(s *Server, sessionID string) error {
 	return nil
 }
 
+// compactionOptions builds the ctxcompact.Options for this server, wiring the
+// process-wide secrets redactor into compaction (C11).
+//
+// THE NIL CHECK IS LOAD-BEARING AND CANNOT BE DROPPED. s.redactor is a
+// *secrets.Redactor and is documented as nil when no secrets backend is
+// configured, while ctxcompact.Options.Redactor is an INTERFACE. Assigning a
+// nil *secrets.Redactor to it yields a non-nil interface holding a nil pointer,
+// so ctxcompact's own `r == nil` guard does not fire and (*Redactor).Redact
+// runs on a nil receiver, dereferencing r.mu and panicking — inside the
+// pre-turn path of every chat request on any deployment without a secrets
+// backend. Returning the zero Options instead keeps that case on the exact
+// historical code path.
+func (s *Server) compactionOptions() ctxcompact.Options {
+	if s.redactor == nil {
+		return ctxcompact.Options{}
+	}
+	return ctxcompact.Options{Redactor: s.redactor}
+}
+
 // maybeAutoCompact runs threshold-gated compaction before a user_message turn.
 // When compaction fires it streams compact_chunk deltas, replaces cs.history,
 // and emits status{compacted} with the before/after token estimates. Disabled
 // (threshold <= 0), under-threshold, or no-model-available is a silent no-op.
+//
+// DURABILITY FIRST (C1). The window is flushed to the durable log before a
+// single message is evicted, and a failed flush ABORTS the compaction. The
+// order is the whole point: compaction's output is a summary, and a summary is
+// a lossy encoding of what it replaces. Evicting first and writing after would
+// mean that a write failure — a full disk, a locked database — silently
+// converts a turn's tool output into a paragraph about it, with nothing left to
+// recover from. Refusing to compact instead trades a larger context (and,
+// eventually, a provider-side length error the operator can see) for never
+// destroying data that was never written down. QwenPaw's ScrollContextManager
+// makes the same trade in compress(), which returns without evicting when its
+// guarded persist reports degraded durability.
 func maybeAutoCompact(ctx context.Context, s *Server,
 	models map[string]model.BaseChatModel, conn *wsConn, cs *connSession) {
 
@@ -342,9 +456,13 @@ func maybeAutoCompact(ctx context.Context, s *Server,
 	if sumModel == nil {
 		return // no model available — compaction disabled
 	}
-	newHist, tb, ta, did := ctxcompact.MaybeCompact(ctx, cs.history,
+	if !cs.flushHistory(s) {
+		return // not durable — see the durability note above
+	}
+	newHist, tb, ta, did := ctxcompact.MaybeCompactWithOptions(ctx, cs.history,
 		s.compaction.Threshold, cw, kr, sumModel,
-		func(chunk string) { conn.write(proto.NewCompactChunk(chunk)) })
+		func(chunk string) { conn.write(proto.NewCompactChunk(chunk)) },
+		s.compactionOptions())
 	if !did {
 		return
 	}
@@ -362,6 +480,12 @@ func maybeAutoCompact(ctx context.Context, s *Server,
 // streams compact_chunk deltas and emits status{compacted}; otherwise it emits a
 // plain status so the TUI's compact block resolves either way.
 //
+// DURABILITY FIRST (C1), on the same terms as maybeAutoCompact: the window is
+// flushed before anything is evicted and a failed flush refuses the compaction.
+// A user typing /compact is asking to shrink the window, not authorising the
+// loss of whatever has not been written down — and a manual request is if
+// anything MORE likely to run on a session whose history matters.
+//
 // Force delegates to ctxcompact.ForceCompact (DRY: the threshold-skip + the
 // did-means-actual-shrink + too-few-messages guard live there, shared with
 // MaybeCompact and CompactingModel.maybeCompact). The WS-layer decisions kept
@@ -375,6 +499,17 @@ func compactNow(ctx context.Context, s *Server,
 	kr := keepRecentOrDefault(s.compaction.KeepRecent)
 	sumModel := compactionModel(s.compaction, models, cs.model)
 	if sumModel == nil {
+		conn.write(cs.statusFrame(s))
+		return
+	}
+	if !cs.flushHistory(s) {
+		// Not durable — refuse rather than evict. The status frame still goes
+		// out so the TUI's compact block resolves; the error frame is what tells
+		// the user their explicit request did not happen and why, which a bare
+		// "nothing changed" status would not.
+		conn.write(proto.NewError(
+			"compaction skipped: the conversation could not be saved, " +
+				"so nothing was dropped from the context"))
 		conn.write(cs.statusFrame(s))
 		return
 	}
@@ -397,8 +532,9 @@ func compactNow(ctx context.Context, s *Server,
 	if cw <= 0 {
 		cw = 256000
 	}
-	newHist, tb, ta, did := ctxcompact.ForceCompact(ctx, cs.history, cw, kr, sumModel,
-		func(chunk string) { conn.write(proto.NewCompactChunk(chunk)) })
+	newHist, tb, ta, did := ctxcompact.ForceCompactWithOptions(ctx, cs.history, cw, kr, sumModel,
+		func(chunk string) { conn.write(proto.NewCompactChunk(chunk)) },
+		s.compactionOptions())
 	if !did {
 		conn.write(cs.statusFrame(s))
 		return

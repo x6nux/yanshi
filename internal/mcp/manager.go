@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -25,6 +28,97 @@ type Manager struct {
 	errs              map[string]string
 	health            HealthConfig
 	reconnectInflight map[string]struct{}
+	// tokens persists OAuth material for authorization_code servers. nil is a
+	// legitimate state (no secrets backend configured); buildTokenSource then
+	// declines to build an authorization_code source and says so.
+	tokens TokenStore
+}
+
+// SetTokenStore binds the credential backend used by authorization_code
+// servers. Call it BEFORE StartAll: the source is constructed once per server
+// at start, so a store bound afterwards is read by nothing.
+func (m *Manager) SetTokenStore(store TokenStore) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tokens = store
+}
+
+// tokenStore reads the bound store under the lock. startOne runs without the
+// mutex held (it does network I/O), so it cannot touch m.tokens directly.
+func (m *Manager) tokenStore() TokenStore {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.tokens
+}
+
+// TokenStoreFor returns a token source for one configured server, so the CLI
+// login leg can perform the interactive exchange against the same client id,
+// endpoints and store the running manager would use.
+//
+// It returns an error rather than nil for an unconfigured server so `yanshi
+// auth mcp-login nosuchserver` names the mistake instead of silently doing
+// nothing.
+func (m *Manager) TokenStoreFor(server string) (*AuthCodeSource, error) {
+	m.mu.Lock()
+	cfg, ok := m.servers[server]
+	store := m.tokens
+	m.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("mcp: no server named %q is configured", server)
+	}
+	if cfg.OAuth == nil {
+		return nil, fmt.Errorf("mcp: server %q has no oauth block", server)
+	}
+	grant, valid := NormalizeGrant(cfg.OAuth.Grant)
+	if !valid || grant != GrantAuthorizationCode {
+		return nil, fmt.Errorf("mcp: server %q uses grant %q; only %s has an interactive login",
+			server, cfg.OAuth.Grant, GrantAuthorizationCode)
+	}
+	if store == nil {
+		return nil, fmt.Errorf("mcp: no credential store is configured; " +
+			"set secrets.backend so the tokens can be persisted")
+	}
+	return NewAuthCodeSource(AuthCodeConfig{
+		Server: server, TokenURL: cfg.OAuth.TokenURL,
+		ClientID: cfg.OAuth.ClientID, ClientSecret: cfg.OAuth.ClientSecret,
+		Scopes: cfg.OAuth.Scopes, Store: store,
+	})
+}
+
+// OAuthEndpoints returns the authorization endpoint and scopes configured for
+// server, for the CLI to build the browser URL from.
+func (m *Manager) OAuthEndpoints(server string) (authURL, clientID string, scopes []string, err error) {
+	m.mu.Lock()
+	cfg, ok := m.servers[server]
+	m.mu.Unlock()
+	if !ok || cfg.OAuth == nil {
+		return "", "", nil, fmt.Errorf("mcp: server %q has no oauth block", server)
+	}
+	if strings.TrimSpace(cfg.OAuth.AuthorizationURL) == "" {
+		return "", "", nil, fmt.Errorf("mcp: server %q has no oauth.authorization_url; "+
+			"the browser flow cannot start without it", server)
+	}
+	return cfg.OAuth.AuthorizationURL, cfg.OAuth.ClientID,
+		append([]string(nil), cfg.OAuth.Scopes...), nil
+}
+
+// AuthCodeServers lists the configured servers that use the authorization_code
+// grant, in sorted order. `yanshi auth mcp-login` with no argument prints it,
+// so an operator does not have to grep their config for which names are valid.
+func (m *Manager) AuthCodeServers() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []string
+	for name, cfg := range m.servers {
+		if cfg.OAuth == nil {
+			continue
+		}
+		if grant, ok := NormalizeGrant(cfg.OAuth.Grant); ok && grant == GrantAuthorizationCode {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // NewManager creates a Manager from a config map (server name -> ServerConfig).
@@ -88,7 +182,7 @@ func (m *Manager) startOne(ctx context.Context, cfg *ServerConfig) (Client, erro
 	var cli Client
 	switch cfg.Transport {
 	case TransportHTTP:
-		h := newHTTPClientFor(cfg)
+		h := newHTTPClientFor(cfg, m.tokenStore())
 		h.SetTimeout(cfg.Timeout)
 		cli = h
 	case TransportStdio:
@@ -168,13 +262,55 @@ func (m *Manager) startOne(ctx context.Context, cfg *ServerConfig) (Client, erro
 	return cli, nil
 }
 
-// newHTTPClientFor 根据 cfg.OAuth 选择 bearer 或 OAuth 2.0 client-credentials token。
-func newHTTPClientFor(cfg *ServerConfig) *HTTPClient {
-	if cfg.OAuth != nil {
-		src := NewClientCredentialsSource(cfg.OAuth.TokenURL, cfg.OAuth.ClientID, cfg.OAuth.ClientSecret, cfg.OAuth.Scopes, nil)
+// newHTTPClientFor 根据 cfg.OAuth 选择 bearer / client-credentials / authorization_code。
+//
+// An authorization_code server whose token source cannot be constructed —
+// no store bound, missing client_id — falls back to the configured bearer
+// rather than to an unauthenticated client. The fallback is not a silent
+// downgrade: buildTokenSource is the only place that can tell, and it logs the
+// reason. Returning an error instead would make one misconfigured server abort
+// the whole MCP subsystem, which is the opposite of the soft-degrade posture
+// StartAll already has.
+func newHTTPClientFor(cfg *ServerConfig, store TokenStore) *HTTPClient {
+	if src := buildTokenSource(cfg, store); src != nil {
 		return NewHTTPClientWithTokenSource(cfg.URL, src)
 	}
 	return NewHTTPClient(cfg.URL, cfg.Bearer)
+}
+
+// buildTokenSource maps an OAuth config to a TokenSource, or nil when the
+// server has none (or when one could not be built, having logged why).
+func buildTokenSource(cfg *ServerConfig, store TokenStore) TokenSource {
+	if cfg.OAuth == nil {
+		return nil
+	}
+	grant, ok := NormalizeGrant(cfg.OAuth.Grant)
+	if !ok {
+		slog.Warn("mcp: unknown oauth grant; falling back to the configured bearer",
+			"server", cfg.Name, "grant", cfg.OAuth.Grant)
+		return nil
+	}
+	if grant == GrantClientCredentials {
+		return NewClientCredentialsSource(
+			cfg.OAuth.TokenURL, cfg.OAuth.ClientID, cfg.OAuth.ClientSecret, cfg.OAuth.Scopes, nil)
+	}
+	if store == nil {
+		slog.Warn("mcp: authorization_code configured but no credential store is available; "+
+			"falling back to the configured bearer (run `yanshi auth mcp-login` after configuring secrets)",
+			"server", cfg.Name)
+		return nil
+	}
+	src, err := NewAuthCodeSource(AuthCodeConfig{
+		Server: cfg.Name, TokenURL: cfg.OAuth.TokenURL,
+		ClientID: cfg.OAuth.ClientID, ClientSecret: cfg.OAuth.ClientSecret,
+		Scopes: cfg.OAuth.Scopes, Store: store,
+	})
+	if err != nil {
+		slog.Warn("mcp: authorization_code source could not be built; falling back to the configured bearer",
+			"server", cfg.Name, "error", err.Error())
+		return nil
+	}
+	return src
 }
 
 // ListAllTools returns all discovered tools across all servers.

@@ -76,13 +76,56 @@ type ResourceDescriptor struct {
 	MimeType    string `json:"mime_type,omitempty"`
 }
 
-// OAuthConfig 配置 OAuth 2.0 client-credentials token 获取。
+// OAuthConfig 配置 MCP server 的 OAuth 2.0 token 获取。
 // ClientSecret 已在 config.Load 的 ${VAR} 展开阶段解析；不要写入日志/status。
 type OAuthConfig struct {
 	TokenURL     string   `json:"token_url" yaml:"token_url"`
 	ClientID     string   `json:"client_id" yaml:"client_id"`
 	ClientSecret string   `json:"-" yaml:"client_secret"`
 	Scopes       []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
+
+	// Grant selects the OAuth flow. "" and "client_credentials" both mean the
+	// machine-to-machine grant this package started with; "authorization_code"
+	// selects the browser flow with PKCE.
+	//
+	// The empty string is kept as an alias rather than normalised away at load
+	// time because every config that predates this field omits it, and a
+	// missing value must keep meaning exactly what it meant before.
+	Grant string `json:"grant,omitempty" yaml:"grant,omitempty"`
+
+	// AuthorizationURL is the authorize endpoint. Required for
+	// authorization_code and ignored for client_credentials, which has no
+	// browser leg.
+	AuthorizationURL string `json:"authorization_url,omitempty" yaml:"authorization_url,omitempty"`
+}
+
+// OAuth grant types accepted in OAuthConfig.Grant.
+const (
+	// GrantClientCredentials is the machine-to-machine grant. It is also what
+	// an empty Grant means.
+	GrantClientCredentials = "client_credentials"
+	// GrantAuthorizationCode is the browser flow with PKCE, established
+	// interactively by `yanshi auth mcp-login` and thereafter refreshed
+	// without user interaction.
+	GrantAuthorizationCode = "authorization_code"
+)
+
+// NormalizeGrant maps a configured grant string to its canonical form,
+// reporting whether the value is one this package can speak.
+//
+// It rejects rather than defaulting on an unknown value. Defaulting would make
+// a typo (`authorisation_code`) silently select the machine-to-machine grant,
+// which then fails with "invalid_client" against a server expecting a user
+// token — a failure that looks like a credential problem and is not.
+func NormalizeGrant(s string) (string, bool) {
+	switch strings.TrimSpace(strings.ToLower(s)) {
+	case "", GrantClientCredentials:
+		return GrantClientCredentials, true
+	case GrantAuthorizationCode:
+		return GrantAuthorizationCode, true
+	default:
+		return "", false
+	}
 }
 
 // sanitizeName 把非字母数字字符替换为 `_`，合并连续 `_`，去掉前后 `_`，小写化。

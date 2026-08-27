@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/stretchr/testify/require"
@@ -44,13 +45,33 @@ func recordSpans(t *testing.T) *tracetest.InMemoryExporter {
 }
 
 // turnSpan returns the single agent.turn span, or fails.
+//
+// IT POLLS, because the span is ended on a DEFER that runs after the `done`
+// frame has already been written to the socket. A test that reads the exporter
+// the instant it sees `done` is therefore racing the deferred endTurn, and
+// loses often enough to redden roughly one full-suite run in ten — as an
+// intermittent "got 0 spans", which reads exactly like the wiring this test
+// exists to pin having been removed.
+//
+// Waiting is the correct shape rather than a workaround: "the span is ended
+// before the connection closes" is the real contract, and nothing in it
+// promises the end happens before the last frame. The bound is short enough
+// that a genuinely missing span still fails fast.
 func turnSpan(t *testing.T, exp *tracetest.InMemoryExporter) tracetest.SpanStub {
 	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
 	var found []tracetest.SpanStub
-	for _, s := range exp.GetSpans() {
-		if s.Name == "agent.turn" {
-			found = append(found, s)
+	for {
+		found = found[:0]
+		for _, s := range exp.GetSpans() {
+			if s.Name == "agent.turn" {
+				found = append(found, s)
+			}
 		}
+		if len(found) == 1 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	if len(found) != 1 {
 		var names []string

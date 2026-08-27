@@ -250,8 +250,14 @@ func TestChat_SSE_AutoCompaction(t *testing.T) {
 	fm := einollm.NewFakeModel([]string{"SSE-SUMMARY", "turn-reply"}, nil)
 	o, err := orchestrator.New(orchestrator.Config{Model: fm})
 	require.NoError(t, err)
-	// Small budget + KeepRecent=1 so an over-budget history compacts.
-	s := New(Config{Token: "t", Compaction: CompactionConfig{Threshold: 0.5, ContextWindow: 100, KeepRecent: 1}})
+	// ContextWindow must clear the summary INSTRUCTION's own cost, which the
+	// C4 structured prompt made non-trivial: even the terse form is ~130
+	// tokens, so the historical 100-token fixture left a negative chunk budget
+	// and RunSummary refused with ErrNoWindowRoom — a correct refusal that
+	// reported did=false and made this test read as "compaction is broken".
+	// 2000 is the smallest round window where instruction + a real history
+	// still fits the single cache-aligned call.
+	s := New(Config{Token: "t", Compaction: CompactionConfig{Threshold: 0.5, ContextWindow: 2000, KeepRecent: 1}})
 	// Register the fake model so compactionModel can pick it (the new
 	// MaybeCompact signature takes a model directly, not the orchestrator).
 	models := map[string]model.BaseChatModel{"fm": fm}
@@ -263,8 +269,9 @@ func TestChat_SSE_AutoCompaction(t *testing.T) {
 	// Plan: user messages are pinned verbatim (intent is never lost), so only
 	// the assistant turns are folded into the summary. A long assistant turn
 	// is larger than the small scripted summary, so TokensAfter < TokensBefore
-	// and MaybeCompact returns did=true.
-	long := strings.Repeat("b", 100)
+	// and MaybeCompact returns did=true. It is sized against the 2000-token
+	// window above: the history has to clear Threshold*window = 1000 tokens.
+	long := strings.Repeat("b", 2200)
 	body := `{"messages":[` +
 		`{"role":"user","content":"task"},` +
 		`{"role":"assistant","content":"` + long + `"},` +

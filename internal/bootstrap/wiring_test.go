@@ -1206,3 +1206,210 @@ func TestSelfManagementToolsAreAllowedAndSensitiveOnesAreNot(t *testing.T) {
 				"and discarding their edits are the two things that must be asked for", name)
 	}
 }
+
+// TestToolBatchIsRegisteredAndBound covers the half of T12's two-step
+// registration that the tool-name snapshot cannot see.
+//
+// tool_batch is a member of the registry it dispatches over, so its
+// construction must happen before the snapshot loop (or the profile entry is a
+// GOV5 phantom) and its Bind must happen after it (or the table is missing
+// whichever tools were appended later). Those are two separate lines in Build,
+// and only the first one leaves a trace in ToolNames. Dropping the second
+// yields a tool that is registered, advertised to the model, allowed by the
+// profile — and answers every call with a wiring error. That is the
+// "written but zero readers" shape with a name in the registry to hide behind.
+//
+// Bound() is asserted first because it names the defect precisely, but it is
+// not sufficient on its own: a Bind that ran against an empty or partial slice
+// would set the flag just the same. So the table's actual contents are
+// compared against the snapshot.
+func TestToolBatchIsRegisteredAndBound(t *testing.T) {
+	app := buildMinimalApp(t)
+
+	require.Contains(t, app.ToolNames, "tool_batch",
+		"tool_batch is absent from the registry: the profile entry naming it is a "+
+			"GOV5 phantom and the model will be refused by toolreg.Check at call time")
+	require.NotNil(t, app.ToolBatch, "App.ToolBatch is nil: Build never constructed it")
+	require.True(t, app.ToolBatch.Bound(),
+		"tool_batch is registered but Bind was never called: it is advertised to the "+
+			"model and allowed by the profile, yet every batch it receives returns a "+
+			"wiring error. Add batchTool.Bind(allTools) after the toolNames snapshot.")
+}
+
+// TestToolBatchDispatchesOverTheRealRegistry runs an actual two-step batch
+// through the assembled app.
+//
+// Bound() only proves a boolean flipped. This drives a real program through the
+// registered tool and requires the callee's output to come back, which is the
+// only evidence that the table Bind built contains dispatchable entries rather
+// than being empty.
+//
+// The two steps are chained by a reference: step 1's argument is "$0", step 0's
+// whole result. So step 1 can only produce the expected output if step 0 really
+// ran through the registered fs_read and its result really flowed forward — a
+// table that resolved the names but dispatched to nothing would leave the
+// reference resolving to an empty string.
+//
+// The batch is READ-only and runs under an operator profile that grants fs
+// reads. The factory profile ships no fs allowlist at all, so every fs tool is
+// refused under it — which is correct, and is asserted separately in
+// TestToolBatchDeniedStepStopsTheBatchInTheAssembledApp. Running the dispatch
+// probe under that profile would only have re-proven the guard says no, and
+// would never have touched the table this test exists to inspect.
+//
+// It drives App.ToolBatch.Tool, which is the same pointer Build appended to the
+// registry, so what runs here is the registered tool carrying the table Bind
+// gave it. That the NAME reached the snapshot is asserted separately in
+// TestToolBatchIsRegisteredAndBound; this test is about the table's contents.
+func TestToolBatchDispatchesOverTheRealRegistry(t *testing.T) {
+	app := buildAppWithProviders(t, `
+profiles:
+  orchestrator:
+    tools: { allow: ["*"] }
+    fs: { read: ["**"], write: [] }
+`)
+	require.NotNil(t, app.ToolBatch, "App.ToolBatch is nil: Build never constructed it")
+	batch := app.ToolBatch.Tool
+	require.NotNil(t, batch, "tool_batch has no registered GuardedTool")
+
+	const marker = "batch-dispatch-marker"
+	const fixture = "batch-dispatch-fixture.txt"
+	target := filepath.Join(app.Orch.WorkRoot(), fixture)
+	require.NoError(t, os.WriteFile(target, []byte(marker+"\n"), 0o644))
+	t.Cleanup(func() { _ = os.Remove(target) })
+
+	steps := []map[string]any{
+		// Step 0 returns a JSON array of matching paths.
+		{"tool": "fs_glob", "args": map[string]any{"pattern": fixture}},
+		// "$0.0" indexes element 0 of that array — the documented $N.<index>
+		// grammar — and hands it to fs_read as a path. The chain is therefore
+		// load-bearing in both directions: step 1 cannot find the file unless
+		// step 0 really ran and its result really flowed forward.
+		{"tool": "fs_read", "args": map[string]any{"path": "$0.0"}},
+	}
+	raw, err := json.Marshal(map[string]any{"steps": steps})
+	require.NoError(t, err)
+
+	// The guard is fail-closed on an empty context: every tool refuses with
+	// "no permission profile in context" before it ever reaches its body. That
+	// is correct behaviour, and it means a direct call has to bind the same
+	// execution context a turn does or this test would only be re-proving the
+	// guard works.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ctx = app.Orch.BindHeadlessContext(ctx)
+
+	var out strings.Builder
+	for c := range batch.Stream(ctx, string(raw)) {
+		out.WriteString(c.Result)
+		if c.Err != nil {
+			t.Fatalf("tool_batch returned an error: %v (output so far: %s)", c.Err, out.String())
+		}
+	}
+	got := out.String()
+
+	require.NotContainsf(t, got, "dispatch table not bound",
+		"tool_batch ran unbound through the assembled app (result: %s)", got)
+	require.NotContainsf(t, got, "is not a registered tool of this agent",
+		"the dispatch table does not contain tools that ARE in the registry — Bind "+
+			"ran against the wrong slice (result: %s)", got)
+	require.Containsf(t, got, marker,
+		"the fixture's content never came back, so the batch did not really dispatch "+
+			"to the registered tools (result: %s)", got)
+
+	// Both steps must have completed. Parsing the report rather than
+	// string-matching it: "completed":2 is the field the model reads, and a
+	// batch that stopped after step 0 would still contain the marker in the
+	// text above.
+	var report struct {
+		Steps []struct {
+			Index  int    `json:"index"`
+			Tool   string `json:"tool"`
+			Result string `json:"result"`
+			Denied bool   `json:"denied"`
+		} `json:"steps"`
+		Completed int    `json:"completed"`
+		Stopped   string `json:"stopped"`
+	}
+	require.NoErrorf(t, json.Unmarshal([]byte(got), &report),
+		"tool_batch did not return a parseable BatchReport: %s", got)
+	require.Emptyf(t, report.Stopped, "the batch stopped early: %s", report.Stopped)
+	require.Equalf(t, 2, report.Completed,
+		"only %d of 2 steps completed (report: %s)", report.Completed, got)
+	require.Len(t, report.Steps, 2)
+	require.Equal(t, "fs_glob", report.Steps[0].Tool)
+	require.Equal(t, "fs_read", report.Steps[1].Tool)
+	require.Containsf(t, report.Steps[0].Result, fixture,
+		"step 0's fs_glob found nothing, so the chain below proves nothing "+
+			"(step 0 result: %q)", report.Steps[0].Result)
+
+	// The chain itself: step 1's path argument was "$0.0", so it can only have
+	// read the fixture if that reference resolved to the path step 0 found.
+	// Had it resolved to nothing, fs_read would have been handed an empty path
+	// and this marker would appear nowhere in step 1's result.
+	require.Containsf(t, report.Steps[1].Result, marker,
+		"step 1 did not receive step 0's result through \"$0.0\": the reference "+
+			"resolved to nothing, so steps do not actually chain (step 1 result: %q)",
+		report.Steps[1].Result)
+}
+
+// TestToolBatchDeniedStepStopsTheBatchInTheAssembledApp is the security half of
+// the wiring: it proves the per-step Authorize is live in the REAL app, against
+// the REAL factory profile, not just in the package's own tests with a
+// hand-built guard.
+//
+// A batch tool is the natural shape of a guard bypass — authorize the wrapper
+// once, then do N things nobody looked at. tool_batch itself IS allowed by the
+// factory profile, while that profile grants no fs writes, so fs_write inside a
+// batch must be refused exactly as a direct fs_write would be. If batching ever
+// widened anything, this is where it would show up first.
+func TestToolBatchDeniedStepStopsTheBatchInTheAssembledApp(t *testing.T) {
+	app := buildMinimalApp(t)
+	require.NotNil(t, app.ToolBatch)
+
+	victim := filepath.Join(app.Orch.WorkRoot(), "batch-must-not-exist.txt")
+	t.Cleanup(func() { _ = os.Remove(victim) })
+	require.NoFileExists(t, victim, "fixture: the victim path must start absent")
+
+	steps := []map[string]any{
+		{"tool": "fs_write", "args": map[string]any{
+			"path": victim, "content": "written through a batch",
+		}},
+	}
+	raw, err := json.Marshal(map[string]any{"steps": steps})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ctx = app.Orch.BindHeadlessContext(ctx)
+
+	var out strings.Builder
+	for c := range app.ToolBatch.Tool.Stream(ctx, string(raw)) {
+		out.WriteString(c.Result)
+	}
+	got := out.String()
+
+	var report struct {
+		Steps []struct {
+			Denied bool `json:"denied"`
+		} `json:"steps"`
+		Completed int    `json:"completed"`
+		Stopped   string `json:"stopped"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(got), &report), "report: %s", got)
+	require.Len(t, report.Steps, 1)
+	require.Truef(t, report.Steps[0].Denied,
+		"fs_write ran inside a batch under a profile whose fs.write allowlist is "+
+			"EMPTY: batching widened the permission (report: %s)", got)
+	require.Zerof(t, report.Completed,
+		"a denied step was counted as completed (report: %s)", got)
+	require.Containsf(t, report.Stopped, "denied",
+		"the batch did not record WHY it stopped, so the model cannot tell a refusal "+
+			"from a failure (report: %s)", got)
+
+	// The decisive assertion: no side effect. A denial reported in JSON while
+	// the file appeared anyway would be the worst of both worlds.
+	require.NoFileExistsf(t, victim,
+		"the guard reported a denial but the file was written anyway: the batch "+
+			"dispatched around Authorize (report: %s)", got)
+}

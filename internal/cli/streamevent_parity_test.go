@@ -50,6 +50,8 @@ var streamEventFieldMap = map[string]string{
 	"Reason":           "Reason",
 	"ApprovalRequired": "ApprovalRequired",
 	"ForcePrompt":      "ForcePrompt",
+	"PermTimeoutSecs":  "PermTimeoutSecs",
+	"PermDeadlineUnix": "PermDeadlineUnix",
 	"Compacted":        "Compacted",
 	"TokensBefore":     "TokensBefore",
 	"TokensAfter":      "TokensAfter",

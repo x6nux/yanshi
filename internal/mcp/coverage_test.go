@@ -233,12 +233,12 @@ func TestManagerStartOneUnknownTransportDirect(t *testing.T) {
 // TestManagerNewHTTPClientFor covers the OAuth branch of newHTTPClientFor.
 func TestManagerNewHTTPClientFor(t *testing.T) {
 	// bearer path
-	h := newHTTPClientFor(&ServerConfig{URL: "http://x", Bearer: "tok"})
+	h := newHTTPClientFor(&ServerConfig{URL: "http://x", Bearer: "tok"}, nil)
 	if h == nil {
 		t.Fatal("nil http client")
 	}
 	// oauth path
-	h2 := newHTTPClientFor(&ServerConfig{URL: "http://x", OAuth: &OAuthConfig{TokenURL: "http://tok", ClientID: "c", ClientSecret: "s"}})
+	h2 := newHTTPClientFor(&ServerConfig{URL: "http://x", OAuth: &OAuthConfig{TokenURL: "http://tok", ClientID: "c", ClientSecret: "s"}}, nil)
 	if h2 == nil || h2.tokens == nil {
 		t.Fatal("oauth client must have a token source")
 	}

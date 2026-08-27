@@ -25,7 +25,7 @@ import (
 // GOV5 builds one app and a phantom that only appears under another config is
 // structurally invisible to it.
 //
-// Today the set holds one name:
+// Today the set holds two names:
 //
 //   - rlm_query — needs an explicitly configured cheap provider
 //     (batch.rlm_model, see SelectRLMModel). Absent it, BuildC1 warns, leaves
@@ -33,6 +33,12 @@ import (
 //     without it. That is the DEFAULT config, so hard-coding "rlm_query" in
 //     the profile made the shipped default advertise a tool most deployments
 //     never get.
+//
+//   - skill_write — needs a user skills directory to write into. With none,
+//     BuildSkillWriteTool returns nil and the tool is never registered, so a
+//     static allow entry would name a phantom in exactly those deployments.
+//     Its capability is narrow: it writes a SKILL.md beneath a root fixed at
+//     construction, which the model cannot redirect through arguments.
 //
 // The eight automation_* tools and agent_batch stay in the static list on
 // purpose: their only degradation path is a wireC1 error, which BuildC1 can
@@ -46,7 +52,7 @@ import (
 // name is always present: a tool that cannot do its job is a placeholder, and
 // an allow list that names it is lying in a second way.
 func ConditionalProfileTools() []string {
-	return []string{"rlm_query"}
+	return []string{"rlm_query", "skill_write"}
 }
 
 // extendProfileWithConditionalTools returns p with every ConditionalProfileTools
@@ -105,6 +111,15 @@ func DefaultOrchestratorProfile() guard.PermissionProfile {
 			// they drift silently while symbol names do not),
 			// which is already allowed below; there is no mkdir tool at all.
 			"fs_read", "fs_list", "fs_search", "fs_glob", "fs_write", "fs_edit",
+			// T2 structural search. Allowed alongside fs_search because its
+			// capability is a strict SUBSET: it authorizes the same "read" FS
+			// action on the same jailed path, launches one read-only
+			// subprocess through secproc, and cannot write. Leaving it out
+			// while fs_search is in would be an inverted gradient — the
+			// narrower tool costs a dialog, the broader one does not — and on
+			// SSE, which has no permission callback, it would be permanently
+			// fail-closed while the tool still burned schema tokens.
+			"ast_search",
 			"shell_run", "shell_start", "shell_read", "shell_write_stdin", "shell_wait", "shell_cancel",
 			"task_shell_start", "task_shell_wait", "task_shell_stdin", "task_shell_cancel",
 			// A2 durable tasks. These were registered but never allowed, so the
@@ -123,6 +138,24 @@ func DefaultOrchestratorProfile() guard.PermissionProfile {
 			// log that spilled, so withholding it makes the spill a deletion.
 			"task_gate_run", "artifact_read",
 			"memory_search", "memory_recall", "memory_write",
+			// C2 history recall. Both are READ-ONLY and scoped to the current
+			// conversation by context (never by argument), so they widen
+			// nothing: the model already saw this history, it is being handed
+			// back what compaction took away. Withholding them makes eviction
+			// permanent forgetting, which is the failure C1 exists to prevent.
+			"history_search", "history_read",
+			// C7: the model labels its own work so compaction can keep the
+			// label after the underlying turns are evicted. Writes one row
+			// scoped to the current conversation by context, never by argument.
+			"milestone_set",
+			// T3 background offload. background_list and background_result are
+			// READ-ONLY over this process's own offload registry, and
+			// background_cancel only takes capability away. Withholding them
+			// makes the run id in the offload notice a token the model is told
+			// to remember and can never spend — and the id is the entire point
+			// of offloading, so the tool that produced it (shell_run, allowed
+			// above) would end up strictly worse off than before.
+			"background_list", "background_result", "background_cancel",
 			// A2 self-management. These let an agent keep its own plan and
 			// todo list; none of them touches anything outside the task row it
 			// already owns. Leaving them out inverted the permission gradient
@@ -160,6 +193,15 @@ func DefaultOrchestratorProfile() guard.PermissionProfile {
 			"git_status", "git_diff", "run_tests", "diagnostics",
 			"github_pr_context", "github_comment", "github_approve", "github_merge",
 			"review",
+			// T1 LSP navigation. Read-only lookups whose capability is strictly
+			// NARROWER than fs_search, which is already allowed above: they take
+			// a symbol name or a file position and return locations plus the
+			// source line at each, re-checking the FS read allowlist per file so
+			// a denied path keeps its location but loses its snippet. Withholding
+			// them while fs_search is allowed is an inverted gradient — the
+			// accurate tool would cost a dialog on WS and be permanently
+			// fail-closed on SSE, while the regex one costs nothing.
+			"lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols",
 			// C1. Spelled out one by one rather than as "automation_*": GOV5's
 			// phantom-name check skips any entry containing a wildcard, so a
 			// glob here would silently re-open the hole W0 just closed. Note
@@ -169,6 +211,12 @@ func DefaultOrchestratorProfile() guard.PermissionProfile {
 			"automation_create", "automation_list", "automation_read", "automation_update",
 			"automation_pause", "automation_resume", "automation_delete", "automation_run",
 			"agent_batch",
+			// T12. Grants nothing on its own: dispatch re-runs the callee's own
+			// Authorize for every step, so this entry authorizes the batch
+			// wrapper and not one thing inside it. A step naming a tool that is
+			// NOT in this allow list still costs a dialog (or is refused on
+			// SSE), exactly as the same call made directly would.
+			"tool_batch",
 			// NB: "rlm_query" is deliberately NOT here — it registers only when
 			// batch.rlm_model names a cheap provider. See ConditionalProfileTools.
 		}},
