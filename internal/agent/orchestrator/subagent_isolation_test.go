@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/x6nux/yanshi/internal/agent/registry"
 	"github.com/x6nux/yanshi/internal/guard"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/store"
@@ -22,9 +24,15 @@ import (
 // against. The model is a FakeModel that is never actually invoked by these
 // tests (they call acquireSubAgentWorkspace/workRootForSubAgentTurn
 // directly, not Query), so its canned response is irrelevant.
+//
+// The work root is seeded with one tracked file BEFORE InitRepo so main_head
+// carries it: InitRepo walks the root into the initial commit, and a repo whose
+// main tree is empty cannot exercise the "an isolated agent EDITED an existing
+// file" half of a merge, only the "added a new one" half.
 func newTestOrchestratorWithVCS(t *testing.T) *Orchestrator {
 	t.Helper()
 	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "pre.txt"), []byte("base"), 0o644))
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { st.Close() })
@@ -77,15 +85,40 @@ func TestNonIsolatedSubAgentKeepsTheSharedWorkRoot(t *testing.T) {
 		"an unrequested worktree per agent_spawn would fill ~/.yanshi/worktrees/ with one directory per call")
 }
 
+// 「被合并回主干」的判据是**主干工作副本里能读到那些编辑**，不是 lifecycle
+// 字段翻成了 "merged"。第一版只断言 lifecycle != "active"，于是它在
+// MergeToMain 只写 SQLite、一个字节都没落到工作副本的那半年里一直是绿的 ——
+// 子代理写的文件在项目里根本不存在，而这条子句宣称它们已经合并了。
+//
+// 用真实的 fs_write / fs_edit 而不是 os.WriteFile：只有前者会把编辑记进
+// worktree 的 changeset，后者写出来的文件 VCS 根本不知道，CommitWorktree 会
+// 返回 ErrNoChanges，于是「合并」merge 的是一棵空树 —— 那正是让第一版测试
+// 无论生产代码怎么坏都通过的原因。
+//
 // ledger: A2/W-A-08#3 子代理结束后其 worktree 被合并回主干或显式丢弃
 func TestIsolatedSubAgentWorktreeIsSettledOnExit(t *testing.T) {
 	o := newTestOrchestratorWithVCS(t)
+	fsTools := tools.NewFSTools(o.workRoot)
 	ctx := tools.WithSubAgentIsolation(context.Background())
 
-	root, _, settle := o.acquireSubAgentWorkspace(ctx, "writer")
+	root, scope, settle := o.acquireSubAgentWorkspace(ctx, "writer")
 	require.NotEqual(t, o.workRoot, root)
 
-	require.NoError(t, os.WriteFile(filepath.Join(root, "note.txt"), []byte("hi"), 0o644))
+	fsCtx := tools.WithWorkRoot(ctx, root)
+	fsCtx = tools.WithVCS(fsCtx, scope)
+	fsCtx = tools.WithProfile(fsCtx, guard.PermissionProfile{
+		Tools: guard.ToolsPerm{Allow: []string{"fs_*"}},
+		FS:    guard.FSPerm{Read: []string{root + "/**"}, Write: []string{root + "/**"}},
+	})
+
+	out, err := fsTools.Write.InvokableRun(fsCtx, `{"path":"note.txt","content":"hi"}`)
+	require.NoError(t, err)
+	require.NotContainsf(t, out, "denied", "fs_write was denied: %s", out)
+	out, err = fsTools.Edit.InvokableRun(fsCtx,
+		`{"path":"pre.txt","old_string":"base","new_string":"edited"}`)
+	require.NoError(t, err)
+	require.NotContainsf(t, out, "denied", "fs_edit was denied: %s", out)
+
 	settle(nil) // 正常结束 → 合并
 
 	states, err := o.vcsScope.VCS.ListWorktreeStates(o.vcsScope.RepoID)
@@ -95,6 +128,17 @@ func TestIsolatedSubAgentWorktreeIsSettledOnExit(t *testing.T) {
 		require.NotEqualf(t, "active", string(s.Lifecycle),
 			"worktree %s was left active; orphan worktrees accumulate until GC", s.ID)
 	}
+
+	added, err := os.ReadFile(filepath.Join(o.workRoot, "note.txt"))
+	require.NoErrorf(t, err,
+		"the isolated sub-agent's new file never reached the main working copy; "+
+			"a merge that only moves main_head in SQLite discards every isolated agent's output")
+	require.Equal(t, "hi", string(added))
+
+	edited, err := os.ReadFile(filepath.Join(o.workRoot, "pre.txt"))
+	require.NoError(t, err)
+	require.Equal(t, "edited", string(edited),
+		"the isolated sub-agent's edit to an existing tracked file never reached the main working copy")
 }
 
 // ledger: A2/W-A-08#4 子代理失败时其 worktree 被标记为放弃而不是合并
@@ -170,4 +214,46 @@ func TestIsolatedSubAgentFSWriteLandsInItsOwnWorktree(t *testing.T) {
 	require.Contains(t, pending, "note.txt")
 
 	settle(nil)
+}
+
+// TestManagedSubAgentFailureIsAnError pins a deliberate behaviour change that
+// rode along with W-A-08 and belonged to no acceptance clause: a managed
+// sub-agent that reaches a non-completed terminal state now makes
+// runSubAgentTurn return an error instead of handing back its partial text
+// with err == nil.
+//
+// It is load-bearing for the isolated path (settle keys off the named error
+// return; without it a failed sub-agent's half-finished worktree gets merged
+// into main), but it was NOT narrowed to that path, because the old behaviour
+// was wrong everywhere: agent_spawn/agent_resume reported success on a run
+// that had failed or been cancelled. The general form is kept on purpose, so
+// it gets a test that runs WITHOUT a VCS scope — the non-isolated shape — or
+// a later "narrow this to isolation" edit would stay green.
+func TestManagedSubAgentFailureIsAnError(t *testing.T) {
+	mdl := einollm.NewFakeModel([]string{"ok"}, nil)
+	o, err := New(Config{Model: mdl, WorkRoot: t.TempDir()})
+	require.NoError(t, err)
+	require.Nil(t, o.vcsScope.VCS, "this test must exercise the non-isolated shape")
+
+	mgr := registry.NewManager(registry.NewManagerOpts{
+		RootContext: context.Background(),
+		Path:        filepath.Join(t.TempDir(), "agents.json"),
+	})
+	t.Cleanup(mgr.Close)
+
+	ctx := tools.WithManager(context.Background(), mgr)
+	ctx = tools.WithManagedRunnerFactory(ctx,
+		func(_ []string, _ string) registry.Runner {
+			return registry.RunnerFunc(func(context.Context, string, string) (string, error) {
+				return "half an answer", errors.New("boom")
+			})
+		})
+
+	out, err := o.runSubAgentTurn(ctx, "do the thing", nil, "", 0)
+
+	require.Error(t, err,
+		"a failed managed sub-agent reported success; the parent then treats "+
+			"partial output as a finished delegation")
+	require.Contains(t, err.Error(), "boom")
+	require.Empty(t, out)
 }

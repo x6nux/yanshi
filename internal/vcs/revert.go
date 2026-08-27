@@ -91,7 +91,30 @@ func (v *VCS) materializeMainLockedWithHook(
 
 	targetTree := v.commitTree(commitID)
 	prevTree := v.commitTree(r.MainHead)
-	paths := sortedTreeUnion(prevTree, targetTree)
+	return v.applyTreePathsLocked(
+		r.RootPath, targetTree, sortedTreeUnion(prevTree, targetTree), hook,
+	)
+}
+
+// applyTreePathsLocked 把 paths 里的每条路径写成它在 tree 里的状态:tree 里有
+// 就写入对应 blob 的内容,tree 里没有就从工作副本删除。调用方必须已经持有该
+// repo 的写车道(lockRepo),本函数不再取锁 —— 它同时服务于两个已经持锁的
+// 调用者。
+//
+// 抽出来是因为有两个调用点,而它们要物化的路径集合不同:
+//
+//   - materializeMainLockedWithHook 传 prev ∪ target 的全集,这是回滚语义:
+//     工作副本要变成那个 commit 的样子,一条不多一条不少。
+//   - mergeToMainLocked 只传「合并真正改动了的路径」。它不能传全集:main 的
+//     工作副本上通常带着还没 CommitMain 的编辑(fs_write 写盘 + 记进未提交
+//     changeset,main_head 里没有),把整棵 main_head 树刷下去会把这些编辑
+//     连同 mtime 一起抹掉,并且在大仓上把每次子代理合并变成一次全仓重写。
+//
+// paths 的顺序决定了 mutation 的顺序,调用方给的都是排序过的切片,所以失败
+// 现场对测试是确定性的。
+func (v *VCS) applyTreePathsLocked(
+	root string, tree map[string]string, paths []string, hook materializeHook,
+) error {
 	for _, path := range paths {
 		if err := validateRelPath(path); err != nil {
 			return err
@@ -99,8 +122,12 @@ func (v *VCS) materializeMainLockedWithHook(
 	}
 
 	// Resolve every target blob before the first filesystem mutation.
-	targetBytes := make(map[string][]byte, len(targetTree))
-	for path, hash := range targetTree {
+	targetBytes := make(map[string][]byte, len(paths))
+	for _, path := range paths {
+		hash, ok := tree[path]
+		if !ok {
+			continue
+		}
 		content, err := v.getBlob(hash)
 		if err != nil {
 			return fmt.Errorf("vcs: materialize: blob %s for %s: %w", hash, path, err)
@@ -111,31 +138,29 @@ func (v *VCS) materializeMainLockedWithHook(
 	// V6: every mutation below goes through a confined root handle instead of a
 	// filepath.Join'd absolute path, so a working-copy directory swapped to a
 	// symlink cannot redirect a materialize out of the repo.
-	workRoot, err := openWorkRoot(r.RootPath)
+	workRoot, err := openWorkRoot(root)
 	if err != nil {
 		return err
 	}
 	defer workRoot.Close()
 
 	// D1: snapshot all tracked paths that this operation may delete/replace.
-	snapshot, err := snapshotWorkingFiles(r.RootPath, paths)
+	snapshot, err := snapshotWorkingFiles(root, paths)
 	if err != nil {
 		return fmt.Errorf("vcs: materialize: snapshot: %w", err)
 	}
 	compensate := func(cause error) error {
-		if rollbackErr := restoreWorkingFiles(r.RootPath, paths, snapshot); rollbackErr != nil {
+		if rollbackErr := restoreWorkingFiles(root, paths, snapshot); rollbackErr != nil {
 			return errors.Join(cause,
 				fmt.Errorf("vcs: materialize: compensation failed: %w", rollbackErr))
 		}
 		return cause
 	}
 
-	// Delete prev-only paths first, in deterministic order.
+	// Delete the paths the target tree does not carry, first, in the order the
+	// caller gave.
 	for _, path := range paths {
-		if _, wasPresent := prevTree[path]; !wasPresent {
-			continue
-		}
-		if _, remains := targetTree[path]; remains {
+		if _, remains := tree[path]; remains {
 			continue
 		}
 		if hook != nil {
@@ -148,7 +173,7 @@ func (v *VCS) materializeMainLockedWithHook(
 		}
 	}
 
-	// Replace target paths. sortedTreeUnion keeps order deterministic for tests.
+	// Replace the rest.
 	for _, path := range paths {
 		content, ok := targetBytes[path]
 		if !ok {
@@ -168,6 +193,19 @@ func (v *VCS) materializeMainLockedWithHook(
 		}
 	}
 	return nil
+}
+
+// changedTreePaths 返回 before → after 之间内容或存在性发生了变化的路径,
+// 排好序。空 hash 同时表示「树里没有这条路径」,所以一次 != 比较就同时覆盖了
+// 新增、删除和修改三种情况。
+func changedTreePaths(before, after map[string]string) []string {
+	var out []string
+	for _, p := range sortedTreeUnion(before, after) {
+		if before[p] != after[p] {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func sortedTreeUnion(a, b map[string]string) []string {

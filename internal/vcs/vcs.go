@@ -1202,6 +1202,14 @@ func (v *VCS) Diff(repoID, refA, refB string) ([]FileDiff, error) {
 // Fast-forward: when main_head == worktree.base_commit (main hasn't moved since
 // the branch), ours==base, so every change is unambiguously theirs and there can
 // be no conflict — the merged tree is exactly theirs.
+//
+// A successful merge also writes the merged bytes into main's WORKING COPY —
+// only the paths the merge actually changed, never the whole tree. See the
+// applyTreePathsLocked call in mergeToMainLocked for why both halves of that
+// sentence are load-bearing. A non-nil error with a non-empty mergeCommitID
+// means exactly that: the commit is durable and main_head has moved, but the
+// files on disk are stale, and MaterializeMain(repoID, mergeCommitID) is the
+// recovery.
 func (v *VCS) MergeToMain(wtID, author string, force bool) (string, []string, error) {
 	wt, err := v.getWorktree(wtID)
 	if err != nil {
@@ -1289,6 +1297,41 @@ func (v *VCS) mergeToMainLocked(
 		return nil
 	}); err != nil {
 		return "", conflicts, err
+	}
+	// W-A-08 round 2: put the merged bytes in the WORKING COPY.
+	//
+	// Until this call existed, MergeToMain wrote a commit row and moved
+	// main_head and stopped — the merge was real inside SQLite and invisible
+	// everywhere else. MaterializeMain, the one function in this package that
+	// touches main's working copy, had zero production callers, so every
+	// caller of MergeToMain (sub-agent settle, acp_delegate, goalloop's
+	// worker, the vcs_merge tool, the VCS MCP server) reported a successful
+	// merge while the user, the compiler and `git status` saw nothing. For
+	// isolated sub-agents that turned "concurrent agents clobber each other"
+	// into "no isolated agent's output lands at all", which is strictly worse.
+	//
+	// Only the DELTA is materialized (see applyTreePathsLocked): main's
+	// working copy normally carries edits that are recorded in the uncommitted
+	// changeset but not in main_head, and a full-tree materialize would revert
+	// every one of them.
+	//
+	// Ordering/locking: this runs INSIDE the repo lane we already hold, so it
+	// calls the locked core. MaterializeMain (the public entry) takes the same
+	// lane and lockRepo's sync.Mutex is not reentrant — calling it from here
+	// would deadlock.
+	//
+	// On failure the commit is already durable and main_head has already
+	// moved, so the merge is not undone; the error tells the caller the
+	// working copy is stale, and MaterializeMain(repoID, cid) is the recovery.
+	// MarkWorktreeMerged is deliberately NOT reached in that case: a caller
+	// that settles on error abandons the worktree, and a ledger reading
+	// "merged" next to an abandoned branch is the more confusing of the two.
+	if err := v.applyTreePathsLocked(
+		r.RootPath, merged, changedTreePaths(ours, merged), nil,
+	); err != nil {
+		return cid, conflicts, fmt.Errorf(
+			"vcs: merge %s: commit %s recorded but working copy not updated: %w",
+			wtID, cid, err)
 	}
 	// V7: record that this branch reached main. The ledger is updated by the
 	// operation that makes the fact true, not by a caller who might forget —

@@ -993,6 +993,21 @@ func (o *Orchestrator) workRootForSubAgentTurn(ctx context.Context, agent string
 //     side's edits, which is exactly the data loss isolation exists to
 //     prevent. Two concurrent sub-agents editing the same file is an
 //     expected outcome of this mechanism, not a bug in it.
+//
+// KNOWN CEILING — an isolated sub-agent cannot see UNTRACKED state.
+// vcs.AddWorktree seeds the worktree from main_head's tracked tree, so
+// anything that exists in the live work root without being in the VCS is
+// absent from it: build output, `npm install` results, generated code — in
+// short, everything shell_run produced rather than an fs_* tool. An isolated
+// agent asked to read those files finds nothing.
+//
+// Not fixed, deliberately: making the worktree a full copy of the work root
+// would copy node_modules once per sub-agent, and copying "just the untracked
+// files" needs an ignore policy that would drift from the VCS's own. Isolation
+// is opt-in per dispatch point precisely so this trade can be made per call —
+// a fan-out whose steps depend on untracked build state should not request it.
+// MergeToMain does materialize the merged bytes back into the work root, so
+// the reverse direction (the agent's own output reaching the user) is closed.
 func (o *Orchestrator) acquireSubAgentWorkspace(ctx context.Context, agent string) (string, tools.VCSScope, func(error)) {
 	noop := func(error) {}
 	scopeFallback := func() tools.VCSScope {
@@ -1115,6 +1130,21 @@ func (o *Orchestrator) runSubAgentTurn(ctx context.Context, prompt string, allow
 			// Terminal must be checked explicitly, or every managed failure
 			// would report success with empty content AND settle would merge
 			// a failed/partial worktree instead of abandoning it.
+			//
+			// DELIBERATE BEHAVIOUR CHANGE, and it is NOT scoped to the
+			// isolated path. Before this check a failed or cancelled managed
+			// sub-agent returned its partial text with a nil error, so every
+			// agent_spawn/agent_resume reported success on a run that had
+			// failed — this repo's "failure disguised as success" shape.
+			// Keeping it general costs one thing worth naming: agent.go turns
+			// the error into an Err chunk, which advances the
+			// five-consecutive-failure breaker in GuardedTool.InvokableRun
+			// and can abort the parent turn. That is the correct reading of
+			// five sub-agents in a row failing, so the breaker interaction is
+			// accepted rather than narrowed away.
+			// TestManagedSubAgentFailureIsAnError pins the error itself; the
+			// breaker is that error's documented downstream consequence, not a
+			// second mechanism.
 			if res.Terminal != registry.StatusCompleted {
 				msg := res.Error
 				if msg == "" {
