@@ -58,6 +58,29 @@ func LeafSubAgentTools(ctx context.Context) bool {
 
 type leafSubAgentToolsKey struct{}
 
+type subAgentIsolationKey struct{}
+
+// WithSubAgentIsolation marks a sub-agent dispatch as requiring an isolated
+// worktree instead of the shared work root. Set by the concurrent fan-out
+// points (agent_dag's executeLevel, agent_batch's per-row spawn) where two
+// sub-agents running at once would otherwise write into the same directory
+// and silently clobber each other's edits. Not set by agent_start/agent_spawn
+// or any other single-shot delegation: allocating a worktree per call there
+// would fill ~/.yanshi/worktrees/ for no concurrency benefit.
+func WithSubAgentIsolation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, subAgentIsolationKey{}, true)
+}
+
+// SubAgentIsolationRequested reports whether the caller asked for an isolated
+// worktree. orchestrator.acquireSubAgentWorkspace reads this; when false it
+// falls back to whatever work root/VCS scope are already bound on ctx (or the
+// orchestrator's own fields), which is what keeps every non-concurrent
+// delegation path byte-for-byte unchanged.
+func SubAgentIsolationRequested(ctx context.Context) bool {
+	v, _ := ctx.Value(subAgentIsolationKey{}).(bool)
+	return v
+}
+
 // SubAgentEmit forwards a sub-agent's streamed ServerFrame (thinking,
 // tool_call, tool_result, agent_chunk, …) to the parent transport so the user
 // can watch the sub-agent's ReAct loop live instead of seeing only its final
@@ -199,6 +222,14 @@ type ManagedSubAgentResult struct {
 	AgentID  string
 	Usage    registry.Usage
 	Terminal registry.Status
+	// Error is the registry.Record's failure message when Terminal is not
+	// StatusCompleted. mgr.Wait only errors on wait mechanics (context
+	// cancellation, timeout, unknown id) — a sub-agent that ran to a failed/
+	// cancelled/interrupted terminal state returns (res, nil) from
+	// ManagedSubAgentRun, so a caller MUST check Terminal (not just the
+	// returned error) to detect that outcome. Error carries the reason so
+	// that check doesn't have to discard information to make it.
+	Error string
 }
 
 // ---------------------------------------------------------------------------
@@ -310,7 +341,7 @@ func ManagedSubAgentRun(ctx context.Context, spec ManagedSubAgentSpec) (ManagedS
 	final, werr := mgr.Wait(ctx, id, registry.WaitOpts{})
 	unpark()
 	res := ManagedSubAgentResult{
-		Text: final.Result, AgentID: final.ID, Usage: final.Usage, Terminal: final.Status,
+		Text: final.Result, AgentID: final.ID, Usage: final.Usage, Terminal: final.Status, Error: final.Error,
 	}
 	if werr != nil && final.ID == "" {
 		return res, werr

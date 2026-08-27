@@ -4,6 +4,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -34,6 +35,7 @@ import (
 	"github.com/x6nux/yanshi/internal/task/work"
 	"github.com/x6nux/yanshi/internal/toolreg"
 	"github.com/x6nux/yanshi/internal/tools"
+	"github.com/x6nux/yanshi/internal/vcs"
 )
 
 // BaseTool is an alias for the tool interface the orchestrator accepts.
@@ -926,7 +928,131 @@ func contains(s []string, v string) bool {
 }
 
 // runSubAgentTurn builds a nested orchestrator and runs one turn.
-func (o *Orchestrator) runSubAgentTurn(ctx context.Context, prompt string, allowed []string, instructionOverride string, depth int) (string, error) {
+// resolveSharedWorkRoot resolves the work root a non-isolated sub-agent turn
+// should execute against: whatever WithWorkRoot already put on ctx, falling
+// back to the orchestrator's own workRoot when ctx carries none.
+// bindExecutionContext binds o.workRoot onto ctx for every top-level turn, so
+// for an ordinary (non-isolated) call this returns exactly o.workRoot — no
+// behavior change from before isolated sub-agents existed.
+//
+// It does double duty for the isolated case too: managedTurnRunner.Run binds
+// its own (possibly isolated) workRoot field onto ctx via WithWorkRoot before
+// making its recursive call into runSubAgentTurn (see that method's doc
+// comment). Reading ctx first, rather than going straight to o.workRoot, is
+// what lets that recursive second entry pick up the SAME root the first
+// entry already resolved instead of silently falling back to the shared one.
+func (o *Orchestrator) resolveSharedWorkRoot(ctx context.Context) string {
+	if root := tools.WorkRootFromContext(ctx); root != "" {
+		return root
+	}
+	return o.workRoot
+}
+
+// workRootForSubAgentTurn resolves and immediately settles a sub-agent
+// workspace, discarding the VCS scope: it exists for tests and diagnostics
+// that only care which work root a given ctx/agent pairing would produce,
+// without driving a full runSubAgentTurn. Settling with nil merges an
+// isolated worktree that received no edits as a truthful empty no-op (see
+// acquireSubAgentWorkspace's doc comment on CommitWorktree/ErrNoChanges).
+func (o *Orchestrator) workRootForSubAgentTurn(ctx context.Context, agent string) string {
+	root, _, settle := o.acquireSubAgentWorkspace(ctx, agent)
+	settle(nil)
+	return root
+}
+
+// acquireSubAgentWorkspace resolves the work root and VCS scope a single
+// runSubAgentTurn invocation should run against, and returns a settle func
+// the caller MUST invoke exactly once (via defer, keyed off the turn's own
+// named error return) with the turn's outcome.
+//
+// Isolation is opt-in via tools.WithSubAgentIsolation, set only at the
+// concurrent fan-out points — agent_dag's executeLevel and agent_batch's
+// per-row spawn (via AgentTools/BatchTools) — where two sub-agents can
+// genuinely run at the same time and would otherwise share, and clobber, the
+// same work root. Every other caller (agent_start/agent_spawn, and the
+// recursive second entry runSubAgentTurn reaches through
+// managedTurnRunner.Run) takes the "not requested" branch below, which is a
+// pure passthrough to resolveSharedWorkRoot/the ambient VCS scope:
+// allocating a worktree per single-shot delegation would fill
+// ~/.yanshi/worktrees/ for no concurrency benefit.
+//
+// settle's contract:
+//   - Isolation not requested, or requested with nothing to isolate against
+//     (no VCS configured — every --fake-model run and most unit tests):
+//     settle is a no-op.
+//   - runErr != nil: marks the worktree abandoned. A failed sub-agent's
+//     partial edits must never reach main.
+//   - runErr == nil: first folds the worktree's pending edits into a commit
+//     (CommitWorktree — fs_edit only ever leaves them as uncommitted state;
+//     ErrNoChanges just means the sub-agent touched nothing and is not a
+//     failure), then merges the worktree to main (MergeToMain records
+//     WorktreeMerged on success itself; no separate call needed here). A
+//     merge conflict is NOT reported back as a turn error — the sub-agent's
+//     own work succeeded — but the conflicting worktree is abandoned rather
+//     than force-merged: forcing on conflict would silently discard one
+//     side's edits, which is exactly the data loss isolation exists to
+//     prevent. Two concurrent sub-agents editing the same file is an
+//     expected outcome of this mechanism, not a bug in it.
+func (o *Orchestrator) acquireSubAgentWorkspace(ctx context.Context, agent string) (string, tools.VCSScope, func(error)) {
+	noop := func(error) {}
+	scopeFallback := func() tools.VCSScope {
+		if scope, ok := tools.VCSScopeFromContext(ctx); ok {
+			return scope
+		}
+		return o.vcsScope
+	}
+	if !tools.SubAgentIsolationRequested(ctx) {
+		return o.resolveSharedWorkRoot(ctx), scopeFallback(), noop
+	}
+	base := o.vcsScope
+	if base.VCS == nil || base.RepoID == "" {
+		return o.resolveSharedWorkRoot(ctx), scopeFallback(), noop
+	}
+	wt, err := base.VCS.AddWorktree(base.RepoID, []string{agent})
+	if err != nil {
+		// Degrade to the shared root rather than failing the whole sub-agent
+		// turn over an isolation nicety.
+		obslog.WarnErr(ctx, "sub-agent worktree allocation failed; falling back to shared work root", err)
+		return o.resolveSharedWorkRoot(ctx), scopeFallback(), noop
+	}
+	scope := tools.VCSScope{VCS: base.VCS, RepoID: base.RepoID, WorktreeID: wt.ID, Agent: agent}
+	settle := func(runErr error) {
+		if runErr != nil {
+			if aerr := base.VCS.MarkWorktreeAbandoned(wt.ID); aerr != nil {
+				obslog.WarnErr(ctx, "sub-agent worktree: mark abandoned after failure", aerr)
+			}
+			return
+		}
+		// fs_edit only records edits into the worktree's uncommitted changeset
+		// (RecordEditWorktree); MergeToMain diffs against the worktree's last
+		// COMMIT (worktreeTip), not its uncommitted state. Skipping this fold
+		// would merge nothing every time, silently discarding a successful
+		// sub-agent's edits — the same data loss isolation exists to prevent,
+		// just moved one step later. ErrNoChanges (the sub-agent edited
+		// nothing) is expected and not a failure; mirrors acpdelegate.go's
+		// mergeWorktree, which is the existing precedent for this sequence.
+		if _, cerr := base.VCS.CommitWorktree(wt.ID, agent, "subagent: "+agent); cerr != nil && !errors.Is(cerr, vcs.ErrNoChanges) {
+			obslog.WarnErr(ctx, "sub-agent worktree: commit failed, abandoning", cerr)
+			if aerr := base.VCS.MarkWorktreeAbandoned(wt.ID); aerr != nil {
+				obslog.WarnErr(ctx, "sub-agent worktree: mark abandoned after commit failure", aerr)
+			}
+			return
+		}
+		if _, conflicts, merr := base.VCS.MergeToMain(wt.ID, agent, false); merr != nil {
+			if len(conflicts) > 0 {
+				obslog.WarnErr(ctx, fmt.Sprintf("sub-agent worktree %s: merge conflicts %v, abandoning", wt.ID, conflicts), merr)
+			} else {
+				obslog.WarnErr(ctx, "sub-agent worktree: merge to main failed, abandoning", merr)
+			}
+			if aerr := base.VCS.MarkWorktreeAbandoned(wt.ID); aerr != nil {
+				obslog.WarnErr(ctx, "sub-agent worktree: mark abandoned after merge failure", aerr)
+			}
+		}
+	}
+	return wt.Path, scope, settle
+}
+
+func (o *Orchestrator) runSubAgentTurn(ctx context.Context, prompt string, allowed []string, instructionOverride string, depth int) (out string, err error) {
 	if depth >= tools.MaxSubAgentDepth {
 		return "", fmt.Errorf("sub-agent nesting depth %d exceeds limit %d", depth+1, tools.MaxSubAgentDepth)
 	}
@@ -934,6 +1060,15 @@ func (o *Orchestrator) runSubAgentTurn(ctx context.Context, prompt string, allow
 	if tools.LeafSubAgentTools(ctx) {
 		selected = withoutOrchestrationTools(selected)
 	}
+
+	// Resolve the work root/VCS scope for THIS invocation once, and settle it
+	// (merge or abandon — see acquireSubAgentWorkspace's doc comment) exactly
+	// once no matter which return path below fires. Named returns make that a
+	// single defer instead of a runErr variable duplicated at every return
+	// site, which is what keeps every failure path — including ones added
+	// later — routed through settle without having to remember to.
+	root, scope, settle := o.acquireSubAgentWorkspace(ctx, "subagent")
+	defer func() { settle(err) }()
 
 	// Route through the Manager when one is bound. This is what puts a
 	// delegated turn under the concurrency cap: run inline and the sub-agent
@@ -950,15 +1085,42 @@ func (o *Orchestrator) runSubAgentTurn(ctx context.Context, prompt string, allow
 	// most tests see.
 	if mgr := tools.ManagerFromContext(ctx); mgr != nil {
 		if factory := tools.ManagedRunnerFactoryFromContext(ctx); factory != nil {
-			res, err := tools.ManagedSubAgentRun(ctx, tools.ManagedSubAgentSpec{
+			runner := factory(allowed, instructionOverride)
+			// The factory closure captures workRoot/vcsScope ONCE per top-level
+			// turn (see bindManagedRunner), so every concurrent DAG step/batch
+			// row would otherwise get the same (non-isolated) values. Mutating
+			// THIS call's freshly-constructed *managedTurnRunner in place is
+			// safe: factory returns a new pointer per call, so concurrent
+			// callers never share one. managedTurnRunner.Run rebinds these
+			// fields onto its own (Manager-detached) ctx before recursing back
+			// into runSubAgentTurn, which is how the isolated root/scope
+			// survives that detachment (see resolveSharedWorkRoot).
+			if mtr, ok := runner.(*managedTurnRunner); ok {
+				mtr.workRoot = root
+				mtr.vcsScope = scope
+			}
+			res, rerr := tools.ManagedSubAgentRun(ctx, tools.ManagedSubAgentSpec{
 				ParentID:     registry.CurrentAgentID(ctx),
 				Prompt:       prompt,
 				AllowedTools: allowed,
 				Instruction:  instructionOverride,
-				Runner:       factory(allowed, instructionOverride),
+				Runner:       runner,
 			})
-			if err != nil {
-				return "", err
+			if rerr != nil {
+				return "", rerr
+			}
+			// mgr.Wait only errors on WAIT mechanics (context cancellation,
+			// timeout, unknown id) — a sub-agent that ran to a failed,
+			// cancelled, or interrupted terminal state returns (res, nil).
+			// Terminal must be checked explicitly, or every managed failure
+			// would report success with empty content AND settle would merge
+			// a failed/partial worktree instead of abandoning it.
+			if res.Terminal != registry.StatusCompleted {
+				msg := res.Error
+				if msg == "" {
+					msg = fmt.Sprintf("sub-agent ended with status %s", res.Terminal)
+				}
+				return "", fmt.Errorf("sub-agent: %s", msg)
 			}
 			return res.Text, nil
 		}
@@ -980,14 +1142,15 @@ func (o *Orchestrator) runSubAgentTurn(ctx context.Context, prompt string, allow
 		}
 	}
 
-	sub, err := New(Config{
+	sub, serr := New(Config{
 		Model:       o.rawModel, // 用未包裹的 rawModel，让子 Orchestrator 独立构建 compaction
 		Tools:       selected,
 		Profile:     o.profile,
 		MaxIters:    o.maxIters,
 		Compaction:  o.compaction,
 		Instruction: subInstruction,
-		WorkRoot:    o.workRoot,
+		WorkRoot:    root,
+		VCSScope:    scope,
 		LSP:         o.lspMgr,
 		// W-A-02 fix round 2: without this the sub-Orchestrator built here has
 		// a nil redactor and bindExecutionContext's `if o.redactor != nil`
@@ -1000,10 +1163,10 @@ func (o *Orchestrator) runSubAgentTurn(ctx context.Context, prompt string, allow
 		// spawns a sub-agent and gets a full one.
 		LoopGuard: o.loopGuard,
 	})
-	if err != nil {
+	if serr != nil {
 		resp, gerr := o.model.Generate(ctx, []*schema.Message{schema.UserMessage(prompt)})
 		if gerr != nil || resp == nil {
-			return "", fmt.Errorf("sub-agent: build failed (%w) and fallback generate failed", err)
+			return "", fmt.Errorf("sub-agent: build failed (%w) and fallback generate failed", serr)
 		}
 		return resp.Content, nil
 	}
@@ -1026,7 +1189,7 @@ func (o *Orchestrator) runSubAgentTurn(ctx context.Context, prompt string, allow
 	displayOf := make(map[string]string)
 	for _, tl := range selected {
 		if t, ok := tl.(tools.Tool); ok {
-			if info, err := t.Info(ctx); err == nil && info != nil {
+			if info, ierr := t.Info(ctx); ierr == nil && info != nil {
 				displayOf[info.Name] = t.DisplayName()
 			}
 		}

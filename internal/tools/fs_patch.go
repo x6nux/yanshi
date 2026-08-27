@@ -55,7 +55,7 @@ func (f *FSTools) runPatch(ctx context.Context, argsJSON string) (string, error)
 		return "", err
 	}
 
-	staged, err := f.preparePatch(ops)
+	staged, err := f.preparePatch(ctx, ops)
 	if err != nil {
 		return "", fmt.Errorf("apply_patch: %w", err)
 	}
@@ -121,7 +121,7 @@ func opWritePaths(ops []patchOp) []string {
 // context not found, delete/move source missing, move destination exists) aborts
 // the whole batch — this is the prepare half of atomicity (no file is written
 // until every op validates).
-func (f *FSTools) preparePatch(ops []patchOp) ([]stagedChange, error) {
+func (f *FSTools) preparePatch(ctx context.Context, ops []patchOp) ([]stagedChange, error) {
 	type entry struct {
 		rel         string // first raw path that referenced this abs (display)
 		origExisted bool
@@ -147,7 +147,7 @@ func (f *FSTools) preparePatch(ops []patchOp) ([]stagedChange, error) {
 		order = append(order, abs)
 		return e
 	}
-	resolve := f.abs
+	resolve := func(p string) (string, error) { return f.abs(ctx, p) }
 
 	for i, op := range ops {
 		switch op.kind {

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -135,7 +136,7 @@ func TestPreparePatch_AddNewFile(t *testing.T) {
 	tmp := t.TempDir()
 	ft := NewFSTools(tmp)
 	ops := []patchOp{{kind: opAdd, path: "new.txt", addBody: "content"}}
-	staged, err := ft.preparePatch(ops)
+	staged, err := ft.preparePatch(context.Background(), ops)
 	require.NoError(t, err)
 	require.Len(t, staged, 1)
 	assert.Equal(t, "new.txt", staged[0].rel)
@@ -149,7 +150,7 @@ func TestPreparePatch_AddExistingFails(t *testing.T) {
 	require.NoError(t, os.WriteFile(existing, []byte("old"), 0o644))
 	ft := NewFSTools(tmp)
 	ops := []patchOp{{kind: opAdd, path: "exists.txt", addBody: "new"}}
-	_, err := ft.preparePatch(ops)
+	_, err := ft.preparePatch(context.Background(), ops)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already exists")
 }
@@ -158,7 +159,7 @@ func TestPreparePatch_UpdateNonExistingFails(t *testing.T) {
 	tmp := t.TempDir()
 	ft := NewFSTools(tmp)
 	ops := []patchOp{{kind: opUpdate, path: "nope.txt", updOld: "a", updNew: "b"}}
-	_, err := ft.preparePatch(ops)
+	_, err := ft.preparePatch(context.Background(), ops)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not exist")
 }
@@ -167,7 +168,7 @@ func TestPreparePatch_DeleteNonExistingFails(t *testing.T) {
 	tmp := t.TempDir()
 	ft := NewFSTools(tmp)
 	ops := []patchOp{{kind: opDelete, path: "nope.txt"}}
-	_, err := ft.preparePatch(ops)
+	_, err := ft.preparePatch(context.Background(), ops)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not exist")
 }
@@ -176,7 +177,7 @@ func TestPreparePatch_MoveNonExistingFails(t *testing.T) {
 	tmp := t.TempDir()
 	ft := NewFSTools(tmp)
 	ops := []patchOp{{kind: opMove, from: "src.txt", path: "dst.txt"}}
-	_, err := ft.preparePatch(ops)
+	_, err := ft.preparePatch(context.Background(), ops)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not exist")
 }
@@ -189,7 +190,7 @@ func TestPreparePatch_MoveToExistingFails(t *testing.T) {
 	require.NoError(t, os.WriteFile(dst, []byte("existing"), 0o644))
 	ft := NewFSTools(tmp)
 	ops := []patchOp{{kind: opMove, from: "src.txt", path: "dst.txt"}}
-	_, err := ft.preparePatch(ops)
+	_, err := ft.preparePatch(context.Background(), ops)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already exists")
 }
@@ -200,7 +201,7 @@ func TestPreparePatch_SuccessfulMove(t *testing.T) {
 	require.NoError(t, os.WriteFile(src, []byte("data"), 0o644))
 	ft := NewFSTools(tmp)
 	ops := []patchOp{{kind: opMove, from: "src.txt", path: "dst.txt"}}
-	staged, err := ft.preparePatch(ops)
+	staged, err := ft.preparePatch(context.Background(), ops)
 	require.NoError(t, err)
 	require.Len(t, staged, 2) // delete src + add dst
 }
@@ -211,7 +212,7 @@ func TestPreparePatch_UpdateSuccess(t *testing.T) {
 	require.NoError(t, os.WriteFile(existing, []byte("hello world"), 0o644))
 	ft := NewFSTools(tmp)
 	ops := []patchOp{{kind: opUpdate, path: "edit.txt", updOld: "world", updNew: "there"}}
-	staged, err := ft.preparePatch(ops)
+	staged, err := ft.preparePatch(context.Background(), ops)
 	require.NoError(t, err)
 	require.Len(t, staged, 1)
 	assert.Equal(t, "hello there", string(staged[0].final))
@@ -223,7 +224,7 @@ func TestPreparePatch_DeleteSuccess(t *testing.T) {
 	require.NoError(t, os.WriteFile(existing, []byte("content"), 0o644))
 	ft := NewFSTools(tmp)
 	ops := []patchOp{{kind: opDelete, path: "del.txt"}}
-	staged, err := ft.preparePatch(ops)
+	staged, err := ft.preparePatch(context.Background(), ops)
 	require.NoError(t, err)
 	require.Len(t, staged, 1)
 	assert.Nil(t, staged[0].final)
@@ -239,7 +240,7 @@ func TestPreparePatch_NoOpUpdate(t *testing.T) {
 		{kind: opUpdate, path: "same.txt", updOld: "abc", updNew: "xyz"},
 		{kind: opUpdate, path: "same.txt", updOld: "xyz", updNew: "abc"},
 	}
-	staged, err := ft.preparePatch(ops)
+	staged, err := ft.preparePatch(context.Background(), ops)
 	require.NoError(t, err)
 	assert.Len(t, staged, 0) // no net change
 }
@@ -251,7 +252,7 @@ func TestPreparePatch_CreateThenDelete(t *testing.T) {
 		{kind: opAdd, path: "temp.txt", addBody: "data"},
 		{kind: opDelete, path: "temp.txt"},
 	}
-	staged, err := ft.preparePatch(ops)
+	staged, err := ft.preparePatch(context.Background(), ops)
 	require.NoError(t, err)
 	assert.Len(t, staged, 0) // created then deleted = no net change
 }
@@ -260,7 +261,7 @@ func TestPreparePatch_UnknownKind(t *testing.T) {
 	tmp := t.TempDir()
 	ft := NewFSTools(tmp)
 	ops := []patchOp{{kind: 99, path: "x.txt"}}
-	_, err := ft.preparePatch(ops)
+	_, err := ft.preparePatch(context.Background(), ops)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown kind")
 }

@@ -57,7 +57,14 @@ import (
 // store.ApplyDistillation shipped complete with no caller. Wires /distill
 // (interactive) plus an optional post-turn pass behind
 // memory_distill_after_turn (default off).
-const ledgerSize = 69
+//
+// 2026-08-28: +1 for A2/W-A-08, same package — agent_dag/agent_batch's
+// concurrently-dispatched sub-agents shared one work root and silently
+// overwrote each other's edits (data loss, not a missing feature). W-A-07
+// (sandbox path expansion, audit F4) was reviewed and rejected — no
+// corresponding code path exists — so W-A's item count goes 06 -> 08, not
+// 06 -> 07; this is the deliberate ID gap, not a skipped entry.
+const ledgerSize = 70
 
 type ledgerEntry struct {
 	ID         string `yaml:"id"`

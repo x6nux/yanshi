@@ -1721,3 +1721,19 @@
     "3": "internal/llm/eino::TestWatchdogLongStreamWithContentIsNotKilled"
     "4": "internal/llm/eino::TestWatchdogZeroTimeoutsDisableIt"
 
+- id: "A2/W-A-08"
+  package: "W-A"
+  verdict: done
+  title: "并发子代理的 worktree 隔离"
+  # 审计列为 A 档（缺失特性），本 spec 判为 W-A（已交付功能坏了）：agent_dag
+  # 与 agent_batch 明确支持并发派发，并发下互相覆盖对方的编辑是数据损坏。
+  # 子句 2 是护栏——单发 agent_spawn 每次开 worktree 会把 ~/.yanshi/worktrees/
+  # 填满，那是把一个损坏换成另一个。子句 4 钉住失败路径：失败的子代理必须
+  # 被放弃而不是合并，否则半成品编辑落到 main，比不隔离更糟。
+  acceptance: "并发子代理各自在独立 worktree 中编辑且互不覆盖；未请求隔离的子代理行为与本改动前一致；子代理结束后其 worktree 被合并回主干或显式丢弃；子代理失败时其 worktree 被标记为放弃而不是合并"
+  evidence:
+    "1": "internal/agent/orchestrator::TestConcurrentIsolatedSubAgentsDoNotShareAWorkRoot"
+    "2": "internal/agent/orchestrator::TestNonIsolatedSubAgentKeepsTheSharedWorkRoot"
+    "3": "internal/agent/orchestrator::TestIsolatedSubAgentWorktreeIsSettledOnExit"
+    "4": "internal/agent/orchestrator::TestFailedIsolatedSubAgentWorktreeIsAbandoned"
+

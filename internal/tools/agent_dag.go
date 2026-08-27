@@ -199,6 +199,13 @@ func (t *AgentTools) executeLevel(ctx context.Context, level []ExpandedStep, con
 			if wp != nil && wp.StepCB != nil {
 				stepCtx = WithSubAgentProgress(ctx, wp.StepCB(step.ID))
 			}
+			// Every step in a level runs concurrently (up to the semaphore
+			// cap above) against the SAME parent work root unless isolated.
+			// Without this marker two steps of one level that both touch a
+			// file silently clobber each other — that is data loss, not a
+			// missing feature, so isolation is unconditional here rather than
+			// gated on len(level) > 1.
+			stepCtx = WithSubAgentIsolation(stepCtx)
 			// Deliberately NOT wrapped in ParentWorkingSetHint: this is an
 			// INTERMEDIATE DAG step. Its output is spliced into the prompt of
 			// downstream steps, so appending the parent-facing hint would let a

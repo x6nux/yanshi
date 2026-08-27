@@ -70,7 +70,7 @@ func TestStreamFromReaderEmpty(t *testing.T) {
 func TestAbsEdgeCases(t *testing.T) {
 	ft := NewFSTools(t.TempDir())
 	t.Run("empty path", func(t *testing.T) {
-		_, err := ft.abs("")
+		_, err := ft.abs(context.Background(), "")
 		if err == nil {
 			t.Fatal("expected error for empty path")
 		}
