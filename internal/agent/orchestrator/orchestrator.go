@@ -989,6 +989,10 @@ func (o *Orchestrator) runSubAgentTurn(ctx context.Context, prompt string, allow
 		Instruction: subInstruction,
 		WorkRoot:    o.workRoot,
 		LSP:         o.lspMgr,
+		// W-A-02 fix round 2: without this the sub-Orchestrator built here has
+		// a nil redactor and bindExecutionContext's `if o.redactor != nil`
+		// gate silently skips WithRedactor for this sub-agent's entire turn.
+		Redactor: o.redactor,
 		// The sub-agent inherits the loop-guard POLICY and gets its own fresh
 		// per-turn STATE (its EventsWithHistoryOpts call below runs
 		// withTurnContext, which rebinds). Without this line delegation is a
@@ -1104,9 +1108,17 @@ func subAgentUsageForSink(u TurnUsage) *registry.Usage {
 }
 
 // managedTurnRunner is a concrete registry.Runner. It re-binds the turn context
-// (profile / workroot / VCS / emit / depth / currentAgentID + role) on the
-// Manager's cancellation-only child context, enforcing role policy and routing
-// usage back to the Manager via AddUsage.
+// (profile / workroot / VCS / redactor / emit / depth / currentAgentID + role)
+// on the Manager's cancellation-only child context, enforcing role policy and
+// routing usage back to the Manager via AddUsage.
+//
+// W-A-02 fix round 2: this list was wrong for a whole class of agents. The
+// Manager's RootContext is context.Background() (bootstrap.go), so a managed
+// sub-agent turn gets NOTHING from the main turn's context except what this
+// method re-binds explicitly — WithRedactor was missing, so every
+// shell_run/fs_read result a managed sub-agent produced reached its model
+// call unredacted. Any future field added to bindExecutionContext that a
+// sub-agent turn must also see needs the same treatment here.
 type managedTurnRunner struct {
 	o           *Orchestrator
 	mgr         *registry.Manager
@@ -1124,6 +1136,9 @@ func (r *managedTurnRunner) Run(ctx context.Context, agentID, assignment string)
 	ctx = tools.WithWorkRoot(ctx, r.workRoot)
 	if r.vcsScope.VCS != nil {
 		ctx = tools.WithVCS(ctx, r.vcsScope)
+	}
+	if r.o.redactor != nil {
+		ctx = tools.WithRedactor(ctx, r.o.redactor)
 	}
 	if r.emit != nil {
 		ctx = tools.WithSubAgentEmit(ctx, r.emit)
