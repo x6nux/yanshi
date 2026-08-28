@@ -103,8 +103,9 @@ func segAction(cmd string) Action {
 // differently), and pinning equality would forbid future tightening.
 func TestSegmentedShellIsNeverMorePermissiveThanItsSegments(t *testing.T) {
 	g := New()
-	checked := 0
-	for pname, prof := range segmentProfiles() {
+	profiles := segmentProfiles()
+	checked, refused := 0, 0
+	for pname, prof := range profiles {
 		for _, a := range segmentAtoms {
 			for _, b := range segmentAtoms {
 				for _, op := range segmentOperators {
@@ -113,6 +114,7 @@ func TestSegmentedShellIsNeverMorePermissiveThanItsSegments(t *testing.T) {
 						// A chain the segmenter refuses is a structural
 						// HardDeny by construction; the property is about the
 						// chains that DO get split.
+						refused++
 						continue
 					}
 					want := severity(g.Check(prof, segAction(a)))
@@ -132,8 +134,20 @@ func TestSegmentedShellIsNeverMorePermissiveThanItsSegments(t *testing.T) {
 	// Self-proof that the corpus is live (review-checklist.md, C-bis): a
 	// generator that produced nothing, or whose every chain failed to parse,
 	// would report a clean pass while asserting about the empty set.
-	if checked < len(segmentAtoms)*len(segmentAtoms) {
-		t.Fatalf("only %d chains reached the assertion; the corpus is not exercising the fold", checked)
+	//
+	// The bound is stated against the FULL cross product rather than a round
+	// number. It used to be len(atoms)², i.e. 400 against a measured 8000 —
+	// twenty times slack, enough for a ParseCommandList that started refusing
+	// nine chains in ten to leave this green. The two halves are separate on
+	// purpose: the first says the loops ran at all, the second says the
+	// segmenter still accepts the corpus.
+	full := len(profiles) * len(segmentAtoms) * len(segmentAtoms) * len(segmentOperators)
+	if checked+refused != full {
+		t.Fatalf("the generator produced %d chains, not the %d the corpus describes", checked+refused, full)
+	}
+	if checked < full*9/10 {
+		t.Fatalf("only %d of %d chains reached the assertion (%d refused by the segmenter); "+
+			"the corpus is no longer exercising the fold", checked, full, refused)
 	}
 }
 
@@ -547,8 +561,8 @@ func TestRedirectIntoTheCredentialDenylistPrompts(t *testing.T) {
 // old top-level handoff hid. destructive.go's own splitter is quote-aware while
 // its hasControlOperator check is a bare strings.Contains, so feeding it a
 // string like this one and recursing on the result does not shrink the input —
-// measured as a stack overflow before classifyEverySegment took over the
-// splitting. This is the shape that would bring it back.
+// measured as a stack overflow before splitIntoStrictlySmallerSegments took
+// over the splitting. This is the shape that would bring it back.
 func TestQuotedOperatorIsNotASegmentBoundary(t *testing.T) {
 	g := New()
 	prof := segmentProfiles()["allowlist"]

@@ -7,9 +7,13 @@ import (
 )
 
 // RedirectSpec is a parsed redirection operator + its target word.
-// Target is empty for "&>N"-style operators that fold a fd reference into the
-// operator itself (e.g. "2>&1"); in that case the full operator carries the
-// information and Target is "".
+//
+// Target is empty ONLY for the two operators that name no file: a descriptor
+// duplication whose word is a plain fd number ("2>&1", ">&2") and the close
+// token (">&-"). In both cases the full operator carries the information.
+// Everything else has a Target, INCLUDING `>&word` with a non-numeric word,
+// which bash, sh and zsh all execute as "write the file called word" — reading
+// that as a duplication left the path invisible to the guard's FS dimension.
 type RedirectSpec struct {
 	Operator string
 	Target   string
@@ -19,11 +23,19 @@ type RedirectSpec struct {
 // `go test ./...` parses to one Segment with Program="go", Args=["test","./..."].
 //
 // Two of the fields are populated by ParseCommandList only, and Parse leaves
-// them zero. That asymmetry is deliberate rather than an omission: Parse
-// describes ONE command for the rule engine, which matches on program and
-// argument words and has no use for either field, while ParseCommandList
-// describes a command LIST for the guard, which has to know how the segments
-// are joined and what the operator's own source text was.
+// them zero. Parse describes ONE command for the rule engine, which matches on
+// program and argument words and has no use for either; ParseCommandList
+// describes a command LIST, where a segment's verbatim source text is what the
+// guard matches profile globs against.
+//
+// Operator is the exception, and the honest statement about it today is that
+// nothing in production reads it: the guard folds every segment's verdict with
+// moreSevere, an operation that does not care whether the segments were joined
+// with `&&` or `|`. It is populated because the reader that would care —
+// per-operator reasoning about which segments actually run — is W-B-03/W-B-04's
+// job, and a scanner that discarded the operator would have to be re-opened to
+// get it back. If those work packages land without a reader for it, delete the
+// field rather than leave a value nobody consumes.
 type Segment struct {
 	Program   string
 	Args      []string

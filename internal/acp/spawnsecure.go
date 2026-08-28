@@ -4,16 +4,19 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 
+	"github.com/x6nux/yanshi/internal/netpolicy"
 	"github.com/x6nux/yanshi/internal/sandbox"
 	"github.com/x6nux/yanshi/internal/secproc"
 )
 
 // SecureSpawned is what SpawnSecure returns: a ready Client plus the reaper and
-// PID of the child. It is the secproc twin of Spawned, which carries an
-// *exec.Cmd instead.
+// PID of the child. There is no *exec.Cmd anywhere in it, and that is the
+// point — the process is owned by a secproc.Factory, so this package never
+// holds a handle it could have spawned itself.
 //
 // Wait and Close are separate because the ordering matters and only the caller
 // knows when the session is over: Close drops the client's end of the pipes so
@@ -58,16 +61,27 @@ func (s *SecureSpawned) Close() {
 	}
 }
 
-// SpawnSecure is Spawn routed through internal/secproc.
+// SpawnSecure starts an external ACP agent through internal/secproc. It is the
+// ONLY way this package starts a process.
 //
 // It exists because an external agent CLI is the textbook untrusted program:
 // it is chosen by name from a config file, it is handed the project directory,
 // and it executes whatever the model asks it to. secproc.Launch is the single
 // entry point where such a program passes the Authorize firewall, gets its
 // credential-bearing environment stripped, and picks up the sandbox posture.
-// The pre-existing Spawn calls exec.CommandContext directly and therefore does
-// none of that; it stays for the goal loop, whose worker is invoked by an
-// operator at a shell prompt rather than by a model mid-turn.
+//
+// It replaced an exec.CommandContext-based Spawn that did none of that. That
+// function was kept for a while on the argument that the goal loop's worker is
+// invoked by an operator at a shell prompt rather than by a model mid-turn —
+// which W-B-02 rejected: the goal loop hands the agent a model-authored
+// objective, so the operator is present at the start and absent for everything
+// after it. Spawn, buildCmd and Spawned were deleted and goalloop was moved
+// onto this function. What is pinned by a test is that the firewall is really
+// in this path — internal/acp::TestSpawnSecurePropagatesLaunchDenial fails if a
+// guard denial stops reaching the caller. What is NOT pinned by anything in
+// this package is the absence of a second, unguarded path: re-adding an
+// exec.CommandContext here compiles and passes. `grep -rn 'exec\.Command'
+// internal/acp` returning nothing is the standing check for that half.
 //
 // Failure modes, in order:
 //   - unknown agent name -> LaunchSpec's error
@@ -127,27 +141,67 @@ func SpawnSecure(ctx context.Context, opts SpawnOptions) (*SecureSpawned, error)
 	}
 	if _, err := client.Initialize(ctx, caps); err != nil {
 		spawned.Close()
-		return nil, fmt.Errorf("acp: initialize %q: %w%s", opts.Agent, err, spawned.stderrSuffix())
+		return nil, fmt.Errorf("acp: initialize %q: %w%s", opts.Agent, err, spawned.failureSuffix())
 	}
 	sessionID, err := client.NewSession(ctx, opts.Cwd, opts.ExtraDirs, buildMcpServers(opts))
 	if err != nil {
 		spawned.Close()
-		return nil, fmt.Errorf("acp: session/new %q: %w%s", opts.Agent, err, spawned.stderrSuffix())
+		return nil, fmt.Errorf("acp: session/new %q: %w%s", opts.Agent, err, spawned.failureSuffix())
 	}
 	spawned.SessionID = sessionID
 	return spawned, nil
 }
 
-// stderrSuffix renders the child's stderr tail as a parenthesised clause, or
-// "" when it printed nothing. Appended to handshake errors: the JSON-RPC layer
-// only ever reports "EOF" or a timeout, while the actual cause ("npx: command
-// not found", "missing ANTHROPIC_API_KEY") went to stderr.
-func (s *SecureSpawned) stderrSuffix() string {
-	tail := s.Stderr()
-	if tail == "" {
+// failureSuffix renders what a handshake error cannot say for itself: the
+// child's stderr tail, and the credentials the secure launcher withheld from
+// it. Either clause is omitted when empty.
+//
+// The stderr half exists because the JSON-RPC layer only ever reports "EOF" or
+// a timeout, while the actual cause ("npx: command not found") went to stderr.
+//
+// The credential half exists because W-B-02 routed the goal loop's agent
+// through secproc, which strips credential-bearing variables from the
+// environment it inherits. That is the intended posture, but its failure mode
+// is an agent that reports a plain authentication error while the operator can
+// see the key in their own shell — and the only record of the stripping was an
+// slog line in a file nobody has open. This error is what `yanshi goal`
+// prints — goalloop.Loop.Run turns an implementer failure into an
+// `Implement: error: …` event and cmd/yanshi's callback writes it out — so
+// naming the variables here is what puts it in front of the person who set
+// them. Names only, never values.
+func (s *SecureSpawned) failureSuffix() string {
+	var clauses []string
+	if tail := s.Stderr(); tail != "" {
+		clauses = append(clauses, "agent stderr: "+tail)
+	}
+	if names := withheldCredentials(); len(names) > 0 {
+		clauses = append(clauses, "credentials withheld from the agent: "+strings.Join(names, ", "))
+	}
+	if len(clauses) == 0 {
 		return ""
 	}
-	return " (agent stderr: " + tail + ")"
+	return " (" + strings.Join(clauses, "; ") + ")"
+}
+
+// withheldCredentials names the variables the secure launcher removes from an
+// external agent's environment, in sorted order and capped so a developer
+// machine full of tokens cannot bury the rest of the error.
+//
+// It asks netpolicy the same question the launcher asks — same exported
+// function, same os.Environ() baseline that internal/shell's
+// childLaunchPosture scrubs — rather than re-deriving the rule. The policy is
+// empty because SpawnSecure declares no AllowEnv: an ACP agent gets no
+// credential exemption, and widening that is an authorization change, not a
+// diagnostics one. A Factory that builds its environment differently would make
+// this list a statement about the launcher's policy rather than about that
+// specific child, which is still what an operator missing a credential needs.
+func withheldCredentials() []string {
+	_, dropped := netpolicy.ScrubCredentials(os.Environ(), netpolicy.CredentialPolicy{})
+	const maxNames = 12
+	if len(dropped) > maxNames {
+		return append(dropped[:maxNames:maxNames], fmt.Sprintf("… and %d more", len(dropped)-maxNames))
+	}
+	return dropped
 }
 
 // stderrTailLimit bounds the retained stderr. Large enough for a stack trace or
