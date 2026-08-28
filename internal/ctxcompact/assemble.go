@@ -60,7 +60,7 @@ func IsEvictionMapMessage(m *schema.Message) bool {
 // left the model two directories of evicted spans, or two messages each
 // claiming to be the summary of the conversation.
 //
-// So the kinds being appended are stripped from the prefix first —— AND ONLY
+// So the kinds being appended are stripped from the prefix first — AND ONLY
 // THOSE. A blanket purge would be worse than the duplication it fixes: the
 // mid-turn path runs with no EvictionMap (its messages have no persisted seq
 // numbers to cite), produces an empty mapText, and would then delete the

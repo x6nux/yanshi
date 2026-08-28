@@ -137,16 +137,16 @@ func ParseFragments(msgs []*schema.Message) []Fragment {
 // StripFragments returns msgs without the fragments whose kind appears in
 // kinds, preserving order and sharing the surviving message pointers.
 //
-// AN EMPTY kinds LIST STRIPS NOTHING. The variadic form makes "strip these
-// kinds" and "strip everything" look alike at the call site, and the caller
-// most likely to pass an empty list is one that computed the list and found
-// nothing to replace — for which purging every fragment is the opposite of
-// what was asked, and would delete an eviction map no fresh map is coming to
-// replace.
+// AN EMPTY kinds LIST STRIPS NOTHING, which falls out of the empty drop set
+// rather than needing a guard — a guard for it was written, and removed once a
+// mutation probe showed deleting it changed no behaviour. The property is worth
+// stating anyway, because the variadic form makes "strip these kinds" and
+// "strip everything" look alike at the call site: the caller most likely to
+// pass an empty list is one that computed the list and found nothing to
+// replace, for which purging every fragment is the opposite of what was asked
+// and would delete an eviction map no fresh map is coming to replace.
+// TestContextFragment_IsLocatableStrippableDedupable pins it.
 func StripFragments(msgs []*schema.Message, kinds ...FragmentKind) []*schema.Message {
-	if len(kinds) == 0 {
-		return msgs
-	}
 	drop := make(map[FragmentKind]bool, len(kinds))
 	for _, k := range kinds {
 		drop[k] = true
