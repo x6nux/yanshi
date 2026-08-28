@@ -3,6 +3,8 @@ package guard
 import (
 	"path"
 	"strings"
+
+	"github.com/x6nux/yanshi/internal/execpolicy"
 )
 
 // Destruction classifies a shell command's deletion intent for the interactive
@@ -124,7 +126,7 @@ func classifyDestruction(cmd, workdir string, depth int, topLevel bool) Destruct
 	// this is the only place the encoded form is expanded to a chain, since
 	// lexShellLite decodes per token and a decoded token never word-splits.
 	if topLevel {
-		if decoded, wasEncoded := decodeANSIC(cmd); wasEncoded && hasControlOperator(decoded) {
+		if decoded, wasEncoded := execpolicy.DecodeANSIC(cmd); wasEncoded && hasControlOperator(decoded) {
 			return classifyDestruction(decoded, workdir, depth, false)
 		}
 	}
@@ -568,7 +570,7 @@ func byteAtOrZero(s string, i int) byte {
 //
 // A `&&` written as $'\x26\x26' carries no literal operator, so this returns
 // false for it and the split does not fire. That form is caught one level down
-// instead, by classifyDestruction's top-level decodeANSIC branch, which expands
+// instead, by classifyDestruction's top-level execpolicy.DecodeANSIC branch, which expands
 // it and re-classifies the decoded chain — `internal/guard`'s
 // TestClassifyDestruction_ObfuscatedAndWrapped is what fails if that branch
 // goes away.
@@ -620,7 +622,7 @@ func lexShellLite(cmd string) (program string, args []string, ok bool) {
 		}
 		switch {
 		case c == '$' && i+1 < len(cmd) && cmd[i+1] == '\'':
-			lit, next, spanOK := decodeANSICSpan(cmd, i+2)
+			lit, next, spanOK := execpolicy.DecodeANSICSpan(cmd, i+2)
 			if !spanOK {
 				return "", nil, false // unterminated $'...' — same as any unterminated quote
 			}

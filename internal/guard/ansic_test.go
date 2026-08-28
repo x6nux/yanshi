@@ -2,47 +2,6 @@ package guard
 
 import "testing"
 
-// TestDecodeANSIC is the table for the $'...' decoder. Every escape form bash
-// honors is covered, plus the two behaviours that keep decoding honest:
-// unrecognized escapes keep their backslash (bash does the same, so the decoder
-// cannot manufacture a token the shell would not produce), and an unterminated
-// span is left alone.
-func TestDecodeANSIC(t *testing.T) {
-	cases := []struct {
-		name    string
-		in      string
-		want    string
-		decoded bool
-	}{
-		{"no ansi-c span", "rm -rf /tmp", "rm -rf /tmp", false},
-		{"hex escapes spell rm -rf /", `$'\x72\x6d -rf /'`, "rm -rf /", true},
-		{"single-digit hex", `$'\x7a'`, "z", true},
-		{"octal escapes", `$'\162\155'`, "rm", true},
-		{"short octal", `$'\11'`, "\t", true},
-		{"simple escapes", `$'a\nb\tc\\d'`, "a\nb\tc\\d", true},
-		{"escaped quote", `$'it\'s'`, "it's", true},
-		{"bell and escape", `$'\a\e'`, "\a\x1b", true},
-		{"control char", `$'\cA'`, "\x01", true},
-		{"unicode short", `$'A'`, "A", true},
-		{"unicode long", `$'\U00000042'`, "B", true},
-		{"unknown escape keeps backslash", `$'\q'`, `\q`, true},
-		{"bare x with no digits", `$'\x'`, `\x`, true},
-		{"span in the middle of a command", `bash -c $'\x72\x6d' /tmp`, "bash -c rm /tmp", true},
-		{"multiple spans", `$'\x61'$'\x62'`, "ab", true},
-		{"unterminated span is left verbatim", `$'\x72\x6d`, `$'\x72\x6d`, false},
-		{"empty span", `$''`, "", true},
-		{"dollar without quote is untouched", "$HOME/x", "$HOME/x", false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got, decoded := decodeANSIC(c.in)
-			if got != c.want || decoded != c.decoded {
-				t.Fatalf("decodeANSIC(%q) = (%q, %v), want (%q, %v)", c.in, got, decoded, c.want, c.decoded)
-			}
-		})
-	}
-}
-
 // TestUnwrapShellCommand covers the wrapper-detection table: which invocations
 // carry an inner command, and which merely look like they do.
 func TestUnwrapShellCommand(t *testing.T) {

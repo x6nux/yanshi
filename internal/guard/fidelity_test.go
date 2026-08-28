@@ -245,6 +245,15 @@ var fidelityCorpus = []fidelityRow{
 	{"`rm -rf /`", DestructionCatastrophic},
 	{"(rm -rf /)", DestructionCatastrophic},
 	{"case x in x) rm -rf /;; esac", DestructionCatastrophic},
+
+	// Axis 3 — ANSI-C spelled redirection TARGETS. The deletion lexer decoded
+	// $'…' and the segment reader did not, so a target could be hidden from the
+	// FS dimension while staying perfectly visible to the shell.
+	{`echo hi > $'\x6f'ut20`, DestructionNone},
+	{`echo hi > ou$'\x74'21`, DestructionNone},
+	{`echo hi > $'\x6f\x75\x7422'`, DestructionNone},
+	{`echo hi >> $'\x6f'ut23`, DestructionNone},
+	{`echo hi > "ou"$'\x74'24`, DestructionNone},
 }
 
 // TestGuardReadsAShellCommandTheWayTheShellDoes is the fidelity property.

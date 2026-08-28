@@ -111,6 +111,29 @@ func (s *listScanner) run() error {
 			return fmt.Errorf("execpolicy: newline is a second command line, not a segment")
 		case c == '`':
 			return fmt.Errorf("execpolicy: backtick command substitution rejected")
+		case c == '$' && s.peek(1) == '\'':
+			// ANSI-C quoting. Decoding it here — into the CURRENT WORD, past
+			// the scanner — is what makes this reader see the same word the
+			// shell does. Measured before it did: `echo ssh-rsa AAAA >
+			// ~/$'\x2e\x73\x73\x68'/authorized_keys` produced the literal
+			// target `~/$\x2e\x73\x73\x68/authorized_keys`, the credential
+			// denylist matches on the `~/.ssh` directory prefix and so did not
+			// fire, and the key landed on disk with no prompt. Hiding the
+			// FILENAME instead was already caught, because the prefix survived.
+			//
+			// It cannot widen the split: the decoded bytes join the word
+			// directly and are never re-scanned, so $'\x26\x26' stays one word
+			// rather than becoming an AND-IF. The same invariant guard's
+			// lexShellLite relies on, now enforced in both readers by the same
+			// decoder (execpolicy/ansic.go).
+			lit, next, ok := DecodeANSICSpan(s.raw, s.i+2)
+			if !ok {
+				return fmt.Errorf("execpolicy: unterminated ANSI-C quote")
+			}
+			s.startToken()
+			s.word.WriteString(lit)
+			s.inWord = true
+			s.i = next
 		case c == '$' && s.peek(1) == '(':
 			return fmt.Errorf("execpolicy: command substitution $(…) rejected")
 		case c == '(' || c == ')':

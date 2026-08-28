@@ -546,6 +546,16 @@ func TestRedirectIntoTheCredentialDenylistPrompts(t *testing.T) {
 		"echo ssh-rsa AAAA &> ~/.ssh/authorized_keys",
 		"echo ssh-rsa AAAA >& ~/.ssh/authorized_keys",
 		"echo ssh-rsa AAAA >&~/.ssh/authorized_keys",
+		// ANSI-C spellings of the same target. The denylist matches on the
+		// `~/.ssh` DIRECTORY prefix, so hiding the directory segment defeated
+		// it while hiding the filename did not — the prefix survived that one.
+		// Both /bin/bash and /bin/sh were measured planting the key for the
+		// first of these, with HOME pointed at a temporary directory.
+		`echo ssh-rsa AAAA > ~/$'\x2e\x73\x73\x68'/authorized_keys`,
+		`echo ssh-rsa AAAA > ~/.$'\x73\x73\x68'/authorized_keys`,
+		`echo ssh-rsa AAAA >> ~/$'\x2e'ssh/authorized_keys`,
+		`echo ssh-rsa AAAA > ~/.ssh/authorized_$'\x6b'eys`,
+		`echo ssh-rsa AAAA >& ~/$'\x2e\x73\x73\x68'/authorized_keys`,
 	} {
 		d := g.Check(prof, segAction(cmd))
 		if d.Verdict != Prompt {
