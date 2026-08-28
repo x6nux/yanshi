@@ -387,8 +387,8 @@ type ServerFrame struct {
 	// arise there; the field stays empty rather than being forgotten. Both
 	// transports share the vocabulary, so an SSE handler that later grows a
 	// durable window has the field waiting.
-	CompactionBlocked string `json:"compaction_blocked,omitempty"`
-	Messages     []schema.Message `json:"messages,omitempty"` // history_replaced / session_restored
+	CompactionBlocked string           `json:"compaction_blocked,omitempty"`
+	Messages          []schema.Message `json:"messages,omitempty"` // history_replaced / session_restored
 	// Retry fields: carried by a "retry" frame announcing a transient-error
 	// retry (e.g. a mid-stream "unexpected EOF") so the client can render
 	// "↻ retry N/M…" in its activity line. Text carries the triggering error.
