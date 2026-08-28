@@ -415,12 +415,110 @@ func TestSearchMessages_IsSessionScoped(t *testing.T) {
 	assert.Len(t, hits, 1)
 }
 
+// TestSearchMessages_AcrossSessions: an empty sessionID used to be an error
+// ("store: search messages: empty session id"). It now means "every
+// session", which is what lets a question like "how did we fix that bug last
+// week" be answered at all: the caller does not know, and should not have to
+// know, which past session holds the fix.
+//
+// Three sessions are seeded on purpose, not two: a fixture where only one
+// session has any hits cannot distinguish "scoping was silently dropped" from
+// "the cross-session code path was never exercised" — the test needs to see
+// rows from more than one session in a single result set to prove the search
+// actually spans sessions rather than just tolerating an empty argument.
+func TestSearchMessages_AcrossSessions(t *testing.T) {
+	s, _ := openTempStore(t)
+	a := newSession(t, s)
+	b := newSession(t, s)
+	c := newSession(t, s)
+
+	_, _, err := s.AppendMessages(a, []Message{
+		{Role: RoleUser, Content: "deploying the new release pipeline"},
+		{Role: RoleAssistant, Content: "there was a flaky test in the guard package"},
+	})
+	require.NoError(t, err)
+	_, _, err = s.AppendMessages(b, []Message{
+		{Role: RoleUser, Content: "looking at a flaky scheduler retry"},
+		{Role: RoleAssistant, Content: "root cause: ONLYINSESSIONB raced on the lock"},
+	})
+	require.NoError(t, err)
+	_, _, err = s.AppendMessages(c, []Message{
+		{Role: RoleUser, Content: "unrelated conversation about pizza toppings"},
+	})
+	require.NoError(t, err)
+
+	// The old error is gone.
+	hits, err := s.SearchMessages("", "flaky", 0)
+	require.NoError(t, err)
+	require.NotEmpty(t, hits, "cross-session search must find the term")
+
+	seen := map[string]bool{}
+	for _, h := range hits {
+		require.NotEmpty(t, h.SessionID, "every hit must say which session it came from")
+		seen[h.SessionID] = true
+	}
+	assert.True(t, seen[a], "session A's hit must be present")
+	assert.True(t, seen[b], "session B's hit must be present")
+	assert.False(t, seen[c], "session C never mentioned the term")
+	assert.Greater(t, len(seen), 1,
+		"a fixture with hits in only one session cannot prove the search is cross-session")
+
+	// A term that exists only in session B must still be found with no
+	// session filter applied.
+	hits, err = s.SearchMessages("", "ONLYINSESSIONB", 0)
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	assert.Equal(t, b, hits[0].SessionID)
+
+	// limit still applies to the COMBINED cross-session result set, not
+	// per-session.
+	hits, err = s.SearchMessages("", "flaky", 1)
+	require.NoError(t, err)
+	assert.Len(t, hits, 1, "limit must bound the merged result, not each session separately")
+}
+
+// TestSearchMessages_AcrossSessionsCJK: the cross-session path must go
+// through the same W-A-03 CJK fallback as the single-session path
+// (SearchMessages routes on hasCJK before it knows whether sessionID is
+// empty). Getting this wrong is invisible in English: FTS5's default
+// tokenizer would still match ASCII text, and only a Chinese query would
+// silently come back empty — which is exactly the failure mode a
+// NoError-only assertion would miss, so this test also pins the hit count and
+// the actual content, not just the absence of an error.
+func TestSearchMessages_AcrossSessionsCJK(t *testing.T) {
+	s, _ := openTempStore(t)
+	a := newSession(t, s)
+	b := newSession(t, s)
+	c := newSession(t, s)
+
+	require.NoError(t, s.AppendMessage(a, 0, RoleUser, "项目的截止日期是周二，需要跟进"))
+	require.NoError(t, s.AppendMessage(b, 0, RoleUser, "张伟说这个项目的截止日期可能推迟"))
+	require.NoError(t, s.AppendMessage(c, 0, RoleUser, "今天天气很好，适合散步"))
+
+	hits, err := s.SearchMessages("", "截止日期", 0)
+	require.NoError(t, err)
+	require.Len(t, hits, 2, "the term appears in exactly two sessions")
+
+	bySession := map[string]MessageSearchHit{}
+	for _, h := range hits {
+		bySession[h.SessionID] = h
+	}
+	require.Contains(t, bySession, a)
+	require.Contains(t, bySession, b)
+	assert.Equal(t, "项目的截止日期是周二，需要跟进", bySession[a].Content)
+	assert.Equal(t, "张伟说这个项目的截止日期可能推迟", bySession[b].Content)
+	assert.Contains(t, bySession[a].Snippet, "截止日期")
+	assert.Contains(t, bySession[b].Snippet, "截止日期")
+}
+
+// TestSearchMessages_Rejects: an empty QUERY is still an error (there is
+// nothing to search for). An empty SESSION id is no longer one of these
+// cases — see TestSearchMessages_AcrossSessions — so this test only pins the
+// query-side validation now.
 func TestSearchMessages_Rejects(t *testing.T) {
 	s, _ := openTempStore(t)
 	sid := newSession(t, s)
-	_, err := s.SearchMessages("", "x", 0)
-	assert.Error(t, err, "empty session id must not become a wildcard")
-	_, err = s.SearchMessages(sid, "   ", 0)
+	_, err := s.SearchMessages(sid, "   ", 0)
 	assert.Error(t, err, "empty query must not match everything")
 }
 
