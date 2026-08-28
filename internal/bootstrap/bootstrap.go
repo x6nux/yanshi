@@ -250,6 +250,33 @@ type Options struct {
 	// render. Headless modes leave this false and keep stderr.
 	TUIMode bool
 
+	// SelfHeal lets Build move an UNREADABLE database aside and start an empty
+	// one instead of failing. It defaults to false, and the default is the
+	// safety property: healing renames the user's history away, which only a
+	// process that owns the database has any business doing.
+	//
+	// Build has six callers and they are not alike. Two set this:
+	//
+	//   - cmd/yanshi runServe — the daemon; it IS the backend for the project.
+	//   - cli.bootstrapOwner, and only when the caller is the interactive TUI
+	//     — it wins the lockfile election and becomes the backend. This is the
+	//     scenario healing exists for: a corrupt yanshi.db otherwise means the
+	//     TUI never comes up and the user has no second tool to repair it.
+	//
+	// The other four must not, because they are short-lived processes attached
+	// to someone else's database, and several of them run concurrently:
+	//
+	//   - runACPServer — one per editor window.
+	//   - runPR — one-shot.
+	//   - runApp — a JSON-RPC subprocess.
+	//   - runGoal — a batch run; failing loudly is more useful than discarding
+	//     history, since a human is reading its output.
+	//
+	// cli's non-interactive entries (exec, headless) share bootstrapOwner but
+	// leave this false for the same reason: they report the error to a user who
+	// is right there and can act on it, rather than deciding to discard data.
+	SelfHeal bool
+
 	// WorkRoot overrides the directory autoVCS scans into its initial main
 	// commit. Production leaves it empty and Build uses os.Getwd().
 	//
@@ -428,16 +455,9 @@ func Build(opts Options) (*App, error) {
 		MaxOpenConns:      cfg.Storage.WALMaxOpenConns,
 		BusyTimeoutMs:     cfg.Storage.BusyTimeoutMs,
 		WALAutoCheckpoint: cfg.Storage.WALAutoCheckpoint,
-		// SelfHeal is enabled HERE and nowhere else. Build is the composition
-		// root of the long-lived process that owns this database — the TUI and
-		// the server both come up through it, exactly one instance holds the
-		// file, and if it refuses to start the user is left with no yanshi at
-		// all and no second tool to repair the file with. Every other opener
-		// (doctor's read-only checks, the per-ACP-agent vcs-mcp subprocesses,
-		// the goal and auth subcommands) goes through store.Open and keeps the
-		// default of false, because none of them owns the database and two of
-		// them can run concurrently with this one.
-		SelfHeal: true,
+		// Forwarded, never hardcoded. Build has six callers and only two of
+		// them own the database; see Options.SelfHeal.
+		SelfHeal: opts.SelfHeal,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: open store: %w", err)

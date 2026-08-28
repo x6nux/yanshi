@@ -1325,13 +1325,12 @@ features:
 }
 
 // TestBuild_SelfHealsACorruptDatabase is the enabling-side guard for
-// store.OpenOptions.SelfHeal, which defaults to OFF everywhere else.
+// Options.SelfHeal.
 //
-// Build is the composition root of the process that OWNS the database, and the
-// only opener allowed to turn healing on. That matters because yanshi ships as
-// a single local binary: without this, one corrupt yanshi.db means the TUI
-// never comes up and the user has no second tool to repair it with. Delete the
-// SelfHeal line in bootstrap.go and this test fails at Build.
+// Healing exists because yanshi ships as a single local binary: for the entries
+// that OWN the database, one corrupt yanshi.db would otherwise mean the TUI
+// never comes up and the user has no second tool to repair it with. Stop
+// forwarding Options.SelfHeal in bootstrap.go and this test fails at Build.
 //
 // The corrupt file is written where the config points, so the assertion runs
 // against the real assembled App rather than a store opened by the test.
@@ -1355,7 +1354,7 @@ storage:
 token: "test-token"
 `), 0o644))
 
-	app, err := bootstrap.Build(bootstrap.Options{ConfigPath: cfgPath, FakeModel: true})
+	app, err := bootstrap.Build(bootstrap.Options{ConfigPath: cfgPath, FakeModel: true, SelfHeal: true})
 	require.NoError(t, err, "a corrupt database must not stop the process from booting")
 	require.NotNil(t, app)
 	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
@@ -1381,4 +1380,49 @@ token: "test-token"
 	saved, err := os.ReadFile(backup)
 	require.NoError(t, err)
 	assert.Equal(t, junk, saved, "the quarantined file must be byte-identical to the original")
+}
+
+// TestBuild_DoesNotHealByDefault pins the OTHER half of Options.SelfHeal, and
+// it is the half that protects data.
+//
+// Build has six callers and only two own the database. The rest — one ACP
+// server per editor window, a one-shot PR run, a JSON-RPC subprocess, a batch
+// goal run — are short-lived processes attached to somebody else's database,
+// and several of them run concurrently with the owner. If Build healed
+// unconditionally, any of them could rename a database another process is
+// actively using. Hardcode SelfHeal back to true in bootstrap.go and this test
+// goes red.
+func TestBuild_DoesNotHealByDefault(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	dbPath := filepath.Join(dir, "test.db")
+
+	junk := make([]byte, 8192)
+	for i := range junk {
+		junk[i] = byte(i*31 + 7)
+	}
+	require.NoError(t, os.WriteFile(dbPath, junk, 0o600))
+	require.NoError(t, os.WriteFile(cfgPath, []byte(`
+server:
+  http_addr: "127.0.0.1:0"
+storage:
+  sqlite_path: "`+toYAMLPath(dbPath)+`"
+token: "test-token"
+`), 0o644))
+
+	app, err := bootstrap.Build(bootstrap.Options{ConfigPath: cfgPath, FakeModel: true})
+	if app != nil {
+		_ = app.Shutdown(context.Background())
+	}
+	require.Error(t, err, "a non-owning Build caller must report the corruption, not repair it")
+
+	after, err := os.ReadFile(dbPath)
+	require.NoError(t, err)
+	assert.Equal(t, junk, after, "the database must be left exactly as found")
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		assert.NotContains(t, e.Name(), ".corrupt-",
+			"only an owning entry point may quarantine the database")
+	}
 }

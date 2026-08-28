@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -302,7 +303,11 @@ func TestOpenWith_DoesNotQuarantineARecoverableFailure(t *testing.T) {
 	require.NoError(t, os.Chmod(path, 0o400))
 	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
 
-	st, openErr := OpenWith(path, DefaultOptions)
+	// healingOptions, NOT DefaultOptions: with healing switched off nothing
+	// would quarantine anything no matter how wrong isCorruptDB got, and the
+	// assertions below would pass vacuously. This test is the one that keeps
+	// the predicate narrow, so it has to run with healing armed.
+	st, openErr := OpenWith(path, healingOptions())
 	if st != nil {
 		_ = st.Close()
 	}
@@ -539,4 +544,127 @@ func TestOpenWith_SecondHealDoesNotOverwriteTheFirstBackup(t *testing.T) {
 	}
 	assert.ElementsMatch(t, [][]byte{first, second}, contents,
 		"each heal must preserve its own database, not the last one only")
+}
+
+// TestOpenWith_ConcurrentHealersDoNotDestroyEachOthersDatabase is the guard on
+// healing being exclusive across processes.
+//
+// The failure it prevents is data destruction, not a wasted rename. Several
+// yanshi processes hold one project database at once — cli.bootstrapOwner
+// builds BEFORE it claims the lockfile, so two TUI windows starting together
+// both reach healing, and `yanshi serve` can be beside either. Without the
+// lock the second healer renames the database the FIRST one just repaired:
+// measured, that left three files, an empty store, and the first process
+// writing to an orphaned inode.
+//
+// Goroutines stand in for processes because the lock is a file, not a mutex in
+// this address space — the same O_EXCL create that separates two processes
+// separates these.
+func TestOpenWith_ConcurrentHealersDoNotDestroyEachOthersDatabase(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "yanshi.db")
+	corruptShapes["garbage from byte zero"](t, path)
+
+	const healers = 6
+	var wg sync.WaitGroup
+	stores := make([]*Store, healers)
+	errs := make([]error, healers)
+	start := make(chan struct{})
+	for i := range healers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			stores[i], errs[i] = OpenWith(path, healingOptions())
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	healed := 0
+	for i := range healers {
+		if stores[i] != nil {
+			healed++
+			_ = stores[i].Close()
+		}
+		require.NoErrorf(t, errs[i], "healer %d", i)
+	}
+	assert.Equal(t, healers, healed, "every opener must end up with a usable store")
+
+	// Exactly ONE quarantine. More than one means a healer renamed a database
+	// that another healer had already repaired.
+	var backups []string
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".corrupt-") {
+			backups = append(backups, e.Name())
+		}
+		assert.NotContains(t, e.Name(), ".healing", "the heal lock must not be left behind: %s", e.Name())
+	}
+	require.Len(t, backups, 1, "the database must be quarantined exactly once, got %v", backups)
+
+	// The database still at path is the live one, and it is usable.
+	final, err := Open(path)
+	require.NoError(t, err, "the surviving database must be healthy")
+	defer final.Close()
+	_, err = final.CreateSession("after the race")
+	require.NoError(t, err)
+}
+
+// TestHealCorrupt_SucceedsWhenTheFileIsAlreadyGone covers the quarantine-failed
+// path, which used to return early and refuse to start.
+//
+// It is reachable: a racing healer can move the file between this process's
+// failed open and its rename, so the rename fails with ENOENT while the reopen
+// SUCCEEDS — SQLite just creates a new database at the now-empty path. Bailing
+// out on the rename error turned a recoverable state into a refusal to boot.
+// Only the reopen gets to decide.
+func TestHealCorrupt_SucceedsWhenTheFileIsAlreadyGone(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "yanshi.db")
+	corruptShapes["garbage from byte zero"](t, path)
+
+	_, openErr := openPrepared(path, 4, 5000, 1000)
+	require.Error(t, openErr)
+	require.True(t, isCorruptDB(openErr))
+
+	// Simulate the racing peer having already moved the file away.
+	require.NoError(t, os.Remove(path))
+
+	st, err := healCorrupt(path, 4, 5000, 1000, openErr)
+	require.NoError(t, err, "a rename that fails because the file is already gone must not stop the boot")
+	require.NotNil(t, st)
+	defer st.Close()
+
+	_, err = st.CreateSession("usable")
+	require.NoError(t, err)
+}
+
+// TestAcquireHealLock_IsExclusiveAndReclaimsStaleLocks covers the mutex itself:
+// a second holder is refused, a released lock is reusable, and a lock left
+// behind by a process that died mid-heal does not disable healing forever.
+func TestAcquireHealLock_IsExclusiveAndReclaimsStaleLocks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "yanshi.db")
+
+	unlock, won := acquireHealLock(path)
+	require.True(t, won)
+	_, second := acquireHealLock(path)
+	assert.False(t, second, "a second holder must be refused while the first holds it")
+
+	unlock()
+	unlock2, won2 := acquireHealLock(path)
+	require.True(t, won2, "the lock must be reusable once released")
+	unlock2()
+
+	// A lock abandoned by a dead process must be reclaimable, or one crash
+	// would disable healing for this database permanently.
+	lock := path + ".healing"
+	require.NoError(t, os.WriteFile(lock, nil, 0o600))
+	stale := time.Now().Add(-2 * healLockTTL)
+	require.NoError(t, os.Chtimes(lock, stale, stale))
+	unlock3, won3 := acquireHealLock(path)
+	require.True(t, won3, "a lock older than healLockTTL must be taken over")
+	unlock3()
 }

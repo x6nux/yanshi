@@ -159,28 +159,115 @@ func OpenWith(path string, opts OpenOptions) (*Store, error) {
 	if err == nil || !opts.SelfHeal || !isCorruptDB(err) {
 		return s, err
 	}
-	// An early-out with no observable difference: if the rename failed the
-	// corrupt file is still sitting at path, so the reopen below is guaranteed
-	// to fail on it and land on the same `return nil, err`. Measured — deleting
-	// this branch changes nothing but the number of doomed opens. It is kept
-	// because "we could not move it, so stop" reads more plainly at 3am than a
-	// reopen whose failure is load-bearing.
-	backup, mvErr := quarantineCorrupt(path)
-	if mvErr != nil {
-		return nil, err
+	return healCorrupt(path, maxOpen, busyMs, ckpt, err)
+}
+
+// healWaitTimeout bounds how long an opener waits for ANOTHER process to
+// finish healing before giving up and reporting the corruption.
+const healWaitTimeout = 5 * time.Second
+
+// healLockTTL bounds how long a heal lock is honoured. Healing is one rename
+// plus one round of CREATE TABLE — milliseconds — so a lock older than this
+// belongs to a process that died holding it. Never healing again is a worse
+// outcome than proceeding, so a lock that stale is taken over.
+const healLockTTL = time.Minute
+
+// healCorrupt moves the unreadable database at path aside and opens a fresh one
+// in its place. openErr is the corruption that triggered healing and is what
+// comes back if healing does not work out — never the error from the recovery
+// attempt, which describes the rescue rather than the injury.
+//
+// Healing is EXCLUSIVE ACROSS PROCESSES, and that is a data-safety property,
+// not tidiness. Several yanshi processes routinely hold one project database at
+// once: the TUI's own election in cli.bootstrapOwner Builds BEFORE it claims the
+// lockfile, so two windows starting together both build, and `yanshi serve` can
+// be running beside either. Measured without the lock: the second healer renames
+// the database the first one had just repaired, the first keeps writing to an
+// orphaned inode, and the project is left with three files and an empty store.
+// Quarantining is destructive precisely because it is a rename, so it has to
+// happen at most once — hence the lock, and hence the recheck under it.
+func healCorrupt(path string, maxOpen, busyMs, autoCkpt int, openErr error) (*Store, error) {
+	unlock, won := acquireHealLock(path)
+	if !won {
+		// Another process is already healing this database. Its rename is
+		// atomic, so waiting for it and looking again is the only safe move —
+		// quarantining in parallel is exactly what destroys data.
+		return waitForOtherHealer(path, maxOpen, busyMs, autoCkpt, openErr)
 	}
-	healed, healErr := openPrepared(path, maxOpen, busyMs, ckpt)
+	defer unlock()
+
+	// Recheck under the lock. The holder we queued behind may have finished
+	// between our failed open and our acquiring the lock, in which case the
+	// file at path is now a healthy database and renaming it away would undo
+	// their repair.
+	if healthy, err := openPrepared(path, maxOpen, busyMs, autoCkpt); err == nil {
+		return healthy, nil
+	}
+
+	// A failed quarantine is NOT fatal on its own, and the early return that
+	// used to be here was wrong: if the file has already been moved (a racing
+	// healer got there first) the rename fails with ENOENT while the reopen
+	// below SUCCEEDS, because SQLite simply creates a new database at the now
+	// empty path. Bailing out on mvErr turned that recoverable state into a
+	// refusal to start. Only the reopen decides.
+	backup, mvErr := quarantineCorrupt(path)
+	healed, healErr := openPrepared(path, maxOpen, busyMs, autoCkpt)
 	if healErr != nil {
-		// The rebuild failed too, so report the ORIGINAL failure and hand back
+		// Recovery failed too, so report the ORIGINAL failure and hand back
 		// nothing. Returning a Store that cannot be written to would push the
 		// same error out to whichever feature happens to touch storage first,
 		// somewhere far from the reason — refusing to start is the honest
 		// answer once self-healing has itself failed.
-		return nil, err
+		return nil, openErr
+	}
+	if mvErr != nil {
+		slog.Warn("store: database was unreadable and could not be moved aside; started an empty one",
+			"path", path, "err", openErr, "move_err", mvErr)
+		return healed, nil
 	}
 	slog.Warn("store: database was unreadable; moved it aside and started an empty one",
-		"path", path, "backup", backup, "err", err)
+		"path", path, "backup", backup, "err", openErr)
 	return healed, nil
+}
+
+// acquireHealLock takes a cross-process exclusive lock on healing path, using
+// O_EXCL create as the mutex (the portable one; this repo targets Windows too).
+// The second return reports whether the lock was won.
+func acquireHealLock(path string) (unlock func(), won bool) {
+	lock := path + ".healing"
+	// Two attempts, not a retry loop: the second exists only to take over a
+	// lock abandoned by a dead process, and looping past that would let two
+	// processes steal from each other indefinitely.
+	for range 2 {
+		f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_ = f.Close()
+			return func() { _ = os.Remove(lock) }, true
+		}
+		fi, statErr := os.Stat(lock)
+		if statErr != nil || time.Since(fi.ModTime()) <= healLockTTL {
+			return nil, false
+		}
+		_ = os.Remove(lock)
+	}
+	return nil, false
+}
+
+// waitForOtherHealer polls the database while a different process heals it,
+// returning that process's rebuilt store. It gives up after healWaitTimeout and
+// reports the original corruption, so a wedged peer degrades to the pre-healing
+// behaviour (refuse to start) rather than to a hang.
+func waitForOtherHealer(path string, maxOpen, busyMs, autoCkpt int, openErr error) (*Store, error) {
+	deadline := time.Now().Add(healWaitTimeout)
+	for {
+		if healed, err := openPrepared(path, maxOpen, busyMs, autoCkpt); err == nil {
+			return healed, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, openErr
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // openPrepared opens path, sizes the pool, applies the pragmas and runs the
@@ -247,30 +334,27 @@ func isCorruptDB(err error) bool {
 // quarantineCorrupt renames the unreadable database out of the way and returns
 // the backup path.
 //
-// The WAL and SHM sidecars move with it, and the reason is salvage rather than
-// tidiness. An un-checkpointed -wal holds the most RECENT writes — exactly the
-// history a user would want back — and the replacement database immediately
-// writes its own WAL to that same path, destroying it. Moving the sidecars is
-// what makes the backup a complete copy instead of a truncated one.
+// The WAL and SHM sidecars move with it, but do NOT read that as "the backup is
+// therefore a complete database". On every path that actually reaches here the
+// backup is the main file alone, because SQLite has already destroyed the
+// sidecars — measured across all three corruption shapes that trigger healing
+// (garbage from byte zero, a bogus header page size, a smashed schema page):
+// the open that fails reads -wal, rejects it, and deletes both before this
+// function runs. The converse closes the other half: a database with a VALID
+// un-checkpointed WAL opens successfully and recovers its 3 MB of pending
+// writes, so it never reaches healing at all. There is no reachable case in
+// which a user's newest writes survive in a sidecar to be preserved here.
 //
-// It is NOT needed to protect the new database. Measured: a foreign -wal left
-// beside a freshly created database is ignored (the salt does not match), the
-// new database opens, migrates and writes normally, and nothing from the old
-// one leaks into it. If a sidecar cannot be moved it is therefore deleted
-// rather than left to be overwritten in place.
-//
-// The sidecar loop is NOT REACHED through OpenWith on this platform, and that
-// is measured rather than assumed: across all three corruption shapes that
-// trigger healing (garbage from byte zero, a bogus header page size, a smashed
-// schema page) SQLite itself deletes -wal and -shm during the open that fails,
-// so nothing is left to move by the time this runs. The converse also holds —
-// a database with a VALID un-checkpointed WAL opens successfully and recovers,
-// so it never reaches healing at all. The loop is kept anyway because the
-// measurement is platform-specific (this repo is developed on Windows, where
-// deleting a file with an open handle behaves differently) and unconditional
-// cleanup costs four lines. TestQuarantineCorrupt_TakesTheSidecarsWithIt
-// exercises it directly for that reason; it is not evidence of a production
-// path.
+// So the loop is DEAD CODE on this platform, kept deliberately and cheaply. It
+// is retained because the measurement is platform-specific — this repo is
+// developed on Windows, where deleting a file with an open handle behaves
+// differently, so a sidecar may well outlive the failed open there — and
+// because leaving a stale -wal beside the replacement database is the one
+// outcome worth four lines to rule out. It is NOT needed to protect the new
+// database: measured, a foreign -wal beside a freshly created database is
+// ignored (the salt does not match) and nothing from the old one leaks in.
+// TestQuarantineCorrupt_TakesTheSidecarsWithIt calls this function directly for
+// that reason; it is not evidence of a production path.
 //
 // The timestamp is nanosecond, not second: two heals of the same path inside
 // one second would otherwise silently overwrite the first backup — the one

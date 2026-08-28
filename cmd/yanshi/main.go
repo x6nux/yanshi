@@ -522,6 +522,11 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) int {
 	app, err := bootstrap.Build(bootstrap.Options{
 		ConfigPath: *configPath,
 		FakeModel:  *fakeModel,
+		// The daemon IS the backend for this project — it owns the database
+		// for as long as it runs, and refusing to start leaves the user with
+		// no yanshi and no tool to repair the file. See Options.SelfHeal for
+		// why the other Build callers leave this false.
+		SelfHeal: true,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "yanshi serve: %v\n", err)
@@ -721,6 +726,12 @@ func splitNoTUI(args []string) (noTUI bool, filtered []string) {
 // package main because package cli cannot import package tui (the tui package
 // depends on cli.StreamEvent), so the cli→tui wiring must happen here.
 func runTUI(ctx context.Context, opts cli.Options) error {
+	// The interactive TUI is the one entry allowed to heal an unreadable
+	// database, and it is set HERE rather than inside cli so that exec and
+	// headless — which build the same Session type — keep the safe default.
+	// This is the scenario healing exists for: without it a corrupt yanshi.db
+	// means the TUI never starts and the user has no other tool to repair it.
+	opts.SelfHeal = true
 	sess := cli.NewSession(opts)
 	if err := sess.Resolve(ctx); err != nil {
 		return err

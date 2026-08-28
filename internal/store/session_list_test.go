@@ -311,3 +311,72 @@ func TestListSessionsPage_ConcurrentUpdateCanDropARow(t *testing.T) {
 	assert.NotContains(t, seen, full[4].ID,
 		"this is the documented gap: a row updated ahead of the walk is not returned")
 }
+
+// TestListSessionsPage_RestoredSessionCanBeServedTwice pins the duplicate half
+// of the keyset limitation, using the production writer that causes it.
+//
+// The comment on ListSessionsPage used to claim a row "can never be served
+// twice however much the table churns", which is false whenever updated_at
+// moves BACKWARDS. RestoreSessionAfterFailedRevert does exactly that: it
+// rewrites session metadata from a pre-rollback snapshot, so a session the walk
+// has already passed reappears in front of the cursor and is served again.
+// Driving it through that method rather than a hand-written UPDATE is the
+// point — it proves the shape is reachable in production, not just in SQL.
+func TestListSessionsPage_RestoredSessionCanBeServedTwice(t *testing.T) {
+	s, err := Open(":memory:")
+	require.NoError(t, err)
+	defer s.Close()
+
+	// The target is created and snapshotted FIRST, in its own second, so the
+	// snapshot carries an updated_at strictly older than every other row. That
+	// strictness is required, not stylistic: within one second the ordering
+	// tie-break is the random session id, so a restored row would land ahead of
+	// or behind the cursor at random and this test would pass about 5 times in 6.
+	target, err := s.CreateSession("target")
+	require.NoError(t, err)
+	require.NoError(t, s.AppendMessage(target, 0, "user", "hello"))
+	snap, err := s.TruncateSessionForRevert(target, 1, 0)
+	require.NoError(t, err)
+
+	// Three more, a full second later, so they all outrank the snapshot.
+	time.Sleep(1100 * time.Millisecond) // updated_at is second-granular
+	for i := 0; i < 3; i++ {
+		id, err := s.CreateSession("other")
+		require.NoError(t, err)
+		require.NoError(t, s.AppendMessage(id, 0, "user", "hello"))
+	}
+
+	// A new turn on the target moves it to the front, so the walk serves it first.
+	time.Sleep(1100 * time.Millisecond)
+	require.NoError(t, s.AppendMessage(target, 1, "user", "a new turn"))
+
+	page1, err := s.ListSessionsPage("", 2)
+	require.NoError(t, err)
+	require.Len(t, page1.Sessions, 2)
+	served := []string{page1.Sessions[0].ID, page1.Sessions[1].ID}
+	require.Equal(t, target, page1.Sessions[0].ID, "the target must be served first")
+	require.NotEmpty(t, page1.NextCursor)
+
+	// The revert fails, so the compensation restores the OLD metadata — which
+	// puts updated_at back BEHIND the cursor the walk is already holding.
+	require.NoError(t, s.RestoreSessionAfterFailedRevert(snap))
+
+	cursor := page1.NextCursor
+	for cursor != "" {
+		p, err := s.ListSessionsPage(cursor, 2)
+		require.NoError(t, err)
+		for _, ss := range p.Sessions {
+			served = append(served, ss.ID)
+		}
+		cursor = p.NextCursor
+	}
+
+	count := 0
+	for _, id := range served {
+		if id == target {
+			count++
+		}
+	}
+	assert.Equal(t, 2, count,
+		"a session whose updated_at moved backwards is served twice; walk was %v", served)
+}

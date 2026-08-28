@@ -178,23 +178,29 @@ func decodeSessionCursor(tok string) (*sessionCursor, error) {
 // ListSessionsPage returns one page of ACTIVE sessions in the same order as
 // ListSessions, starting just past cursor (empty cursor = the first page).
 //
-// This is keyset paging, not OFFSET paging, and the difference is visible to
-// users rather than theoretical. The list is ordered by updated_at DESC, so
-// every message appended during a paging walk moves a session to the front and
-// shifts every OFFSET by one — the row that was about to start page 2 slides
-// back onto page 1 and the reader sees it twice. A cursor names a position in
-// the ordering instead of counting rows before it, so a row can never be
-// served twice however much the table churns underneath.
+// This is keyset paging, not OFFSET paging. What that buys is narrow and worth
+// stating exactly, because the obvious summary of it is wrong. OFFSET counts
+// rows before the page, so ANY insert or reordering shifts every later page by
+// one and the reader sees rows twice; a cursor names a position in the ordering
+// instead, so mere churn elsewhere in the table cannot shift the walk.
 //
-// What it does NOT promise is completeness, and the difference matters because
-// the sort key here is mutable. Measured: touching a session the walk has not
-// reached yet moves it AHEAD of the cursor, where the walk will never look
-// again — five rows come back as four, silently. Appends are the common case
-// in this table, so a full walk is a best-effort snapshot, not a guarantee that
-// every session alive at the start was seen. Callers that need exactly-once
-// delivery of every row must sort on something immutable (created_at, id)
-// instead; TestListSessionsPage_ConcurrentUpdateCanDropARow pins the current
-// behaviour so nobody infers the stronger promise from the weaker one.
+// It does NOT make the walk exactly-once, and it cannot, because the sort key
+// here is MUTABLE. Both failure modes are reachable and both are measured:
+//
+//   - A row moved AHEAD of the cursor is dropped. Appending a message to a
+//     session the walk has not reached yet does this — five rows walk out as
+//     four, silently. Appends are the common case in this table.
+//   - A row moved BEHIND the cursor is served AGAIN. This needs updated_at to
+//     go backwards, which store.RestoreSessionAfterFailedRevert does: it
+//     rewrites session metadata from a pre-rollback snapshot, so a session the
+//     walk already passed reappears in front of it.
+//
+// So a full walk is a best-effort snapshot: neither "every session was seen"
+// nor "no session twice" survives concurrent writers. Callers needing either
+// guarantee must sort on something immutable (created_at, id).
+// TestListSessionsPage_ConcurrentUpdateCanDropARow and
+// TestListSessionsPage_RestoredSessionCanBeServedTwice pin both, so nobody
+// infers the stronger promise from the weaker one.
 //
 // limit shares clampLimit with the message log: an unspecified page becomes
 // DefaultMessagePageSize and an over-large one is capped at MaxMessagePageSize.
