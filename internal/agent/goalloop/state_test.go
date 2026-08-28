@@ -246,17 +246,22 @@ func TestGoalLoop_ResumesAfterRestart(t *testing.T) {
 		sink2 := &UsageSink{}
 		loop2 := budgetLoop(raised, BudgetSet{MaxTokens: true}, sink2, st2, perIteration)
 		var ranAt int
-		var announced bool
+		var notes []string
 		record := firstIteration(&ranAt)
 		decision2, err := loop2.Run(context.Background(), goal, func(e Event) {
 			record(e)
-			if e.Phase == "State" && strings.Contains(e.Detail, "explicit budget") {
-				announced = true
-			}
+			stateEvents(&notes)(e)
 		})
 		require.NoError(t, err)
 
-		assert.True(t, announced, "the override must be reported in the other direction too")
+		// This is the MIXED case — the flag won MaxTokens, the store won
+		// MaxIterations — so both halves have to be reported. Announcing only
+		// the first leaves the operator's untouched limit coming from a source
+		// they were never told about, which is the situation they are least
+		// likely to guess.
+		joined := strings.Join(notes, "\n")
+		assert.Contains(t, joined, "explicit budget", "the flag's win must be reported")
+		assert.Contains(t, joined, "persisted budget", "and so must the store's, in the same run")
 		assert.Equal(t, saved1.Iterations+1, ranAt, "the raised budget buys work, from the resume point")
 		assert.Equal(t, maxIters, loop2.Iterations(),
 			"MaxIterations was not typed, so it must still come from the store, not the caller's 99")
