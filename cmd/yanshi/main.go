@@ -966,6 +966,12 @@ func runGoal(args []string) int {
 			Budget:      budget,
 			Sink:        loopSink,
 			Tier:        resolvedTier,
+			// W-D-16: the store doubles as the goal loop's resume point, so a
+			// crashed or Ctrl-C'd run restarts at the next iteration with the
+			// tokens it already spent still spent. Only the real path gets one
+			// — the fake path is a self-contained demo whose whole point is to
+			// run identically every time.
+			State: loopStore,
 		})
 	}
 

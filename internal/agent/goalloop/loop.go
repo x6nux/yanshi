@@ -23,6 +23,12 @@ type Config struct {
 	// pipeline, which is set by the caller via the components above. Zero value
 	// (TierQuickFix) is safe.
 	Tier Tier
+	// State persists the run's progress — objective, both budgets, iterations
+	// executed and tokens spent — so a restarted process resumes where it
+	// stopped instead of replaying the goal from iteration 1 with a budget
+	// reset to zero (W-D-16). A nil State disables persistence and leaves Run's
+	// behaviour exactly as it was before.
+	State StateStore
 }
 
 // Loop is the Goal Loop controller. It repeatedly runs
@@ -84,7 +90,9 @@ func (l *Loop) budgetExceededDecision(at string) Decision {
 }
 
 // Event represents a phase event emitted during the loop.
-// Phase is one of "Plan", "Implement", "Evaluate", "Judge", "Done".
+// Phase is one of "State", "Plan", "Implement", "Evaluate", "Judge", "Done".
+// "State" carries resume and persistence notices (iteration 0 when emitted
+// before the first cycle) and never indicates a failed run.
 type Event struct {
 	Phase     string
 	Iteration int
@@ -102,6 +110,11 @@ func (l *Loop) Iterations() int {
 //   - the context is cancelled (returns ctx.Err()),
 //   - the token budget is exceeded (returns a budget-exceeded Decision), or
 //   - MaxIterations is reached without completion (returns an incomplete Decision).
+//
+// When Config.State is wired, Run resumes a previously interrupted run of the
+// same goal in the same working directory: it starts at the next iteration and
+// carries the earlier token spend forward, so neither budget is reset by the
+// restart.
 func (l *Loop) Run(ctx context.Context, g Goal, onEvent func(Event)) (Decision, error) {
 	emit := func(phase, detail string, iter int) {
 		if onEvent != nil {
@@ -109,7 +122,43 @@ func (l *Loop) Run(ctx context.Context, g Goal, onEvent func(Event)) (Decision, 
 		}
 	}
 
-	for iter := 1; iter <= l.cfg.Budget.MaxIterations; iter++ {
+	first := 1
+	saved, resumed, err := l.loadState(g)
+	if err != nil {
+		emit("State", fmt.Sprintf("unreadable, starting from iteration 1: %v", err), 0)
+	} else if resumed {
+		first = saved.Iterations + 1
+		l.iterations = saved.Iterations
+		// Seeding the shared sink is what makes the TOKEN budget resume rather
+		// than reset: spent() reads the sink and nothing else, so a fresh
+		// process would otherwise report zero spend and grant the run its
+		// whole MaxTokens over again.
+		if l.cfg.Sink != nil {
+			l.cfg.Sink.Add(saved.Usage)
+		}
+		// The persisted budget wins. Taking the caller's instead would reopen
+		// the exact hole this resume path closes — a restart picking up new
+		// config defaults is precisely how a budget gets silently reset — so
+		// the override is announced rather than applied in silence.
+		if saved.Budget != l.cfg.Budget {
+			emit("State", fmt.Sprintf("persisted budget %+v overrides %+v", saved.Budget, l.cfg.Budget), saved.Iterations)
+			l.cfg.Budget = saved.Budget
+		}
+		emit("State", fmt.Sprintf("resuming at iteration %d/%d with %d tokens already spent",
+			first, l.cfg.Budget.MaxIterations, saved.Usage.Total()), saved.Iterations)
+	}
+
+	// Persist on every exit path, cancellation included — that is the
+	// interruption this mechanism exists for, and it is also the one path that
+	// returns without producing a Decision.
+	complete := false
+	defer func() {
+		if err := l.saveState(g, complete); err != nil {
+			emit("State", fmt.Sprintf("persist failed: %v", err), l.iterations)
+		}
+	}()
+
+	for iter := first; iter <= l.cfg.Budget.MaxIterations; iter++ {
 		// Context cancellation.
 		if err := ctx.Err(); err != nil {
 			return Decision{}, err
@@ -168,6 +217,7 @@ func (l *Loop) Run(ctx context.Context, g Goal, onEvent func(Event)) (Decision, 
 		}
 
 		if decision.Complete {
+			complete = true
 			emit("Judge", "complete", iter)
 			emit("Done", decision.Summary, iter)
 			return decision, nil
