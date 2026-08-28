@@ -487,3 +487,56 @@ func TestOpenWith_ReturnsTheOriginalErrorWhenTheRebuildFails(t *testing.T) {
 		"the rebuild error describes the recovery attempt, not what is wrong with the database")
 	require.Greater(t, calls, 1, "the rebuild must actually have been attempted")
 }
+
+// TestOpenWith_SecondHealDoesNotOverwriteTheFirstBackup guards the timestamp
+// PRECISION of the backup path.
+//
+// Two heals of the same path inside one second is the single case where this
+// feature destroys the data it exists to preserve: with a second-granular
+// suffix the second quarantine renames over the first backup, and the history
+// the user was told had been set aside is gone. Both heals below happen in far
+// under a second, which is exactly the window that used to collide.
+func TestOpenWith_SecondHealDoesNotOverwriteTheFirstBackup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "yanshi.db")
+
+	backups := func() []string {
+		t.Helper()
+		entries, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		var out []string
+		for _, e := range entries {
+			if strings.Contains(e.Name(), ".corrupt-") {
+				out = append(out, e.Name())
+			}
+		}
+		return out
+	}
+
+	first := []byte("first corrupt database, distinct content")
+	require.NoError(t, os.WriteFile(path, first, 0o600))
+	st, err := OpenWith(path, healingOptions())
+	require.NoError(t, err)
+	require.NoError(t, st.Close())
+	require.Len(t, backups(), 1)
+
+	// Corrupt it again immediately — same second, different bytes.
+	second := []byte("second corrupt database, also distinct")
+	require.NoError(t, os.WriteFile(path, second, 0o600))
+	st2, err := OpenWith(path, healingOptions())
+	require.NoError(t, err)
+	require.NoError(t, st2.Close())
+
+	got := backups()
+	require.Len(t, got, 2, "the second heal must not rename over the first backup: %v", got)
+
+	// Both originals are still readable, and they are the two distinct files.
+	var contents [][]byte
+	for _, name := range got {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		require.NoError(t, err)
+		contents = append(contents, b)
+	}
+	assert.ElementsMatch(t, [][]byte{first, second}, contents,
+		"each heal must preserve its own database, not the last one only")
+}
