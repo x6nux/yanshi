@@ -102,6 +102,16 @@ func (s *Store) CompressSession(sessionID string) (int, error) {
 		// that round-trips in memory but not through the column is exactly the
 		// failure this check exists to catch, and after the DELETE below there
 		// is nothing left to catch it with.
+		//
+		// NO TEST COVERS THIS BRANCH, measured: stubbing the comparison out
+		// leaves the suite green, because gzip+JSON over []Message has no
+		// reachable failure today and faking one would need a seam whose only
+		// consumer is the seam. It stays for the same reason C1 refuses to
+		// evict what did not persist — the check is one comparison, and the
+		// thing it guards is the only irreversible step in this file. The
+		// atomicity claim above IS load-bearing and is real regardless: every
+		// statement here runs in one WriteTx, so any error rolls the DELETE
+		// back with everything else.
 		var stored []byte
 		if err := tx.QueryRow(
 			"SELECT blob FROM cold_sessions WHERE session_id = ?", sessionID,
@@ -266,11 +276,19 @@ func (s *Store) ColdCandidates(before int64, limit int) ([]string, error) {
 // CompressColdSessions compresses every session idle since `before` and returns
 // how many it packed.
 //
-// A `before` of zero or less compresses NOTHING and reports no error. That is
-// how storage.retention_days == 0 reaches "keep everything exactly as it is":
-// the switch is enforced at the one place that removes rows, not at the caller,
-// so a future second caller cannot reintroduce compression for an operator who
-// turned it off.
+// A `before` of zero or less compresses NOTHING and reports no error.
+//
+// THAT GUARD IS DEFENCE IN DEPTH, NOT THE OFF SWITCH, and the difference was
+// measured rather than assumed: deleting it leaves the whole suite green,
+// because session timestamps are positive unix seconds and a cutoff of zero
+// selects no candidate anyway. The switch operators actually turn is
+// upkeep.Worker.compressCold, which never calls this function at all when
+// storage.retention_days is 0 — that one IS guarded, by
+// upkeep.TestWorker_RetentionDaysDrivesCompression and
+// bootstrap.TestUpkeep_ZeroRetentionLeavesTheStoreAlone, both of which go red
+// when it is removed. This line stays because "compress everything older than
+// the epoch" is not a request any caller means, and answering it explicitly is
+// cheaper than reasoning about timestamp signs at the call site.
 //
 // One failed session does not abort the sweep. Compression is opportunistic
 // maintenance, and a single unreadable session must not stop the other
