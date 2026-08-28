@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -124,6 +127,108 @@ func TestHistory_ConcurrentSavesDoNotLoseEntries(t *testing.T) {
 	}
 	if !got1 || !got2 {
 		t.Fatalf("两个窗口各自 Save 后都应保留对方的条目,得到 %v", items)
+	}
+}
+
+// TestHistory_LargeAngleBracketEntrySaveDoesNotInflate 是评审复现过的回归:
+// json.Encoder 默认会把 `<`/`>`/`&` 从 1 字节转义成 6 字节的 unicode 转义
+// 序列。端到端走 Add -> Save -> LoadHistory,断言两件事:
+// 落盘文件没有被转义撑到数倍体积(Save 已 SetEscapeHTML(false)),以及大条目
+// 之后追加的历史在重新加载后仍然都在。
+func TestHistory_LargeAngleBracketEntrySaveDoesNotInflate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "history.jsonl")
+
+	h, _ := LoadHistory(path, 500)
+	angleHeavy := strings.Repeat("<", 400*1024) // 转义后会变成约 2.4 MiB
+	h.Add(angleHeavy)
+	h.Add("after-1")
+	h.Add("after-2")
+	if err := h.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if got := len(raw); got > 2*len(angleHeavy) {
+		t.Errorf("落盘文件 %d 字节,疑似仍在做 HTML 转义(未转义时应接近原文长度的量级),"+
+			"检查 Save 里的 enc.SetEscapeHTML(false) 是否被移除", got)
+	}
+	// 用逐字节构造而非字符串字面量,避免转义序列本身在源码/工具链里被误读:
+	// 这 6 个字节是 JSON 对小于号做 unicode 转义后的样子——反斜杠、u、0、0、3、c。
+	escapeSeq := []byte{'\\', 'u', '0', '0', '3', 'c'}
+	if bytes.Contains(raw, escapeSeq) {
+		t.Errorf("落盘内容里出现了 HTML 转义序列,SetEscapeHTML(false) 应已关闭它")
+	}
+
+	reloaded, err := LoadHistory(path, 500)
+	if err != nil {
+		t.Fatalf("LoadHistory: %v", err)
+	}
+	texts := map[string]bool{}
+	for _, it := range reloaded.Items() {
+		texts[it.Text] = true
+	}
+	for _, want := range []string{"after-1", "after-2"} {
+		if !texts[want] {
+			t.Errorf("大 `<` 条目之后追加的历史应保留,缺 %q,得到 %v", want, reloaded.Items())
+		}
+	}
+}
+
+// TestHistory_ReadSurvivesHTMLEscapedLegacyLine 直接在磁盘上构造一行"看起来
+// 像旧版本(关闭 SetEscapeHTML 之前)写下的、被 HTML 转义膨胀过"的历史,
+// 跳过 Save,只测 LoadHistory/readHistoryFile 本身。这条独立于上一条:上一条
+// 覆盖"新写入不再膨胀",这条覆盖"哪怕磁盘上已经有一行被膨胀过的旧数据,
+// 它之后的条目也不会因为按裸字节数估的行长上限而被整体丢弃"——也就是
+// readHistoryFile 改用 os.ReadFile(无单行长度上限)而不是 bufio.Scanner
+// (有上限)这个修复本身。
+func TestHistory_ReadSurvivesHTMLEscapedLegacyLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "history.jsonl")
+
+	// 模拟旧版本会写出的转义行:400 KiB 的 `<`,json.Marshal 默认转义后编码
+	// 体积膨胀到约 2.4 MiB,远超旧实现按 defaultHistoryBytes+8*1024 估出的
+	// scanner 缓冲区上限(~2.1 MiB)。
+	escaped, err := json.Marshal(historyItem{
+		Text: strings.Repeat("<", 400*1024),
+		TS:   time.Now().Add(-time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("Marshal escaped line: %v", err)
+	}
+	after1, err := json.Marshal(historyItem{Text: "after-1", TS: time.Now()})
+	if err != nil {
+		t.Fatalf("Marshal after-1: %v", err)
+	}
+	after2, err := json.Marshal(historyItem{Text: "after-2", TS: time.Now().Add(time.Second)})
+	if err != nil {
+		t.Fatalf("Marshal after-2: %v", err)
+	}
+
+	var buf bytes.Buffer
+	for _, line := range [][]byte{escaped, after1, after2} {
+		buf.Write(line)
+		buf.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	h, err := LoadHistory(path, 500)
+	if err != nil {
+		t.Fatalf("LoadHistory: %v", err)
+	}
+	texts := map[string]bool{}
+	for _, it := range h.Items() {
+		texts[it.Text] = true
+	}
+	for _, want := range []string{"after-1", "after-2"} {
+		if !texts[want] {
+			t.Errorf("被 HTML 转义膨胀过的历史行之后的条目应保留,缺 %q,得到 %v", want, h.Items())
+		}
 	}
 }
 

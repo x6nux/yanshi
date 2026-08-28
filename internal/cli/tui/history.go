@@ -1,7 +1,7 @@
 package tui
 
 import (
-	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -18,9 +18,13 @@ const defaultHistoryCap = 500
 
 // defaultHistoryBytes 是历史文件的总字节上限(仅计 Text,不计 JSON 换行/字段
 // 名开销)。条数上限本身管不住体积——几条几十 KB 的粘贴 prompt 就能把
-// 500 条撑到几十 MB,而这份文件每次 TUI 启动都要整份读进内存。2 MiB 大约是
-// "一整场会话里正常量级的粘贴(diff、日志片段)都装得下,但装不下一次性把
-// 一个大文件整个粘进来"的量级,足够把启动读取成本钉在个位数 MB。
+// 500 条撑到几十 MB,而这份文件每次 TUI 启动都要整份读进内存。
+//
+// 2 MiB 是估算值,不是从真实用户粘贴大小分布量出来的。推理:多数正常 prompt
+// 是几 KB 到几十 KB;偶尔出现的大粘贴(一份 diff、一段日志)量级在几十到几百
+// KB;2 MiB 大致对应"一整场会话里能装下十几条这种偏大的粘贴,但装不下一次性
+// 把一个大文件整个粘进来",同时把启动读取成本钉在个位数 MB。这个数字如果与
+// 真实使用不符,应该按实测调整,而不是被当成已经量过的常量。
 const defaultHistoryBytes = 2 * 1024 * 1024
 
 // History 是已真正发送 prompt 的有界 FIFO;重复项移动到尾部(最新)。
@@ -63,24 +67,33 @@ func LoadHistory(path string, capacity int) (*History, error) {
 // defaultHistoryBytes 的行也跳过(拒绝存储,理由见 History.Add)。文件不存在
 // 时返回空切片、无错误。返回顺序是文件里的顺序(oldest -> newest)。
 //
-// scanner 的 token 上限必须大于 defaultHistoryBytes 才能读到一整行去判断它
-// 是否超限——否则 bufio.Scanner 会在这行上报 ErrTooLong 并让 Scan() 直接
-// 返回 false,把这行之后的全部历史都静默丢掉,而不是只丢这一行。
+// 用 os.ReadFile + bytes.Split 整段读入,而不是 bufio.Scanner 按行扫描:
+// Scanner 有固定的单行 token 上限,一旦某一行超过这个上限就会返回
+// bufio.ErrTooLong 并让 Scan() 直接结束,把这行之后的全部历史都静默丢掉,
+// 而不是只丢这一行。这里踩过一次——json.Encoder 默认会把 Text 里的
+// `<`/`>`/`&`/控制字符做 HTML 转义,1 字节可以膨胀到 6 字节,单条 Text 在
+// defaultHistoryBytes 预算内也可能编码后超过按预算估出来的 Scanner 缓冲区
+// 上限。Save 已经关闭了新写入的 HTML 转义(见下方 enc.SetEscapeHTML),但
+// 存量文件里可能还有旧版本写入的转义行,而"某一行到底会不会超过某个缓冲区"
+// 这件事没有稳妥的上界可以事先算出来,所以干脆换成没有单行长度上限的读法。
+// os.ReadFile 仍然会把整份文件读进内存,但这与调用方本来就要把全部历史读进
+// 内存的前提一致,不是新增的成本。
 func readHistoryFile(path string) ([]historyItem, error) {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), defaultHistoryBytes+8*1024)
 	var items []historyItem
-	for scanner.Scan() {
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
 		var it historyItem
-		if err := json.Unmarshal(scanner.Bytes(), &it); err != nil {
+		if err := json.Unmarshal(line, &it); err != nil {
 			continue // JSONL 自愈:坏行跳过
 		}
 		if it.Text == "" || len(it.Text) > defaultHistoryBytes {
@@ -245,6 +258,11 @@ func (h *History) Save() error {
 		return err
 	}
 	enc := json.NewEncoder(f)
+	// 这是本地 JSONL 文件,不是要塞进 <script> 的网页内容:HTML 转义在这里
+	// 没有任何安全收益,只会把 Text 里的 `<`/`>`/`&`/控制字符从 1 字节膨胀成
+	// 6 字节,徒增文件体积,也是上面 readHistoryFile 注释里那次静默截断的
+	// 根源之一。关掉它,新写入的历史不再受这个膨胀影响。
+	enc.SetEscapeHTML(false)
 	for _, it := range merged {
 		if err := enc.Encode(it); err != nil {
 			f.Close()
