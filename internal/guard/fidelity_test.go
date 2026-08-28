@@ -210,6 +210,34 @@ var fidelityCorpus = []fidelityRow{
 	{`'rm' -rf /`, DestructionCatastrophic},
 	{`r''m -rf /`, DestructionCatastrophic},
 	{`$'\x72\x6d' -rf /`, DestructionCatastrophic},
+	{`r\m -rf /`, DestructionCatastrophic},
+	{`d\d if=/dev/zero of=/dev/disk0`, DestructionCatastrophic},
+	{`s\hred -u /etc/shadow`, DestructionOutOfScope},
+	{`\r\m -rf /`, DestructionCatastrophic},
+
+	// Axis 2b — assignment prefixes. The shell applies them and runs the word
+	// after them; a reader that stops at the first word sees a program called
+	// "foo=1".
+	{"FOO=1 rm -rf /", DestructionCatastrophic},
+	{"FOO=1 BAR=2 rm -rf /", DestructionCatastrophic},
+	{"A= rm -rf /", DestructionCatastrophic},
+	{"FOO=/tmp/x rm -rf /", DestructionCatastrophic},
+	{"_x=1 rm -rf /", DestructionCatastrophic},
+
+	// Axis 2c — compound commands and reserved words. The program word sits
+	// after a keyword or a group opener, neither of which is a program.
+	{"{ rm -rf /; }", DestructionCatastrophic},
+	{"{ rm -rf /;}", DestructionCatastrophic},
+	{"! rm -rf /", DestructionCatastrophic},
+	{"if true; then rm -rf /; fi", DestructionCatastrophic},
+	{"if false; then :; else rm -rf /; fi", DestructionCatastrophic},
+	{"for x in 1; do rm -rf /; done", DestructionCatastrophic},
+	{"while true; do rm -rf /; break; done", DestructionCatastrophic},
+
+	// Axis 2d — eval, whose argv IS a command however it is quoted.
+	{"eval rm -rf /", DestructionCatastrophic},
+	{`eval "rm -rf /"`, DestructionCatastrophic},
+	{`eval 'rm' '-rf' '/'`, DestructionCatastrophic},
 
 	// Axis 2e — substitution and grouping. The word after the opener is a
 	// program, so the opener has to be a boundary.

@@ -2,13 +2,17 @@ package guard
 
 import "strings"
 
-// prefixrunner.go closes the third and last way a command's real shape can hide
-// from the destructive gate's token-level inspection.
+// prefixrunner.go handles one of the ways a command's real shape can hide from
+// the destructive gate's token-level inspection. ClassifyDestruction's header
+// lists them all; this file owns
 //
-// ansic.go already handles two of them: ANSI-C quoting ($'\x72\x6d') and shell
-// wrappers (`bash -c "…"`). This file handles the one they left open —
 // COMMAND PREFIX RUNNERS: programs whose trailing argv IS another whole
 // command, with no -c flag and no quoting to mark the boundary.
+//
+// It said "the third and last way" until a re-review measured four more, so
+// the count is gone rather than restated — the authoritative list is the one
+// on ClassifyDestruction, and a second copy of it here is a copy that stops
+// being true.
 //
 //	sudo rm -rf /
 //	timeout 5 rm -rf /
@@ -163,6 +167,34 @@ var prefixRunners = map[string]prefixRunnerSpec{
 	// their flags use the slash spelling, which the flag test below accepts.
 	"start": {},
 	"runas": {},
+
+	// SHELL RESERVED WORDS AND THE GROUP OPENER. These are not programs at
+	// all, but the position they occupy is the one lexShellLite reports as the
+	// program word, and the word after them IS a command. splitControlSegments
+	// cuts `{ rm -rf /; }` at the semicolon, so the first fragment arrives here
+	// as the program `{` with `rm -rf /` in its argv; `if true; then rm -rf /;
+	// fi` arrives as three fragments, the middle one starting with `then`.
+	// Measured: every one of those graded DestructionNone.
+	//
+	// Only the words a command may FOLLOW are listed. `fi`, `done`, `esac` and
+	// `}` close a construct and have nothing behind them, so an entry for them
+	// would never strip anything. `for` and `case` are followed by a variable
+	// name or a word to match, not a command, and listing them would grade that
+	// operand as a program.
+	//
+	// They are safe to add for the same reason every other entry is: stripping
+	// combines with the MORE SEVERE rule, so `{ rm -rf ./build; }` still grades
+	// None. A program genuinely named `then` would only be reclassified when
+	// what follows it is itself destructive.
+	"{":     {},
+	"!":     {},
+	"then":  {},
+	"else":  {},
+	"elif":  {},
+	"do":    {},
+	"if":    {},
+	"while": {},
+	"until": {},
 }
 
 // suLikeRunners take the command as the argument of a -c flag, but unlike the

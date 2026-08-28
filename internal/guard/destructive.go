@@ -59,8 +59,9 @@ var deletionPrograms = map[string]bool{
 // reason INF1 is a refinement of the metacharacter defence rather than a
 // removal of it.
 //
-// Two obfuscations are seen THROUGH rather than refused, because the visible
-// text of a command is not always what runs (see ansic.go for the rationale):
+// Several obfuscations are seen THROUGH rather than refused, because the
+// visible text of a command is not always what runs (see ansic.go for the
+// rationale). Every one of them was a measured Allow before it was handled:
 //
 //   - ANSI-C quoting: $'\x72\x6d -rf /' is decoded by lexShellLite as it
 //     tokenizes, so the hex spelling reaches the same verdict as the plain one.
@@ -72,6 +73,15 @@ var deletionPrograms = map[string]bool{
 //     re-lexed and re-classified recursively (bounded by maxUnwrapDepth). The
 //     MOST SEVERE verdict across the wrapper and its payload wins - a wrapper
 //     can only ever add danger, never launder it away.
+//   - Backslash escapes: `r\m` is `rm` to a POSIX shell and `r/m` to a Windows
+//     one. Both readings are graded and the worse wins (unescapeWordLetters).
+//   - Assignment prefixes: `FOO=1 rm -rf /` runs rm, not a program called
+//     `foo=1`; lexShellLite walks past them to the real command word.
+//   - Reserved words and group openers: `{`, `!`, `then`, `do` occupy the
+//     program-word position without being programs, so they are prefix runners
+//     (prefixrunner.go).
+//   - `eval`, whose argv IS a command whichever way it is quoted
+//     (classifyLexed).
 func ClassifyDestruction(cmd, workdir string) Destruction {
 	return classifyDestruction(cmd, workdir, maxUnwrapDepth, true)
 }
@@ -118,11 +128,105 @@ func classifyDestruction(cmd, workdir string, depth int, topLevel bool) Destruct
 			return classifyDestruction(decoded, workdir, depth, false)
 		}
 	}
+	// A backslash escape hides a letter of the program word from lexShellLite,
+	// which keeps backslashes literal so a Windows path (`C:\Users\me`) survives
+	// as one. /bin/sh reads `r\m` as `rm`; the literal reading normalizes it to
+	// `r/m` and takes the base name, so the deletion gate saw a program called
+	// `m`. Measured: `r\m -rf /`, `d\d if=/dev/zero of=/dev/disk0` and
+	// `s\hred -u /etc/shadow` all graded DestructionNone and reached Allow.
+	//
+	// BOTH readings are graded and the more severe wins, rather than the literal
+	// one being replaced. Replacing it would trade this bypass for a Windows
+	// regression: `rm -rf C:\Users\me` de-escapes to `C:Usersme`, a relative
+	// path that resolves inside the workdir. Only letters and digits are
+	// unescaped, so this pass can never manufacture a control operator out of
+	// `ls \&\& rm -rf /` — where the escaped `&&` is an operand to ls, not a
+	// chain — and turn an ordinary command into a structural refusal.
+	worst := DestructionNone
+	if unescaped, hadEscape := unescapeWordLetters(cmd); hadEscape {
+		worst = classifyDestruction(unescaped, workdir, depth, topLevel)
+	}
 	program, args, ok := lexShellLite(cmd)
 	if !ok {
-		return DestructionNone
+		return worst
 	}
-	return classifyLexed(program, args, workdir, depth)
+	if d := classifyLexed(program, args, workdir, depth); d > worst {
+		worst = d
+	}
+	return worst
+}
+
+// unescapeWordLetters removes the backslash from every `\<letter>` and
+// `\<digit>` pair, which is how a POSIX shell reads a backslash inside an
+// unquoted word.
+//
+// TWO RESTRICTIONS, each one measured rather than reasoned:
+//
+//   - Only letters and digits are unescaped. Any other escaped byte keeps its
+//     backslash, so the result can never contain a control operator the input
+//     did not already carry — that is what lets classifyDestruction re-split
+//     the result without widening what runs. `ls \&\& rm -rf /` passes through
+//     untouched.
+//   - A word that is recognizably a WINDOWS PATH is skipped whole: one starting
+//     with `\\` (a UNC share) or containing `:` or `/`. On Windows the
+//     backslash is a separator, not an escape, and de-escaping collapses the
+//     separators. Measured: `rm -rf \\server\share\proj\build` became
+//     `\\servershareprojbuild`, which normalizes to a whole UNC share and
+//     graded Catastrophic — an unappealable refusal in place of the correct
+//     out-of-workdir Prompt. That is the direction where an extra reading costs
+//     something, so the words where it can happen do not get one.
+//
+// The reported bool is "the visible text is not what the shell would run". It
+// is false on a second application (the words it changed no longer contain an
+// escaped letter, and the words it skipped are skipped again), which is what
+// terminates the caller's recursion.
+func unescapeWordLetters(cmd string) (string, bool) {
+	if !strings.Contains(cmd, `\`) {
+		return cmd, false
+	}
+	var out strings.Builder
+	changed := false
+	for i := 0; i < len(cmd); {
+		start := i
+		for i < len(cmd) && (cmd[i] == ' ' || cmd[i] == '\t') {
+			i++
+		}
+		out.WriteString(cmd[start:i])
+		start = i
+		for i < len(cmd) && cmd[i] != ' ' && cmd[i] != '\t' {
+			i++
+		}
+		word, wordChanged := unescapeOneWord(cmd[start:i])
+		out.WriteString(word)
+		changed = changed || wordChanged
+	}
+	return out.String(), changed
+}
+
+// unescapeOneWord is unescapeWordLetters applied to a single whitespace-
+// delimited word, with the Windows-path exclusion its header describes.
+func unescapeOneWord(w string) (string, bool) {
+	if !strings.Contains(w, `\`) || strings.HasPrefix(w, `\\`) || strings.ContainsAny(w, ":/") {
+		return w, false
+	}
+	var out strings.Builder
+	changed := false
+	for i := 0; i < len(w); i++ {
+		if w[i] != '\\' || i+1 >= len(w) {
+			out.WriteByte(w[i])
+			continue
+		}
+		n := w[i+1]
+		if isASCIILetter(n) || (n >= '0' && n <= '9') {
+			out.WriteByte(n)
+			changed = true
+		} else {
+			out.WriteByte('\\')
+			out.WriteByte(n)
+		}
+		i++
+	}
+	return out.String(), changed
 }
 
 // classifyLexed grades an ALREADY-TOKENIZED command. It is split out from
@@ -142,6 +246,26 @@ func classifyLexed(program string, args []string, workdir string, depth int) Des
 			// right. Classify it with the same workdir: the wrapper does not
 			// change which directory the deletion lands in.
 			worst = classifyDestruction(inner, workdir, depth-1, false)
+			if worst == DestructionCatastrophic {
+				return worst
+			}
+		}
+		if program == "eval" && len(args) > 0 {
+			// `eval` joins its argv with single spaces and parses the result as
+			// a command, so re-joining here is what the shell itself does — not
+			// the lossy re-serialization classifyLexed's header refuses. It
+			// covers both spellings with one branch: `eval rm -rf /` (three
+			// words) and `eval "rm -rf /"` (one), which a prefix-runner entry
+			// could not, because the single-word form would hand
+			// normalizeProgramWord the whole command and get back the empty
+			// string after the last slash.
+			//
+			// eval is the same shape as `command` and `exec`, which are already
+			// prefix runners; it was simply missing, and both spellings graded
+			// DestructionNone.
+			if d := classifyDestruction(strings.Join(args, " "), workdir, depth-1, false); d > worst {
+				worst = d
+			}
 			if worst == DestructionCatastrophic {
 				return worst
 			}
@@ -520,7 +644,50 @@ func lexShellLite(cmd string) (program string, args []string, ok bool) {
 	if len(tokens) == 0 {
 		return "", nil, false
 	}
-	return normalizeProgramWord(tokens[0]), tokens[1:], true
+	// Leading VAR=value words are ASSIGNMENTS the shell applies to the
+	// environment of the command that follows; the program is the first word
+	// that is not one. Measured before this loop existed: `FOO=1 rm -rf /` and
+	// `A= rm -rf /` produced the program word `foo=1`, which is in no table
+	// this file consults, so every predicate declined and the command graded
+	// DestructionNone under a permissive profile.
+	//
+	// This belongs in the lexer rather than in stripCommandPrefix because
+	// normalizeProgramWord splits on path separators: by the time a caller sees
+	// the program word, `FOO=/tmp/x rm -rf /` has already become `x`. The
+	// existing `env FOO=1 rm -rf /` spelling was caught only because `env` is a
+	// prefix runner with assignments enabled; the bare prefix is the same shape
+	// with the `env` left off, which is what a shell accepts and a model writes.
+	//
+	// The last token is never consumed: `FOO=1` on its own runs nothing, and
+	// reporting an empty program would lose the fact that there was a command
+	// word at all.
+	first := 0
+	for first < len(tokens)-1 && isAssignmentWord(tokens[first]) {
+		first++
+	}
+	return normalizeProgramWord(tokens[first]), tokens[first+1:], true
+}
+
+// isAssignmentWord reports whether w has the shape of a shell variable
+// assignment: a name made of letters, digits and underscores that does not
+// start with a digit, followed by "=". The value may be empty (`A= cmd` is a
+// legal assignment of the empty string).
+func isAssignmentWord(w string) bool {
+	eq := strings.IndexByte(w, '=')
+	if eq <= 0 {
+		return false
+	}
+	for i := 0; i < eq; i++ {
+		c := w[i]
+		if isASCIILetter(c) || c == '_' {
+			continue
+		}
+		if i > 0 && c >= '0' && c <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // normalizeProgramWord canonicalizes the program word the way execpolicy does:
