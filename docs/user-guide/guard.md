@@ -59,6 +59,27 @@ shell 维度先拆段（见下一节），再对**每一段**过下面两层，�
 
 **嵌套有上限，而且用完了是拒绝不是放行。** wrapper（`bash -c "…"`）、`su -c`、`eval` 与前缀执行器共用同一个 8 层预算。八层之内照常读到底；超过之后，如果底下还藏着一条命令，判 **Unreadable** —— 同样是结构性 HardDeny，理由文案会明说是"嵌套太深、读不到真正要跑的程序"，而不是借用灾难性删除的说法。`sudo nohup timeout 5 nice -n 19 rm -rf /` 才用掉四层，正常写法碰不到这条。
 
+### 读不懂的 payload 会弹窗（**Opaque**）
+
+同一条原则的另一面：**"没读到 payload"不等于"读到了一个安全的 payload"**。当没有任何读法认领这条命令、而它仍然带着一段本工具读不懂的东西时，判 **Opaque** —— 一个 **Prompt**，不是结构性地板。
+
+会落进这一档的两类：
+
+- **另一种语言的程序**：一个本工具不认识的程序，带着 `-c` / `-e` / `--command` / `--eval` / `--execute` 中的一个，且它后面那个操作数长得像程序而不像选项值（含空格、括号、`$`、`;`、`|` 之类）。`python3 -c "…"`、`perl -e "…"`、`node --eval "…"`、`powershell -EncodedCommand <base64>` 都在这里。
+- **wrapper 的兜底**：`bash +o posix -c "rm -rf /"` 用了一种本工具的 flag 扫描不认的 shell 选项拼法，于是没有任何读法拿到那个 `-c` 的内容 —— 这种"没人读过"的形态从静默放行变成弹窗。
+
+**这是刻意的过严，代价是知情接受的。** 一些完全正常的命令会开始要你点一下：`psql -c "SELECT 1"`、`osascript -e '…'`、你自己写的带 `-c` 的小工具。方向是这样选的：判错成"多问一次"你会立刻看见并抱怨，判错成"静默放行"没有任何痕迹。
+
+**不会落进这一档的**：`tail -c 100`、`cut -c 1-5`、`gcc -c foo.c`、`ssh -e none host`（操作数是选项值不是程序），以及 `grep -e "a b"`、`sed -e 's/a b/c/'`、`git -c core.pager="less -R" log`、`docker run -e "A=b c"`、`rsync -e "ssh -p 22"`、`jq -e '.a|.b'`、`kubectl logs -c web`（这些程序在一张"它的 `-c`/`-e` 操作数按文档就不是程序"的缓解表里）。**这张表漏一个条目的代价是多一次弹窗**，所以碰到你觉得不该弹的命令，那是缺表项而不是缺防线。
+
+`yolo` 会直接放行这一档（它只对 Catastrophic 与 Unreadable 停手），`auto` 交给模型判，`default` / `allow-edits` 弹窗。理由与四条不可违反的约束见 [../adr/0018-an-unread-payload-is-a-refusal-not-a-pass.md](../adr/0018-an-unread-payload-is-a-refusal-not-a-pass.md)。
+
+### 写文件的目标是参数时也算写
+
+重定向（`>`）的目标一直会进 fs 维度。**用参数指定写入目标的程序同样会** —— `tee`、`cp` / `mv` / `ln` / `install` 的最后一个操作数、`sed -i` 的文件、`dd of=`、`gzip` / `xz` 一族原地替换的文件、`truncate`，以及 PowerShell 里 `Set-Content` / `Add-Content` / `Out-File` / `Export-Csv` / `Tee-Object` / `New-Item` 的 `-Path` / `-FilePath`（或第一个位置参数）。
+
+在 PowerShell 那边这不是补一个角落：用 cmdlet 写文件本来就是**惯用写法**，重定向才是少见的那个，所以只判重定向等于几乎什么都没判。
+
 ## fail-closed：空 Allow 拒绝一切
 
 > 这是架构级安全承诺，不可妥协。详见 [../adr/0003-guard-fail-closed-empty-allow.md](../adr/0003-guard-fail-closed-empty-allow.md)。

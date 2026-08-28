@@ -122,6 +122,16 @@ var prefixRunners = map[string]prefixRunnerSpec{
 	"setsid": {},
 	"daemon": {},
 
+	// Locking, namespacing, fan-out and repetition. Every one of these exists
+	// to run the argv that follows it, and every one was measured passing
+	// `rm -rf /` — `unshare` and `watch` with a real /bin/sh reaching the
+	// recorder, the other two on their documented semantics. `flock` takes the
+	// lock file as a positional before the command.
+	"flock":    {valueFlags: map[string]bool{"-w": true, "--wait": true, "--timeout": true, "-E": true, "--conflict-exit-code": true}, positionals: 1},
+	"unshare":  {valueFlags: map[string]bool{"--map-user": true, "--map-group": true, "-S": true, "--setuid": true, "-G": true, "--setgid": true, "--propagation": true, "-R": true, "--root": true, "-w": true, "--wd": true}},
+	"parallel": {valueFlags: map[string]bool{"-j": true, "--jobs": true, "-a": true, "--arg-file": true, "-S": true, "--sshlogin": true, "-N": true, "-L": true, "-d": true, "--delimiter": true, "--colsep": true, "-C": true}},
+	"watch":    {valueFlags: map[string]bool{"-n": true, "--interval": true}},
+
 	// Scheduling and resource wrappers.
 	"nice":   {valueFlags: map[string]bool{"-n": true, "--adjustment": true}},
 	"ionice": {valueFlags: map[string]bool{"-c": true, "--class": true, "-n": true, "--classdata": true, "-p": true, "--pid": true}},
@@ -231,6 +241,7 @@ var nestedCommandUnwrappers = []func(program string, args []string) (string, boo
 	unwrapSuCommand,
 	unwrapEvalCommand,
 	unwrapArgvCommand,
+	unwrapRemoteCommand,
 }
 
 // unwrapEvalCommand extracts the command `eval` runs.
@@ -341,6 +352,151 @@ func nestedPayloads(cmd string, depth int) []string {
 	return out
 }
 
+// scriptEmitters are the programs whose operands are written to stdout
+// VERBATIM. They are the left half of `printf 'rm -rf /' | sh`.
+//
+// `cat` is deliberately absent: its operands are FILE NAMES, so `cat script.sh
+// | sh` carries its payload in a file rather than in this string, which is the
+// boundary the corpus already records for stdin payloads.
+var scriptEmitters = map[string]bool{"echo": true, "printf": true}
+
+// posixShellPrograms are the shells that read a script from STDIN when given no
+// -c payload and no script operand.
+var posixShellPrograms = map[string]bool{
+	"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true, "ash": true,
+}
+
+// pipeStage is one stage of a command line, with whether a PIPE (rather than
+// `;`, `&&` or `||`) connected it to the stage before it.
+type pipeStage struct {
+	text  string
+	piped bool
+}
+
+// splitPipeStages breaks cmd at its top-level operators, recording which
+// boundaries were pipes. It is quote-aware for the same reason
+// splitControlSegments is: `grep "a|b" x` contains no pipe.
+//
+// `||` is tracked as a NON-pipe on purpose. Folding it in would have been one
+// character cheaper and would have graded `echo 'rm -rf /' || sh` — where the
+// shell pipes nothing — as a catastrophic, unappealable refusal.
+func splitPipeStages(cmd string) []pipeStage {
+	var stages []pipeStage
+	var cur strings.Builder
+	quote := byte(0)
+	piped := false
+	flush := func(nextPiped bool) {
+		if strings.TrimSpace(cur.String()) != "" {
+			stages = append(stages, pipeStage{text: cur.String(), piped: piped})
+		}
+		cur.Reset()
+		piped = nextPiped
+	}
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			cur.WriteByte(c)
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			quote = c
+			cur.WriteByte(c)
+		case '|':
+			if i+1 < len(cmd) && cmd[i+1] == '|' {
+				flush(false)
+				i++
+				continue
+			}
+			flush(true)
+		case ';', '&', '\n', '\r':
+			flush(false)
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	flush(false)
+	return stages
+}
+
+// classifyScriptOnStdin grades `printf 'rm -rf /' | sh` — a payload that is
+// entirely present in the command string but arrives at the shell through a
+// file descriptor rather than as an operand.
+//
+// The corpus already pins `printf rm | sh -s -- -rf /` to Allow, with the
+// justification that the payload is a PROGRAM NAME on stdin and "is in no
+// reading of this string". That is true of that row and false of this one: here
+// the whole command, operands included, is one quoted word sitting in the text,
+// and the only difference from `sh -c "rm -rf /"` — a structural HardDeny — is
+// which descriptor it enters by. The justification covered a family it had not
+// argued about.
+//
+// The pinned row keeps its verdict for the reason it was pinned: `rm` on its own
+// is a deletion with no target, which grades None. Nothing here is special-cased
+// to keep it that way.
+func classifyScriptOnStdin(cmd, workdir string, depth int) Destruction {
+	if depth <= 0 {
+		return DestructionNone
+	}
+	stages := splitPipeStages(cmd)
+	worst := DestructionNone
+	for i := 1; i < len(stages); i++ {
+		if !stages[i].piped {
+			continue
+		}
+		program, args, ok := lexShellLite(stages[i].text)
+		if !ok || !readsScriptFromStdin(program, args) {
+			continue
+		}
+		emitter, emitted, ok := lexShellLite(stages[i-1].text)
+		if !ok || !scriptEmitters[emitter] {
+			continue
+		}
+		for _, w := range emitted {
+			if isFlagWord(w) {
+				continue
+			}
+			worst = maxDestruction(worst, classifyDestruction(w, workdir, depth-1, false))
+		}
+	}
+	return worst
+}
+
+// readsScriptFromStdin reports whether a shell invocation takes its script from
+// standard input: a POSIX shell with no -c payload and no script-path operand.
+//
+// `-s` is what makes the operands positional parameters rather than a script
+// path, which is why `sh -s -- -rf /` still reads from stdin while `sh
+// script.sh` does not.
+func readsScriptFromStdin(program string, args []string) bool {
+	if !posixShellPrograms[program] {
+		return false
+	}
+	if _, hasPayload := unwrapShellCommand(program, args); hasPayload {
+		return false
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			return true // everything after is a positional parameter
+		}
+		if strings.HasPrefix(a, "-") && a != "-" {
+			if strings.ContainsRune(a, 's') {
+				return true
+			}
+			if shellShortValueFlags[a] || shellLongValueFlags[a] {
+				i++
+			}
+			continue
+		}
+		return false // a script path operand
+	}
+	return true
+}
+
 // suLikeRunners take the command as the argument of a -c flag, but unlike the
 // entries in shellWrappers they may carry a bare username positional first
 // (`su root -c "…"`). unwrapShellCommand bails on the first non-flag word, so
@@ -381,6 +537,22 @@ func stripCommandPrefix(program string, args []string) (string, []string, bool) 
 	if !ok {
 		return "", nil, false
 	}
+	i, ok := prefixCommandIndex(spec, args)
+	if !ok {
+		return "", nil, false
+	}
+	return normalizeProgramWord(args[i]), args[i+1:], true
+}
+
+// prefixCommandIndex walks past a runner's own options, assignments and
+// positional operands and returns the index of the command word behind them.
+//
+// It is shared with unwrapRemoteCommand rather than duplicated there: `ssh`
+// needs the same walk (skip ssh's flags, skip the host) and a second copy of a
+// flag walk is a second place for the two to disagree about `-o` — which is
+// precisely how the shell wrapper's own flag scan came to read three standard
+// spellings wrongly.
+func prefixCommandIndex(spec prefixRunnerSpec, args []string) (int, bool) {
 	i := 0
 	for i < len(args) {
 		w := args[i]
@@ -407,9 +579,62 @@ func stripCommandPrefix(program string, args []string) (string, []string, bool) 
 		i++
 	}
 	if i >= len(args) {
-		return "", nil, false
+		return 0, false
 	}
-	return normalizeProgramWord(args[i]), args[i+1:], true
+	return i, true
+}
+
+// remoteShellRunners hand their trailing argv to a shell ON ANOTHER MACHINE,
+// joined with single spaces the way eval joins its own. The spec is the flag
+// walk that reaches past the runner's options to the host operand.
+//
+// # The decision this table records
+//
+// `ssh host rm -rf /` was measured Allow, and the review that measured it set
+// it aside as needing a DESIGN DECISION rather than a table row, because every
+// verdict in this package is relative to a local working directory and the
+// command runs somewhere else. The decision taken here is TO GRADE IT ANYWAY,
+// for two reasons:
+//
+//   - The catastrophic tier is not workdir-relative. `rm -rf /` is a disaster on
+//     whichever machine runs it, and the tier's own definition ("a system root,
+//     a home, a whole drive") names nothing local. The out-of-scope tier IS
+//     workdir-relative, and grading a remote path against a local directory is
+//     wrong — but it is wrong in the direction of one extra prompt, on a command
+//     that deletes something outside the project on a machine the operator is
+//     reaching into.
+//   - Declining to model it is not neutral. `ssh` is what a model reaches for
+//     when a local path is refused, in exactly the way `sudo` is what it reaches
+//     for when a permission is refused, and prefixrunner.go exists because of
+//     the second case.
+//
+// The reading is the JOINED argv rather than the tokens, because that is what
+// ssh does: it concatenates its remaining operands with spaces and hands the
+// result to the remote login shell. A token-level prefix entry alone would have
+// covered `ssh h rm -rf /` and missed `ssh h "rm -rf /"` — the more common
+// spelling — reproducing the wrapped-form-passes inversion this file was
+// written to end.
+var remoteShellRunners = map[string]prefixRunnerSpec{
+	"ssh": {valueFlags: map[string]bool{
+		"-o": true, "-i": true, "-p": true, "-l": true, "-F": true, "-c": true,
+		"-e": true, "-b": true, "-D": true, "-L": true, "-R": true, "-W": true,
+		"-w": true, "-S": true, "-J": true, "-m": true, "-Q": true, "-E": true,
+		"-B": true, "-I": true,
+	}, positionals: 1}, // the [user@]host operand
+}
+
+// unwrapRemoteCommand extracts the command a remoteShellRunners entry hands to
+// a shell on another machine. See that table for why it is graded at all.
+func unwrapRemoteCommand(program string, args []string) (string, bool) {
+	spec, ok := remoteShellRunners[program]
+	if !ok {
+		return "", false
+	}
+	i, ok := prefixCommandIndex(spec, args)
+	if !ok {
+		return "", false // `ssh host` with no command opens an interactive shell
+	}
+	return strings.Join(args[i:], " "), true
 }
 
 // commandPrefixStrippers is the list of ways one command carries another AS

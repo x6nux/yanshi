@@ -327,6 +327,14 @@ func (g *Guard) checkDestructive(a Action) Decision {
 		// that the command nests wrappers deeper than the unwrap budget, so the
 		// program that would run was never reached.
 		return hardDeny("shell command nests command wrappers deeper than the guard will unwrap; the program that would actually run cannot be identified")
+	case DestructionOpaque:
+		// A THIRD refusal with a third reason. It is a Prompt rather than a
+		// floor because the guard is not saying the command is dangerous — it
+		// is saying it could not read part of it, which is a reason to ask a
+		// human and not a reason to make `python3 -c` unrunnable in every mode.
+		// opaque.go's header carries the argument in full.
+		return prompt("shell command carries a payload this guard does not read " +
+			"(an interpreter's -c/-e operand, or an encoded command); nobody has seen what it runs")
 	case DestructionOutOfScope:
 		return prompt("deletion outside the working directory")
 	default:
@@ -492,7 +500,7 @@ func (g *Guard) checkShell(p PermissionProfile, a Action) Decision {
 			continue
 		}
 		for _, seg := range innerSegs {
-			worst = moreSevere(worst, g.checkRedirectTargets(p, a, seg))
+			worst = moreSevere(worst, g.checkSegmentWrites(p, a, seg))
 		}
 	}
 	return worst
@@ -522,7 +530,30 @@ func segmentsFor(a Action) ([]execpolicy.Segment, error) {
 // two — a segment whose program is allowlisted but whose output is redirected
 // into a credential file is not an allowed segment.
 func (g *Guard) checkShellSegment(p PermissionProfile, a Action, seg execpolicy.Segment) Decision {
-	return moreSevere(g.checkRedirectTargets(p, a, seg), g.checkShellPolicy(p, seg.Text))
+	return moreSevere(g.checkSegmentWrites(p, a, seg), g.checkShellPolicy(p, seg.Text))
+}
+
+// checkSegmentWrites is every path a segment WRITES, from both of the two
+// places a shell command can name one: a redirection target and an operand.
+//
+// The second half arrived late and the corpus recorded the gap as a
+// single-program boundary (`tee`) while it was a family of at least ten. See
+// argvwrite.go.
+func (g *Guard) checkSegmentWrites(p PermissionProfile, a Action, seg execpolicy.Segment) Decision {
+	worst := g.checkRedirectTargets(p, a, seg)
+	program, args, ok := lexShellLite(seg.Text)
+	if !ok {
+		return worst
+	}
+	targets := argvWriteTargets(program, args)
+	if len(targets) == 0 {
+		return worst
+	}
+	return moreSevere(worst, g.checkFS(p, Action{
+		Tool:    a.Tool,
+		Workdir: a.Workdir,
+		FS:      FSWant{Op: "write", Paths: targets},
+	}))
 }
 
 // checkRedirectTargets routes every redirection target of a segment through the

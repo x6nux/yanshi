@@ -22,6 +22,18 @@ const (
 	// directory (e.g. "rm /etc/passwd", "rm -rf /opt/other"). yolo blocks; auto
 	// AI-judges; default/allow-edits prompt the user.
 	DestructionOutOfScope
+	// DestructionOpaque: the command carries an operand this package does not
+	// read — a payload in another language (`python3 -c …`, `perl -e …`), a
+	// base64 blob (`powershell -EncodedCommand …`), or a `-c` payload behind an
+	// option spelling no unwrapper here walks past. Nothing about it is known to
+	// be dangerous; what is known is that NOBODY READ IT.
+	//
+	// It is a Prompt, not a floor, and opaque.go's header states why: a refusal
+	// nobody can appeal is defensible only when the reason can be stated, and
+	// "there is something here I cannot read" is a reason to ask. It ranks above
+	// OutOfScope so that its reason — which names an unread payload rather than
+	// a directory — is the one an operator is shown when a command is both.
+	DestructionOpaque
 	// DestructionCatastrophic: recursive/forced mass deletion of a system root,
 	// home, drive, wildcard root, the workdir itself, an ancestor of it, or a
 	// bare "rm -rf". Structurally blocked in ALL modes — the immovable floor.
@@ -128,13 +140,43 @@ func classifyDestruction(cmd, workdir string, depth int, topLevel bool) Destruct
 	if strings.TrimSpace(cmd) == "" {
 		return DestructionNone
 	}
+	// worst accumulates across every READING of this command string. There are
+	// four (expansion, control-operator split, ANSI-C decode, backslash escapes)
+	// plus the two lexings at the bottom, and each one can only ever add a
+	// verdict: a reading that reveals danger raises it and a reading that
+	// reveals nothing leaves it alone.
+	worst := DestructionNone
+	// THE EXPANSION READING APPLIES INSIDE A PAYLOAD TOO. Guard.Check runs
+	// expandKnownParameters on the command it was handed, but a wrapper payload
+	// never reaches Guard.Check — classifyLexed re-enters HERE — so the second
+	// reading stopped at the wrapper. Measured: `X=rm; $X -rf /` was a
+	// structural HardDeny and `bash -c 'X=rm; $X -rf /'` was Allow, which is the
+	// inversion (the more wrapped form being the one that passes) that
+	// prefixrunner.go's header was written about.
+	//
+	// It runs BEFORE the control-operator split, and that position is
+	// load-bearing: the definition and the use of a variable are in DIFFERENT
+	// segments (`X=rm; $X -rf /`), so a split that happened first would hand
+	// each half to a reader that cannot see the other.
+	//
+	// The recursion terminates on STRING EQUALITY rather than on the `changed`
+	// flag — a value that expands to itself (`X=$X; $X`) sets changed without
+	// shortening anything — and the budget decrement is the second guard.
+	if depth > 0 {
+		if expanded, _ := expandKnownParameters(cmd); expanded != cmd {
+			worst = maxDestruction(worst, classifyDestruction(expanded, workdir, depth-1, topLevel))
+		}
+	}
+	// A PIPELINE'S PAYLOAD IS IN THE STRING TOO. The split below grades each
+	// stage on its own, which reads `printf 'rm -rf /'` as a harmless print and
+	// `sh` as a shell with no arguments; the connection between them is the
+	// pipe, and only a reader that keeps the stages adjacent can see it. See
+	// classifyScriptOnStdin.
+	worst = maxDestruction(worst, classifyScriptOnStdin(cmd, workdir, depth))
 	if hasControlOperator(cmd) {
 		if segs, ok := splitIntoStrictlySmallerSegments(cmd); ok {
-			worst := DestructionNone
 			for _, seg := range segs {
-				if d := classifyDestruction(seg, workdir, depth, false); d > worst {
-					worst = d
-				}
+				worst = maxDestruction(worst, classifyDestruction(seg, workdir, depth, false))
 			}
 			return worst
 		}
@@ -149,7 +191,7 @@ func classifyDestruction(cmd, workdir string, depth int, topLevel bool) Destruct
 	// lexShellLite decodes per token and a decoded token never word-splits.
 	if topLevel {
 		if decoded, wasEncoded := execpolicy.DecodeANSIC(cmd); wasEncoded && hasControlOperator(decoded) {
-			return classifyDestruction(decoded, workdir, depth, false)
+			return maxDestruction(worst, classifyDestruction(decoded, workdir, depth, false))
 		}
 	}
 	// A backslash escape hides a letter of the program word from lexShellLite,
@@ -166,18 +208,35 @@ func classifyDestruction(cmd, workdir string, depth int, topLevel bool) Destruct
 	// unescaped, so this pass can never manufacture a control operator out of
 	// `ls \&\& rm -rf /` — where the escaped `&&` is an operand to ls, not a
 	// chain — and turn an ordinary command into a structural refusal.
-	worst := DestructionNone
 	if unescaped, hadEscape := unescapeWordLetters(cmd); hadEscape {
-		worst = classifyDestruction(unescaped, workdir, depth, topLevel)
+		worst = maxDestruction(worst, classifyDestruction(unescaped, workdir, depth, topLevel))
+	}
+	// A backslash before a double quote is an ESCAPE inside double quotes, which
+	// the permissive lexer does not model so that `C:\` survives. Both readings
+	// are graded and the worse wins, for the same reason the escape pass above
+	// grades both: each one is right about a shape the other gets wrong. See
+	// lexShellLiteDoubleQuoteEscapes.
+	if strings.Contains(cmd, `\"`) {
+		if program, args, ok := lexShellLiteDoubleQuoteEscapes(cmd); ok {
+			worst = maxDestruction(worst, classifyLexed(program, args, workdir, depth))
+		}
 	}
 	program, args, ok := lexShellLite(cmd)
 	if !ok {
 		return worst
 	}
-	if d := classifyLexed(program, args, workdir, depth); d > worst {
-		worst = d
+	return maxDestruction(worst, classifyLexed(program, args, workdir, depth))
+}
+
+// maxDestruction folds two readings of the same command into one verdict. It is
+// the `d > worst` idiom this file applies at every reading boundary, named once
+// so the direction — a reading can add danger, never remove it — is stated in a
+// single place rather than restated at each of the nine call sites.
+func maxDestruction(a, b Destruction) Destruction {
+	if b > a {
+		return b
 	}
-	return worst
+	return a
 }
 
 // unescapeWordLetters removes the backslash from every `\<letter>` and
@@ -264,6 +323,12 @@ func unescapeOneWord(w string) (string, bool) {
 // such step.
 func classifyLexed(program string, args []string, workdir string, depth int) Destruction {
 	worst := DestructionNone
+	// read records whether ANY reader claimed this command — an unwrapper that
+	// found a payload, or a prefix stripper that found a command behind a
+	// runner. It is what separates "there was nothing nested here" from "there
+	// was something and no table matched it"; opaquePayload is consulted only in
+	// the second case. See opaque.go.
+	read := false
 	if depth > 0 {
 		// Every way one command carries another AS A STRING — a -c payload on
 		// either side of the platform divide, an su -c payload, an eval argv, a
@@ -277,6 +342,7 @@ func classifyLexed(program string, args []string, workdir string, depth int) Des
 			if !ok {
 				continue
 			}
+			read = true
 			if d := classifyDestruction(inner, workdir, depth-1, false); d > worst {
 				worst = d
 			}
@@ -298,6 +364,7 @@ func classifyLexed(program string, args []string, workdir string, depth int) Des
 			if !isPrefix {
 				continue
 			}
+			read = true
 			if d := classifyLexed(inner, innerArgs, workdir, depth-1); d > worst {
 				worst = d
 			}
@@ -316,6 +383,16 @@ func classifyLexed(program string, args []string, workdir string, depth int) Des
 		// The limit is deliberately generous (maxUnwrapDepth) so that reaching
 		// it means the command is contrived, not merely wrapped.
 		return DestructionUnreadable
+	}
+	// NOBODY READ THE PAYLOAD. Every unwrapper and every prefix stripper
+	// declined, and the command still hands a code-shaped operand to something.
+	// Graded rather than returned, so a command that is BOTH opaque and
+	// recognisably catastrophic (`python3 -c "…" ` behind `sudo rm -rf /` in the
+	// same segment) still reports the worse of the two. See opaque.go.
+	if !read {
+		if _, opaque := opaquePayload(program, args); opaque {
+			worst = DestructionOpaque
+		}
 	}
 	// Storage destruction (dd onto a device, mkfs, wipefs, ...) is graded
 	// BEFORE the deletionPrograms filter, because none of those programs is a
@@ -614,6 +691,42 @@ func hasControlOperator(cmd string) bool {
 // would break that invariant and let $'\x26\x26' materialize a chain that the
 // caller's control-operator check had already passed. See ansic.go.
 func lexShellLite(cmd string) (program string, args []string, ok bool) {
+	return lexShellLiteMode(cmd, false)
+}
+
+// lexShellLiteDoubleQuoteEscapes is lexShellLite with the ONE POSIX rule the
+// permissive lexer drops: inside double quotes, a backslash escapes `"`, `\`,
+// `$` and a backtick.
+//
+// It is a SECOND READING rather than a replacement, folded by
+// classifyDestruction with the more-severe rule, because the two readings
+// disagree on a shape each one gets right and the other does not:
+//
+//	bash -c "bash -c \"bash -c 'rm -rf /'\""   only the escaping reading
+//	powershell -Command "Remove-Item C:\"      only the literal reading
+//
+// The first is three levels of ordinary shell nesting: without `\"` handling the
+// lexer cut the tokens at the wrong bytes and produced the argv
+// ["-c", "bash -c \\bash", "-c", "rm -rf /\\"], so the real payload was in no
+// reading of the string and the wrapper descent had nothing to descend into —
+// measured Allow, at a nesting depth of three against a budget of eight, which
+// is why DestructionUnreadable never fired. The second is a Windows path whose
+// trailing separator sits against the closing quote; reading `\"` as an escape
+// there leaves the quote unterminated and the whole command unlexable, which
+// would turn a structural HardDeny into a pass.
+func lexShellLiteDoubleQuoteEscapes(cmd string) (program string, args []string, ok bool) {
+	return lexShellLiteMode(cmd, true)
+}
+
+// isDoubleQuoteEscapable reports whether a backslash before b is an escape
+// inside double quotes. POSIX lists exactly these four (plus a newline, which
+// is a line continuation rather than a character); before anything else the
+// backslash is itself a literal.
+func isDoubleQuoteEscapable(b byte) bool {
+	return b == '"' || b == '\\' || b == '$' || b == '`'
+}
+
+func lexShellLiteMode(cmd string, dqEscapes bool) (program string, args []string, ok bool) {
 	var tokens []string
 	var cur strings.Builder
 	quote := byte(0)
@@ -628,6 +741,12 @@ func lexShellLite(cmd string) (program string, args []string, ok bool) {
 	for i := 0; i < len(cmd); i++ {
 		c := cmd[i]
 		if quote != 0 {
+			if dqEscapes && quote == '"' && c == '\\' && i+1 < len(cmd) && isDoubleQuoteEscapable(cmd[i+1]) {
+				cur.WriteByte(cmd[i+1])
+				inTok = true
+				i++
+				continue
+			}
 			if c == quote {
 				quote = 0
 				continue

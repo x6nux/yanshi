@@ -38,7 +38,23 @@ import "strings"
 var shellWrappers = map[string]bool{
 	"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true,
 	"ash": true, "busybox": true, "env": true,
+	// `script -c CMD file` records a session running CMD. It belongs here
+	// rather than in prefixRunners because the command is a -c OPERAND, not the
+	// trailing argv, and the spelling that was measured passing is `script -qc
+	// 'rm -rf /' /dev/null` — a cluster, which is the shape the flag scan below
+	// had to learn anyway.
+	"script": true,
 }
+
+// shellShortValueFlags and shellLongValueFlags are the wrapper options whose
+// NEXT WORD is a value rather than a command. They exist because the flag scan
+// below used to give up on the first word that did not start with a dash, so
+// `bash -o pipefail -c "rm -rf /"` ended at `pipefail` and graded as a script
+// invocation — measured Allow, while the same payload behind a bare `-c` was a
+// structural HardDeny.
+var shellShortValueFlags = map[string]bool{"-o": true, "-O": true}
+
+var shellLongValueFlags = map[string]bool{"--rcfile": true, "--init-file": true}
 
 // windowsShellWrappers are the Windows-side wrappers, keyed by program and
 // carrying the flags whose NEXT WORD is a whole command.
@@ -78,6 +94,20 @@ var windowsShellWrappers = map[string]map[string]bool{
 // unwrapWindowsShellCommand extracts the payload of a windowsShellWrappers
 // invocation. The flag match is case-insensitive because PowerShell's own
 // parameter binding is: `-Command`, `-command` and `-COMMAND` are one flag.
+//
+// THE PAYLOAD IS EVERYTHING AFTER THE FLAG, not the next word. Both shells
+// treat the rest of the command line as the command — `powershell -Command
+// Remove-Item -Recurse C:\` and `cmd /c rd /s /q C:\` are ordinary spellings
+// with no quotes anywhere — and taking one word graded them as `Remove-Item`
+// and `rd` with no operands at all. Measured: the quoted spelling of each was a
+// structural HardDeny while the unquoted one, which is what an operator
+// actually types, was Allow.
+//
+// Re-joining loses the boundary between two quoted operands, so `-Command
+// Remove-Item "C:\my dir"` is read as two targets rather than one. That is the
+// over-strict direction (an extra target can only add a verdict, and a path
+// with a space is the rarer spelling), and the alternative measured worse: the
+// payload was not read at all.
 func unwrapWindowsShellCommand(program string, args []string) (string, bool) {
 	flags, ok := windowsShellWrappers[program]
 	if !ok {
@@ -85,7 +115,7 @@ func unwrapWindowsShellCommand(program string, args []string) (string, bool) {
 	}
 	for i, a := range args {
 		if flags[strings.ToLower(a)] && i+1 < len(args) {
-			return args[i+1], true
+			return strings.Join(args[i+1:], " "), true
 		}
 	}
 	return "", false
@@ -100,47 +130,99 @@ func unwrapWindowsShellCommand(program string, args []string) (string, bool) {
 // construction and an unbounded loop over attacker-controlled nesting is a
 // denial-of-service on the authorization path.
 //
-// The flag scan accepts any short-flag cluster ENDING in 'c' (-c, -lc, -ec)
-// because that is where bash itself looks; the command string is the argument
-// immediately after. `env` is included in shellWrappers for `env FOO=1 bash -c
-// …`, and the leading VAR=value assignments are skipped so the wrapper behind
-// them is still found.
+// The flag scan accepts any short-flag cluster CONTAINING 'c' (-c, -lc, -cx,
+// -qc) because that is where bash itself looks — a cluster is a set of flags
+// and the order inside it carries no meaning. It said "ending in 'c'" and did
+// exactly that, so `bash -cx "rm -rf /"` graded as a script invocation and
+// reached Allow, and the doc's own third example (`zsh -o pipefail -c "…"`)
+// was not readable by the code the doc was attached to.
+//
+// Three shapes are handled that the ending-in-'c' scan was not:
+//
+//   - a cluster with c anywhere in it (-cx, -qc)
+//   - an option that consumes the following word (shellShortValueFlags,
+//     shellLongValueFlags), so `-o pipefail` no longer looks like a script path
+//   - `--` between the -c and its operand, which is where POSIX says option
+//     processing ends and the command string begins
+//
+// `env` is included in shellWrappers for `env FOO=1 bash -c …`, and the leading
+// VAR=value assignments are skipped so the wrapper behind them is still found.
 func unwrapShellCommand(program string, args []string) (string, bool) {
 	if !shellWrappers[program] {
 		return "", false
 	}
-	i := 0
 	if program == "env" {
-		// Skip `env`'s own options and VAR=value assignments to reach the real
-		// program word, then require THAT to be a wrapper. Without this, `env`
-		// alone would be treated as a wrapper and `env -i` would misparse.
-		for i < len(args) && (strings.Contains(args[i], "=") || strings.HasPrefix(args[i], "-")) {
-			if args[i] == "-u" || args[i] == "--unset" {
-				i++ // consumes a variable name
-			}
-			i++
-		}
-		if i >= len(args) {
-			return "", false
-		}
-		return unwrapShellCommand(normalizeProgramWord(args[i]), args[i+1:])
+		return unwrapEnvCommand(args)
 	}
-	for ; i < len(args); i++ {
+	sawC := false
+	for i := 0; i < len(args); i++ {
 		a := args[i]
+		if a == "--" {
+			if sawC {
+				continue // `sh -c -- "rm -rf /"`: the operand is still to come
+			}
+			return "", false // `bash -- script.sh`
+		}
 		if !strings.HasPrefix(a, "-") || a == "-" {
+			if sawC {
+				return a, true
+			}
 			return "", false // first non-flag word: this is a script path, not -c
 		}
 		if strings.HasPrefix(a, "--") {
+			if shellLongValueFlags[a] {
+				i++
+			}
 			continue
 		}
-		if strings.HasSuffix(a, "c") && len(a) >= 2 {
+		if strings.ContainsRune(a[1:], 'c') {
+			sawC = true
+			continue
+		}
+		if shellShortValueFlags[a] {
+			i++
+		}
+	}
+	return "", false
+}
+
+// unwrapEnvCommand is unwrapShellCommand's `env` branch.
+//
+// It skips env's own options and VAR=value assignments to reach the real
+// program word, then requires THAT to be a wrapper. Without the second half,
+// `env` alone would be treated as a wrapper and `env -i` would misparse.
+//
+// `-S` is the exception, and it is a whole command rather than a program word:
+// GNU and BSD env both take `env -S 'rm -rf /'` and SPLIT THE STRING into a
+// command line. Measured Allow — the loop below reached the single word
+// `rm -rf /`, handed it to normalizeProgramWord, and got back the empty string
+// because the word's last path separator is its final byte. The attached
+// spelling `env -S'rm -rf /'` is the same flag with no space and is accepted
+// here for the same reason the flag scan accepts clusters.
+func unwrapEnvCommand(args []string) (string, bool) {
+	i := 0
+	for i < len(args) && (strings.Contains(args[i], "=") || strings.HasPrefix(args[i], "-")) {
+		if args[i] == "-S" || args[i] == "--split-string" {
 			if i+1 < len(args) {
 				return args[i+1], true
 			}
 			return "", false
 		}
+		if v, found := strings.CutPrefix(args[i], "-S"); found && v != "" {
+			return v, true
+		}
+		if v, found := strings.CutPrefix(args[i], "--split-string="); found {
+			return v, true
+		}
+		if args[i] == "-u" || args[i] == "--unset" {
+			i++ // consumes a variable name
+		}
+		i++
 	}
-	return "", false
+	if i >= len(args) {
+		return "", false
+	}
+	return unwrapShellCommand(normalizeProgramWord(args[i]), args[i+1:])
 }
 
 // maxUnwrapDepth bounds the nesting classifyLexed will walk through: shell

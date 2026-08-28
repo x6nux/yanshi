@@ -24,7 +24,27 @@ func TestExpandKnownParametersResolvesOnlyWhatTheStringDefines(t *testing.T) {
 		{in: `X=rm; $X -rf /`, want: `X=rm; rm -rf /`, changed: true},
 		{in: `export X=rm; ${X} -rf /`, want: `export X=rm; rm -rf /`, changed: true},
 		{in: `set -- rm -rf /; "$@"`, want: `set -- rm -rf /; rm -rf /`, changed: true},
-		{in: `IFS=X; a${IFS}b`, want: `IFS=X; aXb`, changed: true},
+		// FIELD SPLITTING. `${IFS}` expands to X and the resulting word is then
+		// SPLIT on IFS, so the shell sees `a` and `b` — two words, not the one
+		// word `aXb` this row used to assert. The old expectation was the reason
+		// `IFS=,; X=rm,-rf,/; $X` graded as a program called `rm,-rf,/` and
+		// reached Allow while /bin/sh deleted the root.
+		{in: `IFS=X; a${IFS}b`, want: `IFS=X; a b`, changed: true},
+		{in: `IFS=,; X=rm,-rf,/; $X`, want: `IFS=,; X=rm,-rf,/; rm -rf /`, changed: true},
+		{in: `X=rm,-rf,/; IFS=,; $X`, want: `X=rm,-rf,/; IFS=,; rm -rf /`, changed: true},
+
+		// Positional parameters the string itself set.
+		{in: `set -- /; rm -rf $1`, want: `set -- /; rm -rf /`, changed: true},
+		{in: `set -- /; rm -rf ${1}`, want: `set -- /; rm -rf /`, changed: true},
+		{in: `readonly X=rm; $X -rf /`, want: `readonly X=rm; rm -rf /`, changed: true},
+
+		// A VALUE CARRYING A CONTROL OPERATOR IS DATA. POSIX does not re-scan an
+		// expansion's result for operators, so the `;` here is a word `echo`
+		// prints. Emitting it bare turned this into a structural, unappealable
+		// HardDeny for a command that deletes nothing; the single quotes are what
+		// keep splitControlSegments from cutting the command in half.
+		{in: `X='; rm -rf /'; echo $X`, want: `X='; rm -rf /'; echo ';' rm -rf /`, changed: true},
+		{in: `X=' && rm -rf /'; echo $X`, want: `X=' && rm -rf /'; echo  '&&' rm -rf /`, changed: true},
 
 		// Values the string does NOT carry. Leaving them alone is what stops
 		// `rm -rf $BUILD_DIR` from collapsing into a bare, structurally refused

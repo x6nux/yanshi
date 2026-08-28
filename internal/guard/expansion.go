@@ -47,10 +47,19 @@ import "strings"
 //
 // # What is deliberately not resolved
 //
-// $1..$9, $$, $?, $! and $0 have values, but none of them is attacker-chosen
-// from inside this string. Command substitution `$(…)` and `$'…'` are other
-// readers' jobs (ParseCommandList refuses the first; lexShellLite decodes the
-// second) and are copied through byte for byte, including their contents.
+// $$, $?, $! and $0 have values, but none of them is attacker-chosen from
+// inside this string. $1..$9 USED TO BE ON THAT LIST and were taken off it: a
+// `set --` earlier in the same command supplies them from inside the string,
+// exactly as an assignment supplies $X, and the sentence survived from before
+// `set --` was read at all. Measured while it was still true: `set -- /; rm -rf
+// $1` graded DestructionNone with /bin/sh deleting the root, while the
+// neighbouring `set -- rm -rf /; "$@"` — the same construct one expansion over —
+// was refused. They are resolved only when `set --` provided them, so a $1 whose
+// value comes from outside is still copied through.
+//
+// Command substitution `$(…)` and `$'…'` are other readers' jobs
+// (ParseCommandList refuses the first; lexShellLite decodes the second) and are
+// copied through byte for byte, including their contents.
 
 // expandKnownParameters rewrites cmd with every parameter expansion the string
 // itself defines replaced by its value, and reports whether anything changed.
@@ -127,7 +136,14 @@ func (e *expander) run(cmd string) (string, bool) {
 				i++
 				continue
 			}
-			out.WriteString(lit)
+			text, emitOK := e.emitExpansion(lit, quote != 0)
+			if !emitOK {
+				out.WriteByte(c)
+				e.put(c)
+				i++
+				continue
+			}
+			out.WriteString(text)
 			e.putString(lit)
 			changed = true
 			i = next
@@ -151,6 +167,90 @@ func (e *expander) run(cmd string) (string, bool) {
 	}
 	e.endSegment()
 	return out.String(), changed
+}
+
+// expansionOperatorBytes are the characters splitControlSegments and
+// hasControlOperator read as command boundaries. A resolved value that contains
+// one of them may not be pasted back into the command text as-is; see
+// emitExpansion.
+const expansionOperatorBytes = ";&|<>`()\n\r"
+
+// emitExpansion renders a resolved value as the TEXT a later reader will see,
+// and reports false when this reader cannot render it faithfully (in which case
+// the caller leaves the `$` alone and the expansion is simply not resolved).
+//
+// Two POSIX rules are modelled here, and each one closed a measured defect in
+// the OPPOSITE direction from the other.
+//
+// FIELD SPLITTING. An unquoted expansion is split into fields on IFS, so
+// `IFS=,; X=rm,-rf,/; $X` runs `rm -rf /` — three words, not one. Substituting
+// the value verbatim produced the single program word `rm,-rf,/`, which is in
+// no table here, and the whole command graded DestructionNone while /bin/sh
+// deleted the root. Every IFS byte becomes a space rather than being dropped,
+// because dropping them collapses `rm${IFS}-rf${IFS}/` into `rm-rf/` and loses
+// the word break the expansion exists to create.
+//
+// OPERATORS IN THE VALUE STAY DATA. A POSIX shell does NOT re-scan the result
+// of an expansion for control operators; the fields it produces are words.
+// Pasting the value back as text broke that: `X='; rm -rf /'; echo $X` became
+// `… echo ; rm -rf /`, which splitControlSegments cut into two commands and the
+// deletion gate graded catastrophic — a STRUCTURAL refusal, unappealable in
+// every mode including yolo, for a command whose only effect is that `echo`
+// prints a semicolon. ADR-0017 rejected two designs precisely because they
+// would produce unappealable refusals; the one that was adopted produced them
+// on a different input, and this is where that is paid back. A field carrying
+// an operator is emitted single-quoted, which every reader downstream already
+// treats as data.
+//
+// A value containing a quote character of its own cannot be re-emitted by this
+// scheme (there is no escape for `'` inside `'…'` that lexShellLite reads), so
+// it reports false and the expansion is left unresolved — the same
+// "resolve only what can be read" rule the rest of the file follows.
+func (e *expander) emitExpansion(v string, quoted bool) (string, bool) {
+	if quoted {
+		// The surrounding double quotes are already in the output, so operators
+		// in the value are data and no field splitting happens. Only a double
+		// quote inside the value could break out of them.
+		if strings.ContainsRune(v, '"') {
+			return "", false
+		}
+		return v, true
+	}
+	normalized := v
+	if ifs := e.fieldSeparators(); ifs != "" {
+		var b strings.Builder
+		for i := 0; i < len(normalized); i++ {
+			if strings.IndexByte(ifs, normalized[i]) >= 0 {
+				b.WriteByte(' ')
+				continue
+			}
+			b.WriteByte(normalized[i])
+		}
+		normalized = b.String()
+	}
+	if !strings.ContainsAny(normalized, expansionOperatorBytes) {
+		return normalized, true
+	}
+	if strings.ContainsAny(normalized, "'\"") {
+		return "", false
+	}
+	fields := strings.Split(normalized, " ")
+	for i, f := range fields {
+		if strings.ContainsAny(f, expansionOperatorBytes) {
+			fields[i] = "'" + f + "'"
+		}
+	}
+	return strings.Join(fields, " "), true
+}
+
+// fieldSeparators is the IFS this command string has set, defaulting to the
+// POSIX space-tab-newline. An empty IFS suppresses field splitting entirely,
+// which is a spelling people use on purpose and is reproduced here.
+func (e *expander) fieldSeparators() string {
+	if v, ok := e.vars["IFS"]; ok {
+		return v
+	}
+	return " \t\n"
 }
 
 func (e *expander) put(b byte) {
@@ -187,7 +287,11 @@ func (e *expander) endSegment() {
 	if len(words) == 0 {
 		return
 	}
-	if words[0] == "export" || words[0] == "declare" || words[0] == "typeset" || words[0] == "local" {
+	// `readonly` was missing from this list while its three siblings were here,
+	// so `readonly X=rm; $X -rf /` graded DestructionNone while the identical
+	// `declare X=rm; $X -rf /` was refused.
+	if words[0] == "export" || words[0] == "declare" || words[0] == "typeset" ||
+		words[0] == "local" || words[0] == "readonly" {
 		words = words[1:]
 	}
 	if len(words) > 0 && words[0] == "set" {
@@ -238,6 +342,8 @@ func (e *expander) expandAt(cmd string, i int) (string, int, bool) {
 			return "", 0, false
 		}
 		return strings.Join(e.positional, " "), i + 2, true
+	case '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		return e.positionalAt(int(cmd[i+1]-'0'), i+2)
 	case '{':
 		return e.expandBraced(cmd, i)
 	}
@@ -272,6 +378,9 @@ func (e *expander) expandBraced(cmd string, i int) (string, int, bool) {
 		}
 		return strings.Join(e.positional, " "), end, true
 	}
+	if n, allDigits := parsePositionalIndex(body); allDigits {
+		return e.positionalAt(n, end)
+	}
 	name, rest := body, ""
 	if k := strings.IndexAny(body, ":-=+?#%"); k > 0 {
 		name, rest = body[:k], body[k:]
@@ -288,6 +397,40 @@ func (e *expander) expandBraced(cmd string, i int) (string, int, bool) {
 		}
 	}
 	return "", 0, false
+}
+
+// positionalAt resolves `$N` / `${N}` against the positional parameters this
+// command string set with `set --`, returning the index just past the
+// expansion.
+//
+// It resolves ONLY when a `set --` earlier in the same string supplied them —
+// the same rule the rest of this file applies to variables, and the reason the
+// header used to say `$1` was deliberately unresolved. That sentence was
+// written before `set --` was read at all; once endSegment records the
+// positional parameters, `$1` is exactly as attacker-chosen from inside the
+// string as `$X` is. Measured, while $@ and $* were resolved and $1 was not:
+// `set -- /; rm -rf $1` and `set -- rm; $1 -rf /` both graded DestructionNone
+// while /bin/sh deleted the root.
+func (e *expander) positionalAt(n, end int) (string, int, bool) {
+	if n < 1 || n > len(e.positional) {
+		return "", 0, false
+	}
+	return e.positional[n-1], end, true
+}
+
+// parsePositionalIndex reads a `${N}` body as a positional-parameter index.
+func parsePositionalIndex(body string) (int, bool) {
+	if body == "" {
+		return 0, false
+	}
+	n := 0
+	for i := 0; i < len(body); i++ {
+		if body[i] < '0' || body[i] > '9' {
+			return 0, false
+		}
+		n = n*10 + int(body[i]-'0')
+	}
+	return n, true
 }
 
 // lookup resolves a variable name to the value this command string gives it.
