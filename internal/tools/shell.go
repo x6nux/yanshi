@@ -177,6 +177,12 @@ func (s *ShellTools) stream(ctx context.Context, argsJSON string) <-chan ToolChu
 		factoryStart := time.Now()
 		started, err := LaunchSecureProcess(ctx, secproc.SecureProcessSpec{
 			Tool: "shell_run", Shell: a.Command, Program: prog, Args: args, Dir: wd,
+			// prog is the interpreter ShellArgv resolved for a.Env, so it is
+			// already the answer to "which shell language is a.Command written
+			// in". The guard picks its segmenter from it (W-B-05): a
+			// `env: "powershell"` command read by the POSIX reader loses every
+			// backslash path separator it contains.
+			Interpreter: prog,
 			// s.root, NOT wd: wd may come from the model's own "workdir"
 			// argument, and letting it move the destructive dimension's
 			// boundary would make `{"workdir":"/"}` turn every deletion into an

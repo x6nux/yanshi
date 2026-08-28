@@ -45,9 +45,17 @@ const (
 // deletionPrograms are the canonical (lowercased, base-named) programs that
 // remove files or directories. execpolicy.Parse already normalizes the program
 // word (strips path + .exe, lowercases), so these are plain lowercase names.
+// The PowerShell names are here for the same reason `del` and `rd` are: they
+// are what deletion is CALLED in the language a shell_run with
+// `env: "powershell"` is written in, and the gate matches on the program word.
+// `remove-item` is unambiguous. `ri` is the alias people actually type, and it
+// collides with Ruby's documentation browser — accepted deliberately, because
+// the collision only produces a verdict when a `ri` invocation also carries a
+// recursive flag and a root-like operand, which `ri Array` does not.
 var deletionPrograms = map[string]bool{
 	"rm": true, "rmdir": true, "unlink": true, "shred": true, "rimraf": true,
 	"del": true, "erase": true, "rd": true,
+	"remove-item": true, "ri": true,
 }
 
 // ClassifyDestruction inspects a shell command for destructive deletion. It

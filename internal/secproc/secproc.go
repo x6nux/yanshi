@@ -29,8 +29,8 @@ import (
 )
 
 // SecureProcessSpec is the single shape callers use to describe a process
-// spawn. Tool/Shell echo the guard.Action fields so the Authorizer can match
-// them against the profile; Program/Args/Dir/Env are the exec payload;
+// spawn. Tool/Shell/Interpreter echo the guard.Action fields so the Authorizer
+// can match them against the profile; Program/Args/Dir/Env are the exec payload;
 // UseSandboxTier tells the factory which access class the sandbox should
 // enforce for THIS invocation (may be more permissive than the global
 // Config.Tier when a privileged helper is allowed).
@@ -54,6 +54,17 @@ type SecureProcessSpec struct {
 	// Empty means "unknown", which the classifier treats as fail-safe (every
 	// absolute target is out of scope).
 	Workdir string
+
+	// Interpreter is the shell LANGUAGE Shell is written in — the resolved
+	// interpreter program name, which for a shell spawn is exactly Program.
+	// It is a separate field rather than a reuse of Program because Program is
+	// an arbitrary executable for every other caller (an ACP agent CLI, a
+	// diagnostics helper), and the guard must not read those as shell
+	// languages. Empty means "a POSIX shell", the pre-W-B-05 behaviour.
+	//
+	// It travels to guard.Action.Interpreter, which is what picks the
+	// segmenter. See that field for why it matters.
+	Interpreter string
 
 	// ArgsJSON is the tool's raw argument JSON, forwarded to the Authorizer so
 	// the approval dialog shows the operator what they are approving. Display
@@ -282,9 +293,10 @@ func Launch(ctx context.Context, spec SecureProcessSpec) (*StartedProcess, error
 		return nil, ErrNoAuthorizer
 	}
 	if err := currentAuthorizer(ctx, guard.Action{
-		Tool:    spec.Tool,
-		Shell:   spec.Shell,
-		Workdir: spec.Workdir,
+		Tool:        spec.Tool,
+		Shell:       spec.Shell,
+		Workdir:     spec.Workdir,
+		Interpreter: spec.Interpreter,
 	}, spec.ArgsJSON); err != nil {
 		return nil, err
 	}

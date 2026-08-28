@@ -42,7 +42,7 @@ shell 维度先拆段（见下一节），再对**每一段**过下面两层，�
 
 拒绝分两档（`Decision.Overridable`）：
 
-- **结构性 HardDeny**（`Overridable=false`）—— **任何模式都越不过**：shell 结构读不出来、execpolicy parse-error、未知 shell policy、灾难性批量删除。
+- **结构性 HardDeny**（`Overridable=false`）—— **任何模式都越不过**：shell 结构读不出来、execpolicy parse-error、未知 shell policy、灾难性批量删除、命令嵌套层数超出 guard 的解包预算。
 - **可覆盖 HardDeny**（`Overridable=true`）—— profile 能说"不"的一切：空的 tools/fs allowlist、空的 mcp allowlist、`shell.policy: "deny"`、denylist 命中、execpolicy `hard_deny` 规则、`net.allow: false`。`yolo` 直接越过，`auto` 交给 AI 判断。
 
 > **本页这份枚举比 `CLAUDE.md` 的同名枚举短一项，两边都对**（两边的当前条数都别从这里读，`CLAUDE.md` 那份自带现场清点命令）。少的那一项是源码里 `checkShellPolicy` 的另一个结构性分支（`switch result.Verdict` 的 `default`），它是**防御性的、从任何配置都到不了**：`execpolicy.Evaluate` 的出口集合是 `allow` / `prompt` / `hard_deny`，三个都被前面的 `case` 接住了。规则里把 `decision` 写错（比如 `decision: warn`）不会走到那里 —— `Evaluate` 自己先把它转成 `hard_deny`，落进 `case "hard_deny", "deny":`，那是**可覆盖**的一档，`yolo` 能越过。本页不列它，`CLAUDE.md` 那份枚举面向改 guard 源码的人，把源码分支也数进去。这个"出口集合到不了 default"由 `internal/guard::TestExecPolicyVerdictsAreHandledByCheckShell` 钉住。
@@ -54,6 +54,10 @@ shell 维度先拆段（见下一节），再对**每一段**过下面两层，�
 ## 破坏性删除门（profile 无关）
 
 `rm -rf` 打到 `/`、`~`、`$HOME`、`*`、`/etc`、`/usr`、`/home`、`C:\`、工作目录自身或其祖先 = **Catastrophic**，结构性 HardDeny，**所有模式都拦**（`yolo` 也拦）。删除工作目录之外的路径 = **OutOfScope**，升级为 Prompt。工作目录**内部**的 `rm -rf build/` 不受此门限制，仍由 shell 维度决定。
+
+程序词的**拼法**一律看穿而不是拒绝：`r\m`（反斜杠转义）、`FOO=1 rm -rf /`（赋值前缀）、`{ rm -rf /; }` 与 `if …; then rm -rf /; fi`（复合命令与保留字）、`eval rm -rf /`、`$'\x72\x6d'`（ANSI-C）、以及 `sudo` / `nohup` / `timeout` 这类前缀执行器，都会被读回它真正要跑的那个程序。PowerShell 的 `Remove-Item` 及其别名同样在删除程序表里。
+
+**嵌套有上限，而且用完了是拒绝不是放行。** wrapper（`bash -c "…"`）、`su -c`、`eval` 与前缀执行器共用同一个 8 层预算。八层之内照常读到底；超过之后，如果底下还藏着一条命令，判 **Unreadable** —— 同样是结构性 HardDeny，理由文案会明说是"嵌套太深、读不到真正要跑的程序"，而不是借用灾难性删除的说法。`sudo nohup timeout 5 nice -n 19 rm -rf /` 才用掉四层，正常写法碰不到这条。
 
 ## fail-closed：空 Allow 拒绝一切
 
@@ -74,6 +78,8 @@ shell 维度先拆段（见下一节），再对**每一段**过下面两层，�
   - **重定向可以写在命令词之前**，`>/dev/null rm -rf /` 仍然是一条 `rm -rf /`，破坏性删除门照样拦。
 
 **拆不出段的形态仍然一律拒绝，且是结构性 HardDeny**（`yolo` / `auto` 都越不过）：命令替换 `$(…)` 与反引号、进程替换 `<(…)` / `>(…)`、子 shell 括号 `( )`、here-document `<<`、后台执行的单个 `&`、裸换行与回车、未闭合的引号、结尾的反斜杠。这些形态里「真正要跑的文本」不在被判定的这个字符串里，所以判它等于判了别的东西。
+
+**`shell_run` 带 `env: "powershell"` 时换一个读法。** PowerShell 的转义符是反引号、路径分隔符是反斜杠，POSIX shell 恰好反过来，所以用 POSIX 的读法去读一条 PowerShell 命令会把路径里的分隔符全吃掉 —— `Remove-Item -Recurse C:\temp` 的目标会变成 `C:temp`。它同样是「对词的内容宽容、对结构严格」：`$(…)`、`@(…)`、`${…}`、括号分组、脚本块 `{ }`、here-string、调用运算符与后台的 `&`、`#` 注释、`<`（PowerShell 本身就不支持）、裸换行、未闭合引号与结尾反引号一律拒绝，且同样是结构性 HardDeny。`cmd` **不走**这个读法（它的转义符是第三种，`^`），仍按 POSIX 读。
 
 理由、代价与不变量见 [../adr/0004-guard-stateless-and-shell-metachar-hardblock.md](../adr/0004-guard-stateless-and-shell-metachar-hardblock.md) 的补充后果一节。
 

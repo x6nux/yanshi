@@ -18,6 +18,24 @@ type Action struct {
 	// destructive-deletion dimension (checkDestructive). The shell tool
 	// populates it; other tools leave it empty (the dimension no-ops on Shell=="").
 	Workdir string
+
+	// Interpreter names the shell LANGUAGE Shell will be handed to — the
+	// resolved interpreter program, as internal/shell.ShellArgv returns it
+	// ("sh", "bash", "zsh", "cmd", "powershell"). Empty means "a POSIX shell",
+	// which is what every caller that does not set it gets and is the
+	// behaviour this field replaced.
+	//
+	// It exists because the segmenter has to pick a reader (W-B-05).
+	// PowerShell's escape character is the backtick and its path separator is
+	// the backslash; sh has those exactly the other way round, so reading a
+	// PowerShell command with the POSIX reader dissolves every path separator
+	// in it — `Remove-Item -Recurse C:\temp` was measured reaching the FS
+	// dimension as `C:temp`.
+	//
+	// Deliberately NOT consulted by the destructive gate: lexShellLite grades
+	// both the literal and the de-escaped reading and keeps the worse, so it is
+	// already correct for either language without being told which one.
+	Interpreter string
 }
 
 // FSWant describes a filesystem access intent.
@@ -418,11 +436,13 @@ func (g *Guard) checkShell(p PermissionProfile, a Action) Decision {
 	if a.Shell == "" {
 		return allow()
 	}
-	segs, err := execpolicy.ParseCommandList(a.Shell)
+	segs, err := segmentsFor(a)
 	if err != nil {
 		// Fail-closed and STRUCTURAL, exactly as the metacharacter rejection it
 		// replaces: a model must not be able to widen the accepted syntax by
-		// feeding the parser something it cannot read.
+		// feeding the parser something it cannot read. W-B-05 puts the
+		// PowerShell front-end behind the same clause, so a PowerShell command
+		// the new reader cannot read is refused on the same terms.
 		return hardDeny("shell command rejected: " + err.Error())
 	}
 	worst := allow()
@@ -430,6 +450,30 @@ func (g *Guard) checkShell(p PermissionProfile, a Action) Decision {
 		worst = moreSevere(worst, g.checkShellSegment(p, a, seg))
 	}
 	return worst
+}
+
+// segmentsFor splits a.Shell with the reader for the language it will actually
+// be handed to (W-B-05).
+//
+// The default is the POSIX reader, and it is the default in the "no caller set
+// this field" sense rather than the "we guessed" sense: guard.Action.Interpreter
+// is populated from the resolved interpreter program at the spawn site, so an
+// unset value means the command is going to sh — which is what every caller
+// before this field existed was doing.
+//
+// pwsh is PowerShell Core's program name and reads the same language, so it
+// maps to the same reader. cmd.exe does NOT: its escape character is `^` and its
+// quoting rules are a third set again, so it stays on the POSIX reader rather
+// than being folded into whichever of the two happens to be closer. Making that
+// honest is its own work package; folding it in here would put a reader's name
+// on a language it does not read.
+func segmentsFor(a Action) ([]execpolicy.Segment, error) {
+	switch a.Interpreter {
+	case "powershell", "pwsh":
+		return execpolicy.ParsePowerShellCommandList(a.Shell)
+	default:
+		return execpolicy.ParseCommandList(a.Shell)
+	}
 }
 
 // checkShellSegment applies the full shell dimension to ONE segment: its
