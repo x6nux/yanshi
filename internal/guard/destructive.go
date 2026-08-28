@@ -265,53 +265,18 @@ func unescapeOneWord(w string) (string, bool) {
 func classifyLexed(program string, args []string, workdir string, depth int) Destruction {
 	worst := DestructionNone
 	if depth > 0 {
-		if inner, isWrapper := unwrapShellCommand(program, args); isWrapper {
-			// The payload of `bash -c "..."` is a whole command in its own
-			// right. Classify it with the same workdir: the wrapper does not
-			// change which directory the deletion lands in.
-			worst = classifyDestruction(inner, workdir, depth-1, false)
-			if worst == DestructionCatastrophic {
-				return worst
+		// Every way one command carries another AS A STRING — a -c payload on
+		// either side of the platform divide, an su -c payload, an eval argv, a
+		// trap handler — is one entry in nestedCommandUnwrappers, walked here by
+		// the same loop hasNestedCommand and nestedPayloads walk. The payload is
+		// classified with the SAME workdir (a wrapper does not change which
+		// directory the deletion lands in) and the MORE SEVERE verdict wins, so
+		// unwrapping can only ever reveal danger, never launder it.
+		for _, unwrap := range nestedCommandUnwrappers {
+			inner, ok := unwrap(program, args)
+			if !ok {
+				continue
 			}
-		}
-		if program == "eval" && len(args) > 0 {
-			// `eval` joins its argv with single spaces and parses the result as
-			// a command, so re-joining here is what the shell itself does — not
-			// the lossy re-serialization classifyLexed's header refuses. It
-			// covers both spellings with one branch: `eval rm -rf /` (three
-			// words) and `eval "rm -rf /"` (one), which a prefix-runner entry
-			// could not, because the single-word form would hand
-			// normalizeProgramWord the whole command and get back the empty
-			// string after the last slash.
-			//
-			// eval is the same shape as `command` and `exec`, which are already
-			// prefix runners; it was simply missing, and both spellings graded
-			// DestructionNone.
-			if d := classifyDestruction(strings.Join(args, " "), workdir, depth-1, false); d > worst {
-				worst = d
-			}
-			if worst == DestructionCatastrophic {
-				return worst
-			}
-		}
-		if inner, isArgv := unwrapArgvCommand(program, args); isArgv {
-			// `trap '<command>' EXIT`: the FIRST operand is a command string
-			// the shell parses and runs, and the words after it are signal
-			// names. Same shape as the eval branch above and missing for the
-			// same reason — it is neither a prefix runner nor a -c wrapper, so
-			// it fitted no table and every spelling graded DestructionNone
-			// while /bin/sh really ran the payload. See firstOperandCommands.
-			if d := classifyDestruction(inner, workdir, depth-1, false); d > worst {
-				worst = d
-			}
-			if worst == DestructionCatastrophic {
-				return worst
-			}
-		}
-		if inner, isSu := unwrapSuCommand(program, args); isSu {
-			// `su -c "rm -rf /"` / `su root -c "…"`: same shape as a shell
-			// wrapper but with a username positional bash never allows. See
-			// unwrapSuCommand for why it is not folded into shellWrappers.
 			if d := classifyDestruction(inner, workdir, depth-1, false); d > worst {
 				worst = d
 			}

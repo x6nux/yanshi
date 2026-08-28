@@ -197,6 +197,48 @@ var prefixRunners = map[string]prefixRunnerSpec{
 	"until": {},
 }
 
+// nestedCommandUnwrappers is THE list of ways one command carries another as a
+// string. Three places walk it — classifyLexed while it has budget,
+// hasNestedCommand at the bottom of the budget, and nestedPayloads for the
+// redirection targets — and they walk the same slice on purpose.
+//
+// hasNestedCommand's header requires that its cases be exactly the cases
+// classifyLexed performs, because a case performed there but missing here is a
+// hole at depth zero, the only depth an attacker gets to choose. Sharing one
+// list makes that requirement structural instead of a promise somebody has to
+// keep; it was three hand-maintained copies until trap and the Windows wrappers
+// arrived in consecutive commits and had to be added to each of them.
+//
+// stripCommandPrefix is deliberately NOT here: it hands back a program plus an
+// argv rather than a string, which is the whole reason classifyLexed exists as
+// a separate entry point (see its header on re-serialization).
+var nestedCommandUnwrappers = []func(program string, args []string) (string, bool){
+	unwrapShellCommand,
+	unwrapWindowsShellCommand,
+	unwrapSuCommand,
+	unwrapEvalCommand,
+	unwrapArgvCommand,
+}
+
+// unwrapEvalCommand extracts the command `eval` runs.
+//
+// eval joins its argv with single spaces and parses the result, so re-joining
+// here is what the shell itself does — not the lossy re-serialization
+// classifyLexed's header refuses. It covers both spellings with one function:
+// `eval rm -rf /` (three words) and `eval "rm -rf /"` (one), which a prefix-
+// runner entry could not, because the single-word form would hand
+// normalizeProgramWord the whole command and get back the empty string after
+// the last slash.
+//
+// eval is the same shape as `command` and `exec`, which were already prefix
+// runners; it was simply missing, and both spellings graded DestructionNone.
+func unwrapEvalCommand(program string, args []string) (string, bool) {
+	if program != "eval" || len(args) == 0 {
+		return "", false
+	}
+	return strings.Join(args, " "), true
+}
+
 // firstOperandCommands are programs whose FIRST OPERAND is a whole command,
 // with the words after it being something else entirely.
 //
@@ -209,8 +251,16 @@ var prefixRunners = map[string]prefixRunnerSpec{
 // It is the stealthier sibling of eval: the payload runs when the shell EXITS,
 // so an operator reading a transcript never sees the moment the deletion
 // happened.
+//
+// `Invoke-Expression` is PowerShell's eval and `iex` is the alias people
+// actually type. Both take the command as their first operand, and both were
+// measured passing the exact command their unwrapped spelling was refused for:
+// `Remove-Item -Recurse C:\` was a structural HardDeny while
+// `iex "Remove-Item -Recurse C:\"` was Allow.
 var firstOperandCommands = map[string]bool{
-	"trap": true,
+	"trap":              true,
+	"invoke-expression": true,
+	"iex":               true,
 }
 
 // unwrapArgvCommand extracts the command a firstOperandCommands program takes
@@ -269,17 +319,10 @@ func nestedPayloads(cmd string, depth int) []string {
 		if !ok {
 			continue
 		}
-		if inner, isWrapper := unwrapShellCommand(program, args); isWrapper {
-			add(inner)
-		}
-		if inner, isSu := unwrapSuCommand(program, args); isSu {
-			add(inner)
-		}
-		if program == "eval" && len(args) > 0 {
-			add(strings.Join(args, " "))
-		}
-		if inner, isArgv := unwrapArgvCommand(program, args); isArgv {
-			add(inner)
+		for _, unwrap := range nestedCommandUnwrappers {
+			if inner, isNested := unwrap(program, args); isNested {
+				add(inner)
+			}
 		}
 	}
 	return out
@@ -368,17 +411,10 @@ func stripCommandPrefix(program string, args []string) (string, []string, bool) 
 // which is the only depth an attacker gets to choose. The count is deliberately
 // not written down — it was "four" for one commit before trap made it five.
 func hasNestedCommand(program string, args []string) bool {
-	if _, ok := unwrapShellCommand(program, args); ok {
-		return true
-	}
-	if _, ok := unwrapSuCommand(program, args); ok {
-		return true
-	}
-	if program == "eval" && len(args) > 0 {
-		return true
-	}
-	if _, ok := unwrapArgvCommand(program, args); ok {
-		return true
+	for _, unwrap := range nestedCommandUnwrappers {
+		if _, ok := unwrap(program, args); ok {
+			return true
+		}
 	}
 	_, _, isPrefix := stripCommandPrefix(program, args)
 	return isPrefix

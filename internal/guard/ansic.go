@@ -40,6 +40,57 @@ var shellWrappers = map[string]bool{
 	"ash": true, "busybox": true, "env": true,
 }
 
+// windowsShellWrappers are the Windows-side wrappers, keyed by program and
+// carrying the flags whose NEXT WORD is a whole command.
+//
+// They need their own table because unwrapShellCommand looks for a POSIX short-
+// flag cluster ENDING IN 'c', which is what bash does and what none of these
+// do: `-Command` ends in 'd' and `/c` does not start with a dash at all, so the
+// POSIX scan bailed on the first word and every one of these graded
+// DestructionNone.
+//
+// WHY THIS ARRIVED AS A REGRESSION. Before the PowerShell reader existed, the
+// POSIX segmenter refused `… "…C:\"` outright with a trailing-escape error, so
+// the whole family was a structural HardDeny for a reason that had nothing to
+// do with what it ran. Teaching the segmenter to read a trailing backslash as a
+// path separator was correct, and it made these commands READABLE — which is
+// only an improvement if something then reads the PAYLOAD. Nothing did.
+// Measured after that change and before this table:
+//
+//	Remove-Item -Recurse C:\                     structural HardDeny
+//	powershell -Command "Remove-Item -Recurse C:\"   ALLOW
+//
+// the naive spelling refused and the wrapped one through: the same inversion —
+// the more privileged form being the one that passes — that prefixrunner.go's
+// header was written about.
+//
+// `-EncodedCommand` is DELIBERATELY ABSENT. Its operand is base64-encoded
+// UTF-16, so listing it here would add a wrapper this code walks into and
+// learns nothing from, and at the bottom of the unwrap budget it would turn a
+// blob we cannot read into a refusal we cannot explain. Reading it means
+// decoding it, and that is its own change with its own test.
+var windowsShellWrappers = map[string]map[string]bool{
+	"powershell": {"-command": true, "-c": true},
+	"pwsh":       {"-command": true, "-c": true},
+	"cmd":        {"/c": true, "/k": true, "/r": true},
+}
+
+// unwrapWindowsShellCommand extracts the payload of a windowsShellWrappers
+// invocation. The flag match is case-insensitive because PowerShell's own
+// parameter binding is: `-Command`, `-command` and `-COMMAND` are one flag.
+func unwrapWindowsShellCommand(program string, args []string) (string, bool) {
+	flags, ok := windowsShellWrappers[program]
+	if !ok {
+		return "", false
+	}
+	for i, a := range args {
+		if flags[strings.ToLower(a)] && i+1 < len(args) {
+			return args[i+1], true
+		}
+	}
+	return "", false
+}
+
 // unwrapShellCommand extracts the inner command from a shell-wrapper
 // invocation — `bash -c "…"`, `sh -lc "…"`, `zsh -o pipefail -c "…"`.
 //
