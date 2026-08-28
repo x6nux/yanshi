@@ -428,6 +428,16 @@ func Build(opts Options) (*App, error) {
 		MaxOpenConns:      cfg.Storage.WALMaxOpenConns,
 		BusyTimeoutMs:     cfg.Storage.BusyTimeoutMs,
 		WALAutoCheckpoint: cfg.Storage.WALAutoCheckpoint,
+		// SelfHeal is enabled HERE and nowhere else. Build is the composition
+		// root of the long-lived process that owns this database — the TUI and
+		// the server both come up through it, exactly one instance holds the
+		// file, and if it refuses to start the user is left with no yanshi at
+		// all and no second tool to repair the file with. Every other opener
+		// (doctor's read-only checks, the per-ACP-agent vcs-mcp subprocesses,
+		// the goal and auth subcommands) goes through store.Open and keeps the
+		// default of false, because none of them owns the database and two of
+		// them can run concurrently with this one.
+		SelfHeal: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: open store: %w", err)

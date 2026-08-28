@@ -234,3 +234,80 @@ func TestListArchivedSessions_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, archived)
 }
+
+// TestListSessionsWhere_CursorWithEmptyWhereClause guards the SQL joiner.
+// Every caller today passes a non-empty WHERE fragment, so an unconditional
+// " AND ..." looks harmless — but it produces "FROM sessions AND (...)", which
+// is a syntax error discovered at runtime by whoever adds the first unfiltered
+// list rather than by the compiler here.
+func TestListSessionsWhere_CursorWithEmptyWhereClause(t *testing.T) {
+	s, err := Open(":memory:")
+	require.NoError(t, err)
+	defer s.Close()
+
+	for i := 0; i < 3; i++ {
+		_, err := s.CreateSession("s")
+		require.NoError(t, err)
+	}
+	all, err := s.listSessionsWhere("", 0, nil)
+	require.NoError(t, err)
+	require.Len(t, all, 3)
+
+	// Page past the first row with no WHERE fragment at all.
+	after := &sessionCursor{UpdatedAt: all[0].UpdatedAt, ID: all[0].ID}
+	rest, err := s.listSessionsWhere("", 0, after)
+	require.NoError(t, err, "an empty WHERE fragment must still produce valid SQL")
+	require.Len(t, rest, 2)
+	assert.Equal(t, all[1].ID, rest[0].ID)
+	assert.Equal(t, all[2].ID, rest[1].ID)
+}
+
+// TestListSessionsPage_ConcurrentUpdateCanDropARow pins a LIMITATION, not a
+// feature. Keyset paging on a MUTABLE sort key guarantees no duplicates, but
+// not completeness: touching a session the walk has not reached yet moves it
+// ahead of the cursor, where the walk will never look again.
+//
+// It is pinned because the doc comment on ListSessionsPage would otherwise be
+// the only record of it, and the natural reading of "cursors fix OFFSET paging"
+// is that they fix both halves. They do not. If a caller ever needs every row
+// exactly once, this test is where the change of sort key gets noticed.
+func TestListSessionsPage_ConcurrentUpdateCanDropARow(t *testing.T) {
+	s, err := Open(":memory:")
+	require.NoError(t, err)
+	defer s.Close()
+
+	for i := 0; i < 5; i++ {
+		_, err := s.CreateSession("s")
+		require.NoError(t, err)
+	}
+	full, err := s.ListSessions(0)
+	require.NoError(t, err)
+	require.Len(t, full, 5)
+
+	page1, err := s.ListSessionsPage("", 2)
+	require.NoError(t, err)
+	require.Len(t, page1.Sessions, 2)
+
+	// Touch a row the walk has NOT reached yet: the last one.
+	time.Sleep(1100 * time.Millisecond) // updated_at is second-granular
+	require.NoError(t, s.AppendMessage(full[4].ID, 0, "user", "touched mid-walk"))
+
+	seen := map[string]bool{}
+	for _, ss := range page1.Sessions {
+		seen[ss.ID] = true
+	}
+	cursor := page1.NextCursor
+	for cursor != "" {
+		p, err := s.ListSessionsPage(cursor, 2)
+		require.NoError(t, err)
+		for _, ss := range p.Sessions {
+			require.False(t, seen[ss.ID], "keyset paging must never serve a row twice")
+			seen[ss.ID] = true
+		}
+		cursor = p.NextCursor
+	}
+
+	assert.Len(t, seen, 4, "the touched row jumped ahead of the cursor and was missed")
+	assert.NotContains(t, seen, full[4].ID,
+		"this is the documented gap: a row updated ahead of the walk is not returned")
+}

@@ -242,7 +242,10 @@ func TestOpenWith_RecoversFromCorruptDatabase(t *testing.T) {
 			slog.SetDefault(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn})))
 			t.Cleanup(func() { slog.SetDefault(prev) })
 
-			st, err := OpenWith(path, DefaultOptions)
+			// Healing is opt-in, so the owning-process option is what is under
+			// test here. TestOpenWith_DoesNotHealUnlessTheCallerOwnsTheDatabase
+			// covers the default.
+			st, err := OpenWith(path, healingOptions())
 			require.NoError(t, err, "a corrupt database must not stop the process from starting")
 			require.NotNil(t, st)
 			defer st.Close()
@@ -383,4 +386,104 @@ func TestQuarantineCorrupt_TakesTheSidecarsWithIt(t *testing.T) {
 		assert.Truef(t, os.IsNotExist(err),
 			"%q must not be left behind for the replacement database to overwrite", sfx)
 	}
+}
+
+// healingOptions is DefaultOptions with self-healing enabled, i.e. what
+// bootstrap.Build passes as the process that owns the database.
+func healingOptions() OpenOptions {
+	o := DefaultOptions
+	o.SelfHeal = true
+	return o
+}
+
+// TestOpenWith_DoesNotHealUnlessTheCallerOwnsTheDatabase pins the DEFAULT, and
+// the default is the safety property. Healing renames the user's database, so
+// every opener that is not the owning process must get an error instead:
+// `yanshi doctor` would otherwise quarantine the database it was asked to
+// inspect and then report that all is well, and the vcs-mcp subprocesses
+// bootstrap spawns per ACP agent would race each other to do it.
+//
+// Open() is asserted alongside OpenWith(DefaultOptions) because Open is the
+// entry point every one of those callers actually uses.
+func TestOpenWith_DoesNotHealUnlessTheCallerOwnsTheDatabase(t *testing.T) {
+	for name, corrupt := range corruptShapes {
+		t.Run(name, func(t *testing.T) {
+			for _, tc := range []struct {
+				how  string
+				open func(string) (*Store, error)
+			}{
+				{"Open", func(p string) (*Store, error) { return Open(p) }},
+				{"OpenWith(DefaultOptions)", func(p string) (*Store, error) { return OpenWith(p, DefaultOptions) }},
+			} {
+				t.Run(tc.how, func(t *testing.T) {
+					dir := t.TempDir()
+					path := filepath.Join(dir, "yanshi.db")
+					corrupt(t, path)
+					before, err := os.ReadFile(path)
+					require.NoError(t, err)
+
+					st, err := tc.open(path)
+					if st != nil {
+						_ = st.Close()
+					}
+					require.Error(t, err, "a non-owning opener must report the corruption, not repair it")
+					assert.Nil(t, st)
+
+					after, err := os.ReadFile(path)
+					require.NoError(t, err)
+					assert.Equal(t, before, after, "the database must be left exactly as found")
+					entries, err := os.ReadDir(dir)
+					require.NoError(t, err)
+					for _, e := range entries {
+						assert.NotContains(t, e.Name(), ".corrupt-",
+							"only the owning process may quarantine the database")
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestOpenWith_ReturnsTheOriginalErrorWhenTheRebuildFails covers the promise
+// that only a SUCCESSFUL heal returns a nil error.
+//
+// The failure mode this exists to prevent is specific and silent: returning
+// (healed, nil) when healed is nil hands the caller a nil *Store with no error
+// to check, and bootstrap dereferences it on the very next line. So the
+// assertion is that the ORIGINAL corruption error comes back — not the rebuild
+// error, which describes the recovery attempt rather than what is wrong — and
+// that no Store comes back with it.
+//
+// sqlOpener is swapped for one that works once and fails afterwards, so the
+// first open fails on the genuinely corrupt file, the quarantine succeeds, and
+// only the rebuild is broken.
+func TestOpenWith_ReturnsTheOriginalErrorWhenTheRebuildFails(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "yanshi.db")
+	corruptShapes["garbage from byte zero"](t, path)
+
+	rebuildErr := errors.New("disk went away during the rebuild")
+	calls := 0
+	prev := sqlOpener
+	sqlOpener = func(driver, dsn string) (*sql.DB, error) {
+		calls++
+		if calls > 1 {
+			return nil, rebuildErr
+		}
+		return prev(driver, dsn)
+	}
+	t.Cleanup(func() { sqlOpener = prev })
+
+	st, err := OpenWith(path, healingOptions())
+	if st != nil {
+		_ = st.Close()
+	}
+
+	require.Error(t, err, "a failed rebuild must not be reported as success")
+	assert.Nil(t, st, "refusing to start beats handing back a Store that cannot be used")
+	assert.True(t, isCorruptDB(err),
+		"the original corruption must be reported, not the rebuild failure: %v", err)
+	assert.NotErrorIs(t, err, rebuildErr,
+		"the rebuild error describes the recovery attempt, not what is wrong with the database")
+	require.Greater(t, calls, 1, "the rebuild must actually have been attempted")
 }

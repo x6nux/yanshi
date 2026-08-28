@@ -95,6 +95,24 @@ type OpenOptions struct {
 	MaxOpenConns      int // read pool size (0 = default 4; :memory: forced 1)
 	BusyTimeoutMs     int // busy_timeout in ms (0 = default 5000)
 	WALAutoCheckpoint int // wal_autocheckpoint pages (0 = default 1000; negative = disable)
+
+	// SelfHeal allows OpenWith to move an UNREADABLE database aside and start
+	// an empty one rather than refusing to open. It defaults to FALSE, and the
+	// default is the safety property: healing renames the user's data, which
+	// only the process that owns the database has any business doing.
+	//
+	// Most openers are not owners. `yanshi doctor` is a READ-ONLY diagnostic —
+	// with healing on it would quarantine the database it was asked to inspect
+	// and then report StatusOK, so a user running "check whether anything is
+	// wrong" would have their history moved away and be told everything is
+	// fine. `yanshi vcs-mcp` is worse: bootstrap spawns one per ACP agent, so
+	// several processes would race to quarantine the same file. The goal and
+	// auth subcommands are likewise incidental readers. All of these go
+	// through Open, which uses DefaultOptions, so they get the safe default
+	// without opting into anything.
+	//
+	// bootstrap.Build sets it true; see the call site for why that one may.
+	SelfHeal bool
 }
 
 // DefaultOptions is the fallback for zero OpenOptions fields.
@@ -112,14 +130,15 @@ var DefaultOptions = OpenOptions{
 // working directory — silently, with no error to notice. storage.sqlite_path
 // has no config default, so an omitted key reaches every caller here.
 //
-// An UNREADABLE database file self-heals instead of refusing to start: the file
-// is moved aside and an empty one takes its place. yanshi ships as one local
-// binary, so a corrupt yanshi.db otherwise means the TUI never comes up and the
-// user has no second tool to repair it with — losing history is bad, losing the
-// program that could have told you the history was lost is worse. The old file
-// is renamed, never deleted, and the backup path is logged so the data is still
-// there for anyone who wants to salvage it. See isCorruptDB for why the trigger
-// is deliberately narrow.
+// When opts.SelfHeal is set, an UNREADABLE database file self-heals instead of
+// refusing to start: the file is moved aside and an empty one takes its place.
+// yanshi ships as one local binary, so a corrupt yanshi.db otherwise means the
+// TUI never comes up and the user has no second tool to repair it with — losing
+// history is bad, losing the program that could have told you the history was
+// lost is worse. The old file is renamed, never deleted, and the backup path is
+// logged so the data is still there for anyone who wants to salvage it. See
+// isCorruptDB for why the trigger is narrow, and OpenOptions.SelfHeal for why
+// it is off unless the caller owns the database.
 func OpenWith(path string, opts OpenOptions) (*Store, error) {
 	if path == "" {
 		return nil, errors.New("store: empty database path")
@@ -137,9 +156,15 @@ func OpenWith(path string, opts OpenOptions) (*Store, error) {
 		ckpt = DefaultOptions.WALAutoCheckpoint
 	}
 	s, err := openPrepared(path, maxOpen, busyMs, ckpt)
-	if err == nil || !isCorruptDB(err) {
+	if err == nil || !opts.SelfHeal || !isCorruptDB(err) {
 		return s, err
 	}
+	// An early-out with no observable difference: if the rename failed the
+	// corrupt file is still sitting at path, so the reopen below is guaranteed
+	// to fail on it and land on the same `return nil, err`. Measured — deleting
+	// this branch changes nothing but the number of doomed opens. It is kept
+	// because "we could not move it, so stop" reads more plainly at 3am than a
+	// reopen whose failure is load-bearing.
 	backup, mvErr := quarantineCorrupt(path)
 	if mvErr != nil {
 		return nil, err
@@ -233,8 +258,25 @@ func isCorruptDB(err error) bool {
 // new database opens, migrates and writes normally, and nothing from the old
 // one leaks into it. If a sidecar cannot be moved it is therefore deleted
 // rather than left to be overwritten in place.
+//
+// The sidecar loop is NOT REACHED through OpenWith on this platform, and that
+// is measured rather than assumed: across all three corruption shapes that
+// trigger healing (garbage from byte zero, a bogus header page size, a smashed
+// schema page) SQLite itself deletes -wal and -shm during the open that fails,
+// so nothing is left to move by the time this runs. The converse also holds —
+// a database with a VALID un-checkpointed WAL opens successfully and recovers,
+// so it never reaches healing at all. The loop is kept anyway because the
+// measurement is platform-specific (this repo is developed on Windows, where
+// deleting a file with an open handle behaves differently) and unconditional
+// cleanup costs four lines. TestQuarantineCorrupt_TakesTheSidecarsWithIt
+// exercises it directly for that reason; it is not evidence of a production
+// path.
+//
+// The timestamp is nanosecond, not second: two heals of the same path inside
+// one second would otherwise silently overwrite the first backup — the one
+// case where this function destroys the data it exists to preserve.
 func quarantineCorrupt(path string) (string, error) {
-	backup := path + ".corrupt-" + strconv.FormatInt(time.Now().Unix(), 10)
+	backup := path + ".corrupt-" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	if err := os.Rename(path, backup); err != nil {
 		return "", err
 	}

@@ -82,9 +82,15 @@ func (s *Store) listSessionsWhere(where string, limit int, after *sessionCursor)
 	args := []any{}
 	if after != nil {
 		// Row-value comparison (SQLite 3.15+) states "strictly past this
-		// position in the ORDER BY" as one predicate. Both callers pass a
-		// non-empty WHERE fragment, so AND is always the correct joiner.
-		q += " AND (updated_at, id) < (?, ?)"
+		// position in the ORDER BY" as one predicate. The joiner depends on
+		// whether `where` already opened a clause: every caller today passes a
+		// non-empty fragment, but an unconditional AND turns the first empty
+		// one into a syntax error at runtime rather than a compile error here.
+		if strings.TrimSpace(where) == "" {
+			q += " WHERE (updated_at, id) < (?, ?)"
+		} else {
+			q += " AND (updated_at, id) < (?, ?)"
+		}
 		args = append(args, after.UpdatedAt, after.ID)
 	}
 	q += " ORDER BY updated_at DESC, id DESC"
@@ -176,10 +182,19 @@ func decodeSessionCursor(tok string) (*sessionCursor, error) {
 // users rather than theoretical. The list is ordered by updated_at DESC, so
 // every message appended during a paging walk moves a session to the front and
 // shifts every OFFSET by one — the row that was about to start page 2 slides
-// back onto page 1 and the reader sees it twice, while some other row is
-// skipped entirely. A cursor names a position in the ordering instead of
-// counting rows before it, so concurrent inserts and updates can only add rows
-// the walk has already passed.
+// back onto page 1 and the reader sees it twice. A cursor names a position in
+// the ordering instead of counting rows before it, so a row can never be
+// served twice however much the table churns underneath.
+//
+// What it does NOT promise is completeness, and the difference matters because
+// the sort key here is mutable. Measured: touching a session the walk has not
+// reached yet moves it AHEAD of the cursor, where the walk will never look
+// again — five rows come back as four, silently. Appends are the common case
+// in this table, so a full walk is a best-effort snapshot, not a guarantee that
+// every session alive at the start was seen. Callers that need exactly-once
+// delivery of every row must sort on something immutable (created_at, id)
+// instead; TestListSessionsPage_ConcurrentUpdateCanDropARow pins the current
+// behaviour so nobody infers the stronger promise from the weaker one.
 //
 // limit shares clampLimit with the message log: an unspecified page becomes
 // DefaultMessagePageSize and an over-large one is capped at MaxMessagePageSize.

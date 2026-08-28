@@ -1323,3 +1323,62 @@ features:
 		})
 	}
 }
+
+// TestBuild_SelfHealsACorruptDatabase is the enabling-side guard for
+// store.OpenOptions.SelfHeal, which defaults to OFF everywhere else.
+//
+// Build is the composition root of the process that OWNS the database, and the
+// only opener allowed to turn healing on. That matters because yanshi ships as
+// a single local binary: without this, one corrupt yanshi.db means the TUI
+// never comes up and the user has no second tool to repair it with. Delete the
+// SelfHeal line in bootstrap.go and this test fails at Build.
+//
+// The corrupt file is written where the config points, so the assertion runs
+// against the real assembled App rather than a store opened by the test.
+func TestBuild_SelfHealsACorruptDatabase(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	dbPath := filepath.Join(dir, "test.db")
+
+	// SQLITE_NOTADB: a header that is not SQLite's.
+	junk := make([]byte, 8192)
+	for i := range junk {
+		junk[i] = byte(i*31 + 7)
+	}
+	require.NoError(t, os.WriteFile(dbPath, junk, 0o600))
+
+	require.NoError(t, os.WriteFile(cfgPath, []byte(`
+server:
+  http_addr: "127.0.0.1:0"
+storage:
+  sqlite_path: "`+toYAMLPath(dbPath)+`"
+token: "test-token"
+`), 0o644))
+
+	app, err := bootstrap.Build(bootstrap.Options{ConfigPath: cfgPath, FakeModel: true})
+	require.NoError(t, err, "a corrupt database must not stop the process from booting")
+	require.NotNil(t, app)
+	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
+
+	// The store the App actually carries is usable.
+	id, err := app.Store.CreateSession("after the heal")
+	require.NoError(t, err)
+	list, err := app.Store.ListSessions(0)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, id, list[0].ID)
+
+	// The original bytes were preserved, not discarded.
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	var backup string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "test.db.corrupt-") {
+			backup = filepath.Join(dir, e.Name())
+		}
+	}
+	require.NotEmpty(t, backup, "the corrupt database must be quarantined, not deleted: %v", entries)
+	saved, err := os.ReadFile(backup)
+	require.NoError(t, err)
+	assert.Equal(t, junk, saved, "the quarantined file must be byte-identical to the original")
+}
