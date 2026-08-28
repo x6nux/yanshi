@@ -197,6 +197,94 @@ var prefixRunners = map[string]prefixRunnerSpec{
 	"until": {},
 }
 
+// firstOperandCommands are programs whose FIRST OPERAND is a whole command,
+// with the words after it being something else entirely.
+//
+// `trap 'rm -rf /' EXIT` is the shape: operand one is a command string the
+// shell parses and runs, operands two onward are signal names. That is not a
+// prefix runner (the trailing argv is not the command) and not a shell wrapper
+// (there is no -c), which is why it fitted none of the tables and every
+// spelling of it graded DestructionNone while /bin/sh really ran the payload.
+//
+// It is the stealthier sibling of eval: the payload runs when the shell EXITS,
+// so an operator reading a transcript never sees the moment the deletion
+// happened.
+var firstOperandCommands = map[string]bool{
+	"trap": true,
+}
+
+// unwrapArgvCommand extracts the command a firstOperandCommands program takes
+// as its first operand, skipping the runner's own flags and the `--` separator.
+//
+// `trap - EXIT` (reset a handler) and `trap -p` (print them) yield an operand
+// that is not a command, and that costs nothing: the extracted string is
+// CLASSIFIED, not refused, so a `-` grades DestructionNone exactly as it should.
+func unwrapArgvCommand(program string, args []string) (string, bool) {
+	if !firstOperandCommands[program] {
+		return "", false
+	}
+	for _, a := range args {
+		if a == "--" || isFlagWord(a) {
+			continue
+		}
+		return a, true
+	}
+	return "", false
+}
+
+// nestedPayloads returns the command STRINGS a command carries as quoted
+// operands — a shell wrapper's -c argument, an su -c argument, an eval argv, a
+// trap handler — together with the ones those carry in turn, bounded by depth.
+//
+// It exists for the half of a payload the destructive gate does not answer:
+// WHERE THE PAYLOAD WRITES. classifyLexed already re-classifies these strings
+// for deletion, but a payload's redirections are invisible to every other
+// dimension, because to the outer reader the whole payload is one quoted word.
+// Measured, all reaching Allow while the key landed on disk:
+//
+//	bash -c "echo k > ~/.ssh/authorized_keys"
+//	sh -c 'echo k > ~/.ssh/authorized_keys'
+//	eval "echo k > ~/.ssh/authorized_keys"
+//	trap 'echo k > ~/.ssh/authorized_keys' EXIT
+//
+// while the same redirection written at the top level was refused. checkShell
+// routes these through checkRedirectTargets and NOTHING ELSE — not the profile's
+// command policy — because a payload that also had to satisfy the allowlist
+// would turn `patterns: ["sh -c 'npm test'"]` into a profile that refuses its
+// own entry.
+func nestedPayloads(cmd string, depth int) []string {
+	if depth <= 0 {
+		return nil
+	}
+	var out []string
+	add := func(inner string) {
+		if strings.TrimSpace(inner) == "" {
+			return
+		}
+		out = append(out, inner)
+		out = append(out, nestedPayloads(inner, depth-1)...)
+	}
+	for _, seg := range splitControlSegments(cmd) {
+		program, args, ok := lexShellLite(seg)
+		if !ok {
+			continue
+		}
+		if inner, isWrapper := unwrapShellCommand(program, args); isWrapper {
+			add(inner)
+		}
+		if inner, isSu := unwrapSuCommand(program, args); isSu {
+			add(inner)
+		}
+		if program == "eval" && len(args) > 0 {
+			add(strings.Join(args, " "))
+		}
+		if inner, isArgv := unwrapArgvCommand(program, args); isArgv {
+			add(inner)
+		}
+	}
+	return out
+}
+
 // suLikeRunners take the command as the argument of a -c flag, but unlike the
 // entries in shellWrappers they may carry a bare username positional first
 // (`su root -c "…"`). unwrapShellCommand bails on the first non-flag word, so
@@ -269,15 +357,16 @@ func stripCommandPrefix(program string, args []string) (string, []string, bool) 
 }
 
 // hasNestedCommand reports whether program+args still hide another command
-// behind them — a shell wrapper's -c payload, an su -c payload, an eval argv,
-// or a command prefix runner's trailing argv.
+// behind them — a shell wrapper's -c payload, an su -c payload, an eval argv, a
+// firstOperandCommands operand, or a command prefix runner's trailing argv.
 //
 // It is the predicate classifyLexed consults when its unwrap budget is spent.
-// The four cases are exactly the four unwrappings classifyLexed performs while
-// it still has budget, and they must stay exactly those four: a case listed
-// here but not performed there would refuse a command nothing was going to
-// unwrap anyway, and a case performed there but missing here is a hole at
-// depth zero, which is the only depth an attacker gets to choose.
+// The cases here are exactly the unwrappings classifyLexed performs while it
+// still has budget, and they must stay exactly those: a case listed here but
+// not performed there would refuse a command nothing was going to unwrap
+// anyway, and a case performed there but missing here is a hole at depth zero,
+// which is the only depth an attacker gets to choose. The count is deliberately
+// not written down — it was "four" for one commit before trap made it five.
 func hasNestedCommand(program string, args []string) bool {
 	if _, ok := unwrapShellCommand(program, args); ok {
 		return true
@@ -286,6 +375,9 @@ func hasNestedCommand(program string, args []string) bool {
 		return true
 	}
 	if program == "eval" && len(args) > 0 {
+		return true
+	}
+	if _, ok := unwrapArgvCommand(program, args); ok {
 		return true
 	}
 	_, _, isPrefix := stripCommandPrefix(program, args)

@@ -473,6 +473,28 @@ func (g *Guard) checkShell(p PermissionProfile, a Action) Decision {
 	for _, seg := range segs {
 		worst = moreSevere(worst, g.checkShellSegment(p, a, seg))
 	}
+	// A WRAPPER PAYLOAD REDIRECTS SOMEWHERE TOO, and to the loop above the whole
+	// payload is one quoted word. classifyLexed already re-classifies these
+	// strings for deletion; nothing was asking where they WRITE. Measured:
+	// `bash -c "echo k > ~/.ssh/authorized_keys"` reached Allow and planted the
+	// key, while the identical redirection written at the top level was refused
+	// by the credential denylist.
+	//
+	// Only the redirection targets are taken, never the profile's command
+	// policy: a payload that also had to satisfy the allowlist would turn
+	// `patterns: ["sh -c 'npm test'"]` into a profile that refuses its own
+	// entry. A payload this reader cannot parse is SKIPPED rather than refused —
+	// promoting it to a structural HardDeny would make `bash -c "echo $(date)"`
+	// unappealable, which is a far larger change than the hole being closed.
+	for _, inner := range nestedPayloads(a.Shell, maxUnwrapDepth) {
+		innerSegs, err := segmentsFor(Action{Shell: inner, Interpreter: a.Interpreter})
+		if err != nil {
+			continue
+		}
+		for _, seg := range innerSegs {
+			worst = moreSevere(worst, g.checkRedirectTargets(p, a, seg))
+		}
+	}
 	return worst
 }
 

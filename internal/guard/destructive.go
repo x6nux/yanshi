@@ -294,6 +294,20 @@ func classifyLexed(program string, args []string, workdir string, depth int) Des
 				return worst
 			}
 		}
+		if inner, isArgv := unwrapArgvCommand(program, args); isArgv {
+			// `trap '<command>' EXIT`: the FIRST operand is a command string
+			// the shell parses and runs, and the words after it are signal
+			// names. Same shape as the eval branch above and missing for the
+			// same reason — it is neither a prefix runner nor a -c wrapper, so
+			// it fitted no table and every spelling graded DestructionNone
+			// while /bin/sh really ran the payload. See firstOperandCommands.
+			if d := classifyDestruction(inner, workdir, depth-1, false); d > worst {
+				worst = d
+			}
+			if worst == DestructionCatastrophic {
+				return worst
+			}
+		}
 		if inner, isSu := unwrapSuCommand(program, args); isSu {
 			// `su -c "rm -rf /"` / `su root -c "…"`: same shape as a shell
 			// wrapper but with a username positional bash never allows. See

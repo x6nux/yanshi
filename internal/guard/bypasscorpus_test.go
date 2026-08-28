@@ -290,6 +290,18 @@ $X -rf /`, want: wantFloor},
 		why: "the `>|` over-strictness above, on a credential target; refused for the wrong reason " +
 			"but refused"},
 	{cmd: `echo k 1>| ~/.ssh/authorized_keys`, want: wantFloor, why: "same"},
+	// A wrapper payload redirects somewhere too, and to the outer reader the
+	// whole payload is one quoted word. Not on the review's list — found while
+	// closing `trap`, which is the same shape one table over — and measured
+	// planting a key with no prompt while the identical redirection written at
+	// the top level was refused.
+	{cmd: `bash -c "echo k > ~/.ssh/authorized_keys"`, want: wantPrompt},
+	{cmd: `sh -c 'echo k > ~/.ssh/authorized_keys'`, want: wantPrompt},
+	{cmd: `eval "echo k > ~/.ssh/authorized_keys"`, want: wantPrompt},
+	{cmd: `su -c "echo k > ~/.ssh/authorized_keys"`, want: wantPrompt},
+	{cmd: `bash -c "echo hi > out.txt"`, want: wantAllow,
+		why: "the negative sample for the four rows above: an ordinary payload write, permitted by " +
+			"FS write `**`. Without it those four could be satisfied by refusing every -c payload"},
 	{cmd: `tee ~/.ssh/authorized_keys`, want: wantAllow,
 		why: "the target is an ARGUMENT, not a redirection, and the FS dimension is fed from " +
 			"Segment.Redirects. A known design boundary of where shell writes are judged from, " +
