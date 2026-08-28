@@ -71,6 +71,58 @@ func ParseCommandList(raw string) ([]Segment, error) {
 	return s.segs, nil
 }
 
+// Shell languages this package can tell apart. The empty string is POSIX, and
+// it is empty rather than "posix" for a reason that outlives style: it is the
+// value every caller that never set an interpreter already has, so it is what
+// approval scopes recorded before this distinction existed carry.
+const (
+	// LanguagePOSIX is sh/bash/zsh/dash/ksh — anything read by ParseCommandList.
+	LanguagePOSIX = ""
+	// LanguagePowerShell is powershell/pwsh, read by ParsePowerShellCommandList.
+	LanguagePowerShell = "powershell"
+	// LanguageCmd is cmd.exe. It is a language of its own — its escape character
+	// is `^`, a third convention — but it has no reader yet and is READ AS POSIX
+	// (docs/user-guide/guard.md records that boundary for operators). It gets its
+	// own token anyway, because "which reader parses this" and "is this the same
+	// command" are different questions: a cmd command and an sh command are not
+	// interchangeable just because one reader currently reads both.
+	LanguageCmd = "cmd"
+)
+
+// CommandLanguage maps a resolved interpreter program — what shell.ShellArgv
+// returns, so one of sh/bash/zsh/cmd/powershell — to the shell LANGUAGE its
+// command is written in.
+//
+// It exists because two callers were making this decision separately and
+// stopped agreeing. guard.Guard.checkShell learned to pick the PowerShell
+// reader; tools.scopeFromAction, which builds the APPROVAL SCOPE, kept calling
+// ParseCommandList unconditionally. The POSIX reader eats a backslash as an
+// escape, so `C:\temp` (the C-drive root's temp) and `C:temp` (temp under the
+// current directory) — two different directories in PowerShell — produced
+// byte-identical scopes, and approving one silently admitted the other. The
+// spec's own warning about W-B-06 names that outcome: under-normalization is an
+// annoyance, over-normalization is a security hole.
+func CommandLanguage(interpreter string) string {
+	switch interpreter {
+	case "powershell", "pwsh":
+		return LanguagePowerShell
+	case "cmd":
+		return LanguageCmd
+	default:
+		return LanguagePOSIX
+	}
+}
+
+// ParseCommandListFor splits raw with the reader for the language interpreter
+// names. It is the ONE place that choice is made, so a caller cannot read a
+// command with one reader while another caller reads it with a different one.
+func ParseCommandListFor(interpreter, raw string) ([]Segment, error) {
+	if CommandLanguage(interpreter) == LanguagePowerShell {
+		return ParsePowerShellCommandList(raw)
+	}
+	return ParseCommandList(raw)
+}
+
 // listScanner holds the byte-loop state for ParseCommandList. It is a struct
 // rather than a pile of locals so the word/redirect/segment flushes can be
 // three small methods instead of three copies of the same closure.

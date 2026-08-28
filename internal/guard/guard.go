@@ -501,25 +501,19 @@ func (g *Guard) checkShell(p PermissionProfile, a Action) Decision {
 // segmentsFor splits a.Shell with the reader for the language it will actually
 // be handed to (W-B-05).
 //
-// The default is the POSIX reader, and it is the default in the "no caller set
-// this field" sense rather than the "we guessed" sense: guard.Action.Interpreter
-// is populated from the resolved interpreter program at the spawn site, so an
-// unset value means the command is going to sh — which is what every caller
-// before this field existed was doing.
+// The choice itself lives in execpolicy.ParseCommandListFor, and it lives there
+// because it has to be the SAME choice tools.scopeFromAction makes. It was not:
+// this switch read a.Interpreter and the approval scope did not, so guard knew
+// `C:\temp` and `C:temp` were different directories while the approval cache
+// held one entry covering both. One function, one answer.
 //
-// pwsh is PowerShell Core's program name and reads the same language, so it
-// maps to the same reader. cmd.exe does NOT: its escape character is `^` and its
-// quoting rules are a third set again, so it stays on the POSIX reader rather
-// than being folded into whichever of the two happens to be closer. Making that
-// honest is its own work package; folding it in here would put a reader's name
-// on a language it does not read.
+// The default is the POSIX reader, in the "no caller set this field" sense
+// rather than the "we guessed" sense: guard.Action.Interpreter is populated from
+// the resolved interpreter program at the spawn site, so an unset value means
+// the command is going to sh — which is what every caller before this field
+// existed was doing.
 func segmentsFor(a Action) ([]execpolicy.Segment, error) {
-	switch a.Interpreter {
-	case "powershell", "pwsh":
-		return execpolicy.ParsePowerShellCommandList(a.Shell)
-	default:
-		return execpolicy.ParseCommandList(a.Shell)
-	}
+	return execpolicy.ParseCommandListFor(a.Interpreter, a.Shell)
 }
 
 // checkShellSegment applies the full shell dimension to ONE segment: its

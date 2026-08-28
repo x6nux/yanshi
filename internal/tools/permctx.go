@@ -223,6 +223,32 @@ func permissionCallback(ctx context.Context) (func(PermissionRequest) Permission
 // scope is built from PARSED WORDS. Argument order is deliberately not
 // normalized: the spec's warning is that under-normalization is an annoyance
 // while over-normalization is a security hole, and two orders are two commands.
+//
+// # Why the reader is chosen by action.Interpreter (B-5)
+//
+// It was not, and that was the over-normalization the paragraph above warns
+// about, arriving one commit after the warning was quoted as satisfied. The
+// same batch taught guard.segmentsFor to read a PowerShell command with the
+// PowerShell reader and left this function calling ParseCommandList
+// unconditionally, so the POSIX reader ate the backslashes:
+//
+//	Remove-Item -Recurse C:\temp   ->  Program=remove-item Prefix=[-Recurse C:temp]
+//	Remove-Item -Recurse C:temp    ->  Program=remove-item Prefix=[-Recurse C:temp]
+//
+// Two different directories in PowerShell, one approval scope. Approving the
+// relative one for the session admitted the absolute one with no callback
+// consulted at all — measured end to end.
+//
+// The SECOND half of the same divergence was a silent DENIAL: any PowerShell
+// command ending in `\` (`Get-ChildItem C:\` is the ordinary spelling) made the
+// POSIX reader report a trailing escape, and a scope error here is a hard
+// DenyErr raised BEFORE the callback. The guard said Prompt and the user never
+// saw one — the exact failure this function's reader was changed to fix, on the
+// language the change did not reach. Both disappear with one shared reader.
+//
+// The language ALSO goes into the scope (approval.Scope.Interpreter), because
+// picking the right reader stops two spellings from colliding within a language
+// and does nothing about the same text meaning different things across two.
 func scopeFromAction(action guard.Action) (approval.Scope, error) {
 	scope := approval.Scope{
 		Tool:  action.Tool,
@@ -233,13 +259,14 @@ func scopeFromAction(action guard.Action) (approval.Scope, error) {
 	if action.Shell == "" {
 		return scope, nil
 	}
-	segs, err := execpolicy.ParseCommandList(action.Shell)
+	segs, err := execpolicy.ParseCommandListFor(action.Interpreter, action.Shell)
 	if err != nil {
 		return approval.Scope{}, err
 	}
 	if len(segs) != 1 {
 		return approval.Scope{}, fmt.Errorf("approval: shell scope requires one executable segment")
 	}
+	scope.Interpreter = execpolicy.CommandLanguage(action.Interpreter)
 	scope.Program = segs[0].Program
 	scope.Prefix = append([]string(nil), segs[0].Args...)
 	for _, r := range segs[0].Redirects {
