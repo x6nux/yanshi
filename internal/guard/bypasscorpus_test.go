@@ -363,6 +363,12 @@ $X -rf /`, want: wantFloor},
 	{cmd: `zsh -o pipefail -c "rm -rf /"`, want: wantFloor, tableOnly: noShellShim},
 	{cmd: `sh -c -- "rm -rf /"`, want: wantFloor},
 	{cmd: `bash --rcfile /dev/null -c "rm -rf /"`, want: wantFloor, tableOnly: noShellShim},
+	// Teaching the flag scan that `--rcfile` eats the NEXT word costs something
+	// when the next word is the -c: this spelling now reaches no reader at all.
+	// It lands on the DestructionOpaque backstop rather than on Allow, which is
+	// the whole reason that tier exists, and this row is the sample that proves
+	// the degradation stops at a prompt.
+	{cmd: `bash --rcfile -c "rm -rf /"`, want: wantPrompt, tableOnly: noShellShim},
 	{cmd: `bash -c "bash -c \"bash -c 'rm -rf /'\""`, want: wantFloor, tableOnly: noShellShim},
 	{cmd: `bash script.sh`, want: wantAllow,
 		why: "a script path, not a -c payload. The negative sample for the rows above: without it " +
@@ -686,7 +692,7 @@ func TestNoSpellingTheShellExecutesIsAllowed(t *testing.T) {
 // measurement of how much of this corpus the reference shell cannot reach.
 // Every one of the rows counted here can be flipped to Allow by an editor who
 // also breaks the defence it probes, and nothing in this package will notice.
-const tableOnlyRowCount = 23
+const tableOnlyRowCount = 24
 
 // TestTableOnlyRowsHaveNotGrown is the half of the bookkeeping that does not
 // need a shell, so it runs on the Windows leg too — where the differential
