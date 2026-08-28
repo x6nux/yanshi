@@ -1426,6 +1426,18 @@ func TestRefusedCompactionWritesNoSummaryRow(t *testing.T) {
 	maybeAutoCompact(context.Background(), srv,
 		map[string]model.BaseChatModel{"fm": einollm.NewFakeModel([]string{"SUMMARY2"}, nil)}, wc, cs)
 
+	// POSITIVE CONTROL, in this test rather than borrowed from its neighbour.
+	// The row count is also unchanged when compaction never runs at all, so
+	// without this the assertion below is satisfied by an under-threshold
+	// fixture that never reaches the code under test — which is exactly how a
+	// test in this file passed vacuously once already. A non-empty
+	// compactionBlocked can only come from commitCompaction refusing, so it
+	// proves the compaction fired and was turned away, and it goes red rather
+	// than quiet if the fixture ever shrinks below the threshold.
+	require.Equal(t, compactionNotAligned, cs.compactionBlocked,
+		"the fixture must actually reach the refusal, or 'no summary row' is "+
+			"satisfied by a compaction that never happened")
+
 	after, err := st.Messages(sid)
 	require.NoError(t, err)
 	require.Len(t, after, len(before),
