@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -162,4 +163,51 @@ func TestResetGoalRunReportsAnUnreadableConfig(t *testing.T) {
 	got := resetGoalRun(filepath.Join(t.TempDir(), "nope", "config.yaml"), ".", &out)
 	assert.Equal(t, exitErr, got)
 	assert.Empty(t, out.String())
+}
+
+// TestRunGoalDispatchesTheExitEarlyFlags drives -reset and -history through
+// runGoal's argument parsing rather than calling their handlers directly.
+//
+// Calling the handler is not the same test. It skips the flag-to-dispatch
+// hop, which is its own piece of code and can be removed on its own: neutering
+// `if *reset` left the whole feature unreachable with every test still green,
+// because every -reset test went straight to resetGoalRun. -history had the
+// identical hole for the same reason, and had had it far longer.
+//
+// The exit code alone is enough to catch it. Both branches return before the
+// "goal text is required" check, so a dispatch that stops firing falls through
+// to exitUsage instead of exitOK.
+func TestRunGoalDispatchesTheExitEarlyFlags(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "dispatch.db")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte(
+		"storage:\n  sqlite_path: \""+strings.ReplaceAll(dbPath, "\\", "/")+"\"\n"), 0o600))
+
+	workdir := t.TempDir()
+	resolved, err := absWorkdir(workdir)
+	require.NoError(t, err)
+
+	// Seed a resume point for -reset to clear, written through the same key
+	// the loop uses.
+	st, err := store.Open(dbPath)
+	require.NoError(t, err)
+	require.NoError(t, st.KVSet("goalstate:"+resolved,
+		`{"objective":"x","budget":{"MaxIterations":6,"MaxTokens":250},"iterations":2,"complete":false}`))
+	require.NoError(t, st.Close())
+
+	// No -goal on purpose: clearing a resume point must not require retyping
+	// the goal being abandoned.
+	require.Equal(t, exitOK, runGoal([]string{"-config", cfgPath, "-reset", "-workdir", workdir}))
+
+	st2, err := store.Open(dbPath)
+	require.NoError(t, err)
+	defer st2.Close()
+	blob, ok, err := st2.KVGet("goalstate:" + resolved)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Contains(t, blob, `"complete":true`, "-reset must actually reach resetGoalRun")
+
+	assert.Equal(t, exitOK, runGoal([]string{"-config", cfgPath, "-history", "5"}),
+		"-history must reach printGoalHistory instead of falling through to the goal-text check")
 }
