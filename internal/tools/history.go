@@ -65,11 +65,16 @@ func NewHistoryTools(s *store.Store) *HistoryTools {
 			"output, diffs). Use it instead of asking the user to repeat something, "+
 			"or when you remember doing work whose details are no longer visible. "+
 			"Returns matching excerpts with their seq numbers; pass a seq to "+
-			"history_read for the full text.",
+			"history_read for the full text. Set all_sessions to also search past "+
+			"conversations, e.g. for \"how did we fix that last week\".",
 		30*time.Second,
 		params(map[string]*schema.ParameterInfo{
 			"query": {Type: schema.String, Desc: "SQLite FTS5 query, e.g. `panic` or `\"go test\"` or `guard AND deny`", Required: true},
 			"limit": {Type: schema.Integer, Desc: fmt.Sprintf("max hits (default %d, max %d)", historySearchLimit, store.MaxMessagePageSize)},
+			"all_sessions": {Type: schema.Boolean, Desc: "search every past conversation on this machine, not just this one. " +
+				"Use for questions about earlier sessions, e.g. \"how did we fix that bug last week\". " +
+				"Cannot target one specific other session by id — it is either this conversation or all of them. " +
+				"Each hit names the session it came from; only hits from THIS conversation can be expanded with history_read."},
 		}),
 		SyncStream(ht.runSearch),
 	)
@@ -99,6 +104,24 @@ func (h *HistoryTools) Tools() []*GuardedTool { return []*GuardedTool{h.Search, 
 type historySearchArgs struct {
 	Query string `json:"query"`
 	Limit int    `json:"limit"`
+	// AllSessions widens history_search from "this conversation" to "every
+	// conversation this store has ever recorded" (store.SearchMessages with
+	// an empty session id). That IS a read-scope widening, not a harmless
+	// convenience: historySessionID's doc comment explains why scoping
+	// exists in the first place — a model that has merely SEEN another
+	// session's id in a log line must not be able to read that session's
+	// whole evicted-tool-output history just by naming it.
+	//
+	// What keeps this opt-in acceptable to expose to the model is that it is
+	// a single global switch, not a targeting primitive: there is no session
+	// id argument here, and there must never be one for the same reason
+	// historySessionID takes none — the choice is "just mine" or
+	// "everything", never "that one over there". A hit's originating session
+	// is still surfaced (formatHistoryHits tags it when AllSessions is set),
+	// so the widening is visible in the output, not silent, but it does mean
+	// prose from OTHER projects sharing this store file can surface in a
+	// search a model runs on this one.
+	AllSessions bool `json:"all_sessions"`
 }
 
 type historyReadArgs struct {
@@ -138,9 +161,22 @@ func (h *HistoryTools) runSearch(ctx context.Context, argsJSON string) (string, 
 	if strings.TrimSpace(a.Query) == "" {
 		return "", fmt.Errorf("history_search: query is required")
 	}
-	sessionID, err := historySessionID(ctx)
-	if err != nil {
-		return "", err
+	// Resolution branches on AllSessions rather than always calling
+	// historySessionID and discarding its result on the true branch.
+	// historySessionID hard-errors when ctx carries no conversation (see its
+	// doc comment) — correct for the scoped path, wrong for this one. A
+	// cross-session search has no such precondition: "search everything I
+	// have ever recorded" must still work when there happens to be no
+	// CURRENT session bound to ctx, which is exactly the shape of the
+	// question this switch exists to answer ("what did we do last week", not
+	// "what have we done so far right now").
+	sessionID := ""
+	if !a.AllSessions {
+		sid, err := historySessionID(ctx)
+		if err != nil {
+			return "", err
+		}
+		sessionID = sid
 	}
 	limit := a.Limit
 	if limit <= 0 {
@@ -153,7 +189,7 @@ func (h *HistoryTools) runSearch(ctx context.Context, argsJSON string) (string, 
 		return "", fmt.Errorf("history_search: %w (FTS5 syntax: bare words are ANDed, "+
 			"use double quotes for phrases, OR / NOT for boolean terms)", err)
 	}
-	return formatHistoryHits(hits), nil
+	return formatHistoryHits(hits, a.AllSessions), nil
 }
 
 func (h *HistoryTools) runRead(ctx context.Context, argsJSON string) (string, error) {
@@ -191,15 +227,35 @@ func (h *HistoryTools) runRead(ctx context.Context, argsJSON string) (string, er
 
 // formatHistoryHits renders search results: one header line per hit carrying
 // the seq (the handle for history_read) and the FTS snippet.
-func formatHistoryHits(hits []store.MessageSearchHit) string {
+//
+// allSessions must be the same flag that picked the search's scope. It exists
+// because history_read only ever reads the CURRENT session (historySessionID
+// is its only source of a session id — see that function's doc comment), so a
+// hit's seq is only actionable there when the hit came from that session. A
+// cross-session result set can contain seqs from other conversations that
+// history_read cannot follow, and telling the model "use history_read with a
+// seq" without qualification would be an instruction that silently does the
+// wrong thing for most of the hits it was just given.
+func formatHistoryHits(hits []store.MessageSearchHit, allSessions bool) string {
 	if len(hits) == 0 {
+		if allSessions {
+			return "No matching messages in any recorded session."
+		}
 		return "No matching messages in this conversation's history."
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d match(es). Use history_read with a seq to see one in full.\n", len(hits))
+	if allSessions {
+		fmt.Fprintf(&b, "%d match(es) across sessions. Only hits from THIS conversation's "+
+			"session can be expanded with history_read; others are shown as excerpts only.\n", len(hits))
+	} else {
+		fmt.Fprintf(&b, "%d match(es). Use history_read with a seq to see one in full.\n", len(hits))
+	}
 	for _, hit := range hits {
 		b.WriteByte('\n')
 		b.WriteString(historyHeader(hit.Message))
+		if allSessions {
+			fmt.Fprintf(&b, " [session %s]", hit.SessionID)
+		}
 		snippet := strings.TrimSpace(collapseBlankLines(hit.Snippet))
 		if snippet != "" {
 			b.WriteString("\n    " + strings.ReplaceAll(snippet, "\n", "\n    "))
