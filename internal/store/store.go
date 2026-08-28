@@ -480,10 +480,56 @@ func (s *Store) applyConnectionPragmas() error {
 		_, err := s.DB.Exec("PRAGMA foreign_keys=ON")
 		return err
 	}
-	if _, err := s.DB.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		return fmt.Errorf("store: set WAL: %w", err)
+	// Switching journal mode needs a brief EXCLUSIVE lock, and busy_timeout does
+	// not cover it — SQLite returns SQLITE_BUSY straight away rather than
+	// waiting. Two processes opening one project at the same time therefore had
+	// a real chance of one failing with "database is locked" before it had done
+	// anything at all: measured, 8 simultaneous first opens failed on roughly
+	// every attempt. That is the ordinary case, not an exotic one, since the
+	// TUI's lockfile election is decided only after both have built their store.
+	//
+	// Retrying is the whole fix, because the contention is momentary and the
+	// winner leaves the database in the very mode the loser wanted. Once any
+	// process has set WAL the pragma stops needing the exclusive lock, so this
+	// converges immediately rather than spinning for the full budget.
+	var err error
+	for range 100 {
+		if _, err = s.DB.Exec("PRAGMA journal_mode=WAL"); err == nil {
+			return nil
+		}
+		if !isTransientOpenErr(err) {
+			return fmt.Errorf("store: set WAL: %w", err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	return nil
+	return fmt.Errorf("store: set WAL: %w", err)
+}
+
+// SQLite result codes that mean "another process got there first, try again".
+// Neither says anything about the data, which is why they are deliberately NOT
+// in isCorruptDB's set — healing on one would quarantine a database whose only
+// problem is that somebody else is using it.
+const (
+	// sqliteBusy is SQLITE_BUSY: a conflicting lock is held.
+	sqliteBusy = 5
+	// sqliteIOErrDeleteNoent is SQLITE_IOERR_DELETE_NOENT, the extended code
+	// for "tried to delete a file that is no longer there". A concurrent opener
+	// removing the same journal or WAL sidecar produces it, and it is benign.
+	sqliteIOErrDeleteNoent = 5898
+)
+
+// isTransientOpenErr reports whether err is one of the contention codes above.
+//
+// This list is narrow on purpose and is NOT a general "retry storage errors"
+// policy: it covers exactly the two codes measured coming out of concurrent
+// first opens. Widening it would start retrying real I/O failures, which is how
+// a broken disk turns into a hang instead of an error.
+func isTransientOpenErr(err error) bool {
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	return se.Code() == sqliteBusy || se.Code() == sqliteIOErrDeleteNoent
 }
 
 // WriteTx serializes WAL writes inside one process. It locks writeMu, begins a

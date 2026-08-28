@@ -767,3 +767,73 @@ func TestHealCorrupt_DoesNotQuarantineADatabaseAPeerAlreadyRepaired(t *testing.T
 			"a database a peer already repaired must not be quarantined on a stale diagnosis")
 	}
 }
+
+// TestOpen_ConcurrentFirstOpenIsFreeOfTwoFixedRaces covers two concurrent-start
+// failures that have nothing to do with self-healing. Two yanshi processes
+// opening one project at the same time is the ORDINARY case, not an exotic one:
+// the TUI's lockfile election is decided only after both have built their store.
+//
+// Both fixed modes are asserted by CLASS, because both are about a process being
+// told something is wrong when nothing is:
+//
+//   - SQLITE_BUSY from PRAGMA journal_mode=WAL. Switching journal mode needs a
+//     brief exclusive lock that busy_timeout does not cover, so the loser failed
+//     before doing anything at all. applyConnectionPragmas now retries.
+//   - "duplicate column name" from addColumnIfMissing, a check-then-ALTER that
+//     is not atomic across processes. The loser now treats it as success,
+//     because the column existing is the whole postcondition.
+//
+// KNOWN OPEN, deliberately tolerated here: migrate() is not safe to run
+// concurrently in general, and a third mode survives — "database schema has
+// changed: vtable constructor failed: messages_fts" from the conditional FTS
+// rebuild in migrateMessageLog (measured ~1 in 150 openers). Fixing that means
+// serialising migrations across processes, which changes the hot path for every
+// caller in the repo and is not this task's to make. It is tolerated EXPLICITLY
+// rather than by loosening the assertion, so the day it is fixed this test
+// starts reporting the tolerance as unused.
+func TestOpen_ConcurrentFirstOpenIsFreeOfTwoFixedRaces(t *testing.T) {
+	fixed := []string{"database is locked", "duplicate column name"}
+	knownOpen := "vtable constructor failed"
+	sawKnownOpen := 0
+
+	for attempt := range 20 {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "yanshi.db")
+
+		const openers = 8
+		var wg sync.WaitGroup
+		errs := make([]error, openers)
+		stores := make([]*Store, openers)
+		start := make(chan struct{})
+		for i := range openers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				stores[i], errs[i] = Open(path)
+			}()
+		}
+		close(start)
+		wg.Wait()
+
+		for i := range openers {
+			if stores[i] != nil {
+				_ = stores[i].Close()
+			}
+			if errs[i] == nil {
+				continue
+			}
+			msg := errs[i].Error()
+			for _, mode := range fixed {
+				assert.NotContainsf(t, msg, mode,
+					"attempt %d opener %d hit a FIXED concurrent-start race: %v", attempt, i, errs[i])
+			}
+			if strings.Contains(msg, knownOpen) {
+				sawKnownOpen++
+				continue
+			}
+			assert.NoErrorf(t, errs[i], "attempt %d opener %d: unrecognised concurrent-start failure", attempt, i)
+		}
+	}
+	t.Logf("known-open migrate() FTS race hit %d times (see doc comment)", sawKnownOpen)
+}
