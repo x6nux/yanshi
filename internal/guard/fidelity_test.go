@@ -40,6 +40,16 @@ import (
 //  2. shimsAreLive fails the test before the corpus runs if the recorder did not
 //     capture a probe invocation, so a broken shim cannot degrade into "the test
 //     quietly ran the real thing".
+//
+// # What this harness cannot reach
+//
+// Wrapper payloads. `bash -c "…"` is one quoted word to the outer shell, so
+// measuring what the payload does would mean putting a real interpreter on the
+// shim PATH — at which point the shim is no longer a recorder and rule 1 is
+// gone. Those shapes are pinned deterministically instead, without a
+// subprocess, by TestClassifyDestruction_ObfuscatedAndWrapped, whose table
+// covers ANSI-C encoding, nested wrappers, chains and subshell grouping inside
+// a payload.
 
 // destructiveShims are the programs the corpus invokes. Each is replaced by a
 // recorder that deletes nothing and appends its argv to the witness file.

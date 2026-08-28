@@ -126,6 +126,19 @@ func TestClassifyDestruction_ObfuscatedAndWrapped(t *testing.T) {
 		// loosening" would look like.
 		{"plain chain is split and graded", `ls && rm -rf /`, DestructionCatastrophic},
 		{"chain inside a wrapper is split and graded", `bash -c "ls && rm -rf /"`, DestructionCatastrophic},
+
+		// Subshell grouping and process substitution inside a WRAPPER PAYLOAD.
+		// ParseCommandList refuses a bare paren, so the unwrapped spellings are
+		// a structural HardDeny at the shell dimension — but it never sees the
+		// paren inside `bash -c "…"`, where the payload is one quoted word.
+		// This classifier is the only reader that gets the chance, and it read
+		// `(rm -rf /)` as a program called `(rm`: measured Allow under a
+		// permissive profile, no prompt.
+		{"subshell inside a wrapper", `bash -c "(rm -rf /)"`, DestructionCatastrophic},
+		{"process substitution inside a wrapper", `bash -c "cat >(rm -rf /)"`, DestructionCatastrophic},
+		{"nested subshell inside a wrapper", `sh -c "( ( rm -rf / ) )"`, DestructionCatastrophic},
+		// …and grouping must not INVENT danger either.
+		{"benign subshell inside a wrapper", `bash -c "(cd build && ls)"`, DestructionNone},
 		// ANSI-C ENCODED operators leave no literal operator in the raw string,
 		// so the split above cannot fire; the decode branch is what catches them.
 		{"encoded chain inside a wrapper", `bash -c $'ls \x26\x26 rm -rf /'`, DestructionCatastrophic},

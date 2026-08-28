@@ -292,7 +292,14 @@ func splitControlSegments(cmd string) []string {
 		case '\'', '"':
 			quote = c
 			cur.WriteByte(c)
-		case ';', '|', '&', '\n', '\r', '`', ')':
+		case ';', '|', '&', '\n', '\r', '`', '(', ')':
+			// `(` opens a subshell or a process substitution, and the word
+			// after it is a PROGRAM, not an operand. Only `)` was a boundary
+			// before, so `bash -c "(rm -rf /)"` reached lexShellLite whole and
+			// produced the program word `(rm` — measured Allow under a
+			// permissive profile. ParseCommandList refuses a bare paren, but it
+			// never sees one inside a quoted wrapper payload, so this splitter
+			// is the only reader that gets the chance.
 			flush()
 		case '>', '<':
 			// A standalone all-digit token in front of the operator is the file
@@ -442,7 +449,7 @@ func byteAtOrZero(s string, i int) byte {
 // TestClassifyDestruction_ObfuscatedAndWrapped is what fails if that branch
 // goes away.
 func hasControlOperator(cmd string) bool {
-	for _, m := range []string{"&&", "&", "||", ";", "|", "`", "$(", "\n", "\r", ">", "<"} {
+	for _, m := range []string{"&&", "&", "||", ";", "|", "`", "$(", "\n", "\r", ">", "<", "(", ")"} {
 		if strings.Contains(cmd, m) {
 			return true
 		}
