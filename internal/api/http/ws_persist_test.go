@@ -602,3 +602,55 @@ func assertRestoredWindow(t *testing.T, restored, compacted []*schema.Message) {
 	require.Contains(t, restored[len(restored)-1].Content, "SUMMARY",
 		"the summary must survive the projection")
 }
+
+// TestSecondCompactionAfterRestoreAdvancesTheBoundary: compaction boundaries
+// stack, and the second one is computed from a session that was rebuilt from a
+// projection rather than grown in memory.
+//
+// That is the case where the watermark is easiest to get wrong. cs.seq is a LOG
+// coordinate — commitCompaction subtracts the kept tail from it — but a restore
+// only loads the WINDOW, so deriving cs.seq from the restored slice (as the
+// shared snapshot mapper does) would make the next boundary point into the
+// middle of history and un-hide everything the first compaction evicted.
+func TestSecondCompactionAfterRestoreAdvancesTheBoundary(t *testing.T) {
+	st, sid, _, srv := compactedFixture(t)
+
+	first, err := st.HiddenSeq(sid)
+	require.NoError(t, err)
+	require.Greater(t, first, 0, "the first compaction must have set a boundary")
+
+	// Reconnect, then run another turn's worth of evictable history on top.
+	fresh := &connSession{perm: &permModeState{}}
+	require.NoError(t, fresh.loadSession(srv, sid))
+	rows, err := st.Messages(sid)
+	require.NoError(t, err)
+	require.Equal(t, len(rows), fresh.seq, "cs.seq must be a log coordinate, not a window length")
+
+	fresh.history = append(fresh.history, evictableHistory(8)...)
+	wc, client, cleanup := newWSPair(t)
+	defer cleanup()
+	_ = client
+	fm := einollm.NewFakeModel([]string{"SECOND SUMMARY"}, nil)
+	maybeAutoCompact(context.Background(), srv,
+		map[string]model.BaseChatModel{"fm": fm}, wc, fresh)
+
+	second, err := st.HiddenSeq(sid)
+	require.NoError(t, err)
+	assert.Greater(t, second, first,
+		"a later compaction must move the boundary forward, never back over "+
+			"history an earlier one already superseded")
+
+	// And a restore after both still shows nothing that was evicted.
+	again := &connSession{perm: &permModeState{}}
+	require.NoError(t, again.loadSession(srv, sid))
+	for _, m := range again.history {
+		assert.NotContains(t, m.Content, "an ordinary progress report")
+	}
+	assert.Contains(t, again.history[len(again.history)-1].Content, "SUMMARY")
+
+	// Undo pops exactly one layer, back to the first boundary.
+	require.NoError(t, st.AppendContextEvent(sid, store.ContextEventUndo, 0))
+	back, err := st.HiddenSeq(sid)
+	require.NoError(t, err)
+	assert.Equal(t, first, back)
+}
