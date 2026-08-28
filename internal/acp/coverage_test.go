@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/x6nux/yanshi/internal/guard"
+	"github.com/x6nux/yanshi/internal/secproc"
 )
 
 // ---------------------------------------------------------------------------
@@ -1241,15 +1242,8 @@ type acpReadMessage struct {
 }
 
 // ---------------------------------------------------------------------------
-// Spawn - test the failing paths without a real subprocess
+// SpawnSecure - test the failing paths without a real subprocess
 // ---------------------------------------------------------------------------
-
-func TestSpawnBuildCmdFailure(t *testing.T) {
-	_, err := Spawn(context.Background(), SpawnOptions{Agent: "nonexistent"})
-	if err == nil || !strings.Contains(err.Error(), "unknown agent") {
-		t.Fatalf("expected unknown agent error, got %v", err)
-	}
-}
 
 // TestLaunchSpecAndAgentNames verifies the two remaining launch-related functions.
 func TestLaunchSpecAndAgentNames(t *testing.T) {
@@ -1593,63 +1587,58 @@ func TestBuildMcpServersMarshalError(t *testing.T) {
 // TestSpawnCmdStartFailure verifies that Spawn fails when the agent binary
 // is not on PATH (cmd.Start failure).
 //
-// PATH is emptied rather than trusted to lack "opencode": on a dev box that
-// actually has it installed the spawn SUCCEEDS, and the test then failed on
-// the later initialize error instead — a false red that never reproduced in
-// CI's clean container. exec.LookPath reads the process PATH at exec.Command
-// time (not cmd.Env), so t.Setenv is enough to make resolution deterministic.
-func TestSpawnCmdStartFailure(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
+// The three tests below exercise SpawnSecure's failure paths. They used to
+// drive the exec-based Spawn against a fake "opencode" placed on PATH; W-B-02
+// deleted that function, and with it the reason to spawn a real process here at
+// all — the failure modes live above the factory, so a stub factory reproduces
+// each one exactly and without the PATH manipulation that made the old versions
+// flaky on a dev box that actually had opencode installed.
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := Spawn(ctx, SpawnOptions{Agent: "opencode"})
+// TestSpawnSecureStartFailure: a factory that cannot start the child must
+// surface its error rather than hand back a half-built session.
+func TestSpawnSecureStartFailure(t *testing.T) {
+	f := &stubFactory{startEr: errors.New("boom: no such binary")}
+	_, err := SpawnSecure(withStubFactory(t, f), SpawnOptions{Agent: "opencode"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "acp: spawn")
+	assert.Contains(t, err.Error(), "boom: no such binary")
 }
 
-// TestSpawnInitializeFailureCleanup verifies that when a process starts
-// but does not speak ACP, Spawn properly cleans up (closes client, kills
-// process, waits for exit). This tests the Initialize failure cleanup path
-// including client.Close, cmd.Process.Kill, cmd.Wait.
-func TestSpawnInitializeFailureCleanup(t *testing.T) {
-	dir := t.TempDir()
-
-	// Create a fake "opencode" that starts but does not speak ACP, so
-	// Initialize fails and the cleanup path runs. The script form is
-	// platform-specific (createNonACPAgent is defined behind build tags).
-	createNonACPAgent(t, dir)
-
-	oldPath := os.Getenv("PATH")
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+// TestSpawnSecureInitializeFailureCleanup verifies that when a child starts but
+// does not speak ACP, SpawnSecure tears it down before returning: the client is
+// closed (so ReadLoop's context is cancelled) and the reaper runs.
+func TestSpawnSecureInitializeFailureCleanup(t *testing.T) {
+	reaped := 0
+	f := &stubFactory{proc: &secproc.StartedProcess{
+		Wait:   func() error { reaped++; return nil },
+		Stdout: strings.NewReader("not json-rpc\n"),
+		Stderr: strings.NewReader(""),
+		Stdin:  &deadPipe{},
+	}}
+	ctx, cancel := context.WithTimeout(withStubFactory(t, f), 5*time.Second)
 	defer cancel()
 
-	_, err := Spawn(ctx, SpawnOptions{Agent: "opencode"})
+	_, err := SpawnSecure(ctx, SpawnOptions{Agent: "opencode"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "acp: initialize")
+	assert.Equal(t, 1, reaped, "a child that failed the handshake must still be reaped")
 }
 
-// TestSpawnWithPolicyAndWorktree verifies that passing Policy and WorktreeID
-// to Spawn configures the client before the ACP handshake (which will fail
-// because the fake script doesn't speak ACP).
-func TestSpawnWithPolicyAndWorktree(t *testing.T) {
-	dir := t.TempDir()
-
-	createNonACPAgent(t, dir)
-
-	oldPath := os.Getenv("PATH")
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
-
+// TestSpawnSecureWithPolicyAndWorktree verifies that Policy and WorktreeID are
+// applied to the client before the handshake (which fails here because the stub
+// child does not speak ACP).
+func TestSpawnSecureWithPolicyAndWorktree(t *testing.T) {
+	f := &stubFactory{proc: &secproc.StartedProcess{
+		Wait:   func() error { return nil },
+		Stdout: strings.NewReader(""),
+		Stdin:  &deadPipe{},
+	}}
 	gp := NewGuardPolicy(guard.PermissionProfile{Tools: guard.ToolsPerm{Allow: []string{"*"}}})
 	recorder := func(_, _, _ string, _ []byte) error { return nil }
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(withStubFactory(t, f), 5*time.Second)
 	defer cancel()
 
-	_, err := Spawn(ctx, SpawnOptions{
+	_, err := SpawnSecure(ctx, SpawnOptions{
 		Agent:      "opencode",
 		WorktreeID: "wt-1",
 		Recorder:   recorder,

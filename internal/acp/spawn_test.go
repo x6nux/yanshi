@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"runtime"
 	"strings"
@@ -13,19 +14,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestSpawn_UnknownAgent verifies that Spawn returns an error for an unknown
-// agent name without attempting to start a process.
-func TestSpawn_UnknownAgent(t *testing.T) {
-	_, err := Spawn(context.Background(), SpawnOptions{Agent: "nope"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unknown agent")
-}
-
-// TestBuildCmd verifies that buildCmd constructs the correct *exec.Cmd for
-// each known agent -- asserting Args, Dir, and Env -- without starting the
-// process. The full subprocess+init flow (Initialize, NewSession) is deferred
-// to the optional Task 9 (real-CLI E2E smoke).
-func TestBuildCmd(t *testing.T) {
+// TestSpawnLaunchSpecPerAgent verifies that the spawn path resolves the correct
+// program, argv, Dir and Env for each known agent, without starting a process.
+//
+// It used to assert against buildCmd's *exec.Cmd. W-B-02 deleted that function
+// together with the exec-based Spawn it served, so the same coverage now reads
+// the secproc.SecureProcessSpec handed to the factory — which is the value that
+// actually reaches the OS now, and the one an argv regression would corrupt.
+func TestSpawnLaunchSpecPerAgent(t *testing.T) {
 	tests := []struct {
 		name     string
 		opts     SpawnOptions
@@ -42,10 +38,10 @@ func TestBuildCmd(t *testing.T) {
 		},
 		{
 			name:     "claudecode with env",
-			opts:     SpawnOptions{Agent: "claudecode", Cwd: "/proj", Env: []string{"ANTHROPIC_API_KEY=sk-test"}},
+			opts:     SpawnOptions{Agent: "claudecode", Cwd: "/proj", Env: []string{"YANSHI_ACP_DEPTH=1"}},
 			wantArgs: []string{"npx", "@agentclientprotocol/claude-agent-acp"},
 			wantDir:  "/proj",
-			wantEnv:  []string{"ANTHROPIC_API_KEY=sk-test"},
+			wantEnv:  []string{"YANSHI_ACP_DEPTH=1"},
 		},
 		{
 			name:     "codex",
@@ -61,26 +57,58 @@ func TestBuildCmd(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cmd, err := buildCmd(context.Background(), tt.opts)
+			f := &stubFactory{startEr: errStopAfterSpec}
+			_, err := SpawnSecure(withStubFactory(t, f), tt.opts)
+			require.Error(t, err) // the stub never produces a usable process
 			if tt.wantErr {
-				require.Error(t, err)
+				assert.Contains(t, err.Error(), "unknown agent")
+				assert.Empty(t, f.seen.Program, "an unknown agent must not reach the factory")
 				return
 			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.wantArgs, cmd.Args)
-			assert.Equal(t, tt.wantDir, cmd.Dir)
+			require.ErrorIs(t, err, errStopAfterSpec,
+				"the spawn failed before reaching the factory, so the spec below is stale")
+			got := append([]string{f.seen.Program}, f.seen.Args...)
+			assert.Equal(t, tt.wantArgs, got)
+			assert.Equal(t, tt.wantDir, f.seen.Dir)
 			for _, e := range tt.wantEnv {
-				assert.Contains(t, strings.Join(cmd.Env, "\n"), e)
+				assert.Contains(t, strings.Join(f.seen.Env, "\n"), e)
 			}
 		})
 	}
 }
 
-// TestSpawnOptions_VCSFieldsCompile verifies that the WorktreeID + Recorder
-// fields on SpawnOptions compile as expected, and that supplying them does not
-// alter buildCmd's argv resolution (VCS tracking is wiring-only; it must not
-// change the spawned command).
-func TestSpawnOptions_VCSFieldsCompile(t *testing.T) {
+// errStopAfterSpec lets a test capture the spec the factory was handed and then
+// abort the spawn, so no handshake against a nonexistent child is attempted.
+var errStopAfterSpec = errors.New("acp: test stopped the spawn after capturing the spec")
+
+// TestSpawnSecureHandsTheAgentNoCredentials pins the posture W-B-02 gave the
+// goal loop's agent when it stopped using the exec-based Spawn.
+//
+// The old path built the child's environment as os.Environ() + opts.Env with no
+// filtering, so an external agent CLI received every provider key, cloud
+// credential and VCS token in yanshi's own process. secproc.Launch scrubs them,
+// and the ACP spawn declares no AllowEnv, so nothing survives. That is a
+// deliberate behaviour CHANGE, not an oversight: an agent CLI is the textbook
+// untrusted program, and the ones yanshi launches authenticate from their own
+// on-disk login. Adding an AllowEnv here would be an authorization change and
+// belongs in a work package, not in a bug fix — which is what this test exists
+// to make someone notice.
+func TestSpawnSecureHandsTheAgentNoCredentials(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-host-secret")
+	f := &stubFactory{startEr: errStopAfterSpec}
+	opts := SpawnOptions{Agent: "claudecode", Env: []string{"ANTHROPIC_API_KEY=sk-caller-secret"}}
+	_, err := SpawnSecure(withStubFactory(t, f), opts)
+	require.ErrorIs(t, err, errStopAfterSpec)
+	assert.NotContains(t, strings.Join(f.seen.Env, "\n"), "sk-caller-secret",
+		"a credential handed in explicitly must not route past the scrub")
+	assert.Empty(t, f.seen.AllowEnv,
+		"the ACP spawn declares no credential allowlist; adding one is an authorization change")
+}
+
+// TestSpawnOptions_VCSFieldsDoNotAlterTheLaunchSpec verifies that supplying
+// WorktreeID + Recorder does not change the spawned command (VCS tracking is
+// wiring-only, applied to the Client after the child exists).
+func TestSpawnOptions_VCSFieldsDoNotAlterTheLaunchSpec(t *testing.T) {
 	recorder := func(worktreeID, agent, absPath string, content []byte) error { return nil }
 	opts := SpawnOptions{
 		Agent:      "opencode",
@@ -88,18 +116,12 @@ func TestSpawnOptions_VCSFieldsCompile(t *testing.T) {
 		WorktreeID: "wt-1",
 		Recorder:   recorder,
 	}
-	if opts.WorktreeID != "wt-1" {
-		t.Errorf("opts.WorktreeID = %q; want \"wt-1\"", opts.WorktreeID)
-	}
-	if opts.Recorder == nil {
-		t.Error("opts.Recorder = nil; want callback")
-	}
-
-	cmd, err := buildCmd(context.Background(), opts)
-	require.NoError(t, err)
-	// argv is unchanged from the plain opencode spec in TestBuildCmd.
-	assert.Equal(t, []string{"opencode", "acp"}, cmd.Args)
-	assert.Equal(t, "/tmp/work", cmd.Dir)
+	f := &stubFactory{startEr: errStopAfterSpec}
+	_, err := SpawnSecure(withStubFactory(t, f), opts)
+	require.ErrorIs(t, err, errStopAfterSpec)
+	// argv is unchanged from the plain opencode spec in TestSpawnLaunchSpecPerAgent.
+	assert.Equal(t, []string{"opencode", "acp"}, append([]string{f.seen.Program}, f.seen.Args...))
+	assert.Equal(t, "/tmp/work", f.seen.Dir)
 }
 
 // TestSpawn_FailureClosesClient verifies that when Initialize fails (because

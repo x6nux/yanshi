@@ -577,14 +577,15 @@ func newApprovalID() string {
 // WithSecureProcessFactory binds f to ctx via secproc.WithFactory so any
 // downstream Launch call can find it. A nil f is a no-op (Launch then fails
 // closed).
+//
+// There is deliberately no matching FromContext re-export any more. There was
+// one, and its only consumer was shell_run's "if a factory is bound, use it,
+// otherwise spawn the command myself" branch — the second spawn implementation
+// W-B-02 deleted. Reading the factory back at a call site is the shape of that
+// mistake: callers spawn through LaunchSecureProcess, which reads it once and
+// fails closed when it is absent.
 func WithSecureProcessFactory(ctx context.Context, f secproc.Factory) context.Context {
 	return secproc.WithFactory(ctx, f)
-}
-
-// SecureProcessFactoryFromContext reads back a Factory bound by
-// WithSecureProcessFactory.
-func SecureProcessFactoryFromContext(ctx context.Context) (secproc.Factory, bool) {
-	return secproc.FromContext(ctx)
 }
 
 // LaunchSecureProcess is the canonical spawn entry point. Every call site

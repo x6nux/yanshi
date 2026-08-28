@@ -984,6 +984,14 @@ func runGoal(args []string) int {
 			impl = impl.WithVCS(app.VCS, app.VCSRepoID, app.VCSDBPath, app.WorktreeDir)
 		}
 		evals := goalloop.EvaluatorsForTier(resolvedTier, chatModel, loopSink)
+		// W-B-02: the worker spawns the external agent CLI through
+		// secproc.Launch, which fails closed without a profile and a process
+		// factory in context. Bound here rather than inside goalloop so the
+		// package keeps its current dependency set — the composition root is
+		// the only place that knows both values. Lightweight (T0-T2) runs go
+		// through the orchestrator, which rebinds both per turn, so this is a
+		// no-op for them.
+		ctx = app.BindAgentLaunchContext(ctx)
 
 		loop = goalloop.New(goalloop.Config{
 			Planner:     planner,

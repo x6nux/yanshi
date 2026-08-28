@@ -111,7 +111,6 @@ func TestS10_CatastrophicCommandsNeverReachTheProcess(t *testing.T) {
 		`bash -c "rm -rf /"`,
 		`rm -rf ~`,
 		`rm -rf $HOME`,
-		`rm -rf ~/proj/../`,
 		`rm -rf *`,
 		`rm -rf /etc`,
 		`dd if=/dev/zero of=/dev/disk0`,
@@ -122,6 +121,28 @@ func TestS10_CatastrophicCommandsNeverReachTheProcess(t *testing.T) {
 		if !strings.Contains(strings.ToLower(out), "denied") {
 			t.Errorf("attack %q was not denied: %s", cmd, out)
 		}
+	}
+	// `rm -rf ~/proj/../` is refused by shell_run's OWN "../" jail, which now
+	// runs BEFORE authorization rather than after it. W-B-02 moved the guard
+	// check into secproc.Launch (the single spawn entry point), and Launch is
+	// what spawns — so the jail had to move in front of it. The ordering is the
+	// better one either way: the old sequence asked the operator to approve a
+	// command it was going to refuse regardless.
+	//
+	// Asserted separately rather than folded into the loop above so the two
+	// gates stay distinguishable. A single "was it refused somehow" assertion
+	// would stay green if the guard stopped grading this command at all.
+	const traversal = `rm -rf ~/proj/../`
+	out := runShellTurn(t, work, traversal, prof)
+	t.Logf("cmd=%q -> %s", traversal, strings.TrimSpace(out))
+	if !strings.Contains(out, "path traversal is not allowed") {
+		t.Errorf("attack %q was not refused by the traversal jail: %s", traversal, out)
+	}
+	// …and the guard still grades it Catastrophic on its own, so the jail is
+	// defence in depth rather than the only thing standing there.
+	if got := guard.ClassifyDestruction(traversal, work); got != guard.DestructionCatastrophic {
+		t.Errorf("ClassifyDestruction(%q) = %v, want Catastrophic — the traversal jail is not "+
+			"supposed to be the only gate on this command", traversal, got)
 	}
 	if b, err := os.ReadFile(witness); err == nil && len(b) > 0 {
 		t.Fatalf("CANARY FIRED — a destructive process was launched with:\n%s", b)
@@ -160,4 +181,44 @@ func TestS10_LegitimateCommandsStillExecute(t *testing.T) {
 		t.Fatalf("expected the canary rm to be invoked for a legitimate deletion; witness=%q err=%v", b, err)
 	}
 	t.Logf("canary witness: %q", strings.TrimSpace(string(b)))
+}
+
+// TestINF1_ChainRunsOnlyWhenEverySegmentIsAllowed is the execution-level proof
+// for the segmented shell judging (W-B-01 / ADR-0004's supplement). Everything
+// else about it is asserted against guard.Check's return value; this drives a
+// real ReAct turn, a real shell_run, and a real child process, and reads the
+// filesystem afterwards to see what actually happened.
+//
+// Both directions are needed. The allowed chain proves the friction is really
+// gone (a Check that returned Allow while the tool still refused would look
+// identical from the guard's side). The refused chain proves "strictest segment
+// wins" is enforced where it matters: the first segment IS allowlisted, so a
+// per-segment implementation that ran what it could would leave `one` on disk.
+func TestINF1_ChainRunsOnlyWhenEverySegmentIsAllowed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses sh-style touch")
+	}
+	work := t.TempDir()
+	prof := guard.PermissionProfile{
+		Tools: guard.ToolsPerm{Allow: []string{"*"}},
+		FS:    guard.FSPerm{Read: []string{"**"}, Write: []string{"**"}},
+		Shell: guard.ShellPerm{Policy: "allowlist", Patterns: []string{"touch one*", "touch two*"}},
+	}
+
+	out := runShellTurn(t, work, "touch one && touch two", prof)
+	t.Logf("allowed chain -> %s", strings.TrimSpace(out))
+	for _, name := range []string{"one", "two"} {
+		if _, err := os.Stat(filepath.Join(work, name)); err != nil {
+			t.Errorf("%q was not created: the allowed chain did not actually run (%v)", name, err)
+		}
+	}
+
+	out = runShellTurn(t, work, "touch one && touch nope", prof)
+	t.Logf("refused chain -> %s", strings.TrimSpace(out))
+	if !strings.Contains(strings.ToLower(out), "denied") {
+		t.Errorf("a chain with a non-allowlisted segment was not refused: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(work, "nope")); err == nil {
+		t.Error("`nope` exists: the refused chain ran anyway")
+	}
 }

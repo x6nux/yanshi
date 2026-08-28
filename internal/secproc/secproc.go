@@ -43,6 +43,23 @@ type SecureProcessSpec struct {
 	Env            []string
 	UseSandboxTier sandbox.AccessTier
 
+	// Workdir is the in-scope boundary the guard's destructive-deletion
+	// dimension compares deletion targets against (guard.Action.Workdir). It is
+	// SEPARATE from Dir on purpose: Dir is where the child actually runs and a
+	// caller may legitimately point it anywhere, while Workdir is the project
+	// root the operator's policy is written about. Feeding Dir here would let a
+	// tool argument move the boundary — `{"workdir":"/","command":"rm -rf /x"}`
+	// would become an in-scope deletion.
+	//
+	// Empty means "unknown", which the classifier treats as fail-safe (every
+	// absolute target is out of scope).
+	Workdir string
+
+	// ArgsJSON is the tool's raw argument JSON, forwarded to the Authorizer so
+	// the approval dialog shows the operator what they are approving. Display
+	// only: it is never written to the audit log (see tools.Authorize).
+	ArgsJSON string
+
 	// AllowEnv names the credential-bearing environment variables THIS
 	// invocation legitimately needs. Empty (the zero value) means the child
 	// gets no credentials at all, which is the correct default for every
@@ -242,7 +259,10 @@ func SwapAuthorizer(a Authorizer) Authorizer {
 // Pipeline (each step is a fail-closed check):
 //  1. Authorize via the registered Authorizer — HardDeny never reaches the
 //     factory; Prompt may record an approval rule through the same path
-//     tools.Authorize already uses.
+//     tools.Authorize already uses. This is the ONLY authorization a caller
+//     needs: a caller that also Authorizes the same guard.Action itself asks
+//     the operator twice for one command, which is why shell_run hands its
+//     Workdir/ArgsJSON down through the spec instead of keeping its own call.
 //  2. If no Factory is in context, fail closed (returns a factory-missing
 //     error rather than silently skipping the spawn).
 //  3. Strip credential-bearing variables out of spec.Env under spec.AllowEnv,
@@ -261,7 +281,11 @@ func Launch(ctx context.Context, spec SecureProcessSpec) (*StartedProcess, error
 	if currentAuthorizer == nil {
 		return nil, ErrNoAuthorizer
 	}
-	if err := currentAuthorizer(ctx, guard.Action{Tool: spec.Tool, Shell: spec.Shell}, ""); err != nil {
+	if err := currentAuthorizer(ctx, guard.Action{
+		Tool:    spec.Tool,
+		Shell:   spec.Shell,
+		Workdir: spec.Workdir,
+	}, spec.ArgsJSON); err != nil {
 		return nil, err
 	}
 	f, ok := FromContext(ctx)

@@ -24,6 +24,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/x6nux/yanshi/internal/acp"
 	"github.com/x6nux/yanshi/internal/guard"
+	"github.com/x6nux/yanshi/internal/secproc"
+	"github.com/x6nux/yanshi/internal/shell"
 	"github.com/x6nux/yanshi/internal/store"
 )
 
@@ -79,7 +81,14 @@ func TestE2EACP_AgentEditsTrackedAndMerged(t *testing.T) {
 	//    against wt.Path per the V18 path-resolution fix).
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	spawned, err := acp.Spawn(ctx, acp.SpawnOptions{
+	// W-B-02: the ACP spawn goes through secproc.Launch, which fails closed
+	// without a Factory and an Authorizer. Bind the real unsandboxed factory so
+	// this stays an end-to-end exercise of the production launcher.
+	ctx = secproc.WithFactory(ctx, shell.UnsandboxedSecureFactory())
+	prevAuth := secproc.SwapAuthorizer(func(context.Context, guard.Action, string) error { return nil })
+	defer secproc.SwapAuthorizer(prevAuth)
+
+	spawned, err := acp.SpawnSecure(ctx, acp.SpawnOptions{
 		Agent:      agent,
 		Cwd:        wt.Path,
 		Policy:     acp.NewGuardPolicy(workProfile(t, wt.Path)),
@@ -96,11 +105,7 @@ func TestE2EACP_AgentEditsTrackedAndMerged(t *testing.T) {
 		t.Fatalf("spawn %q: %v", agent, err)
 	}
 	t.Logf("spawned %q ok (session=%s)", agent, spawned.SessionID)
-	defer func() {
-		spawned.Client.Close()
-		spawned.Cmd.Process.Kill()
-		spawned.Cmd.Wait()
-	}()
+	defer spawned.Close()
 
 	// 3. prompt the agent to create a file in the worktree (its Cwd = wt.Path).
 	prompt := "Create a file named acpmark.txt in the current directory " +

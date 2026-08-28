@@ -116,11 +116,29 @@ func TestAuthorize_AuditsDenials(t *testing.T) {
 			wantReasonCode: "missing_profile",
 		},
 		{
-			name: "structural hard deny (shell metacharacter)",
+			// INF1 (ADR-0004 supplement) narrowed the structural class from
+			// "any control metacharacter" to "structure the segmenter cannot
+			// read", so `ls && rm -rf /tmp/x` is no longer the example: it is
+			// now split and graded (and refused, but by the destructive gate).
+			// A command substitution still is.
+			name: "structural hard deny (unreadable shell structure)",
 			ctx: func(t *testing.T, sink PermissionAuditSink) context.Context {
 				return authCtx(t, sink, []string{"shell_run"}, "s", "a")
 			},
-			action:         guard.Action{Tool: "shell_run", Shell: "ls && rm -rf /tmp/x"},
+			action:         guard.Action{Tool: "shell_run", Shell: "ls $(whoami)"},
+			wantDecision:   "deny",
+			wantSource:     "hard_deny",
+			wantReasonCode: "firewall",
+		},
+		{
+			// The chained form still audits as a structural refusal, just via
+			// the deletion gate rather than the metacharacter scan. Keeping
+			// both rows is what proves the class did not shrink.
+			name: "structural hard deny (catastrophic segment in a chain)",
+			ctx: func(t *testing.T, sink PermissionAuditSink) context.Context {
+				return authCtx(t, sink, []string{"shell_run"}, "s", "a")
+			},
+			action:         guard.Action{Tool: "shell_run", Shell: "ls && rm -rf /"},
 			wantDecision:   "deny",
 			wantSource:     "hard_deny",
 			wantReasonCode: "firewall",

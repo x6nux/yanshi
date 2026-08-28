@@ -154,3 +154,22 @@ func (c consoleReader) Read(p []byte) (int, error) {
 	}
 	return n, nil
 }
+
+// UnsandboxedSecureFactory is the secproc.Factory used when no sandbox and no
+// network policy have been configured: a real spawn through the same
+// DefaultSecureFactory pipeline, with the two optional seams left out.
+//
+// It exists so "no factory in context" can stop being a representable state.
+// Before W-B-02 an unbound factory made shell_run fall back to its own raw
+// exec.Cmd pipe, which meant a composition root that simply forgot to pass the
+// field produced a spawn with no credential scrub and no managed proxy env —
+// indistinguishable, from the outside, from a deployment that had chosen not to
+// sandbox. Substituting this factory keeps the credential scrub, the env
+// baseline and the reaper contract while omitting only what the caller has not
+// configured.
+//
+// It is NOT a bypass of authorization: every caller reaches a Factory through
+// secproc.Launch, which Authorizes before any factory is consulted.
+func UnsandboxedSecureFactory() secproc.Factory {
+	return DefaultSecureFactory{OS: OSProcessFactory{}}
+}

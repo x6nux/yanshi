@@ -17,6 +17,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/x6nux/yanshi/internal/guard"
+	"github.com/x6nux/yanshi/internal/secproc"
+	"github.com/x6nux/yanshi/internal/shell"
 )
 
 func workProfile(t *testing.T, work string) guard.PermissionProfile {
@@ -46,7 +48,14 @@ func runRealAgent(t *testing.T, agent, marker string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
 	defer cancel()
 
-	spawned, err := Spawn(ctx, SpawnOptions{
+	// W-B-02: SpawnSecure is the only spawn path, so the E2E has to supply the
+	// two things secproc.Launch fails closed without — a Factory and an
+	// Authorizer. Using the real unsandboxed factory keeps this an end-to-end
+	// test of the production launcher rather than of a stub.
+	ctx = secproc.WithFactory(ctx, shell.UnsandboxedSecureFactory())
+	swapAuthorizer(t, func(context.Context, guard.Action, string) error { return nil })
+
+	spawned, err := SpawnSecure(ctx, SpawnOptions{
 		Agent:  agent,
 		Cwd:    work,
 		Policy: NewGuardPolicy(workProfile(t, work)),
@@ -55,11 +64,7 @@ func runRealAgent(t *testing.T, agent, marker string) {
 		t.Fatalf("spawn %q failed: %v", agent, err)
 	}
 	t.Logf("spawned %q ok (session=%s)", agent, spawned.SessionID)
-	defer func() {
-		spawned.Client.Close()
-		spawned.Cmd.Process.Kill()
-		spawned.Cmd.Wait()
-	}()
+	defer spawned.Close()
 
 	prompt := "Create a file named hello.txt in the current working directory " +
 		"containing exactly this text on one line (no quotes): " + marker +
