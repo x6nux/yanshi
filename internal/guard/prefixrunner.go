@@ -78,6 +78,16 @@ type prefixRunnerSpec struct {
 	// assignments reports whether VAR=value words may precede the command.
 	// True for env and sudo, both of which accept them.
 	assignments bool
+
+	// suppliesPositional are flags that PROVIDE the operand `positionals`
+	// counts, so it must not be taken from the argv as well. `taskset` has two
+	// mutually exclusive spellings — `taskset MASK CMD` and `taskset -c LIST
+	// CMD` — and counting a positional in the second one ate the command word:
+	// `-c` consumed `0`, the positional consumed `rm`, and the classifier was
+	// handed a program called `-rf`. Measured Allow while /bin/sh ran `rm -rf
+	// /`, with the misreading ALSO standing the fail-closed backstop down,
+	// because a reader that claims a command reports that it read it.
+	suppliesPositional map[string]bool
 }
 
 // prefixRunners is the table of programs that run another command given in
@@ -136,7 +146,8 @@ var prefixRunners = map[string]prefixRunnerSpec{
 	"nice":   {valueFlags: map[string]bool{"-n": true, "--adjustment": true}},
 	"ionice": {valueFlags: map[string]bool{"-c": true, "--class": true, "-n": true, "--classdata": true, "-p": true, "--pid": true}},
 	"taskset": {valueFlags: map[string]bool{"-p": true, "--pid": true, "-c": true, "--cpu-list": true},
-		positionals: 1}, // the CPU mask
+		positionals:        1, // the CPU mask, in the `taskset MASK CMD` spelling
+		suppliesPositional: map[string]bool{"-c": true, "--cpu-list": true}},
 
 	// `timeout DURATION CMD` — the duration is a bare positional.
 	"timeout": {valueFlags: map[string]bool{"-s": true, "--signal": true, "-k": true, "--kill-after": true}, positionals: 1},
@@ -554,6 +565,7 @@ func stripCommandPrefix(program string, args []string) (string, []string, bool) 
 // spellings wrongly.
 func prefixCommandIndex(spec prefixRunnerSpec, args []string) (int, bool) {
 	i := 0
+	positionals := spec.positionals
 	for i < len(args) {
 		w := args[i]
 		if w == "--" {
@@ -567,12 +579,15 @@ func prefixCommandIndex(spec prefixRunnerSpec, args []string) (int, bool) {
 		if !isFlagWord(w) {
 			break
 		}
+		if spec.suppliesPositional[w] {
+			positionals = 0
+		}
 		i++
 		if spec.valueFlags[w] {
 			i++ // this flag eats the next word
 		}
 	}
-	for n := 0; n < spec.positionals && i < len(args); n++ {
+	for n := 0; n < positionals && i < len(args); n++ {
 		if isFlagWord(args[i]) {
 			break
 		}

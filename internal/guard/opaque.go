@@ -163,6 +163,94 @@ func opaquePayload(program string, args []string) (string, bool) {
 	return "", false
 }
 
+// classifyTrailingArgv grades the possibility that a program EXECUTES THE ARGV
+// WRITTEN AFTER IT, for programs this package has no reader for.
+//
+// # The half of the backstop that was missing
+//
+// opaquePayload above is the fail-closed default for "an operand this package
+// cannot read", and it only ever fires on an operand a FLAG marked as code. A
+// re-review measured the other half of the same family passing:
+//
+//	pkexec rm -rf /        firejail rm -rf /      strace -f rm -rf /
+//	bwrap --dev-bind / /   systemd-run --scope    toolbox run rm -rf /
+//	retry rm -rf /         zzrunner-nobody-knows rm -rf /
+//
+// every one Allow, every one running `rm -rf /` under a real /bin/sh. `doas` is
+// in prefixRunners and refused; `pkexec` is not and passed — the same act, two
+// distribution spellings, and the table decided. The last two names above are
+// INVENTED, which is what makes this a structural hole rather than a list of
+// missing rows: no table of program names can be finished.
+//
+// # The criterion is the argv, not the program name
+//
+// Every suffix of the argv is read as a command in its own right. If one of them
+// grades destructive, this reports it — whatever the program in front is called.
+// A wrapper table can then be wrong, incomplete, or absent and the shape is
+// still seen.
+//
+// SUFFIXES, not "the first non-flag word": `bwrap --dev-bind / / rm -rf /` puts
+// two bare operands where a generic flag walk expects the command, so a walk
+// that stopped at the first one would classify a program called `/`.
+//
+// # Two tiers, and why the unknown one is capped
+//
+// A program IN prefixRunners or remoteShellRunners is DEFINED as running its
+// trailing argv, so a destructive suffix gets its full verdict. That is what
+// closes the second half of the re-review's finding: `taskset -c 0 rm -rf /` was
+// Allow because the table entry consumed `-c 0` as a value flag AND `rm` as the
+// CPU mask positional, leaving `-rf /`. The flag walk being wrong is now a
+// precision loss rather than a hole — being CLAIMED by a reader is no longer a
+// certificate that the reader understood what it claimed.
+//
+// A program in NO table is capped at DestructionOpaque, because "this program
+// probably executes its argv" is exactly the thing that is not known. `echo rm
+// -rf /` prints six words and deletes nothing, so a floor here would be an
+// unappealable refusal of an ordinary command — the direction ADR-0017 and
+// ADR-0018 both refuse. Prompt says what is actually known: something that looks
+// like a destructive command is sitting where an unknown program's arguments go.
+//
+// scriptEmitters are exempt entirely: `echo` and `printf` write their operands
+// to stdout verbatim, which is the one thing in this package already documented
+// as NOT executing them. The relief is that existing table, not a new one.
+//
+// The suffix is graded with a budget of one and with its own tail scan
+// suppressed, which keeps the fan-out linear in the length of the argv. One
+// level is enough for the shapes this exists for: `pkexec bash -c "rm -rf /"`
+// unwraps the payload, `pkexec sudo rm -rf /` strips the prefix, and a deeper
+// nest is reached by the suffix that starts further along.
+func classifyTrailingArgv(program string, args []string, workdir string, depth int) Destruction {
+	if depth <= 0 || len(args) == 0 || scriptEmitters[program] {
+		return DestructionNone
+	}
+	_, runsItsArgv := prefixRunners[program]
+	if !runsItsArgv {
+		_, runsItsArgv = remoteShellRunners[program]
+	}
+	worst := DestructionNone
+	for i, a := range args {
+		if a == "--" || isFlagWord(a) {
+			continue
+		}
+		d := classifyLexedArgv(normalizeProgramWord(a), args[i+1:], workdir, 1, false)
+		if d > DestructionCatastrophic {
+			// Running out of the one-level budget is an artifact of THIS scan,
+			// not a fact about the command, and DestructionUnreadable carries a
+			// reason ("nested deeper than the guard unwraps") that would
+			// misdescribe what was refused.
+			d = DestructionCatastrophic
+		}
+		if !runsItsArgv && d > DestructionOpaque {
+			d = DestructionOpaque
+		}
+		worst = maxDestruction(worst, d)
+		if worst == DestructionCatastrophic {
+			return worst
+		}
+	}
+	return worst
+}
+
 // windowsEncodedPayload reports a PowerShell -EncodedCommand operand.
 //
 // It is separate from the loop above because the operand is base64: it carries

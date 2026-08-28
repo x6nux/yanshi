@@ -124,8 +124,15 @@ func TestClassifyDestruction_WrapperRecursionIsBounded(t *testing.T) {
 	// Deep nesting exceeds the budget, so the payload is no longer reached.
 	// The requirement is only that this TERMINATES and returns a verdict; the
 	// metacharacter and quoting layers still see the outer string.
+	//
+	// The verdict is not pinned because every layer that can see the outer
+	// string is entitled to raise it, and one of them now does: the
+	// trailing-argv scan reads the suffixes of the outermost argv and reports
+	// the unknown-program cap (DestructionOpaque) for the payload it finds
+	// there. Pinning a value here would make this termination test into an
+	// assertion about which layer speaks first.
 	got := ClassifyDestruction(cmd, "/home/me/proj")
-	if got != DestructionNone && got != DestructionCatastrophic {
+	if got < DestructionNone || got > DestructionUnreadable {
 		t.Fatalf("unexpected verdict %v", got)
 	}
 	// Within the budget the payload IS reached.

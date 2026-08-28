@@ -227,6 +227,34 @@ var bypassCorpus = []bypassRow{
 	{cmd: `env -S 'rm -rf /'`, want: wantFloor},
 	{cmd: `env -S'rm -rf /'`, want: wantFloor},
 
+	// ---- the trailing argv of a program NO table models ---------------------
+	//
+	// prefixRunners closes this family one program name at a time, and a
+	// re-review measured eleven real programs and two invented ones walking
+	// straight past it. `pkexec` is the sharpest of them: it is `doas` — which
+	// IS in the table and refused — under a different distribution's name.
+	//
+	// The verdict here is a PROMPT, not the floor: whether an unmodelled program
+	// executes its argv is exactly what is not known, and `echo rm -rf /` prints
+	// six words. The invented-name rows that prove the criterion is structural
+	// rather than a table live in opaque_test.go, where the premise (the name is
+	// in no table) is asserted next to them.
+	{cmd: `pkexec rm -rf /`, want: wantPrompt},
+	{cmd: `pkexec sudo rm -rf /`, want: wantPrompt},
+	{cmd: `echo rm -rf /`, want: wantAllow,
+		why: "scriptEmitters is the relief table: echo writes its operands to stdout and executes " +
+			"nothing, which is why an unknown program's trailing argv caps at a prompt and this " +
+			"one program is exempt outright"},
+
+	// `taskset -c LIST CMD` and `taskset MASK CMD` are mutually exclusive
+	// spellings, and the table entry counted a mask positional in BOTH — so the
+	// walk ate `rm` and classified a program called `-rf`. The verdict was wrong
+	// for an ordinary reason; what made it a hole is that a reader having
+	// CLAIMED the command stood the fail-closed backstop down.
+	{cmd: `taskset -c 0 rm -rf /`, want: wantFloor},
+	{cmd: `taskset --cpu-list 0 rm -rf /`, want: wantFloor},
+	{cmd: `taskset 0x1 rm -rf /`, want: wantFloor},
+
 	// ---- ssh: a command that runs on another machine ------------------------
 	//
 	// Graded, and the decision is recorded on remoteShellRunners: the

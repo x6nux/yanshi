@@ -115,8 +115,29 @@ var prefixRunnerBenign = []string{
 	`timeout 5`,
 	`time`,
 	`xargs`,
-	// `rm` as another program's subcommand, not a nested program.
-	`git rm -r .`,
+	// `rm` as another program's subcommand, not a nested program. The scoped
+	// spelling stays None: the trailing-argv scan grades what the suffix would
+	// mean AS A COMMAND, and `rm -r ./pkg` means nothing outside the workdir.
+	`git rm -r ./pkg`,
+}
+
+// TestSubcommandRmIsPromptedNotFloored records the one place the trailing-argv
+// scan and prefixRunners' membership rule disagree, and why the disagreement is
+// affordable.
+//
+// prefixRunners deliberately excludes `git`, because `git rm` is git's own
+// subcommand and stripping the prefix would grade `git rm -rf /` against the
+// deletion table and produce an UNAPPEALABLE refusal of a command git cannot
+// carry out. The trailing-argv scan sees the same shape and reports it, but for
+// a program in no runner table it caps the verdict at DestructionOpaque — a
+// prompt. `git rm -r .` really does remove every tracked file in the project,
+// so a prompt is the answer the gate gives `rm -rf .` itself; what the cap buys
+// is that the answer costs one click instead of being unappealable.
+func TestSubcommandRmIsPromptedNotFloored(t *testing.T) {
+	wd := t.TempDir()
+	if got := ClassifyDestruction(`git rm -r .`, wd); got != DestructionOpaque {
+		t.Errorf("ClassifyDestruction(%q) = %v, want DestructionOpaque — a prompt, not the floor", `git rm -r .`, got)
+	}
 }
 
 // TestPrefixRunnerAttacksAreGraded is the forward half: every prefix spelling

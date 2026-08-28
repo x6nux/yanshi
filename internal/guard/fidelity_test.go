@@ -106,6 +106,11 @@ var relayShims = map[string]string{
 	"busybox": relayScript(0, false),
 	"unshare": relayScript(0, false),
 	"watch":   relayScript(0, false),
+	// polkit's elevation. It is `sudo` with a different distribution's spelling
+	// and it is NOT in prefixRunners — which is the point of the corpus rows it
+	// witnesses: the verdict has to come from reading the argv, not from
+	// recognising the name.
+	"pkexec": relayScript(0, false),
 	// `env -S STRING` splits STRING into a whole command line and runs it, which
 	// the generic walk cannot express — it would skip -S as an option and then
 	// try to exec the one-word string. The rest of env is the generic shape.
@@ -122,6 +127,10 @@ esac
 	"nice":    relayScript(1, false),
 	"flock":   relayScript(1, false),
 	"chroot":  relayScript(1, false),
+	// `taskset MASK CMD` and `taskset -c LIST CMD`. The generic walk covers
+	// both: it skips `-c`, stops at the bare word after it, and consumes that
+	// one word as the mask either way.
+	"taskset": relayScript(1, false),
 
 	// A POSIX shell. `bash` and `zsh` are absent on purpose; see the file
 	// header. Delegating to the real /bin/sh rather than emulating its option

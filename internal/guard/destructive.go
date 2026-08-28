@@ -322,6 +322,15 @@ func unescapeOneWord(w string) (string, bool) {
 // re-emitted at all once decoded. Passing the tokens straight through has no
 // such step.
 func classifyLexed(program string, args []string, workdir string, depth int) Destruction {
+	return classifyLexedArgv(program, args, workdir, depth, true)
+}
+
+// classifyLexedArgv is classifyLexed with the trailing-argv scan made
+// switchable. The scan re-enters this function once per suffix, and letting
+// those re-entries scan their own suffixes would make the work exponential in
+// the length of an attacker-supplied argv; scanTail=false is how the recursion
+// is kept to one level. See classifyTrailingArgv.
+func classifyLexedArgv(program string, args []string, workdir string, depth int, scanTail bool) Destruction {
 	worst := DestructionNone
 	// read records whether ANY reader claimed this command — an unwrapper that
 	// found a payload, or a prefix stripper that found a command behind a
@@ -365,7 +374,7 @@ func classifyLexed(program string, args []string, workdir string, depth int) Des
 				continue
 			}
 			read = true
-			if d := classifyLexed(inner, innerArgs, workdir, depth-1); d > worst {
+			if d := classifyLexedArgv(inner, innerArgs, workdir, depth-1, scanTail); d > worst {
 				worst = d
 			}
 			if worst == DestructionCatastrophic {
@@ -383,6 +392,15 @@ func classifyLexed(program string, args []string, workdir string, depth int) Des
 		// The limit is deliberately generous (maxUnwrapDepth) so that reaching
 		// it means the command is contrived, not merely wrapped.
 		return DestructionUnreadable
+	}
+	// THE TRAILING ARGV MIGHT BE A COMMAND. This runs whatever `read` says,
+	// which is the difference between it and the opaque check below: being
+	// claimed by a reader is not evidence that the reader UNDERSTOOD what it
+	// claimed. `taskset -c 0 rm -rf /` was claimed by a prefix stripper whose
+	// flag walk consumed `rm` as the CPU mask, so `read` was set, the backstop
+	// stood down, and the command reached Allow. See classifyTrailingArgv.
+	if scanTail {
+		worst = maxDestruction(worst, classifyTrailingArgv(program, args, workdir, depth))
 	}
 	// NOBODY READ THE PAYLOAD. Every unwrapper and every prefix stripper
 	// declined, and the command still hands a code-shaped operand to something.
