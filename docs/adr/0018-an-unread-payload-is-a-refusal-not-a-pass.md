@@ -52,6 +52,8 @@ powershell -EncodedCommand <base64 的 rm -rf />     Allow
 - 未知构造的默认判决从 Allow 变成 Prompt。这是**本决策唯一想要的行为改变**，其余都是它的推论。
 - `DestructionOpaque` 的排序位置是承重的：它必须**高于 OutOfScope、低于 Catastrophic**。放到 Catastrophic 之上会让 `python3 -c "…" && rm -rf /` 从结构性地板悄悄降级成弹窗。看守是 `internal/guard::TestOpaqueRanksBetweenOutOfScopeAndCatastrophic`。
 - **不可违反的约束：`DestructionOpaque` 必须是 Prompt，不得升级为结构性 HardDeny。** 升级会让每一次 `python3 -c` 在 default 模式下永久不可用、在 yolo 下不可申诉，这正是替代方案 C 被否决的理由。看守是 `internal/guard::TestOpaqueIsNotTheStructuralFloor` —— 它断言的是 `Verdict == Prompt && Promptable`，而不是「不是 Allow」，因为后者两种档位都满足。
+
+  ⚠️ **[ADR-0019](0019-the-tier-follows-the-payload-not-the-program-name.md) 收窄了这条约束的作用域。** 它继续成立于本条举证时用的那个形态 —— **payload 读不出灾难性读法**（`python3 -c "print(1)"`）。当 payload 能被读成 shell 命令且判为 Catastrophic 时，档位由那个读法决定而不是由这一档决定：本条写这句话时只想着 `python3 -c`，没想到 `fish -c "rm -rf /"` 会因为 `fish` 不在 `posixShellPrograms` 里而落到同一档，于是「换一个 guard 没听说过的 shell」成了通用的 yolo 绕过。
 - **不可违反的约束：`opaquePayload` 只在没有读法认领该命令时生效。** 去掉这个条件会让 `bash -c "npm test"` 这类已经被正确读出来的命令再挨一次 opaque 判定，把一个兜底变成一道普遍的过严。
 - **不可违反的约束：这个机制不得退化成「已知危险构造的黑名单」。** 表里的条目描述的是**形状**（「这个 flag 的操作数是另一种语言的程序」），不是危险性；判决是「没人读过」，不是「这很危险」。
 - `nonInterpreterPrograms` 的失败方向必须保持「漏一条 = 多一次弹窗」。语料里 `grep -e "foo bar"` 与 `git -c user.name=x …` 两行是它活着的证明；`tail -c 100` / `cut -c 1-5` / `gcc -c` 三行是 `looksLikeCode` 活着的证明（它们不靠缓解表就通过）。

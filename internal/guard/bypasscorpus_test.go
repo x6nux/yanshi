@@ -392,11 +392,14 @@ $X -rf /`, want: wantFloor},
 	{cmd: `sh -c -- "rm -rf /"`, want: wantFloor},
 	{cmd: `bash --rcfile /dev/null -c "rm -rf /"`, want: wantFloor, tableOnly: noShellShim},
 	// Teaching the flag scan that `--rcfile` eats the NEXT word costs something
-	// when the next word is the -c: this spelling now reaches no reader at all.
-	// It lands on the DestructionOpaque backstop rather than on Allow, which is
-	// the whole reason that tier exists, and this row is the sample that proves
-	// the degradation stops at a prompt.
-	{cmd: `bash --rcfile -c "rm -rf /"`, want: wantPrompt, tableOnly: noShellShim},
+	// when the next word is the -c: this spelling reaches no reader at all. It
+	// lands on the backstop rather than on Allow, which is the whole reason that
+	// tier exists — and the payload sitting on the backstop reads as `rm -rf /`,
+	// so the tier is decided by THAT rather than by which flag spelling got it
+	// there (ADR-0019). The prompting half of the backstop is pinned in
+	// opaque_test.go, where a payload with no destructive reading demonstrates
+	// it without needing a shell that has `+o`.
+	{cmd: `bash --rcfile -c "rm -rf /"`, want: wantFloor, tableOnly: noShellShim},
 	{cmd: `bash -c "bash -c \"bash -c 'rm -rf /'\""`, want: wantFloor, tableOnly: noShellShim},
 	{cmd: `bash script.sh`, want: wantAllow,
 		why: "a script path, not a -c payload. The negative sample for the rows above: without it " +
@@ -415,7 +418,12 @@ $X -rf /`, want: wantFloor},
 	{cmd: `perl -e "unlink '/etc/passwd'"`, want: wantPrompt, tableOnly: noInterpreterShim},
 	{cmd: `node -e "require('fs')"`, want: wantPrompt, tableOnly: noInterpreterShim},
 	{cmd: `python3 -c "print(1)"`, want: wantPrompt, tableOnly: noInterpreterShim},
-	{cmd: `bash +o posix -c "rm -rf /"`, want: wantPrompt, tableOnly: noShellShim},
+	{cmd: `bash +o posix -c "rm -rf /"`, want: wantFloor, tableOnly: noShellShim},
+	// ADR-0019. `fish` is not in posixShellPrograms and `bash` is, and that was
+	// the entire difference between a refusal no mode can appeal and a prompt
+	// yolo walks through — for the same command. The tier is now read off the
+	// PAYLOAD: this one says `rm -rf /` whoever was going to run it.
+	{cmd: `fish -c "rm -rf /"`, want: wantFloor},
 	{cmd: `python3 script.py`, want: wantAllow,
 		why: "the payload is in a FILE, not in this string — the same boundary `cat script.sh | sh` " +
 			"has. It is the negative sample that stops the interpreter rows above from being " +

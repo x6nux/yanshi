@@ -134,6 +134,14 @@ func hardDeny(reason string) Decision {
 // of budget before we could tell", and they carry different reasons because a
 // refusal that misdescribes what it refused sends the reader looking for the
 // wrong command.
+//
+// The catastrophic member of the floor is reached by one route this comment
+// used to leave out: an UNREAD PAYLOAD whose text reads as a catastrophic shell
+// command is graded catastrophic whichever program was going to receive it
+// (gradeUnreadPayload, ADR-0019). It is not a sixth class — it is the first one
+// arriving through opaque.go rather than through the deletion tables — but it
+// is the reason `fish -c "rm -rf /"` stopped being a prompt yolo walks past
+// while `bash -c "rm -rf /"` was refused in every mode.
 // Everything a profile can merely have an opinion about is overridable, and
 // that includes two denials this comment used to misfile as structural: a
 // denylist pattern match and an empty MCP allowlist. Both are profile policy,

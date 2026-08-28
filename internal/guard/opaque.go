@@ -163,6 +163,58 @@ func opaquePayload(program string, args []string) (string, bool) {
 	return "", false
 }
 
+// gradeUnreadPayload decides WHICH TIER an unread payload lands in, and the
+// answer is read off the payload rather than off the program holding it.
+//
+// # The inversion this closes
+//
+// DestructionOpaque is a Prompt, which yolo passes. That was decided for the
+// shape it was named after — `python3 -c "…"`, a payload in a language this
+// package does not read — and it was then applied to a shape it does not
+// describe:
+//
+//	bash -c "rm -rf /"    structural HardDeny, refused in every mode
+//	fish -c "rm -rf /"    Prompt, and yolo runs it
+//
+// `mksh`, `yash`, `elvish` and `nu` measured the same way. The two commands are
+// the same command; the only difference is that one shell's name is in
+// posixShellPrograms and the other's is not. "Use a shell the guard has not
+// heard of" was a general-purpose way out of the floor, and the set of shells
+// nobody has heard of is unbounded in exactly the way opaque.go's header says
+// program-name tables always are.
+//
+// # The criterion
+//
+// If the payload CAN be read as a shell command and that reading is
+// catastrophic, the verdict is the catastrophic one — whichever program was
+// going to receive it. If it cannot be read that way, the tier stays Opaque.
+// So `fish -c "rm -rf /"` is refused like `bash -c "rm -rf /"`, and
+// `python3 -c "print(1)"` still only prompts: PROGRAM NAMES ARE UNBOUNDED, THE
+// DANGER OF A PAYLOAD IS NOT.
+//
+// # What this costs, and why the cost was already being paid
+//
+// A payload that merely CONTAINS a destructive command at the head of a
+// segment is refused unappealably even if the receiving program would have
+// treated it as text — `zzsend -c "rm -rf / is dangerous"` is a refusal. That
+// is not a new class of over-strictness: every program in posixShellPrograms
+// has behaved exactly that way since the catastrophic tier existed, and the
+// change here is that it stops depending on whether the shell's name is in a
+// table. Amends the "must not be promoted to a structural HardDeny" constraint
+// in ADR-0018, which was written about the tier as a whole; see ADR-0019.
+//
+// DestructionUnreadable is passed through rather than folded down to
+// Catastrophic: it is structural too, and its reason ("nested deeper than the
+// guard unwraps") describes what actually happened.
+func gradeUnreadPayload(payload, workdir string, depth int) Destruction {
+	if depth > 0 {
+		if d := classifyDestruction(payload, workdir, depth-1, false); d >= DestructionCatastrophic {
+			return d
+		}
+	}
+	return DestructionOpaque
+}
+
 // classifyTrailingArgv grades the possibility that a program EXECUTES THE ARGV
 // WRITTEN AFTER IT, for programs this package has no reader for.
 //

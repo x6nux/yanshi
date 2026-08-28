@@ -143,6 +143,12 @@ esac
 	// in a -c operand with their own operands around it.
 	"su":     cPayloadScript,
 	"script": cPayloadScript,
+	// `fish -c CMD` runs CMD, exactly as `sh -c CMD` does. The stand-in hands
+	// the payload to /bin/sh rather than to a real fish, which for the corpus
+	// row it witnesses (`rm -rf /`) is the same program in both languages. It is
+	// here because fish's ABSENCE from posixShellPrograms was the whole reason
+	// that row used to grade weaker than the bash spelling of it.
+	"fish": cPayloadScript,
 
 	// `ssh [options] host CMD…` joins its trailing operands with spaces and
 	// hands the result to a shell on the far side, so the stand-in joins them

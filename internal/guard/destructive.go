@@ -408,8 +408,8 @@ func classifyLexedArgv(program string, args []string, workdir string, depth int,
 	// recognisably catastrophic (`python3 -c "…" ` behind `sudo rm -rf /` in the
 	// same segment) still reports the worse of the two. See opaque.go.
 	if !read {
-		if _, opaque := opaquePayload(program, args); opaque {
-			worst = DestructionOpaque
+		if payload, opaque := opaquePayload(program, args); opaque {
+			worst = maxDestruction(worst, gradeUnreadPayload(payload, workdir, depth))
 		}
 	}
 	// Storage destruction (dd onto a device, mkfs, wipefs, ...) is graded

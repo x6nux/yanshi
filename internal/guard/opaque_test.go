@@ -65,12 +65,14 @@ func TestAnUnreadPayloadIsRefusedRatherThanAllowed(t *testing.T) {
 			note: "a program in no table, carrying a code-shaped -c payload"},
 		{cmd: unmodelledInterpreter + ` -e "wipe($HOME)"`, want: wantPrompt,
 			note: "the same, with the other code flag"},
-		{cmd: `bash +o posix -c "rm -rf /"`, want: wantPrompt,
+		{cmd: `bash +o posix -c "npm test"`, want: wantPrompt,
 			note: "THE BACKSTOP. `+o` is a legitimate shell option spelling that unwrapShellCommand " +
 				"does not walk past, so no reader here reaches the payload at all — and the verdict " +
-				"is still a refusal. Teaching the flag scan `+` would make this a floor and is " +
+				"is still a refusal. Teaching the flag scan `+` would make this readable and is " +
 				"deliberately NOT done: it is the one-more-spelling move this tier replaces, and " +
-				"doing it would leave the backstop with nothing demonstrating it"},
+				"doing it would leave the backstop with nothing demonstrating it. The payload is " +
+				"`npm test` rather than `rm -rf /` because a payload with a destructive reading is " +
+				"now graded by that reading (ADR-0019) and would land on the floor instead"},
 
 		// THE OTHER DIRECTION. Without these the rows above are satisfied by a
 		// rule that refuses everything, which would be a far worse defect than
@@ -121,9 +123,11 @@ func TestATrailingArgvNobodyClaimedIsRefusedRatherThanAllowed(t *testing.T) {
 		{cmd: `bwrap --dev-bind / / rm -rf /`, want: wantPrompt,
 			note: "two bare operands sit where a generic flag walk expects the command word, which " +
 				"is why the scan reads every SUFFIX rather than the first non-flag word"},
-		{cmd: unmodelledInterpreter + ` bash -c "rm -rf /"`, want: wantPrompt,
+		{cmd: unmodelledInterpreter + ` bash -c "rm -rf ./build"`, want: wantPrompt,
 			note: "the suffix is itself a wrapper invocation, so one level of unwrapping has to " +
-				"happen inside the scan"},
+				"happen inside the scan. The payload is scoped inside the workdir so that this row " +
+				"measures the SCAN: a destructive payload would be graded by ADR-0019's rule on the " +
+				"`-c` operand and would reach the floor without the scan running at all"},
 
 		// THE OTHER DIRECTION. Without these the rows above are satisfied by a
 		// rule that prompts on every argv, which would refuse ordinary work.
@@ -143,6 +147,66 @@ func TestATrailingArgvNobodyClaimedIsRefusedRatherThanAllowed(t *testing.T) {
 		}))
 		if got != tc.want {
 			t.Errorf("Check(%q) = %s, want %s — %s", tc.cmd, got, tc.want, tc.note)
+		}
+	}
+}
+
+// TestTheTierFollowsThePayloadNotTheProgramName is ADR-0019.
+//
+// DestructionOpaque is a Prompt, which yolo passes. That was decided for
+// `python3 -c "…"` — a payload in a language nobody here reads — and it was
+// then applied to a shape it does not describe: a POSIX shell whose name is not
+// in posixShellPrograms. Measured, one command, two verdicts:
+//
+//	bash -c "rm -rf /"    structural HardDeny
+//	fish -c "rm -rf /"    Prompt, and yolo runs it
+//
+// "Use a shell the guard has not heard of" was a general-purpose way out of the
+// floor, and the set of shells nobody has heard of is unbounded in exactly the
+// way opaque.go's header says program-name tables always are. So the tier is
+// read off the payload: if the payload has a catastrophic reading, the verdict
+// is catastrophic whoever was going to receive it.
+//
+// The second group is the half that keeps the first from being "refuse every
+// -c": a payload with no destructive reading still only prompts, which is what
+// keeps `python3 -c` a usable command and is ADR-0018's inviolable half.
+func TestTheTierFollowsThePayloadNotTheProgramName(t *testing.T) {
+	g := New()
+	prof := probeProfile()
+	for _, cmd := range []string{
+		`fish -c "rm -rf /"`,
+		`nu -c "rm -rf /"`,
+		`mksh -c "rm -rf /"`,
+		`yash -c "rm -rf /"`,
+		`elvish -c "rm -rf /"`,
+		unmodelledInterpreter + ` -c "rm -rf /"`,
+		`bash -c "rm -rf /"`, // the control: the modelled spelling, unchanged
+	} {
+		got := classOf(g.Check(prof, Action{Tool: "shell_run", Shell: cmd, Workdir: segTestWorkdir}))
+		if got != wantFloor {
+			t.Errorf("Check(%q) = %s, want %s — the payload reads as `rm -rf /` whichever program "+
+				"receives it", cmd, got, wantFloor)
+		}
+	}
+	// The yolo half. ws_perm.go's fail-safe switches on ClassifyDestruction
+	// itself, not on the Decision, so the tier has to be Catastrophic there too
+	// — a Decision that is a structural HardDeny while the classification stays
+	// Opaque would still be auto-resolved by yolo.
+	if got := ClassifyDestruction(`fish -c "rm -rf /"`, segTestWorkdir); got != DestructionCatastrophic {
+		t.Errorf("ClassifyDestruction(fish -c \"rm -rf /\") = %v, want Catastrophic — that is the "+
+			"value resolvePermissionMode reads to refuse in every mode", got)
+	}
+	for _, cmd := range []string{
+		`python3 -c "print(1)"`,
+		`python3 -c "import shutil;shutil.rmtree('/')"`, // reads as no shell command at all
+		`perl -e "unlink '/etc/passwd'"`,                // out-of-scope, not catastrophic
+		`psql -c "select 1 from t"`,
+		unmodelledInterpreter + ` -c "wipe($HOME)"`,
+	} {
+		got := classOf(g.Check(prof, Action{Tool: "shell_run", Shell: cmd, Workdir: segTestWorkdir}))
+		if got != wantPrompt {
+			t.Errorf("Check(%q) = %s, want %s — a payload with no catastrophic READING must stay "+
+				"appealable, or every interpreter invocation becomes unrunnable", cmd, got, wantPrompt)
 		}
 	}
 }

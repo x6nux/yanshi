@@ -49,7 +49,9 @@ shell 维度先拆段（见下一节），再对**每一段**过下面两层，�
 >
 > ⚠️ **别把这个差别读成「不可达就不数」——那个判据不成立。** 上面第 3 条「未知 shell policy」同样从 yaml 走不到：`rules` 为空时 `internal/config::Config.validateProfiles` 让 `config.Load` 当场拒绝加载，`rules` 非空时 `checkShellPolicy` 在 execpolicy 分支里就 return 了、policy switch 根本不可达（那个函数的 doc 注释写了为什么两条都不留活口）。按「不可达就不数」这条也该删，本页就只剩 3 条。**在两个都不可达的分支之间**，判据是**有没有对应的配置面**：`shell.policy` 是操作者会亲手写进 yaml 的键，所以即使当前不可达也留在本页；execpolicy 的 verdict 词表不是任何配置字段，写规则的人碰不到它，所以只留在 `CLAUDE.md`。
 
-> 这个判据**只在裁决不可达分支时用，不要提升成全页判据**：另外三条（shell 结构读不出来、execpolicy parse-error、灾难性批量删除）都不对应任何 yaml 键，它们由**命令内容**触发而不是由配置打开，照配置面去筛会把本页从 4 条砍成 1 条。本页的入选标准始终是「操作者需要知道它拦得住什么」，配置面只是不可达分支的补充裁决。
+> 这个判据**只在裁决不可达分支时用，不要提升成全页判据**：本页除「未知 shell policy」之外的每一条都不对应任何 yaml 键（shell 结构读不出来、execpolicy parse-error、灾难性批量删除、命令嵌套超预算……），它们由**命令内容**触发而不是由配置打开 —— 照配置面去筛会把本页**砍到只剩「未知 shell policy」那一条**。本页的入选标准始终是「操作者需要知道它拦得住什么」，配置面只是不可达分支的补充裁决。
+>
+> （这句话原先写的是「从 4 条砍成 1 条」，而上面那份清单早已不是 4 条 —— 一个裸计数在描述**另一行的当前内容**，改那一行的人不会回来改这里。写「砍到只剩哪一条」就没有这个问题：差集是稳定的，条数不是。）
 
 ## 破坏性删除门（profile 无关）
 
@@ -73,6 +75,23 @@ shell 维度先拆段（见下一节），再对**每一段**过下面两层，�
 **不会落进这一档的**：`tail -c 100`、`cut -c 1-5`、`gcc -c foo.c`、`ssh -e none host`（操作数是选项值不是程序），以及 `grep -e "a b"`、`sed -e 's/a b/c/'`、`git -c core.pager="less -R" log`、`docker run -e "A=b c"`、`rsync -e "ssh -p 22"`、`jq -e '.a|.b'`、`kubectl logs -c web`（这些程序在一张"它的 `-c`/`-e` 操作数按文档就不是程序"的缓解表里）。**这张表漏一个条目的代价是多一次弹窗**，所以碰到你觉得不该弹的命令，那是缺表项而不是缺防线。
 
 `yolo` 会直接放行这一档（它只对 Catastrophic 与 Unreadable 停手），`auto` 交给模型判，`default` / `allow-edits` 弹窗。理由与四条不可违反的约束见 [../adr/0018-an-unread-payload-is-a-refusal-not-a-pass.md](../adr/0018-an-unread-payload-is-a-refusal-not-a-pass.md)。
+
+> ⚠️ **档位是从 payload 读出来的，不是从程序名读出来的。** 上面那句「yolo 直接放行」只在 payload **读不出灾难性读法**时成立。如果那段操作数本身能被读成一条 shell 命令、而且读出来是灾难档（`fish -c "rm -rf /"`、`nu -c "rm -rf /"`、你自己写的那个带 `-c` 的小工具收到 `rm -rf /`），判决就是 **Catastrophic** —— 结构性 HardDeny，`yolo` 也拦。
+>
+> 这条是补一个倒置：`bash` 在本工具的 shell 表里、`fish` 不在，于是**同一条命令**一个任何模式都拦、一个 yolo 直接跑，"换一个它没听说过的 shell" 成了通用的绕过路子。**程序名的集合是无限的，payload 危险不危险是有限可判的**，所以判据挪到了后者。理由见 [../adr/0019-the-tier-follows-the-payload-not-the-program-name.md](../adr/0019-the-tier-follows-the-payload-not-the-program-name.md)。
+
+### 尾部 argv 里的命令（不带任何 flag）
+
+上一节的 `-c` / `-e` 是**用 flag 标出来**的 payload。还有一种更常见的写法：**命令直接接在程序名后面**，没有任何 flag 标记它。
+
+`sudo` / `timeout` / `nohup` / `xargs` 这类前缀执行器一直在一张表里；表外的同类程序（`pkexec`、`firejail`、`bwrap`、`strace`、`systemd-run`、`toolbox run`，以及明天出现的下一个）以前一律静默放行。判据现在是结构性的：**argv 的任何一个后缀，只要它自己读得出一条破坏性命令，就报出来** —— 前面那个程序叫什么无关紧要。
+
+两档，差别在"这个程序会不会执行它的 argv"是不是已知的：
+
+- **表里的前缀执行器**（`sudo` `timeout` `taskset` `ssh` …）按定义就是跑 argv 的，所以判**全档**：`taskset -c 0 rm -rf /` 是结构性 HardDeny。
+- **表外的程序**封顶在 **Opaque（弹窗）**：`pkexec rm -rf /` 会问你一次。它可能真的执行，也可能只是把这些词当数据 —— 这正是不知道的那件事，而 `echo rm -rf /` 只是打印六个词，把它变成不可申诉的拒绝就太过了。`echo` / `printf` 整个豁免。
+
+**这道检查不管前面那层有没有"读懂"过这条命令。** `taskset -c 0 rm -rf /` 曾经是 Allow，因为表项把 `-c` 同时当成取值 flag 和 CPU 掩码位置参数，把 `rm` 吃掉了 —— 而"被某个读法认领过"这件事本身会把兜底关掉。**"我读错了"拿到的判决比"我读不动"还弱**，这道检查就是为了不再有这种倒置。
 
 ### 写文件的目标是参数时也算写
 
