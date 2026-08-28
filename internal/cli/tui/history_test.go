@@ -241,16 +241,32 @@ func TestHistory_PersistAndHealCorruptLine(t *testing.T) {
 	if err := h.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	// 追加一条损坏行,Load 应跳过
+	// 追加两条损坏行,Load 都应跳过。
+	//
+	// 两条的形态刻意不同,因为它们被**不同的**防线挡住,而只写第一种会让这条
+	// 测试为了错误的理由通过:"NOT_JSON" 解析失败后 it 停在零值,真正把它筛掉
+	// 的是紧邻的空文本过滤,而不是 json 错误检查 —— 把那段错误检查整个删掉,
+	// 只有第一种坏行的版本仍然全绿(实测)。
+	//
+	// 第二条是**部分合法**行:text 字段正常、ts 是非法时间格式。encoding/json
+	// 会先填好已解出的字段再报错,所以少了错误检查它就会被当成一条真历史收下,
+	// 带着一个被静默置零的时间戳。它才是钉住那三行的那条。
 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
 	_, _ = f.WriteString("NOT_JSON\n")
+	_, _ = f.WriteString(`{"text":"partially valid","ts":"not-a-timestamp"}` + "\n")
 	_ = f.Close()
 	h2, err := LoadHistory(path, 500)
 	if err != nil {
 		t.Fatalf("损坏行应自愈: %v", err)
 	}
 	if got := len(h2.Items()); got != 2 {
-		t.Errorf("重载应保留 2 条合法历史,得到 %d", got)
+		t.Errorf("重载应保留 2 条合法历史,得到 %d:%v", got, h2.Items())
+	}
+	for _, it := range h2.Items() {
+		if it.Text == "partially valid" {
+			t.Error("部分损坏行被收下了:json 解码错误没有被检查," +
+				"一条时间戳被静默置零的记录混进了历史")
+		}
 	}
 }
 
