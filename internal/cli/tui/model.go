@@ -1002,11 +1002,12 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 			text: "forked and switched to " + ev.SessionID,
 		})
 		m.sessionID = ev.SessionID
-	case "memories_distilled", "memories_cleared":
-		// A2/W-A-05 and W-D-12: replies to /distill and /memory-clear. Render
-		// the server's one-line summary as an ack. Without this case the frame
-		// round-trips over the wire but is invisible in the transcript — and a
-		// wipe the user cannot see the result of is one they will run twice.
+	case "memories_distilled", "memories_cleared", "checkpoint_result":
+		// A2/W-A-05, W-D-12 and W-D-06: replies to /distill, /memory-clear and
+		// /checkpoint. Render the server's summary as an ack. Without this case
+		// the frame round-trips over the wire but is invisible in the transcript
+		// — and a wipe (or a restore) whose result the user cannot see is one
+		// they will run twice.
 		m.flushAssistant()
 		m.entries = append(m.entries, ackEntry{text: ev.Text})
 	case "side_state":

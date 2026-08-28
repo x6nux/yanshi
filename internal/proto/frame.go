@@ -76,6 +76,13 @@ type ClientFrame struct {
 	// are unchanged.
 	Images []ImageAttach `json:"images,omitempty"` // user_message
 
+	// Dim carries the checkpoint dimension for a checkpoint frame (W-D-06):
+	// "session", "memory" or "files". A field of its own rather than a reuse of
+	// Mode, which means a PERMISSION mode everywhere else in this struct — one
+	// word standing for two unrelated vocabularies is how a handler ends up
+	// reading the wrong one.
+	Dim string `json:"dim,omitempty"` // checkpoint
+
 	// Attachments are @path file references for this turn (UX3). The client
 	// sends PATHS ONLY: the server reads the bytes, inside the work root and
 	// through the same guard profile a tool call would face.
@@ -1102,4 +1109,62 @@ func NewClearMemories(scope, agentID string) ClientFrame {
 // the client's reply channel on it.
 func NewMemoriesCleared(deleted int) ServerFrame {
 	return ServerFrame{Type: "memories_cleared", Text: fmt.Sprintf("cleared %d memories", deleted)}
+}
+
+// --- W-D-06 checkpoint frames ---
+
+// Checkpoint dimensions carried in ClientFrame.Dim (W-D-06).
+//
+// DECLARED HERE AS WELL AS IN internal/store, ON PURPOSE. This package is the
+// wire vocabulary and has no dependencies; the TUI is a thin client that must
+// not reach into the storage layer to learn three words it only ever sends as
+// strings. The two declarations are held equal by a test in internal/api/http,
+// which is a package that can see both — the same shape as the memory scope
+// words above.
+const (
+	// CheckpointDimSession is the context-window dimension.
+	CheckpointDimSession = "session"
+	// CheckpointDimMemory is the long-term memory table.
+	CheckpointDimMemory = "memory"
+	// CheckpointDimFiles is the working copy, served by internal/vcs.
+	CheckpointDimFiles = "files"
+)
+
+// CheckpointDimensions lists the dimensions in a stable order, for clients that
+// validate a user's word before sending it.
+func CheckpointDimensions() []string {
+	return []string{CheckpointDimSession, CheckpointDimMemory, CheckpointDimFiles}
+}
+
+// Checkpoint actions carried in ClientFrame.Name.
+const (
+	// CheckpointList asks for the recent checkpoints.
+	CheckpointList = "list"
+	// CheckpointCreate takes a checkpoint of all three dimensions.
+	CheckpointCreate = "create"
+	// CheckpointPlan previews restoring one dimension WITHOUT touching it.
+	CheckpointPlan = "plan"
+	// CheckpointRestore rolls one dimension back, after an automatic snapshot.
+	CheckpointRestore = "restore"
+)
+
+// NewCheckpoint builds a checkpoint request frame (W-D-06).
+//
+// action is one of the Checkpoint* constants; id names the checkpoint for plan
+// and restore; dim is the store.CheckpointDimension for those two; label is the
+// optional name for create. Reply: checkpoint_result.
+func NewCheckpoint(action, id, dim, label string) ClientFrame {
+	return ClientFrame{Type: "checkpoint", Name: action, ID: id, Dim: dim, Text: label}
+}
+
+// NewCheckpointResult builds the checkpoint_result reply.
+//
+// One reply type carrying rendered text for all four actions, rather than a
+// structured list frame plus an ack. The server is the only side that can
+// render a plan for the files dimension anyway (it holds the working copy), so
+// splitting the vocabulary would put half the formatting on each side of the
+// wire and guarantee they drift. A single-frame control reply, so
+// isControlReply closes the client's reply channel on it.
+func NewCheckpointResult(text string) ServerFrame {
+	return ServerFrame{Type: "checkpoint_result", Text: text}
 }

@@ -991,3 +991,64 @@ func TestClearMemories_RequiresConfirmation(t *testing.T) {
 		assert.Equal(t, tc.agent, rs.frames[0].ID)
 	}
 }
+
+// TestCmdCheckpoint_ArgumentGrammar covers every branch of /checkpoint,
+// including the asymmetry that makes the command safe: plan needs no
+// confirmation, restore does.
+func TestCmdCheckpoint_ArgumentGrammar(t *testing.T) {
+	send := func(args []string) []proto.ClientFrame {
+		rs := &recordingSession{}
+		m := newModel(rs, "/proj")
+		mm, _ := cmdCheckpoint(m, args)
+		_ = mm.(model)
+		return rs.frames
+	}
+
+	// No args and an explicit "list" are the same request.
+	for _, args := range [][]string{nil, {"list"}} {
+		f := send(args)
+		require.Lenf(t, f, 1, "%v lists", args)
+		assert.Equal(t, "checkpoint", f[0].Type)
+		assert.Equal(t, "list", f[0].Name)
+	}
+
+	f := send([]string{"create", "before", "the", "refactor"})
+	require.Len(t, f, 1)
+	assert.Equal(t, "create", f[0].Name)
+	assert.Equal(t, "before the refactor", f[0].Text, "the label keeps its spaces")
+
+	f = send([]string{"plan", "cp1", "memory"})
+	require.Len(t, f, 1)
+	assert.Equal(t, "plan", f[0].Name)
+	assert.Equal(t, "cp1", f[0].ID)
+	assert.Equal(t, "memory", f[0].Dim)
+
+	f = send([]string{"restore", "cp1", "files", "yes"})
+	require.Len(t, f, 1)
+	assert.Equal(t, "restore", f[0].Name)
+	assert.Equal(t, "files", f[0].Dim)
+
+	for _, args := range [][]string{
+		{"restore", "cp1", "session"},      // no confirmation
+		{"restore", "cp1", "session", "y"}, // not "yes"
+		{"restore", "cp1", "everything", "yes"},
+		{"restore", "cp1"},
+		{"plan", "cp1"},
+		{"plan", "cp1", "everything"},
+		{"plan", "cp1", "memory", "extra"},
+		{"wobble"},
+	} {
+		assert.Emptyf(t, send(args), "%v must not reach the server", args)
+	}
+}
+
+// TestCmdCheckpoint_DimensionsComeFromTheWireVocabulary: the command's accepted
+// words are read from proto.CheckpointDimensions rather than typed out again,
+// so a dimension the server knows cannot be rejected by the client.
+func TestCmdCheckpoint_DimensionsComeFromTheWireVocabulary(t *testing.T) {
+	for _, dim := range proto.CheckpointDimensions() {
+		assert.Truef(t, validCheckpointDim(dim), "dimension %q must be accepted", dim)
+	}
+	assert.False(t, validCheckpointDim("everything"))
+	assert.False(t, validCheckpointDim(""))
+}

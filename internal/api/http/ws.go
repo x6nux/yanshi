@@ -1305,6 +1305,10 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 					// the frame loop, so its context is the only thing left
 					// that can release the loop when the client disconnects.
 					handleDistillMemories(connCtx, s, conn, &cs)
+				case "checkpoint":
+					// W-D-06: /checkpoint. list/create/plan/restore all reply
+					// with a single checkpoint_result frame.
+					handleCheckpoint(s, conn, &cs, cf)
 				case "clear_memories":
 					// W-D-12: /memory-clear. The confirmation already happened
 					// client-side; this frame only exists once the user typed

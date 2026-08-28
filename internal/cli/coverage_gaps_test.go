@@ -243,6 +243,7 @@ func TestIsControlReply_FullList(t *testing.T) {
 		// and nothing compares it to the switch, so it goes stale silently —
 		// which is how memories_distilled sat outside it since W-A-05.
 		"memories_distilled", "memories_cleared",
+		"checkpoint_result",
 	} {
 		assert.True(t, isControlReply(kind), "kind=%q must be a control reply", kind)
 	}

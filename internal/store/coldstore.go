@@ -153,29 +153,53 @@ func messagesTx(tx *sql.Tx, sessionID string) ([]Message, error) {
 
 // encodeColdBlob renders a session as gzipped JSON.
 func encodeColdBlob(msgs []Message) ([]byte, error) {
-	var buf bytes.Buffer
-	zw := gzip.NewWriter(&buf)
-	if err := json.NewEncoder(zw).Encode(msgs); err != nil {
+	blob, err := encodeGzipJSON(msgs)
+	if err != nil {
 		return nil, fmt.Errorf("store: encode cold session: %w", err)
 	}
-	if err := zw.Close(); err != nil {
-		return nil, fmt.Errorf("store: flush cold session: %w", err)
-	}
-	return buf.Bytes(), nil
+	return blob, nil
 }
 
 // decodeColdBlob is the inverse, bounded by coldBlobLimit.
 func decodeColdBlob(blob []byte) ([]Message, error) {
-	zr, err := gzip.NewReader(bytes.NewReader(blob))
+	msgs, err := decodeGzipJSON[Message](blob)
 	if err != nil {
-		return nil, fmt.Errorf("store: open cold session: %w", err)
-	}
-	defer zr.Close()
-	var msgs []Message
-	if err := json.NewDecoder(io.LimitReader(zr, coldBlobLimit)).Decode(&msgs); err != nil {
 		return nil, fmt.Errorf("store: decode cold session: %w", err)
 	}
 	return msgs, nil
+}
+
+// encodeGzipJSON renders any row slice as gzipped JSON.
+//
+// Generic because W-D-06 snapshots the `memories` table with the same encoder
+// this file already uses for `messages` — one compression format, one bound,
+// one place where a decode limit could be got wrong. gzip and not a new
+// dependency, for the reason in this file's header.
+func encodeGzipJSON[T any](rows []T) ([]byte, error) {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if err := json.NewEncoder(zw).Encode(rows); err != nil {
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// decodeGzipJSON is encodeGzipJSON's inverse, bounded by coldBlobLimit so a
+// corrupt or hostile blob cannot turn a read into an out-of-memory.
+func decodeGzipJSON[T any](blob []byte) ([]T, error) {
+	zr, err := gzip.NewReader(bytes.NewReader(blob))
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	var rows []T
+	if err := json.NewDecoder(io.LimitReader(zr, coldBlobLimit)).Decode(&rows); err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 // coldMessages returns a compressed session's rows, or ok=false when the

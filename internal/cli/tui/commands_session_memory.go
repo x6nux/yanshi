@@ -114,3 +114,81 @@ func cmdMain(m model, args []string) (tea.Model, tea.Cmd) {
 	}
 	return m.sendControlFrame(proto.NewExitSide())
 }
+
+// checkpointUsage is the one place the command's shape is written down, so the
+// error path and the help entry cannot describe different commands.
+const checkpointUsage = "usage: /checkpoint [create [label] | plan <id> <session|memory|files> | " +
+	"restore <id> <session|memory|files> yes]"
+
+// cmdCheckpoint implements /checkpoint (W-D-06):
+//
+//	/checkpoint                          — list recent checkpoints
+//	/checkpoint create [label]           — snapshot session + memories + files
+//	/checkpoint plan <id> <dimension>    — dry run: what a restore WOULD do
+//	/checkpoint restore <id> <dim> yes   — restore, after an automatic snapshot
+//
+// RESTORE TAKES cmdDelete's "yes", plan does not. The asymmetry is the point of
+// having both: a plan is free and reversible, a restore replaces state. The
+// server takes its own snapshot first regardless, so a confirmed mistake is
+// recoverable — but a mistake nobody confirmed is one nobody knows to recover.
+//
+// The dimension is validated here as well as on the server. Not defence in
+// depth for its own sake: a typo caught locally costs a round trip and prints
+// the three valid words, where the same typo reaching a handler that guessed
+// would restore the wrong half of the user's state.
+func cmdCheckpoint(m model, args []string) (tea.Model, tea.Cmd) {
+	reject := func(text string) (tea.Model, tea.Cmd) {
+		m.entries = append(m.entries, errorEntry{text: text})
+		m.refresh()
+		m.viewport.GotoBottom()
+		return m, nil
+	}
+	if len(args) == 0 {
+		return m.sendControlFrame(proto.NewCheckpoint(proto.CheckpointList, "", "", ""))
+	}
+	switch args[0] {
+	case proto.CheckpointList:
+		return m.sendControlFrame(proto.NewCheckpoint(proto.CheckpointList, "", "", ""))
+	case proto.CheckpointCreate:
+		return m.sendControlFrame(proto.NewCheckpoint(
+			proto.CheckpointCreate, "", "", strings.Join(args[1:], " ")))
+	case proto.CheckpointPlan, proto.CheckpointRestore:
+		if len(args) < 3 {
+			return reject(checkpointUsage)
+		}
+		id, dim := args[1], args[2]
+		if !validCheckpointDim(dim) {
+			return reject("unknown dimension " + dim + " — " + checkpointUsage)
+		}
+		if args[0] == proto.CheckpointPlan {
+			if len(args) != 3 {
+				return reject(checkpointUsage)
+			}
+			return m.sendControlFrame(proto.NewCheckpoint(proto.CheckpointPlan, id, dim, ""))
+		}
+		if len(args) != 4 || args[3] != "yes" {
+			return reject("⚠ restoring replaces your current " + dim +
+				" state. Preview it with: /checkpoint plan " + id + " " + dim +
+				"\nto confirm, run: /checkpoint restore " + id + " " + dim + " yes")
+		}
+		return m.sendControlFrame(proto.NewCheckpoint(proto.CheckpointRestore, id, dim, ""))
+	default:
+		return reject(checkpointUsage)
+	}
+}
+
+// validCheckpointDim reports whether dim is one of the three dimensions.
+//
+// It reads proto.CheckpointDimensions rather than repeating the three words, so
+// a fourth dimension cannot be accepted by the server and rejected here. proto
+// and not store: this package is a thin client that only ever sends the word
+// over the wire, and reaching into the storage layer for a string constant
+// would give the TUI a dependency on how memories are stored.
+func validCheckpointDim(dim string) bool {
+	for _, d := range proto.CheckpointDimensions() {
+		if d == dim {
+			return true
+		}
+	}
+	return false
+}

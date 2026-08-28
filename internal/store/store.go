@@ -944,6 +944,40 @@ CREATE TABLE IF NOT EXISTS cold_sessions (
     max_seq    INTEGER NOT NULL
 );
 
+-- W-D-06: a named moment three dimensions can be rolled back to.
+--
+-- The three columns groups are the three dimensions and they are stored very
+-- differently on purpose, because the three underlying stores have different
+-- properties:
+--
+--   session: hidden_seq + pinned_seqs, i.e. a COPY OF THE CONTEXT BOUNDARY.
+--     messages is append-only and context_events is append-only, so nothing
+--     about a session's past can be lost; a checkpoint therefore only has to
+--     remember where the window stood, and restoring is one more append
+--     (ADR-0015's "checkpoints degrade to appending one event").
+--
+--   memory: a memories BLOB, a real snapshot. Memories are UPDATEd (use_count,
+--     superseded_by) and DELETEd (the quota prune, /memory-clear), so there is
+--     no append-only history to project a past state out of. gzip JSON, the
+--     same encoder cold_sessions uses.
+--
+--   files: file_commit, just an id. internal/vcs already stores every version
+--     of every file and can preview, freeze and restore them; duplicating any
+--     of that here would be a second copy of the working tree.
+CREATE TABLE IF NOT EXISTS checkpoints (
+    id          TEXT    PRIMARY KEY,
+    label       TEXT    NOT NULL DEFAULT '',
+    session_id  TEXT    NOT NULL DEFAULT '',
+    hidden_seq  INTEGER NOT NULL DEFAULT 0,
+    pinned_seqs TEXT    NOT NULL DEFAULT '',
+    memories     BLOB    NOT NULL,
+    memory_count INTEGER NOT NULL DEFAULT 0,
+    file_commit  TEXT    NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_created
+    ON checkpoints(created_at DESC, id);
+
 -- W-D-08: user messages queued for a session that may or may not be connected.
 --
 -- NOT EXPRESSED AS A tasks ROW, and the reason is concrete rather than

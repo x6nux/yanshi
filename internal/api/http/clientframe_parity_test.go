@@ -63,6 +63,7 @@ var clientControlOnlyFields = map[string]string{
 	"Seq":           "restore_session addresses a message index",
 	"Source":        "install_skill",
 	"FeaturesSet":   "features_set",
+	"Dim":           "checkpoint names which of session/memory/files to plan or restore",
 }
 
 // TestEveryClientFrameTurnInputFieldReachesEveryTransport pins the request-side

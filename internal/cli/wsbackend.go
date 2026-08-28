@@ -303,7 +303,8 @@ func isControlReply(kind string) bool {
 		"session_forked", "side_state", "skills_list", "skill_ack",
 		"features",           // OBS3: /features reply is a single-frame control reply
 		"memories_distilled", // A2/W-A-05: /distill reply is a single-frame control reply
-		"memories_cleared":   // W-D-12: /memory-clear reply is a single-frame control reply
+		"memories_cleared",   // W-D-12: /memory-clear reply is a single-frame control reply
+		"checkpoint_result":  // W-D-06: /checkpoint reply is a single-frame control reply
 		return true
 	}
 	return false
