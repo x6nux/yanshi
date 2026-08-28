@@ -1026,11 +1026,6 @@ func Build(opts Options) (*App, error) {
 	}
 	allTools = append(allTools, c1Tools...)
 
-	// W-D: the background upkeep sweep. It runs over the SAME root ctx as the
-	// automation scheduler, so App.cancel stops both and App.Shutdown joins
-	// both before closing the store.
-	upkeepWorker := BuildUpkeep(ctx, *cfg, st)
-
 	// T12: tool_batch dispatches over the assembled registry, so it is a
 	// member of the list it reads. Construction must happen BEFORE the
 	// toolNames snapshot (so GOV5 sees the name and the profile entry is not
@@ -1383,6 +1378,15 @@ func Build(opts Options) (*App, error) {
 		}
 	}
 	httpCfg.DistillModel = distillModel
+	// W-D: the background upkeep sweep, over the SAME root ctx as the
+	// automation scheduler, so App.cancel stops both and App.Shutdown joins
+	// both before closing the store.
+	//
+	// Assembled HERE rather than beside the other subsystems because it shares
+	// distillModel: its memory job calls the same tools.DistillMemories entry
+	// point the WS handler does, and giving it its own model selection would be
+	// a second place for an operator's batch.rlm_model to be honoured or not.
+	upkeepWorker := BuildUpkeep(ctx, *cfg, st, distillModel)
 	// S10: inject the process-wide redactor so the SSE writeSSEFrame and
 	// the WS wsConn.write boundaries redact every outbound frame.
 	httpCfg.Redactor = redactor

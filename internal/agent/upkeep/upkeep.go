@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/x6nux/yanshi/internal/store"
+	"github.com/x6nux/yanshi/internal/tools"
 )
 
 // Config is the worker's tuning. The zero value runs a worker that does
@@ -39,6 +40,18 @@ type Config struct {
 	// ENTIRELY — see config.StorageConfig.RetentionDays for why that is the
 	// only safe default.
 	RetentionDays int
+
+	// Model is the consolidation model used for cross-session memory
+	// extraction (W-D-03). NIL DISABLES EXTRACTION ENTIRELY, and that is the
+	// default an operator gets: this job spends a provider call per finished
+	// session, which is not a cost to start incurring because somebody
+	// upgraded.
+	Model tools.DistillModel
+
+	// MemoryQuota caps how many memory rows the store may hold. Zero means
+	// unlimited, which is the pre-W-D-03 behaviour. It applies whether or not
+	// Model is set, because memory_write fills the same table.
+	MemoryQuota int
 
 	// SweepLimit caps how many sessions one tick may touch, so a first sweep
 	// over a year-old database does not hold the write lock for minutes. Zero
@@ -125,6 +138,7 @@ func (w *Worker) RunOnce(ctx context.Context) {
 		return
 	}
 	w.compressCold()
+	w.extractMemories(ctx)
 }
 
 // compressCold packs sessions idle past the retention threshold.

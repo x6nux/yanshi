@@ -566,6 +566,21 @@ func (s *Store) migrate() error {
 	if err := s.addColumnIfMissing("memories", "distilled_at", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	// W-D-03: use_count makes "unused" answerable, which is what the memory
+	// quota prunes by. Pre-W-D-03 rows default to 0 — literally true, since
+	// nothing was counting — so the first prune after an upgrade treats the
+	// whole existing table as unused and falls back to oldest-first. That is
+	// the honest reading and it is why the quota defaults to unlimited: an
+	// operator has to turn it on, and by the time they do the counter has been
+	// running.
+	//
+	// DELIBERATELY NOT IN memoryColumns OR THE Memory STRUCT. Only SQL reads it
+	// (the prune's ORDER BY) and only SQL writes it (markMemoriesUsed), so
+	// exposing it as a Go field would add a value nothing consumes and a scan
+	// position every reader has to keep in step.
+	if err := s.addColumnIfMissing("memories", "use_count", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	// Every default read now carries `superseded_by = ''`, which the dimension
 	// index above does not cover.
 	if _, err := s.DB.Exec(

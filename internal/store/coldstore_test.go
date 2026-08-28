@@ -291,14 +291,14 @@ func TestColdStore_CandidatesSkipWhatIsAlreadyPacked(t *testing.T) {
 	sid := coldFixture(t, s, 4)
 	cutoff := time.Now().Unix() + 1
 
-	ids, err := s.ColdCandidates(cutoff, 10)
+	ids, err := s.IdleSessions(cutoff, 10, true)
 	require.NoError(t, err)
 	require.Contains(t, ids, sid)
 
 	_, err = s.CompressSession(sid)
 	require.NoError(t, err)
 
-	ids, err = s.ColdCandidates(cutoff, 10)
+	ids, err = s.IdleSessions(cutoff, 10, true)
 	require.NoError(t, err)
 	require.NotContains(t, ids, sid)
 }

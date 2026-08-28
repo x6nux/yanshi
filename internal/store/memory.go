@@ -171,7 +171,24 @@ type MemoryHit struct {
 // K most relevant, because everything below K is discarded unseen and ordering
 // by date would discard the best match for being old — which is precisely the
 // failure C13 exists to correct on the write side.
+// W-D-03: this is also where a retrieval is COUNTED, and the dispatch below is
+// arranged so both the FTS and the CJK branch pass through the single exit that
+// does it. The obvious shape — an early `return s.searchMemoryCJK(...)` — was
+// the first version and it left every Chinese search uncounted, i.e. every
+// memory in this repo's own working language would have looked unused to the
+// quota and been pruned first.
 func (s *Store) SearchMemoryRanked(query string, limit int, dims MemoryFilter) ([]MemoryHit, error) {
+	hits, err := s.searchMemoryRanked(query, limit, dims)
+	if err != nil {
+		return nil, err
+	}
+	s.markMemoriesUsed(memoryIDs(hits))
+	return hits, nil
+}
+
+// searchMemoryRanked is SearchMemoryRanked without the use accounting, so the
+// two retrieval backends have one place to return through.
+func (s *Store) searchMemoryRanked(query string, limit int, dims MemoryFilter) ([]MemoryHit, error) {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -281,7 +298,18 @@ func (s *Store) RecallMemoryScoped(limit int, dims MemoryFilter) ([]Memory, erro
 		return nil, err
 	}
 	defer rows.Close()
-	return scanMemories(rows)
+	out, err := scanMemories(rows)
+	if err != nil {
+		return nil, err
+	}
+	// W-D-03: a recall is a use, exactly like a search. Counting only searches
+	// would make memory_recall's results look untouched and prune them first.
+	ids := make([]string, 0, len(out))
+	for _, m := range out {
+		ids = append(ids, m.ID)
+	}
+	s.markMemoriesUsed(ids)
+	return out, nil
 }
 
 func scanMemories(rows interface {

@@ -496,6 +496,23 @@ type StorageConfig struct {
 	// store.DeleteSession 这一条显式路径。名字里的 "retention" 沿用 spec 的
 	// 措辞，语义以这段注释为准。
 	RetentionDays int `yaml:"retention_days"`
+
+	// MemoryAutoExtract 打开 W-D-03 的后台跨会话记忆抽取：会话安静
+	// upkeep.MemoryIdle 之后，worker 读取它的窗口、向模型要一批"以后还成立的
+	// 事实"、逐条写进 memories，然后调 W-A-05 那条既有的蒸馏入口做合并。
+	//
+	// **默认 false，因为它花钱。** 每个结束的会话一次 provider 调用，用的是
+	// batch.rlm_model（没配就退回主模型）。没人升级一次程序就同意开始产生这笔
+	// 开销，所以它必须是操作员显式打开的。
+	MemoryAutoExtract bool `yaml:"memory_auto_extract"`
+
+	// MemoryQuota 限制 memories 表的行数上限；**0/省略 = 不限制**，与引入前
+	// 一致。超额时只删 use_count = 0（从未被检索命中过）的行，最老的先删；
+	// 被用过的记忆无论多老都不删 —— 这正是配额与"过期"的区别。
+	//
+	// 与 MemoryAutoExtract 相互独立：memory_write 一样往这张表里写，配额管的是
+	// 表的大小而不是谁写的。
+	MemoryQuota int `yaml:"memory_quota"`
 }
 
 // LLMConfig configures the available LLM providers.

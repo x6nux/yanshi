@@ -243,21 +243,27 @@ func filterWindow(msgs []Message, fromSeq int, pinned []int) []Message {
 	return out
 }
 
-// ColdCandidates returns up to limit session ids whose last activity predates
-// `before` and which are not compressed yet.
+// IdleSessions returns up to limit session ids whose last activity predates
+// `before`, oldest first.
 //
-// It excludes sessions already in cold_sessions rather than relying on
-// CompressSession's own no-op, so a store where every old session is already
-// packed does not hand the worker the same ids on every tick.
-func (s *Store) ColdCandidates(before int64, limit int) ([]string, error) {
+// skipCompressed drops sessions already in cold storage. The compression sweep
+// passes true, so a store where everything old is already packed stops handing
+// the worker the same ids every tick; the memory sweep passes false, because a
+// compressed session still projects a readable window and excluding it would
+// permanently skip every session that went cold before extraction was enabled.
+//
+// One function with a flag rather than two near-identical SELECTs: the ordering
+// and the limit clamp are the parts that must not drift between the two sweeps.
+func (s *Store) IdleSessions(before int64, limit int, skipCompressed bool) ([]string, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.DB.Query(
-		`SELECT id FROM sessions
-		  WHERE updated_at < ?
-		    AND id NOT IN (SELECT session_id FROM cold_sessions)
-		  ORDER BY updated_at ASC LIMIT ?`, before, limit)
+	q := "SELECT id FROM sessions WHERE updated_at < ?"
+	if skipCompressed {
+		q += " AND id NOT IN (SELECT session_id FROM cold_sessions)"
+	}
+	q += " ORDER BY updated_at ASC LIMIT ?"
+	rows, err := s.DB.Query(q, before, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +304,7 @@ func (s *Store) CompressColdSessions(before int64, limit int) (int, error) {
 	if before <= 0 {
 		return 0, nil
 	}
-	ids, err := s.ColdCandidates(before, limit)
+	ids, err := s.IdleSessions(before, limit, true)
 	if err != nil {
 		return 0, err
 	}

@@ -123,3 +123,19 @@ func TestWorker_CancelledContextSkipsTheSweep(t *testing.T) {
 		"SELECT COUNT(*) FROM messages WHERE session_id = ?", sid).Scan(&n))
 	require.Equal(t, 4, n)
 }
+
+// storePath returns a path two Store handles can share, standing in for two
+// processes.
+func storePath(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "yanshi.db")
+}
+
+// openStoreAt opens an additional handle on an existing path.
+func openStoreAt(t *testing.T, path string) *store.Store {
+	t.Helper()
+	s, err := store.Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { s.Close() })
+	return s
+}
