@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -35,6 +36,94 @@ func TestHistory_CapacityDropsOldest(t *testing.T) {
 	}
 	if items[0].Text != "b" || items[2].Text != "d" {
 		t.Errorf("应丢最旧 a,保留 [b,c,d],得到 %v", items)
+	}
+}
+
+// TestHistory_TrimsAtByteLimit: 上限必须同时是条数和字节。单条大 prompt 逐条
+// 都在字节上限之内,但累计超过 defaultHistoryBytes 时应从最旧端裁到预算内,
+// 而不是任由文件无界增长。
+func TestHistory_TrimsAtByteLimit(t *testing.T) {
+	dir := t.TempDir()
+	h, _ := LoadHistory(filepath.Join(dir, "history.jsonl"), 500)
+
+	big := strings.Repeat("x", 900*1024) // 900 KiB,单条远小于 defaultHistoryBytes
+	h.Add("a:" + big)
+	h.Add("b:" + big)
+	h.Add("c:" + big) // 三条合计 ~2.6 MiB,超过 2 MiB 字节上限
+
+	items := h.Items()
+	if got := historyItemsBytes(items); got > defaultHistoryBytes {
+		t.Fatalf("总字节应被裁到 <= %d,得到 %d", defaultHistoryBytes, got)
+	}
+	if len(items) == 0 {
+		t.Fatal("字节裁剪不应把历史清空")
+	}
+	if last := items[len(items)-1].Text; !strings.HasPrefix(last, "c:") {
+		t.Errorf("应保留最新一条(c),得到最后一条前缀 %q", last[:2])
+	}
+	if first := items[0].Text; strings.HasPrefix(first, "a:") {
+		t.Errorf("最旧一条(a)应被字节上限丢弃,但仍在 items[0]")
+	}
+}
+
+// TestHistory_OversizedSingleEntryRejected: 单条 Text 本身就超过整条字节预算
+// 时,Add 拒绝存入(而不是截断或死循环)——该 prompt 已经正常发送,只是不会
+// 出现在历史召回里。这条测试同时确保裁剪循环不会因为一条打死不退的超大条目
+// 而失去终止性。
+func TestHistory_OversizedSingleEntryRejected(t *testing.T) {
+	dir := t.TempDir()
+	h, _ := LoadHistory(filepath.Join(dir, "history.jsonl"), 500)
+	h.Add("normal")
+	h.Add(strings.Repeat("y", defaultHistoryBytes+1))
+	items := h.Items()
+	if len(items) != 1 || items[0].Text != "normal" {
+		t.Fatalf("单条超过字节上限应被拒绝存入,得到 %d 条:%v", len(items), items)
+	}
+}
+
+// TestHistory_ConcurrentSavesDoNotLoseEntries: 两个进程各自 Add 后 Save,后写
+// 的不得整份覆盖先写的。多窗口是本仓的常规用法,今天第二个窗口一保存,第一个
+// 窗口这一整场的输入历史不该消失。夹具用两个独立指向同一路径的 *History 实例
+// 模拟两个进程——同一实例并发只会测到 h.mu 那把锁,证明不了跨进程的东西。
+func TestHistory_ConcurrentSavesDoNotLoseEntries(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "history.jsonl")
+
+	h1, err := LoadHistory(path, 500)
+	if err != nil {
+		t.Fatalf("LoadHistory h1: %v", err)
+	}
+	h2, err := LoadHistory(path, 500)
+	if err != nil {
+		t.Fatalf("LoadHistory h2: %v", err)
+	}
+
+	h1.Add("from window 1")
+	h2.Add("from window 2")
+
+	if err := h1.Save(); err != nil {
+		t.Fatalf("h1.Save: %v", err)
+	}
+	if err := h2.Save(); err != nil {
+		t.Fatalf("h2.Save: %v", err)
+	}
+
+	h3, err := LoadHistory(path, 500)
+	if err != nil {
+		t.Fatalf("LoadHistory h3: %v", err)
+	}
+	items := h3.Items()
+	var got1, got2 bool
+	for _, it := range items {
+		if it.Text == "from window 1" {
+			got1 = true
+		}
+		if it.Text == "from window 2" {
+			got2 = true
+		}
+	}
+	if !got1 || !got2 {
+		t.Fatalf("两个窗口各自 Save 后都应保留对方的条目,得到 %v", items)
 	}
 }
 
