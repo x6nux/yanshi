@@ -1052,3 +1052,27 @@ func TestCmdCheckpoint_DimensionsComeFromTheWireVocabulary(t *testing.T) {
 	assert.False(t, validCheckpointDim("everything"))
 	assert.False(t, validCheckpointDim(""))
 }
+
+// TestNewCommandsAreReachableByTyping drives both W-D commands through
+// runCommand, which is the only path a user has.
+//
+// Measured: deleting their commandTable rows left every test in this package
+// green, because the rest of the suite calls the handlers directly. An
+// unregistered command is not a cosmetic defect — runCommand answers "unknown
+// command" and the feature is unreachable, while the handler it would have
+// called is still perfectly covered.
+func TestNewCommandsAreReachableByTyping(t *testing.T) {
+	for _, tc := range []struct{ line, frame string }{
+		{"/memory-clear all yes", "clear_memories"},
+		{"/checkpoint create probe", "checkpoint"},
+		{"/checkpoint plan cp1 memory", "checkpoint"},
+		{"/checkpoint restore cp1 memory yes", "checkpoint"},
+	} {
+		rs := &recordingSession{}
+		m := newModel(rs, "/proj")
+		mm, _ := m.runCommand(tc.line)
+		mm2 := mm.(model)
+		require.Lenf(t, rs.frames, 1, "%q reached no handler; entries=%v", tc.line, renderLast(mm2))
+		assert.Equal(t, tc.frame, rs.frames[0].Type)
+	}
+}
