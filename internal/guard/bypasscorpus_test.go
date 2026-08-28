@@ -17,11 +17,13 @@ import (
 // each round found them by INVENTING A NEW LIST OF SPELLINGS. The lists were
 // thrown away with the review documents, so every round paid the invention cost
 // again and every round's fixes were re-broken by shapes the previous round had
-// already tried. The corpus below is that list made permanent: 120 spellings,
-// INCLUDING the ones that were never bypasses, because a spelling that is
-// correctly refused today is the regression sample for tomorrow.
+// already tried. The corpus below is that list made permanent, INCLUDING the
+// spellings that were never bypasses, because a spelling that is correctly
+// refused today is the regression sample for tomorrow. (It said "120 spellings"
+// and was wrong within two commits; count them with `go test -run
+// TestTableOnlyRowsHaveNotGrown` if the number matters.)
 //
-// # Two assertions, and neither one is a restatement of the other
+// # Three assertions, and none of them is a restatement of another
 //
 // TestEveryMeasuredSpellingKeepsItsVerdict pins what guard SAYS. On its own that
 // is a table of the author's beliefs — the same defect fidelity_test.go's header
@@ -32,6 +34,16 @@ import (
 // let any row whose shell run DESTROYED something or PLANTED A CREDENTIAL be
 // pinned as Allow. So a future edit cannot make a red row green by relaxing its
 // `want` — the shell has to agree.
+//
+// TestEveryStrictRowIsWitnessedOrSaysWhyNot exists because THAT SENTENCE WAS
+// ONLY TRUE OF TWO THIRDS OF THE ROWS. The differential assertion can only speak
+// about a row the shell acted on, and 41 of 115 POSIX rows named a program that
+// was not on the shim PATH — so the shell did nothing, and their verdicts were
+// held by the table alone. A re-review demonstrated the consequence: it broke
+// stripFindExec, flipped four `find -exec` rows to Allow, and the package stayed
+// green. The third assertion makes that partition EXPLICIT — every strict row is
+// either witnessed or says on the line why it cannot be — and
+// TestTableOnlyRowsHaveNotGrown pins how many of the second kind there may be.
 //
 // # What a row's `why` is for
 //
@@ -82,6 +94,25 @@ type bypassRow struct {
 	want   wantVerdict
 	interp string
 	why    string
+
+	// tableOnly says why the reference shell cannot witness this row, and
+	// carrying it is an admission: THE VERDICT ON THIS LINE IS GUARDED BY THE
+	// AUTHOR'S BELIEF AND NOTHING ELSE.
+	//
+	// It exists because a re-review ran the obvious experiment. It broke
+	// stripFindExec, flipped four `find -exec` rows from HardDeny to Allow with
+	// a plausible-sounding why, and the entire package stayed green — the
+	// differential assertion below only fires when the shell DID something, and
+	// `find` was not on the shim PATH. 41 of the 115 POSIX rows were in that
+	// position, so for 41 rows "the shell has to agree" (this file's own header)
+	// was not true.
+	//
+	// A corpus that is partly uncheckable is more dangerous than no corpus,
+	// because it reads as though every row was measured. Most of the 41 were
+	// fixed by putting stand-ins on the shim PATH (fidelity_test.go's relayShims
+	// and credentialWriterShims). What is left is here, one reason per row, and
+	// TestTableOnlyRowsHaveNotGrown pins how many there may be.
+	tableOnly string
 }
 
 // probeProfile is the profile under which the whole corpus is graded: it says
@@ -97,6 +128,43 @@ func probeProfile() PermissionProfile {
 		Net:   NetPerm{Allow: true},
 	}
 }
+
+// The tableOnly reasons, named because most of them apply to several rows and a
+// reason copied nine times is a reason that stops being edited when it changes.
+const (
+	// noShellShim: `bash` and `zsh` are deliberately off the shim PATH.
+	// fidelity_test.go's header carries the argument: their corpus rows use
+	// options dash rejects and bash accepts (`-o pipefail`, `--rcfile`,
+	// `+o posix`), so the witness would depend on which /bin/sh the CI leg has,
+	// and a witness that moves between platforms cannot be reconciled with a
+	// source-level count. The `sh` spelling of the same shapes IS witnessed.
+	noShellShim = "bash/zsh are off the shim PATH so the witness cannot depend on which /bin/sh " +
+		"the platform has; the sh-spelled rows in the same groups are witnessed"
+
+	// noBuiltinShim: the word is a shell BUILTIN or KEYWORD, so there is no
+	// program for the shim directory to hold. `builtin` is not in dash at all,
+	// and `select` and `coproc` are bash-only syntax.
+	noBuiltinShim = "a shell builtin or keyword, not a program: there is nothing to put on the " +
+		"shim PATH, and the two bash-only ones are not syntax /bin/sh parses"
+
+	// noInterpreterShim: witnessing this means running a real Python or Perl,
+	// which is a second language on the shim PATH and a second thing that can
+	// delete a file. The verdict here is `we did not read the payload`, and a
+	// stand-in that DID read it would be measuring the wrong claim.
+	noInterpreterShim = "witnessing it means a real interpreter on the shim PATH; the verdict " +
+		"being pinned is 'nobody read this payload', which no stand-in can demonstrate"
+
+	// noDeviceWitness: the harm is to a raw block device. The harness has a
+	// temporary HOME and a temporary work directory; it has no disk to lose.
+	noDeviceWitness = "the harm is to a raw block device, and the harness owns no device to " +
+		"witness the loss of"
+
+	// noOutsideHomeWitness: the harness detects exactly one planted credential,
+	// $HOME/.ssh/authorized_keys under a temporary HOME. A row whose target is
+	// an absolute system path is unreachable by construction.
+	noOutsideHomeWitness = "the target is an absolute system path; the harness only witnesses a " +
+		"credential planted under its temporary HOME"
+)
 
 // bypassCorpus is the catalogue. Grouped by the DEFENCE each group probes, not
 // by the review that found it, so a new spelling has an obvious home.
@@ -114,10 +182,12 @@ var bypassCorpus = []bypassRow{
 	{cmd: "rm -rf \"`echo /`\"", want: wantFloor},
 	{cmd: `eval "$(echo rm) -rf /"`, want: wantFloor},
 	{cmd: "eval \"`echo rm` -rf /\"", want: wantFloor},
-	{cmd: `eval "$(echo cm0= | base64 -d) -rf /"`, want: wantFloor},
+	{cmd: `eval "$(echo cm0= | base64 -d) -rf /"`, want: wantFloor,
+		tableOnly: "the substitution needs a real base64 on the shim PATH, and shimming it by " +
+			"absolute path would make the witness depend on where coreutils lives"},
 	{cmd: `eval "rm -rf \"$(echo /)\""`, want: wantFloor},
 	{cmd: `sh -c "$(echo rm) -rf /"`, want: wantFloor},
-	{cmd: `bash -c "$(echo rm) -rf /"`, want: wantFloor},
+	{cmd: `bash -c "$(echo rm) -rf /"`, want: wantFloor, tableOnly: noShellShim},
 	{cmd: `echo k > "$(echo ~/.ssh/authorized_keys)"`, want: wantFloor},
 	// Single quotes really are data: `$(` inside them is a literal, and a
 	// reader that refused it would refuse `echo '$(1+1)'` forever.
@@ -128,7 +198,7 @@ var bypassCorpus = []bypassRow{
 	{cmd: `eval rm -rf /`, want: wantFloor},
 	{cmd: `eval "rm -rf /"`, want: wantFloor},
 	{cmd: `command rm -rf /`, want: wantFloor},
-	{cmd: `builtin rm -rf /`, want: wantFloor},
+	{cmd: `builtin rm -rf /`, want: wantFloor, tableOnly: noBuiltinShim},
 	{cmd: `exec rm -rf /`, want: wantFloor},
 	{cmd: `xargs rm -rf /`, want: wantFloor},
 	{cmd: `sudo rm -rf /`, want: wantFloor},
@@ -182,8 +252,10 @@ var bypassCorpus = []bypassRow{
 	{cmd: `find . -exec rm -rf {} \;`, want: wantFloor},
 	{cmd: `find . -execdir rm -rf {} +`, want: wantFloor},
 	{cmd: `find . -ok rm -rf {} \;`, want: wantFloor},
-	{cmd: `find / -delete`, want: wantFloor},
-	{cmd: `find / -name x -delete`, want: wantFloor},
+	{cmd: `find / -delete`, want: wantFloor,
+		tableOnly: "find's stand-in emulates -exec only; -delete removes files it walked to, and " +
+			"a stand-in that walked and deleted would be a real find with a real rm behind it"},
+	{cmd: `find / -name x -delete`, want: wantFloor, tableOnly: "same as the row above"},
 	{cmd: `busybox rm -rf /`, want: wantFloor},
 	{cmd: `busybox sh -c "rm -rf /"`, want: wantFloor},
 	{cmd: `find . -name '*.tmp'`, want: wantAllow,
@@ -196,11 +268,11 @@ var bypassCorpus = []bypassRow{
 	// definition, none of which is a program.
 	{cmd: `i=0; until [ $i = 1 ]; do rm -rf /; i=1; done`, want: wantFloor},
 	{cmd: `while true; do rm -rf /; break; done`, want: wantFloor},
-	{cmd: `select x in a; do rm -rf /; done`, want: wantFloor},
+	{cmd: `select x in a; do rm -rf /; done`, want: wantFloor, tableOnly: noBuiltinShim},
 	{cmd: `case x in x) rm -rf /;; esac`, want: wantFloor},
 	{cmd: `f() { rm -rf /; }; f`, want: wantFloor},
 	{cmd: `time rm -rf /`, want: wantFloor},
-	{cmd: `coproc rm -rf /`, want: wantFloor},
+	{cmd: `coproc rm -rf /`, want: wantFloor, tableOnly: noBuiltinShim},
 	{cmd: `{ rm -rf /; }`, want: wantFloor},
 	{cmd: `! rm -rf /`, want: wantFloor},
 	{cmd: `if true; then rm -rf /; fi`, want: wantFloor},
@@ -286,12 +358,12 @@ $X -rf /`, want: wantFloor},
 	// reason, and the function's doc named one of them as an example of what it
 	// COULD read. A cluster is a set of flags with no meaning to the order
 	// inside it, `-o` takes a value, and `--` ends option processing.
-	{cmd: `bash -cx "rm -rf /"`, want: wantFloor},
-	{cmd: `bash -o pipefail -c "rm -rf /"`, want: wantFloor},
-	{cmd: `zsh -o pipefail -c "rm -rf /"`, want: wantFloor},
+	{cmd: `bash -cx "rm -rf /"`, want: wantFloor, tableOnly: noShellShim},
+	{cmd: `bash -o pipefail -c "rm -rf /"`, want: wantFloor, tableOnly: noShellShim},
+	{cmd: `zsh -o pipefail -c "rm -rf /"`, want: wantFloor, tableOnly: noShellShim},
 	{cmd: `sh -c -- "rm -rf /"`, want: wantFloor},
-	{cmd: `bash --rcfile /dev/null -c "rm -rf /"`, want: wantFloor},
-	{cmd: `bash -c "bash -c \"bash -c 'rm -rf /'\""`, want: wantFloor},
+	{cmd: `bash --rcfile /dev/null -c "rm -rf /"`, want: wantFloor, tableOnly: noShellShim},
+	{cmd: `bash -c "bash -c \"bash -c 'rm -rf /'\""`, want: wantFloor, tableOnly: noShellShim},
 	{cmd: `bash script.sh`, want: wantAllow,
 		why: "a script path, not a -c payload. The negative sample for the rows above: without it " +
 			"they could be satisfied by treating every bash operand as a command"},
@@ -305,11 +377,11 @@ $X -rf /`, want: wantFloor},
 	// package does not read the language it is written in. They are Prompts, not
 	// floors — see opaque.go for why a refusal nobody can appeal needs a reason
 	// that can be stated, and `python3 -c` is not it.
-	{cmd: `python3 -c "import shutil;shutil.rmtree('/')"`, want: wantPrompt},
-	{cmd: `perl -e "unlink '/etc/passwd'"`, want: wantPrompt},
-	{cmd: `node -e "require('fs')"`, want: wantPrompt},
-	{cmd: `python3 -c "print(1)"`, want: wantPrompt},
-	{cmd: `bash +o posix -c "rm -rf /"`, want: wantPrompt},
+	{cmd: `python3 -c "import shutil;shutil.rmtree('/')"`, want: wantPrompt, tableOnly: noInterpreterShim},
+	{cmd: `perl -e "unlink '/etc/passwd'"`, want: wantPrompt, tableOnly: noInterpreterShim},
+	{cmd: `node -e "require('fs')"`, want: wantPrompt, tableOnly: noInterpreterShim},
+	{cmd: `python3 -c "print(1)"`, want: wantPrompt, tableOnly: noInterpreterShim},
+	{cmd: `bash +o posix -c "rm -rf /"`, want: wantPrompt, tableOnly: noShellShim},
 	{cmd: `python3 script.py`, want: wantAllow,
 		why: "the payload is in a FILE, not in this string — the same boundary `cat script.sh | sh` " +
 			"has. It is the negative sample that stops the interpreter rows above from being " +
@@ -329,8 +401,8 @@ $X -rf /`, want: wantFloor},
 	{cmd: `git -c user.name=x commit -m "hi there"`, want: wantAllow, why: "same relief table"},
 
 	// ---- Storage destroyers reached through their own operands --------------
-	{cmd: `truncate -s 0 /dev/disk0`, want: wantFloor},
-	{cmd: `tar -cf /dev/disk0 .`, want: wantFloor},
+	{cmd: `truncate -s 0 /dev/disk0`, want: wantFloor, tableOnly: noDeviceWitness},
+	{cmd: `tar -cf /dev/disk0 .`, want: wantFloor, tableOnly: noDeviceWitness},
 	{cmd: `tar -xf /dev/disk0 -C .`, want: wantAllow,
 		why: "EXTRACTING from a device reads it. tar is in storageDestroyers under a narrower rule " +
 			"than the rest of that table (see isStorageDestruction), and this is the row that fails " +
@@ -350,6 +422,8 @@ $X -rf /`, want: wantFloor},
 	{cmd: `echo x > a1 > a2`, want: wantAllow, why: "both targets reach the FS dimension and both are permitted by `**`"},
 	{cmd: `echo x &>> outB`, want: wantAllow, why: "an ordinary append under FS write `**`"},
 	{cmd: `echo x >| outA`, want: wantFloor,
+		tableOnly: "the row records OVER-strictness, so there is nothing harmful for the shell " +
+			"to do: /bin/sh creates an ordinary file in the work directory",
 		why: "OVER-STRICT, recorded rather than fixed: `>|` is the POSIX noclobber override and " +
 			"ParseCommandList reads no target for it, so the whole command is refused structurally. " +
 			"The direction is safe and the fix is a redirection-operator change; it is written down " +
@@ -387,7 +461,7 @@ $X -rf /`, want: wantFloor},
 	{cmd: `set -- /; rm -rf "$1"`, want: wantFloor},
 	{cmd: `set -- rm; $1 -rf /`, want: wantFloor},
 	{cmd: `readonly X=rm; $X -rf /`, want: wantFloor},
-	{cmd: `bash -c 'X=rm; $X -rf /'`, want: wantFloor},
+	{cmd: `bash -c 'X=rm; $X -rf /'`, want: wantFloor, tableOnly: noShellShim},
 	{cmd: `X='; rm -rf /'; echo $X`, want: wantAllow,
 		why: "OVER-STRICTNESS THAT WAS FIXED, kept as its regression sample. A POSIX shell does not " +
 			"re-scan an expansion's result for control operators, so `echo` prints a semicolon and " +
@@ -407,7 +481,7 @@ $X -rf /`, want: wantFloor},
 	// closing `trap`, which is the same shape one table over — and measured
 	// planting a key with no prompt while the identical redirection written at
 	// the top level was refused.
-	{cmd: `bash -c "echo k > ~/.ssh/authorized_keys"`, want: wantPrompt},
+	{cmd: `bash -c "echo k > ~/.ssh/authorized_keys"`, want: wantPrompt, tableOnly: noShellShim},
 	{cmd: `sh -c 'echo k > ~/.ssh/authorized_keys'`, want: wantPrompt},
 	{cmd: `eval "echo k > ~/.ssh/authorized_keys"`, want: wantPrompt},
 	{cmd: `su -c "echo k > ~/.ssh/authorized_keys"`, want: wantPrompt},
@@ -433,7 +507,7 @@ $X -rf /`, want: wantFloor},
 			"the cp/mv/ln rows above could be satisfied by refusing every copy"},
 	{cmd: `sed -e 's/a b/c/' out10`, want: wantAllow,
 		why: "no -i, so sed writes nothing; the requireFlags half of its entry is what this pins"},
-	{cmd: `gzip -f /etc/shadow`, want: wantPrompt},
+	{cmd: `gzip -f /etc/shadow`, want: wantPrompt, tableOnly: noOutsideHomeWitness},
 	{cmd: `gzip -f out10`, want: wantAllow,
 		why: "gzip replaces its operand, which is a write — of a path inside the work directory " +
 			"that FS write `**` permits"},
@@ -598,6 +672,92 @@ func TestNoSpellingTheShellExecutesIsAllowed(t *testing.T) {
 	if destroyed == 0 || planted == 0 {
 		t.Fatalf("the reference shell produced nothing to compare against (destructive=%d planted=%d); "+
 			"the corpus is not exercising the harness", destroyed, planted)
+	}
+	if err := os.Remove(keyPath); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
+// tableOnlyRowCount is how many corpus rows are allowed to be guarded by the
+// verdict table alone. It is a SOURCE-level number so it is the same on every
+// platform, and it may only go DOWN.
+//
+// It is not an exemption table with a work package behind each line; it is a
+// measurement of how much of this corpus the reference shell cannot reach.
+// Every one of the rows counted here can be flipped to Allow by an editor who
+// also breaks the defence it probes, and nothing in this package will notice.
+const tableOnlyRowCount = 23
+
+// TestTableOnlyRowsHaveNotGrown is the half of the bookkeeping that does not
+// need a shell, so it runs on the Windows leg too — where the differential
+// property does not exist at all and this is the only thing standing between a
+// new unwitnessable row and silence.
+//
+// EXACT equality rather than a ceiling, for the reason acceptance_pin_test.go
+// gives about the ledger: a ceiling lets a row be added the moment another one
+// is removed, and the removal is what makes it invisible.
+func TestTableOnlyRowsHaveNotGrown(t *testing.T) {
+	n := 0
+	for _, row := range bypassCorpus {
+		if row.tableOnly == "" {
+			continue
+		}
+		n++
+		if row.want == wantAllow {
+			t.Errorf("corpus row %q is pinned to Allow and carries a tableOnly note; the note "+
+				"records that a STRICT verdict has no witness, and Allow is the weakest verdict "+
+				"there is — there is nothing for it to be silently downgraded to", row.cmd)
+		}
+	}
+	if n != tableOnlyRowCount {
+		t.Errorf("%d corpus rows are guarded by the verdict table alone, tableOnlyRowCount says %d. "+
+			"Going DOWN means a row gained a witness: lower the constant. Going UP means a row was "+
+			"added that the reference shell cannot check, and that is the thing this number exists "+
+			"to make visible — say so in the commit rather than editing the number quietly", n, tableOnlyRowCount)
+	}
+}
+
+// TestEveryStrictRowIsWitnessedOrSaysWhyNot is Ruling W-B-8: the honesty half of
+// the catalogue must cover EVERY row, and the rows it cannot cover must say so
+// on the line rather than blending in.
+//
+// Both directions fail. A strict row the shell did act on may not carry a
+// tableOnly note (that is a dead entry, and a dead entry is a licence: the note
+// stays after the witness arrives, and the next editor reads it as permission).
+// A strict row the shell did NOT act on must carry one.
+func TestEveryStrictRowIsWitnessedOrSaysWhyNot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the reference reading comes from /bin/sh")
+	}
+	_, run := newShellHarness(t)
+	shimsAreLive(t, run)
+	home := os.Getenv("HOME")
+	work := filepath.Join(home, "work")
+	keyPath := filepath.Join(home, ".ssh", "authorized_keys")
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range bypassCorpus {
+		if row.interp != "" || row.want == wantAllow {
+			continue
+		}
+		if err := os.Remove(keyPath); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		got := run(row.cmd)
+		_, keyErr := os.Stat(keyPath)
+		witnessed := shellRanAHarmfulArgv(work, got.ran) || keyErr == nil
+		switch {
+		case witnessed && row.tableOnly != "":
+			t.Errorf("corpus row %q carries a tableOnly note, but /bin/sh ran %q and the "+
+				"differential assertion DOES constrain it. Delete the note and lower "+
+				"tableOnlyRowCount", row.cmd, got.ran)
+		case !witnessed && row.tableOnly == "":
+			t.Errorf("corpus row %q is pinned to %s and the reference shell did nothing "+
+				"(ran=%q), so the only thing holding that verdict is this table. Give the "+
+				"program a stand-in in fidelity_test.go, or say on the line why it cannot "+
+				"have one and raise tableOnlyRowCount", row.cmd, row.want, got.ran)
+		}
 	}
 	if err := os.Remove(keyPath); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
