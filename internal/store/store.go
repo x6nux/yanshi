@@ -222,11 +222,17 @@ func isCorruptDB(err error) bool {
 // quarantineCorrupt renames the unreadable database out of the way and returns
 // the backup path.
 //
-// The WAL and SHM sidecars move with it, which is not tidiness: a -wal file
-// left beside a fresh database still belongs to the file that was just taken
-// away, and SQLite would try to recover the new database from it. If one
-// cannot be moved it is deleted instead — leaving it in place is the one
-// outcome that must not happen.
+// The WAL and SHM sidecars move with it, and the reason is salvage rather than
+// tidiness. An un-checkpointed -wal holds the most RECENT writes — exactly the
+// history a user would want back — and the replacement database immediately
+// writes its own WAL to that same path, destroying it. Moving the sidecars is
+// what makes the backup a complete copy instead of a truncated one.
+//
+// It is NOT needed to protect the new database. Measured: a foreign -wal left
+// beside a freshly created database is ignored (the salt does not match), the
+// new database opens, migrates and writes normally, and nothing from the old
+// one leaks into it. If a sidecar cannot be moved it is therefore deleted
+// rather than left to be overwritten in place.
 func quarantineCorrupt(path string) (string, error) {
 	backup := path + ".corrupt-" + strconv.FormatInt(time.Now().Unix(), 10)
 	if err := os.Rename(path, backup); err != nil {

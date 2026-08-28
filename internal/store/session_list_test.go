@@ -134,12 +134,18 @@ func TestListSessions_CursorPaginationIsStable(t *testing.T) {
 	assert.Subset(t, original, walked, "every walked row is one of the originals")
 
 	// Walking to the end terminates, and NextCursor empties exactly once the
-	// last row has been delivered rather than one page later.
+	// last row has been delivered rather than one page later. The round-trip
+	// count is asserted because it is the only thing that notices the
+	// difference: emitting a cursor for every full page still terminates and
+	// still returns all seven rows, it just bills the caller for one extra
+	// query that comes back empty.
 	var all []string
 	cursor := ""
+	pages := 0
 	for range 20 {
 		p, err := s.ListSessionsPage(cursor, 2)
 		require.NoError(t, err)
+		pages++
 		for _, ss := range p.Sessions {
 			all = append(all, ss.ID)
 		}
@@ -150,6 +156,7 @@ func TestListSessions_CursorPaginationIsStable(t *testing.T) {
 	}
 	assert.Empty(t, cursor, "the walk terminated")
 	assert.Len(t, all, 7, "all five originals plus the two inserted mid-walk")
+	assert.Equal(t, 4, pages, "7 rows at 2 per page is 4 round trips, not 5 with an empty one")
 }
 
 // TestListSessionsPage_RejectsMalformedCursor proves a corrupt token is an

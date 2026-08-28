@@ -299,20 +299,33 @@ func TestOpenWith_DoesNotQuarantineARecoverableFailure(t *testing.T) {
 	require.NoError(t, os.Chmod(path, 0o400))
 	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
 
-	if _, err := OpenWith(path, DefaultOptions); err == nil {
-		t.Skip("filesystem ignores the read-only bit here; nothing to assert")
+	st, openErr := OpenWith(path, DefaultOptions)
+	if st != nil {
+		_ = st.Close()
 	}
 
-	// The file is still where it was, unchanged, and nothing was quarantined.
-	after, err := os.ReadFile(path)
-	require.NoError(t, err)
-	assert.Equal(t, good, after, "a read-only database must not be rewritten")
+	// The quarantine check runs BEFORE the skip below, and that ordering is the
+	// test. Widening isCorruptDB makes OpenWith heal this database — renaming it
+	// away and returning a fresh one with no error — so a skip conditioned on
+	// "OpenWith returned an error" swallows precisely the mutation this test
+	// exists to catch. Measured: with the predicate widened to any *sqlite.Error
+	// and the skip first, this test passed. Quarantining is wrong whether the
+	// open succeeded or failed, so it is asserted unconditionally.
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	for _, e := range entries {
-		assert.NotContains(t, e.Name(), ".corrupt-",
+		require.NotContains(t, e.Name(), ".corrupt-",
 			"a recoverable failure must never quarantine the database")
 	}
+
+	if openErr == nil {
+		t.Skip("filesystem ignores the read-only bit here; nothing further to assert")
+	}
+
+	// The file is still where it was, byte for byte.
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, good, after, "a read-only database must not be rewritten")
 
 	// And the data is still readable once the filesystem cooperates again.
 	// SQLite creates -wal/-shm with the same mode as the database, so the open
@@ -329,4 +342,45 @@ func TestOpenWith_DoesNotQuarantineARecoverableFailure(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, list, 1)
 	assert.Equal(t, wanted, list[0].ID)
+}
+
+// TestQuarantineCorrupt_TakesTheSidecarsWithIt proves the backup is a COMPLETE
+// database rather than a truncated one. An un-checkpointed -wal holds the most
+// recent writes — the very history a user would want salvaged — and the
+// replacement database writes its own WAL to that same path, so a sidecar left
+// behind is a sidecar destroyed.
+//
+// This asserts against quarantineCorrupt directly rather than through OpenWith,
+// because SQLite gets to the sidecars first. Measured: on a database whose
+// header is intact but whose schema page is smashed, the failed open reads the
+// -wal, rejects it and DELETES both sidecars before OpenWith ever sees the
+// error, so there is nothing left to move by then. Whether the files survive
+// that far is SQLite's business; what this package owes is that they move when
+// they are there.
+func TestQuarantineCorrupt_TakesTheSidecarsWithIt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "yanshi.db")
+
+	files := map[string][]byte{
+		"":     []byte("the corrupt database"),
+		"-wal": []byte("the newest writes, not yet checkpointed"),
+		"-shm": []byte("the shared memory index"),
+	}
+	for sfx, body := range files {
+		require.NoError(t, os.WriteFile(path+sfx, body, 0o600))
+	}
+
+	backup, err := quarantineCorrupt(path)
+	require.NoError(t, err)
+	assert.Contains(t, backup, ".corrupt-", "the backup path must be recognisable as one")
+
+	for sfx, body := range files {
+		moved, err := os.ReadFile(backup + sfx)
+		require.NoErrorf(t, err, "%q must be quarantined alongside the database", sfx)
+		assert.Equalf(t, body, moved, "%q must survive intact", sfx)
+
+		_, err = os.Stat(path + sfx)
+		assert.Truef(t, os.IsNotExist(err),
+			"%q must not be left behind for the replacement database to overwrite", sfx)
+	}
 }

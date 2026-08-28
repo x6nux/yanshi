@@ -71,11 +71,12 @@ func scanSession(scanner interface{ Scan(dest ...any) error }, ss *SessionSummar
 // The ORDER BY carries `id DESC` as a tie-break, and that is load-bearing
 // rather than cosmetic: updated_at is stored as time.Now().Unix(), so any two
 // sessions created or touched within the same second collide, and a cursor
-// over a non-total order cannot express "strictly after this row". Without the
-// tie-break the row-value predicate below would skip every row sharing the
-// cursor's second, which is the whole first page whenever a burst of sessions
-// lands together — TestListSessions_CursorPaginationIsStable creates its five
-// fixtures in one second precisely so it goes red if this is dropped.
+// over a non-total order cannot express "strictly after this row". Drop the
+// tie-break and the ORDER BY stops agreeing with the row-value predicate
+// below, which still compares ids — measured on a five-session walk, that
+// serves one session twice and never returns two others at all.
+// TestListSessions_CursorPaginationIsStable creates its five fixtures inside
+// one second precisely so it goes red if this is dropped.
 func (s *Store) listSessionsWhere(where string, limit int, after *sessionCursor) ([]SessionSummary, error) {
 	q := "SELECT " + sessionColumns + " FROM sessions " + where
 	args := []any{}
