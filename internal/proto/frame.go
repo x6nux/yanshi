@@ -1107,8 +1107,18 @@ func NewClearMemories(scope, agentID string) ClientFrame {
 // NewMemoriesCleared builds the memories_cleared reply: deleted is how many
 // rows the wipe removed. A single-frame control reply, so isControlReply closes
 // the client's reply channel on it.
-func NewMemoriesCleared(deleted int) ServerFrame {
-	return ServerFrame{Type: "memories_cleared", Text: fmt.Sprintf("cleared %d memories", deleted)}
+//
+// note carries whatever the server has to say about what the wipe did NOT do.
+// It exists because a bare "cleared N memories" reads as erasure, and W-D-06
+// keeps a gzipped copy of the whole memories table in every checkpoint — a fact
+// the user can only act on if they are told it. Empty when there is nothing to
+// add, which keeps the common reply exactly what it always was.
+func NewMemoriesCleared(deleted int, note string) ServerFrame {
+	text := fmt.Sprintf("cleared %d memories", deleted)
+	if note != "" {
+		text += "\n" + note
+	}
+	return ServerFrame{Type: "memories_cleared", Text: text}
 }
 
 // --- W-D-06 checkpoint frames ---

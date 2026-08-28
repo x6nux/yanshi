@@ -213,9 +213,30 @@ func (s *Store) MemorySource(memoryID string) ([]Message, error) {
 // search, still on disk, and still returned by the audit switch that exists to
 // read them. "Cleared" has to mean gone.
 //
-// Deleting rather than superseding, unlike ApplyDistillation. A wipe that kept
-// the bytes would be a rename, and the user asking for it is asking for the
-// bytes to stop existing.
+// Deleting rather than superseding, unlike ApplyDistillation: a wipe that left
+// the rows readable through the audit switch would be a rename.
+//
+// IT IS NOT AN ERASURE, AND THE DOC HERE USED TO SAY IT WAS. The earlier
+// wording — "the user asking for it is asking for the bytes to stop existing" —
+// was falsified by the very next change in its own work package: W-D-06 gzips
+// the WHOLE memories table into `checkpoints.memories` on every /checkpoint
+// create and on every /checkpoint restore, so a cleared memory is still on disk
+// in those blobs and comes back verbatim from a plain
+// `/checkpoint restore <id> memory yes`. Measured on a memory whose content was
+// an API key.
+//
+// PURGING THOSE BLOBS WAS TRIED AND REJECTED, for two reasons that both point
+// the same way. It would delete the capability store.restoreMemoriesTx exists
+// for and names in its own doc — "undoing an accidental wipe" is one of the two
+// reasons anybody restores this dimension, and a clear that shredded the
+// snapshots would leave a mistyped /memory-clear unrecoverable. And it would
+// still not deliver erasure: the text a memory was distilled FROM is in
+// `messages`, which no clear has ever touched.
+//
+// So the honest contract is the narrow one: the rows leave `memories` and stop
+// being retrievable. Callers that need the user to know the difference say so —
+// see the reply handleClearMemories writes when checkpoints exist. Erasure of
+// secret text is secrets redaction's job, on the way in.
 func (s *Store) ClearMemories(dims MemoryFilter) (int, error) {
 	dims.IncludeSuperseded = true
 	cond, args := dims.where("")

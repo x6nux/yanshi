@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,13 +11,21 @@ import (
 	"github.com/x6nux/yanshi/internal/store"
 )
 
-// MemoryTools exposes memory_search / memory_recall / memory_write as GuardedTools.
+// MemoryTools exposes memory_search / memory_recall / memory_write /
+// memory_source as GuardedTools.
 type MemoryTools struct {
 	store  *store.Store
 	Search *GuardedTool
 	Recall *GuardedTool
 	Write  *GuardedTool
+	Source *GuardedTool
 }
+
+// maxSourceRows bounds what memory_source renders. The provenance is a POSITION
+// in the log, so the slice it resolves to grows with the conversation and has no
+// natural end — an unbounded render would hand a long session's whole transcript
+// back through a tool whose question was "where did this note come from".
+const maxSourceRows = 10
 
 // NewMemoryTools builds memory tools backed by s.
 func NewMemoryTools(s *store.Store) *MemoryTools {
@@ -53,12 +62,22 @@ func NewMemoryTools(s *store.Store) *MemoryTools {
 		SyncStream(mt.runWrite),
 	)
 
+	mt.Source = NewGuardedTool(
+		"memory_source", "Memory Source",
+		"Show the conversation a memory was derived from, given its id (the id= field in memory_search / memory_recall output).",
+		30*time.Second,
+		params(map[string]*schema.ParameterInfo{
+			"id": {Type: schema.String, Desc: "memory id", Required: true},
+		}),
+		SyncStream(mt.runSource),
+	)
+
 	return mt
 }
 
 // Tools returns all memory tools as a slice for convenience.
 func (m *MemoryTools) Tools() []*GuardedTool {
-	return []*GuardedTool{m.Search, m.Recall, m.Write}
+	return []*GuardedTool{m.Search, m.Recall, m.Write, m.Source}
 }
 
 // --- arg types ---
@@ -77,6 +96,10 @@ type recallArgs struct {
 type writeArgs struct {
 	Content string `json:"content"`
 	Kind    string `json:"kind"`
+}
+
+type sourceArgs struct {
+	ID string `json:"id"`
 }
 
 // --- C14 retrieval dimensions ---
@@ -209,6 +232,62 @@ func (m *MemoryTools) runWrite(ctx context.Context, argsJSON string) (string, er
 	return fmt.Sprintf("Stored as %s [%s]", id, kind), nil
 }
 
+// runSource answers "where did this memory come from" (W-D-07).
+//
+// IT IS THE READ SIDE OF THE PROVENANCE COLUMNS, and it exists because the
+// write side alone is not the feature: source_session_id / source_seq were
+// captured by both production writers and no user, model, tool, frame or
+// endpoint could read them back, so "every memory traces to the log position
+// that produced it" was true only inside _test.go files.
+//
+// The three answers are kept apart on purpose, because store.MemorySource
+// distinguishes them and collapsing them would throw that away:
+//   - no provenance recorded (ErrNoMemorySource) is PERMANENT — every row
+//     written before W-D-07, and every memory written without a session.
+//   - a resolved source with no rows means history that should still be there
+//     is gone, which is a different and much worse thing to be told.
+//   - otherwise, the conversation from that position on.
+func (m *MemoryTools) runSource(_ context.Context, argsJSON string) (string, error) {
+	var a sourceArgs
+	if err := ParseArgs(argsJSON, &a); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(a.ID) == "" {
+		return "", fmt.Errorf("memory_source: id is required")
+	}
+	msgs, err := m.store.MemorySource(a.ID)
+	if errors.Is(err, store.ErrNoMemorySource) {
+		return "No source was recorded for this memory. Memories written before " +
+			"provenance existed, and memories written outside a conversation, " +
+			"carry none — this will not change.", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if len(msgs) == 0 {
+		return "This memory names a source position, but no messages remain there — " +
+			"the conversation it came from has been truncated or deleted.", nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Derived from session %s, from seq %d (%d message(s) follow it):\n",
+		msgs[0].SessionID, msgs[0].Seq, len(msgs))
+	shown := msgs
+	if len(shown) > maxSourceRows {
+		shown = shown[:maxSourceRows]
+	}
+	for _, msg := range shown {
+		text := msg.Content
+		if text == "" && msg.ToolName != "" {
+			text = msg.ToolName + " " + msg.ToolArgs
+		}
+		fmt.Fprintf(&b, "  #%d %s: %s\n", msg.Seq, msg.Role, strings.TrimRight(text, "\n"))
+	}
+	if len(shown) < len(msgs) {
+		fmt.Fprintf(&b, "  … %d more; read them with history_read\n", len(msgs)-len(shown))
+	}
+	return strings.TrimRight(b.String(), "\n"), nil
+}
+
 // formatMemories renders a slice of Memory as human-readable text. Each entry
 // shows kind, date, and content lines. Multiple entries are separated by a blank
 // line. The caller (TUI transcript) already wraps the result in a tool-entry
@@ -223,9 +302,15 @@ func formatMemories(ms []store.Memory) string {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		// Header line: [kind] 2006-01-02
+		// Header line: [kind] 2006-01-02 id=…
+		//
+		// The id is here because memory_source takes one, and a listing that
+		// withholds it makes the trace reachable only for a memory the caller
+		// wrote itself this turn (memory_write echoes the id). W-D-07's whole
+		// claim is that ANY memory can be traced back to the log position that
+		// produced it.
 		ts := time.Unix(m.CreatedAt, 0).Format("2006-01-02")
-		b.WriteString(fmt.Sprintf("[%s] %s\n", m.Kind, ts))
+		b.WriteString(fmt.Sprintf("[%s] %s id=%s\n", m.Kind, ts, m.ID))
 		// Content body: indented, preserves line breaks
 		body := strings.TrimRight(m.Content, "\n")
 		if body != "" {

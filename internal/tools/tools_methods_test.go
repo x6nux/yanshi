@@ -42,8 +42,8 @@ func TestMemoryToolsReturnsAll(t *testing.T) {
 	// MemoryTools needs a store, but we can test the Tools() method.
 	mt := &MemoryTools{}
 	gt := mt.Tools()
-	if len(gt) != 3 {
-		t.Fatalf("MemoryTools.Tools() should return 3 tools, got %d", len(gt))
+	if len(gt) != 4 {
+		t.Fatalf("MemoryTools.Tools() should return 4 tools, got %d", len(gt))
 	}
 }
 

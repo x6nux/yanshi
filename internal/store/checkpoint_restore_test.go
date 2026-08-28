@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"testing"
 	"time"
 
@@ -647,4 +648,52 @@ func TestClearMemories_ReportsAFailedDelete(t *testing.T) {
 	n, err := s.ClearMemories(MemoryFilter{})
 	assert.Error(t, err)
 	assert.Zero(t, n)
+}
+
+// TestCheckpoint_TableIsBounded pins checkpointRetention.
+//
+// Every /checkpoint create AND every /checkpoint restore writes a gzip of the
+// WHOLE memories table — including a session-dimension restore, which does not
+// touch memories at all. Nothing else in this package ever deletes from
+// `checkpoints`, so without the prune the table grows by O(|memories|) per user
+// action, forever. Deleting pruneCheckpointsTx makes this red.
+//
+// The cap is above the twenty Checkpoints() lists by default, so the assertion
+// also covers the thing that would make the prune worse than the leak: a
+// checkpoint disappearing while it is still on screen in /checkpoint list.
+func TestCheckpoint_TableIsBounded(t *testing.T) {
+	s, _ := checkpointFixture(t)
+
+	// One clearly-old checkpoint, backdated so the eviction order is decided by
+	// created_at rather than by the random tiebreak two rows written in the same
+	// second fall back on.
+	old, err := s.CreateCheckpoint("the oldest", "", "")
+	require.NoError(t, err)
+	require.NoError(t, s.WriteTx(t.Context(), func(tx *sql.Tx) error {
+		_, e := tx.Exec("UPDATE checkpoints SET created_at = ? WHERE id = ?",
+			time.Now().AddDate(-1, 0, 0).Unix(), old.ID)
+		return e
+	}))
+
+	for i := range checkpointRetention {
+		_, err := s.CreateCheckpoint("cp "+strconv.Itoa(i), "", "")
+		require.NoError(t, err)
+	}
+
+	var rows int
+	require.NoError(t, s.DB.QueryRow("SELECT COUNT(*) FROM checkpoints").Scan(&rows))
+	require.Equal(t, checkpointRetention, rows, "the table must stay capped")
+
+	_, err = s.CheckpointByID(old.ID)
+	require.Error(t, err, "the oldest checkpoint is the one that goes")
+
+	// The cap must never evict something still on screen: Checkpoints() lists
+	// twenty by default, and every one of them has to still be restorable.
+	cps, err := s.Checkpoints(0)
+	require.NoError(t, err)
+	require.Len(t, cps, 20)
+	for _, cp := range cps {
+		_, err := s.CheckpointByID(cp.ID)
+		require.NoErrorf(t, err, "listed checkpoint %s was pruned out from under the list", cp.ID)
+	}
 }

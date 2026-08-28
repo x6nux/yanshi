@@ -444,3 +444,43 @@ func TestColdStore_CompressedSessionStillCountsItsMessages(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, missing)
 }
+
+// TestColdStore_StaleBoundaryIsStillCaughtOnACompressedSession is the guard
+// maxMessageSeq's cold fallback did not have.
+//
+// The fallback's doc states a mechanism: reading only `messages` reports -1 for
+// every compressed session, and -1 short-circuits ProjectWindow's stale-boundary
+// backstop as "empty session, nothing to be stale about" — disarming the check
+// on the one shape it was written for. Nothing pinned that. Ablating the
+// fallback to `return -1, nil` left internal/store, internal/bootstrap,
+// internal/agent/upkeep and cmd/yanshi all green.
+//
+// The shape it takes to observe: a session that is BOTH compressed and carrying
+// a boundary past the end of its log. The backstop then has to project the full
+// transcript; disarmed, it returns the boundary's empty selection instead, and
+// the model comes back from the restore with no conversation and nothing logged.
+func TestColdStore_StaleBoundaryIsStillCaughtOnACompressedSession(t *testing.T) {
+	s := openTestStore(t)
+	sid := coldFixture(t, s, 10)
+	packed, err := s.CompressSession(sid)
+	require.NoError(t, err)
+	require.Equal(t, 10, packed)
+
+	// A boundary describing rows that are not there — what any future path that
+	// removes message rows without compensating would leave behind.
+	require.NoError(t, s.AppendContextEvent(sid, ContextEventCompact, 20, nil))
+
+	window, err := s.ProjectWindow(sid)
+	require.NoError(t, err)
+	require.Len(t, window, 10,
+		"the backstop must fire for a COMPRESSED session too; reading the watermark "+
+			"from `messages` alone reports -1 and skips the check entirely")
+
+	// The live-session direction still behaves the same, so the fallback cannot
+	// be satisfied by always reporting the cold value.
+	warm := coldFixture(t, s, 4)
+	require.NoError(t, s.AppendContextEvent(warm, ContextEventCompact, 2, nil))
+	w, err := s.ProjectWindow(warm)
+	require.NoError(t, err)
+	require.Len(t, w, 2, "a boundary that still describes live rows is honoured, not backstopped")
+}

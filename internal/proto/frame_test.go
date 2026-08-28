@@ -453,7 +453,7 @@ func goldenFrames() []ServerFrame {
 		NewPermissions(nil),
 		NewPermissionRequest("id", "t", "{}", "r", false, false),
 		NewMemoriesDistilled(7, 2),
-		NewMemoriesCleared(3),
+		NewMemoriesCleared(3, ""),
 		NewCheckpointResult("checkpoint abc123 taken"),
 	}
 }

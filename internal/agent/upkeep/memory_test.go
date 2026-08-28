@@ -2,6 +2,7 @@ package upkeep
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -23,6 +24,10 @@ type scriptedModel struct {
 	mu      sync.Mutex
 	extract func(prompt string) string
 	distill func(prompt string) string
+	// err makes Generate fail. Without it the package could not drive a single
+	// model error, so "a failed pass does not retire the lease" was unassertable
+	// and the branch that implements it was unguarded.
+	err     error
 	calls   int
 	prompts []string
 }
@@ -36,6 +41,9 @@ func (m *scriptedModel) Generate(_ context.Context, msgs []*schema.Message, _ ..
 		prompt = msgs[0].Content
 	}
 	m.prompts = append(m.prompts, prompt)
+	if m.err != nil {
+		return nil, m.err
+	}
 	reply := ""
 	switch {
 	case strings.Contains(prompt, "MERGE id1,id2,id3"):
@@ -221,32 +229,82 @@ func TestMemoryWorker_Phase2CallsDistillEntrypoint(t *testing.T) {
 	}
 }
 
-// TestMemoryWorker_ExtractionFailureLeavesTheSessionRetryable: a provider
-// outage must cost a delay, not a permanently skipped session. The lease is
-// only retired on success.
+// TestMemoryWorker_ExtractionFailureLeavesTheSessionRetryable drives a REAL
+// model error, which is the only thing that reaches the branch it names.
+//
+// The earlier version returned prose the parser rejected and then admitted in
+// its own body that the pass "succeeded" with zero notes, so the lease WAS
+// retired; it forced the retry by rewriting the kv row by hand. That made it a
+// test of expiry, not of failure, and left extractOne's `return` on a failed
+// extraction with nothing pinning it — removing it left the whole package green.
 func TestMemoryWorker_ExtractionFailureLeavesTheSessionRetryable(t *testing.T) {
 	s := openStore(t)
 	sid := finishedSession(t, s)
 
-	// A model that answers with prose produces no NOTE lines and therefore no
-	// memories — but it also must not retire the lease as if it had succeeded.
-	// Simulate the failure that matters (a model error) by returning garbage
-	// the parser rejects, then let the lease expire and retry with a good one.
-	bad := &scriptedModel{extract: func(string) string { return "I could not read the session." }}
-	New(s, Config{Model: bad}).RunOnce(context.Background())
+	broken := &scriptedModel{err: errors.New("provider is down")}
+	New(s, Config{Model: broken}).RunOnce(context.Background())
+	require.NotZero(t, broken.calls, "the failure must have been reached, not skipped")
 	ms, err := s.RecallMemoryScoped(50, store.MemoryFilter{SessionID: sid})
 	require.NoError(t, err)
 	require.Empty(t, ms)
 
-	// The pass "succeeded" with zero notes, so the lease IS retired — which is
-	// correct: a session that established nothing durable must not be re-asked
-	// on every tick forever. Force the retry the way an expiry would.
+	// THE ASSERTION THAT MATTERS: the lease is still an ordinary claim, not the
+	// permanent tombstone. A provider outage must cost a delay, never a session
+	// that is skipped for good.
+	until, ok, err := s.LeaseHeldUntil(memoryLease(sid))
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NotEqual(t, store.LeaseRetired, until,
+		"a failed pass retired the lease; this session would never be extracted again")
+	require.LessOrEqual(t, until, time.Now().Add(memoryLeaseTTL).Unix()+1)
+
+	// Let the claim lapse the way the clock would, and the next sweep succeeds.
 	require.NoError(t, s.KVSet("lease:"+memoryLease(sid), "1"))
 	good := &scriptedModel{extract: func(string) string { return noteReply(2) }}
 	New(s, Config{Model: good}).RunOnce(context.Background())
 	ms, err = s.RecallMemoryScoped(50, store.MemoryFilter{SessionID: sid})
 	require.NoError(t, err)
 	require.Len(t, ms, 2)
+}
+
+// TestMemoryWorker_SuccessfulPassRetiresTheLeasePermanently is the other half
+// of extractOne's contract, and the half no test could see.
+//
+// TestMemoryWorker_LeaseIsExclusive asserts a later sweep does not re-extract,
+// but memoryLeaseTTL is ten minutes and its second sweep happens within
+// milliseconds — the UNEXPIRED claim explains that on its own, so making
+// RetireLease unreachable left it green. What distinguishes the two is the
+// VALUE written: an ordinary claim expires, the tombstone never does.
+//
+// A pass that produced ZERO notes counts as a success on purpose: a session
+// that established nothing durable must not be re-asked on every tick forever.
+func TestMemoryWorker_SuccessfulPassRetiresTheLeasePermanently(t *testing.T) {
+	s := openStore(t)
+	sid := finishedSession(t, s)
+
+	m := &scriptedModel{extract: func(string) string { return noteReply(1) }}
+	New(s, Config{Model: m}).RunOnce(context.Background())
+
+	until, ok, err := s.LeaseHeldUntil(memoryLease(sid))
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, store.LeaseRetired, until,
+		"a successful pass must retire the lease, not leave an expiring claim")
+
+	// And the behaviour that value buys: no clock this program runs under
+	// reaches the tombstone, so the claim can never be granted again.
+	won, err := s.ClaimLease(memoryLease(sid), time.Hour)
+	require.NoError(t, err)
+	require.False(t, won, "a retired lease was re-claimable")
+
+	// Zero notes is still a success.
+	quiet := finishedSession(t, s)
+	silent := &scriptedModel{extract: func(string) string { return "NOTHING" }}
+	New(s, Config{Model: silent}).RunOnce(context.Background())
+	until, ok, err = s.LeaseHeldUntil(memoryLease(quiet))
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, store.LeaseRetired, until)
 }
 
 // TestMemoryWorker_FreshSessionIsLeftAlone: extraction must not run on a

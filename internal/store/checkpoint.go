@@ -213,7 +213,36 @@ func createCheckpointTx(tx *sql.Tx, label, sessionID, fileCommit string) (Checkp
 	); err != nil {
 		return Checkpoint{}, fmt.Errorf("store: write checkpoint: %w", err)
 	}
+	if err := pruneCheckpointsTx(tx); err != nil {
+		return Checkpoint{}, err
+	}
 	return cp, nil
+}
+
+// checkpointRetention caps how many checkpoints the table keeps.
+//
+// The blob is a copy of the WHOLE memories table, and one is written by every
+// /checkpoint create AND by every /checkpoint restore (the automatic undo
+// point), including a session-dimension restore that does not touch memories at
+// all. Without a cap the table grows by O(|memories|) per user action forever,
+// and nothing else in this file ever deletes from it.
+//
+// Larger than the twenty Checkpoints() lists, so the cap cannot silently eat a
+// checkpoint the user can still see in /checkpoint list.
+const checkpointRetention = 100
+
+// pruneCheckpointsTx drops the oldest checkpoints past checkpointRetention,
+// in the transaction that just created one, so the bound holds at every commit
+// rather than whenever a sweep happens to run.
+func pruneCheckpointsTx(tx *sql.Tx) error {
+	_, err := tx.Exec(
+		`DELETE FROM checkpoints WHERE id NOT IN (
+		   SELECT id FROM checkpoints ORDER BY created_at DESC, id DESC LIMIT ?)`,
+		checkpointRetention)
+	if err != nil {
+		return fmt.Errorf("store: prune checkpoints: %w", err)
+	}
+	return nil
 }
 
 // checkpointColumns is the canonical SELECT list for the metadata half. The
@@ -360,7 +389,11 @@ func (s *Store) RestoreCheckpoint(id string, dim CheckpointDimension) (Checkpoin
 			"store: the files dimension is restored by vcs.VCS.RestoreCheckpointFiles, not here")
 	}
 	if dim != CheckpointSession && dim != CheckpointMemory {
-		return Checkpoint{}, fmt.Errorf("store: unknown checkpoint dimension %q", dim)
+		// Named from the catalog rather than hand-listed: a fourth dimension
+		// added to CheckpointDimensions and forgotten here would otherwise be
+		// refused by an error that does not mention it exists.
+		return Checkpoint{}, fmt.Errorf("store: unknown checkpoint dimension %q (want one of %v)",
+			dim, CheckpointDimensions())
 	}
 	// Read the target OUTSIDE the transaction: a missing checkpoint must not
 	// cost an automatic snapshot, and CheckpointByID takes no write lane.

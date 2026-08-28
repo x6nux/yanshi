@@ -138,6 +138,12 @@ func DefaultOrchestratorProfile() guard.PermissionProfile {
 			// log that spilled, so withholding it makes the spill a deletion.
 			"task_gate_run", "artifact_read",
 			"memory_search", "memory_recall", "memory_write",
+			// W-D-07 provenance. READ-ONLY, and it reaches nothing
+			// memory_search cannot already return — it answers "which
+			// conversation produced this note" for a memory id the model got
+			// from one of the two lines above. Registered but not allowed would
+			// mean a dialog per call on WS and a fail-closed refusal on SSE.
+			"memory_source",
 			// C2 history recall. Both are READ-ONLY and scoped to the current
 			// conversation by context (never by argument), so they widen
 			// nothing: the model already saw this history, it is being handed

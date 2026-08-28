@@ -112,3 +112,54 @@ func TestClearMemoriesFrame_AgentScopeNeedsAnID(t *testing.T) {
 	require.Len(t, left, 1)
 	assert.Equal(t, "unscoped", left[0].Content, "only the named agent's row goes")
 }
+
+// TestClearMemoriesFrame_NamesTheCopiesItDidNotReach.
+//
+// "cleared 3 memories" reads as erasure and is not one: W-D-06 gzips the whole
+// memories table into every checkpoint, so a cleared memory — a credential
+// pasted by mistake, say — is still on disk and comes back verbatim from a plain
+// `/checkpoint restore <id> memory yes`. Measured on a memory whose content was
+// an API key, in the same batch that wrote the "the bytes stop existing"
+// comment this reply now makes honest.
+//
+// Both directions, because a warning that is always printed stops being read:
+// with a checkpoint the reply names it, without one the reply is exactly what it
+// always was.
+func TestClearMemoriesFrame_NamesTheCopiesItDidNotReach(t *testing.T) {
+	st, err := store.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { st.Close() })
+	_, err = st.WriteMemoryScoped("note", "MY-API-KEY-sk-secret-12345", store.MemoryFilter{})
+	require.NoError(t, err)
+
+	c := newMemClearServer(t, st)
+	require.NoError(t, c.WriteJSON(proto.NewClearMemories(proto.MemoryClearAll, "")))
+	f := readFrame(t, c)
+	require.Equal(t, "memories_cleared", f.Type)
+	assert.Contains(t, f.Text, "cleared 1")
+	assert.NotContains(t, f.Text, "checkpoint",
+		"with no checkpoint there is no surviving copy to warn about")
+
+	// Now with a checkpoint holding a copy.
+	id, err := st.WriteMemoryScoped("note", "MY-API-KEY-sk-secret-12345", store.MemoryFilter{})
+	require.NoError(t, err)
+	cp, err := st.CreateCheckpoint("before the wipe", "", "")
+	require.NoError(t, err)
+
+	require.NoError(t, c.WriteJSON(proto.NewClearMemories(proto.MemoryClearAll, "")))
+	f = readFrame(t, c)
+	require.Equal(t, "memories_cleared", f.Type)
+	assert.Contains(t, f.Text, "cleared 1")
+	assert.Contains(t, f.Text, "/checkpoint list",
+		"the reply must name the copy it left behind and how to reach it")
+
+	// And the copy really is reachable, which is what makes the note true rather
+	// than a defensive hedge.
+	_, err = st.RestoreCheckpoint(cp.ID, store.CheckpointMemory)
+	require.NoError(t, err)
+	back, err := st.RecallMemory(10)
+	require.NoError(t, err)
+	require.Len(t, back, 1)
+	assert.Equal(t, id, back[0].ID)
+	assert.Equal(t, "MY-API-KEY-sk-secret-12345", back[0].Content)
+}

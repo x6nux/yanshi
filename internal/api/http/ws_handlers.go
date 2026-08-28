@@ -391,7 +391,35 @@ func handleClearMemories(s *Server, conn *wsConn, cs *connSession, scope, agentI
 		conn.write(proto.NewError("clear_memories: " + err.Error()))
 		return
 	}
-	conn.write(proto.NewMemoriesCleared(n))
+	conn.write(proto.NewMemoriesCleared(n, clearedButRetainedNote(s.store, n)))
+}
+
+// clearedButRetainedNote tells the user what the wipe did NOT reach.
+//
+// A bare "cleared N memories" reads as erasure, and it is not one: W-D-06 gzips
+// the WHOLE memories table into every checkpoint, so anything cleared here is
+// still on disk in those blobs and comes back verbatim from a plain
+// `/checkpoint restore <id> memory yes`. Shredding the blobs instead was
+// rejected — it would delete the "undo an accidental wipe" the checkpoint
+// feature exists for, and would still not be erasure, since the text a memory
+// was distilled from stays in `messages`. See store.ClearMemories.
+//
+// So the honest move is to say so, once, at the only moment the user is looking:
+// they can then take the extra step (/checkpoint list) if erasure is what they
+// meant. Silent when nothing was deleted or no checkpoint exists — a warning
+// about a copy that is not there is noise, and noise is how a real warning stops
+// being read.
+func clearedButRetainedNote(st *store.Store, deleted int) string {
+	if st == nil || deleted == 0 {
+		return ""
+	}
+	cps, err := st.Checkpoints(1)
+	if err != nil || len(cps) == 0 {
+		return ""
+	}
+	return "note: checkpoints still hold a copy of these memories and can restore them " +
+		"(/checkpoint list). Clearing does not erase the text — the conversations they " +
+		"were derived from are also unchanged."
 }
 
 // skillInfo converts an internal skills.Skill snapshot into a proto.SkillInfo
