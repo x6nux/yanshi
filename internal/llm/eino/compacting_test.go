@@ -31,6 +31,15 @@ type recordingModel struct {
 	streamOK bool   // Stream returns a 1-chunk reader; else errors
 }
 
+// callCount reads calls under the mutex. The cooldown tests assert on it
+// repeatedly, and reading the field directly is a data race the -race job
+// catches only when a test happens to run concurrently with a record().
+func (r *recordingModel) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
 func (r *recordingModel) record(in []*schema.Message) {
 	// Copy so later caller mutation can't rewrite history.
 	cp := make([]*schema.Message, len(in))
@@ -509,14 +518,26 @@ func TestCompactingModel_FirstCompactNoCooldown(t *testing.T) {
 // package green. A summary that came back larger than the history it replaced
 // would then be forwarded to the model as if it were a compaction.
 //
-// ⚠️ THIS TEST USED TO ALSO ASSERT `didCompact == false` HERE, and that half was
-// INVERTED deliberately — see TestCompactingModel_AFailedCompactionArmsTheCooldown
-// for the argument. Its stated reason ("the next turn skips a compaction it
-// needs") turned out to be answered by HardForceFraction, which is checked
-// before the cooldown gate, while the cost it ignored — one paid summary call
-// per ReAct iteration for the rest of the turn — was unbounded. What survives
-// here is the part this test is actually about: the REJECTION. Whether the
-// cooldown arms is a separate question and now has its own test.
+// ⚠️ THIS TEST USED TO ALSO ASSERT `didCompact == false` HERE, with the reason
+// "a rejected compaction must not arm the cooldown, or the next turn skips a
+// compaction it needs". That half was INVERTED — maybeCompact now arms on
+// failure — and the reason is preserved rather than deleted, because THE DANGER
+// IT NAMES IS REAL:
+//
+//	An over-large context that is refused a retry keeps growing, and eventually
+//	the provider call does not fit.
+//
+// What makes arming on failure safe is not that the danger went away. It is
+// that HardForceFraction blocks it: shouldCompact checks hard-force BEFORE the
+// cooldown gate, so a cooldown can delay a retry but never prevent one once the
+// history nears the window edge. Break that ordering, or let HardForceFraction
+// reach a production path as 0, and the sentence above is true again.
+//
+// That coupling is load-bearing and therefore has its own test —
+// TestHardForceBypassesCooldown_SoArmingOnFailureIsSafe. The cost the old rule
+// ignored (one paid summary call per ReAct iteration, unbounded) is pinned by
+// TestCompactingModel_AFailedCompactionArmsTheCooldown. What survives here is
+// the part this test is actually about: the REJECTION.
 func TestCompactingModel_MaybeCompact_RejectsAGrowingSummary(t *testing.T) {
 	inner := &recordingModel{
 		summary:  strings.Repeat("x", 40000), // dwarfs the history below
@@ -992,18 +1013,105 @@ func TestCompactingModel_AFailedCompactionArmsTheCooldown(t *testing.T) {
 
 	_, did := cm.maybeCompact(context.Background(), msgs)
 	require.False(t, did, "a summary bigger than the history is not a compaction")
-	inner.mu.Lock()
-	afterFirst := inner.calls
-	inner.mu.Unlock()
-	require.Equal(t, 1, afterFirst, "the first attempt costs exactly one summary call")
+	require.Equal(t, 1, inner.callCount(), "the first attempt costs exactly one summary call")
 
 	// Same history, next ReAct iteration. Nothing has changed, so nothing can
 	// succeed — and nothing may be billed.
 	_, did2 := cm.maybeCompact(context.Background(), msgs)
 	assert.False(t, did2)
-	inner.mu.Lock()
-	afterSecond := inner.calls
-	inner.mu.Unlock()
-	assert.Equal(t, 1, afterSecond,
+	assert.Equal(t, 1, inner.callCount(),
 		"the failed attempt must not be repeated on every iteration of the turn")
+}
+
+// TestHardForceBypassesCooldown_SoArmingOnFailureIsSafe pins the COUPLING that
+// makes maybeCompact's arm-on-failure safe. Read this before changing either
+// the cooldown or the hard-force branch.
+//
+// # The danger this guards is real, not hypothetical
+//
+// Arming the cooldown when a compaction FAILS is a deliberate inversion of an
+// earlier rule ("a rejected compaction must not arm the cooldown, or the next
+// turn skips a compaction it needs"). That rule was protecting against
+// something true: an over-large context that is refused a retry keeps growing
+// and eventually the provider call does not fit. The inversion is safe for
+// exactly one reason — shouldCompact checks HardForceFraction BEFORE the
+// cooldown gate, so the cooldown can delay a retry but can never prevent one
+// once the history nears the window edge.
+//
+// IF THAT ORDERING BREAKS, OR HardForceFraction REACHES A PRODUCTION PATH AS 0,
+// THE OLD DANGER COMES BACK. Nothing else in the package would notice: the
+// symptom is a context that quietly stops being compacted, and every test that
+// arms the cooldown by hand would still pass. So the coupling gets a test
+// naming what it protects.
+//
+// TestCompactingModel_HardForceBeatsCooldown covers the same override at the
+// shouldCompact level with a HAND-ARMED cooldown. This one goes through
+// maybeCompact end to end with the cooldown armed BY AN ACTUAL FAILED
+// COMPACTION, which is the state the inversion actually creates.
+//
+// # It also covers the transient-failure cost
+//
+// Rate-limiting a retry also rate-limits a retry after a RECOVERABLE failure —
+// a provider blip costs CooldownTokens of growth before the next attempt, where
+// it used to cost one iteration. Step 3 is that scenario end to end: the first
+// attempt is rejected, the session keeps growing, and the compaction does
+// eventually happen and succeed. The session is delayed, never stranded.
+//
+// CooldownTokens is set absurdly high on purpose. Token growth can then never
+// lapse the cooldown by itself, so if step 3 compacts, hard-force is the only
+// thing that could have let it through.
+func TestHardForceBypassesCooldown_SoArmingOnFailureIsSafe(t *testing.T) {
+	// recordingModel returns `summary` on call 1 and `reply` afterwards, which
+	// is a transient failure for free: attempt 1 gets a summary bigger than the
+	// history (rejected), attempt 2 gets a usable one.
+	inner := &recordingModel{
+		summary:  strings.Repeat("x", 40000), // rejected: dwarfs the history
+		reply:    streamSummaryText,          // long enough to clear the C10 gate
+		streamOK: true,
+	}
+	cm := &CompactingModel{
+		Inner: inner,
+		// summarizableWindow, not a hand-picked number: step 3 requires a
+		// compaction that SUCCEEDS, and this file documents that a window below
+		// the summary instruction's framing cost makes RunSummary refuse — a
+		// correct refusal that reads exactly like compaction being broken.
+		ContextWindow:     summarizableWindow, // 2000
+		Threshold:         0.5,                // 1000 tokens
+		HardForceFraction: 0.9,                // 1800 tokens
+		KeepRecent:        2,
+		CooldownTokens:    100000, // growth alone can never lapse this
+	}
+	ctx := context.Background()
+
+	// STEP 1 — over threshold, under hard-force. The attempt is made and fails.
+	small := []*schema.Message{bigMessage(400), bigMessage(400), bigMessage(400)} // ~1200
+	_, did := cm.maybeCompact(ctx, small)
+	require.False(t, did, "premise: the first attempt must fail")
+	require.Equal(t, 1, inner.callCount(), "and must have cost exactly one call")
+	cm.cmMu.Lock()
+	armed := cm.didCompact
+	cm.cmMu.Unlock()
+	require.True(t, armed, "premise: the failure armed the cooldown")
+
+	// STEP 2 — unchanged history. The cooldown holds, so nothing is billed.
+	_, did = cm.maybeCompact(ctx, small)
+	require.False(t, did)
+	require.Equal(t, 1, inner.callCount(),
+		"premise: the cooldown really is suppressing retries — otherwise step 3 proves nothing")
+
+	// STEP 3 — the session kept growing and is now at the window edge. The
+	// cooldown is still nowhere near lapsing, so ONLY hard-force can let this
+	// through. It must, and the retry must succeed.
+	big := []*schema.Message{ // ~2000, past the 1800 hard-force line
+		bigMessage(400), bigMessage(400), bigMessage(400), bigMessage(400), bigMessage(400),
+	}
+	require.True(t, cm.inCooldown(ctxcompact.EstimateTokens(big)),
+		"premise: still inside the cooldown, so hard-force is the only way through")
+
+	out, did := cm.maybeCompact(ctx, big)
+	assert.True(t, did,
+		"a history at the window edge must compact despite an armed cooldown — "+
+			"this is the entire reason arming on failure is safe")
+	assert.Equal(t, 2, inner.callCount(), "the retry happened, exactly once")
+	assert.Less(t, len(out), len(big), "and it really compacted")
 }

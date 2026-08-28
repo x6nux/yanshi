@@ -53,9 +53,7 @@ func runADKChain(t *testing.T, threshold float64) [][]*schema.Message {
 		}
 	}
 
-	inner.mu.Lock()
-	defer inner.mu.Unlock()
-	return inner.inputs
+	return inner.inputsSnapshot()
 }
 
 // TestCompactingModel_RealADKChainKeepsTheSystemMessage closes the

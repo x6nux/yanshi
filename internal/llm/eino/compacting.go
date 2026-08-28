@@ -164,6 +164,15 @@ func (c *CompactingModel) Stream(ctx context.Context, msgs []*schema.Message, op
 // hard-force fraction the cooldown is overridden and compaction retries anyway.
 // The net effect is to rate-limit a failing retry to once per CooldownTokens of
 // growth instead of once per iteration.
+//
+// ⚠️ THAT ORDERING IS LOAD-BEARING, NOT INCIDENTAL. It is the only thing making
+// this safe, and it is exactly what the rule this replaced was protecting: a
+// context refused a retry keeps growing until the provider call does not fit.
+// Move the hard-force check below the cooldown gate, or let HardForceFraction
+// reach a production path as 0, and that failure returns — silently, since the
+// symptom is a context that quietly stops being compacted.
+// TestHardForceBypassesCooldown_SoArmingOnFailureIsSafe guards the coupling and
+// names it; read it before changing either gate.
 func (c *CompactingModel) maybeCompact(ctx context.Context, msgs []*schema.Message) ([]*schema.Message, bool) {
 	if !c.shouldCompact(msgs) {
 		return msgs, false
