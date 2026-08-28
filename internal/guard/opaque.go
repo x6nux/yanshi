@@ -67,20 +67,13 @@ import "strings"
 // because it is `--recursive` on nearly everything before it is php's eval.
 // Both were measured producing prompts on ordinary commands with no compensating
 // coverage: every interpreter that accepts them also accepts one of these.
+// `--rsh` is here because it means it in the most literal way there is: "the
+// REMOTE SHELL to run". rsync's `-e` short form was already covered by the
+// entry above it, and the long form was not.
 var codePayloadFlags = map[string]bool{
 	"-c": true, "-e": true,
-	"--command": true, "--eval": true, "--execute": true,
+	"--command": true, "--eval": true, "--execute": true, "--rsh": true,
 }
-
-// windowsEncodedCommandPrefix is PowerShell's -EncodedCommand, whose operand is
-// base64-encoded UTF-16LE.
-//
-// PowerShell binds any unambiguous prefix of a parameter name, so `-e`, `-en`
-// and `-enc` are the same flag as `-EncodedCommand` and all three were measured
-// passing the same payload the spelled-out form does. Matching by prefix is
-// what makes "add -EncodedCommand to the wrapper table" insufficient, and it is
-// why this is a prefix test rather than three more map entries.
-const windowsEncodedCommandPrefix = "-encodedcommand"
 
 // nonInterpreterPrograms are programs whose codePayloadFlags operand is DATA,
 // not code: a regular expression, a config path, a transport command for
@@ -91,16 +84,28 @@ const windowsEncodedCommandPrefix = "-encodedcommand"
 // that did not need one; a program wrongly IN it produces a silent pass, which
 // is why membership is "the flag's operand is documented as not being a
 // program" rather than "this program is trusted".
+//
+// `rsync` WAS here and was wrong, which is the failure direction this comment
+// warns about, arriving. The justification on its line read "-e is the remote
+// shell for the transfer" — and a remote shell for the transfer is a PROGRAM
+// rsync execs. `rsync -e 'sh -c "rm -rf /"' a h:b` was Allow. An entry has to
+// mean "the operand is not a program", and "the operand is the program used to
+// reach the far end" is the opposite of that.
 var nonInterpreterPrograms = map[string]bool{
 	// -e is a PATTERN.
 	"grep": true, "egrep": true, "fgrep": true, "zgrep": true, "rg": true, "ag": true,
 	// -e is a sed SCRIPT (its own tiny language, but its operands are not
 	// commands and `sed -e 's/a b/c/'` is written thousands of times a day).
 	"sed": true,
-	// -e is the remote shell for the transfer, -c is a cipher list.
-	"rsync": true,
 	// -e sets the exit status from the filter's result.
 	"jq": true,
+	// -d is a request BODY and -e is the referer header. Both routinely carry
+	// JSON, which the operand scan below would otherwise read as code.
+	"curl": true, "wget": true,
+	// Their operands are text written to stdout. scriptEmitters says the same
+	// thing for the trailing-argv scan; this is the membership rule's own
+	// wording of it — the operand is documented as not being a program.
+	"echo": true, "printf": true,
 	// -c is a configuration override (`git -c core.pager="less -R" log`).
 	"git": true,
 	// -e is an environment variable for the container.
@@ -127,6 +132,34 @@ func looksLikeCode(w string) bool {
 	return strings.ContainsAny(w, " \t\n;(){}$|&<>`")
 }
 
+// looksLikeStatement is looksLikeCode's stricter sibling, for an operand NO
+// FLAG marked as code.
+//
+// `awk 'BEGIN{system("rm -rf /")}'` puts its program in the FIRST POSITIONAL
+// OPERAND, with no option in front of it at all, so the flag-driven loop below
+// could never see it — measured Allow with a real /bin/sh running `rm -rf /`.
+// `gawk`, `mawk`, `deno eval` and `php -r` are the same shape.
+//
+// Reusing looksLikeCode for positionals is not possible: a bare space would
+// then make `ls "my file"`, `mkdir "a b"` and every commit message an opaque
+// payload. A bare `$` is no better — `cd $HOME`, `ls ${HOME}` and
+// `cp $SRC $DST` are ordinary and carry nothing else.
+//
+// So a positional has to look like a STATEMENT rather than merely like a
+// string: whitespace AND structural punctuation together. That is what
+// separates `BEGIN{system("rm -rf /")}` (a space and three brackets) from
+// `ls ${HOME}` (brackets, no space) and `git commit -m "fix the thing"` (a
+// space, no brackets).
+//
+// The boundary this leaves is written down rather than argued away: an operand
+// that is a statement with NEITHER — `gdb -ex 'shell rm -rf /'` (spaces only),
+// `deno eval "Deno.removeSync('/')"` (punctuation only) — is not seen. Both
+// directions were measured; the rule is the widest one that does not prompt on
+// ordinary work.
+func looksLikeStatement(w string) bool {
+	return strings.ContainsAny(w, " \t\n") && strings.ContainsAny(w, ";(){}|&<>`")
+}
+
 // opaquePayload reports that program+args carries an operand this package does
 // not read, and returns it (for the caller's diagnostics, not for grading — the
 // whole point is that nobody here can grade it).
@@ -138,18 +171,33 @@ func looksLikeCode(w string) bool {
 // returns "not a wrapper invocation" and this returns "there is a -c payload
 // here that nobody read", so the shape is a prompt instead of a pass. That is
 // the property the header calls the unbounded direction failing closed.
-func opaquePayload(program string, args []string) (string, bool) {
-	if v, ok := windowsEncodedPayload(program, args); ok {
-		return v, true
+// marked reports whether a FLAG announced the operand as code (`-c`, `--eval`,
+// `-EncodedCommand`). It is what separates the two tiers: a marked operand is a
+// command by construction, so gradeUnreadPayload may put it on the floor when
+// it reads as a disaster, while an unmarked one caps at a prompt for the same
+// reason classifyTrailingArgv caps unknown programs — whether it is a command
+// at all is precisely what is not known.
+func opaquePayload(program string, args []string) (payload string, marked, ok bool) {
+	if v, encoded := windowsEncodedPayload(program, args); encoded {
+		return v, true, true
 	}
 	if nonInterpreterPrograms[program] {
-		return "", false
+		return "", false, false
 	}
 	for i, a := range args {
 		if a == "--" {
 			// Everything after `--` is an operand, so a code flag spelling
 			// found there is a file name that happens to look like one.
-			return "", false
+			break
+		}
+		// `--eval=X` / `--rsh='sh -c …'` attach the operand to the flag, and a
+		// scan that only looked at the following word saw a flag word and
+		// skipped it. GNU-style long options take either spelling.
+		if base, attached, found := strings.Cut(a, "="); found && codePayloadFlags[base] {
+			if !isFlagWord(attached) && looksLikeCode(attached) {
+				return attached, true, true
+			}
+			continue
 		}
 		if !codePayloadFlags[a] || i+1 >= len(args) {
 			continue
@@ -158,9 +206,21 @@ func opaquePayload(program string, args []string) (string, bool) {
 		if isFlagWord(v) || !looksLikeCode(v) {
 			continue
 		}
-		return v, true
+		return v, true, true
 	}
-	return "", false
+	// An operand NO FLAG marked as code. awk's program, php's -r script and
+	// deno's eval argument all sit here, and the loop above cannot reach any of
+	// them. The discriminator is stricter than the one above because nothing
+	// announced this operand as code — see looksLikeStatement.
+	for _, a := range args {
+		if isFlagWord(a) || a == "--" {
+			continue
+		}
+		if looksLikeStatement(a) {
+			return a, false, true
+		}
+	}
+	return "", false, false
 }
 
 // gradeUnreadPayload decides WHICH TIER an unread payload lands in, and the
@@ -206,7 +266,13 @@ func opaquePayload(program string, args []string) (string, bool) {
 // DestructionUnreadable is passed through rather than folded down to
 // Catastrophic: it is structural too, and its reason ("nested deeper than the
 // guard unwraps") describes what actually happened.
-func gradeUnreadPayload(payload, workdir string, depth int) Destruction {
+func gradeUnreadPayload(payload string, marked bool, workdir string, depth int) Destruction {
+	if !marked {
+		// Nothing announced this operand as a command, so "it is a command" is
+		// the thing not known — the same position classifyTrailingArgv is in,
+		// and the same cap. `mkdir "rm -rf /; x"` creates a directory.
+		return DestructionOpaque
+	}
 	if depth > 0 {
 		if d := classifyDestruction(payload, workdir, depth-1, false); d >= DestructionCatastrophic {
 			return d
@@ -303,20 +369,26 @@ func classifyTrailingArgv(program string, args []string, workdir string, depth i
 	return worst
 }
 
-// windowsEncodedPayload reports a PowerShell -EncodedCommand operand.
+// windowsEncodedPayload reports a PowerShell -EncodedCommand or
+// -EncodedArguments operand.
 //
 // It is separate from the loop above because the operand is base64: it carries
 // none of the punctuation looksLikeCode tests for, so the generic rule cannot
 // see it. Decoding it would be a different change — it would move this shape
 // from "cannot read" to "read", which is better and is not what this file is
 // for.
+//
+// The spellings come from bindsPowerShellParam, which covers both halves of how
+// the host's binder works: any unambiguous PREFIX of the parameter name, plus
+// the hard-coded short ALIASES that are not prefixes of anything. The prefix
+// half alone left `-ec` — the alias Microsoft's own documentation leads with,
+// and the one red-team tooling emits — reaching Allow.
 func windowsEncodedPayload(program string, args []string) (string, bool) {
-	if _, isWindowsShell := windowsShellWrappers[program]; !isWindowsShell {
+	if !isPowerShellHost(program) {
 		return "", false
 	}
 	for i, a := range args {
-		l := strings.ToLower(a)
-		if len(l) >= 2 && strings.HasPrefix(windowsEncodedCommandPrefix, l) && i+1 < len(args) {
+		if bindsPowerShellParam(a, powerShellEncodedParams, powerShellEncodedAliases) && i+1 < len(args) {
 			return args[i+1], true
 		}
 	}

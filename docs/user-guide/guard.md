@@ -72,7 +72,19 @@ shell 维度先拆段（见下一节），再对**每一段**过下面两层，�
 
 **这是刻意的过严，代价是知情接受的。** 一些完全正常的命令会开始要你点一下：`psql -c "SELECT 1"`、`osascript -e '…'`、你自己写的带 `-c` 的小工具。方向是这样选的：判错成"多问一次"你会立刻看见并抱怨，判错成"静默放行"没有任何痕迹。
 
-**不会落进这一档的**：`tail -c 100`、`cut -c 1-5`、`gcc -c foo.c`、`ssh -e none host`（操作数是选项值不是程序），以及 `grep -e "a b"`、`sed -e 's/a b/c/'`、`git -c core.pager="less -R" log`、`docker run -e "A=b c"`、`rsync -e "ssh -p 22"`、`jq -e '.a|.b'`、`kubectl logs -c web`（这些程序在一张"它的 `-c`/`-e` 操作数按文档就不是程序"的缓解表里）。**这张表漏一个条目的代价是多一次弹窗**，所以碰到你觉得不该弹的命令，那是缺表项而不是缺防线。
+**不会落进这一档的**：`tail -c 100`、`cut -c 1-5`、`gcc -c foo.c`、`ssh -e none host`（操作数是选项值不是程序），以及 `grep -e "a b"`、`sed -e 's/a b/c/'`、`git -c core.pager="less -R" log`、`docker run -e "A=b c"`、`jq -e '.a|.b'`、`kubectl logs -c web`、`curl -d '{"a": 1}' url`（这些程序在一张"它的 `-c`/`-e` 操作数按文档就不是程序"的缓解表里）。**这张表漏一个条目的代价是多一次弹窗**，所以碰到你觉得不该弹的命令，那是缺表项而不是缺防线。
+
+> ⚠️ **`rsync -e` 曾经在这张表里，那是错放。** 表项的理由写着「`-e` 是传输用的远端 shell」—— 而**传输用的远端 shell 就是一个程序，rsync 会去执行它**，`rsync -e 'sh -c "rm -rf /"' a h:b` 因此一直是 Allow。它已经从表里删掉，代价是 `rsync -e "ssh -p 22" src dst` 这种日常写法现在会弹一次窗。**这正是这张表的失败方向应该长的样子**：漏一条 = 多一次弹窗（你看得见），错放一条 = 静默放行（没有任何痕迹）。
+
+### 位置操作数里的程序
+
+上面两节的 payload 都由 flag 标出来。`awk 'BEGIN{system("rm -rf /")}'` 一个 flag 都没有 —— awk 的程序就是**第一个位置操作数**，实测 Allow 且真 shell 真跑，而同一段 payload 写成 `awk -e '…'` 早就会弹窗了。防线取决于作者有没有多打一个选项。
+
+没有 flag 标记时判据更严：操作数要**同时**含空白和结构标点（`;` `(` `)` `{` `}` `|` `&` `<` `>` 反引号）才算。只有空格不算（否则 `mkdir "my new dir"`、每一条 commit message 都要弹窗），只有标点也不算（否则 `cd $HOME`、`ls ${HOME}`、`cp $SRC $DST` 都要弹窗）。
+
+这一档**封顶在弹窗**，即使那段操作数读起来像一条灾难命令也一样：没有任何东西声明过它是命令，`mkdir "rm -rf /; x"` 只是建了个名字很怪的目录。
+
+**已知的边界**（写下来而不是绕过去）：两者只占其一的语句看不见 —— `gdb -ex 'shell rm -rf /'`（只有空格）、`deno eval "Deno.removeSync('/')"`（只有标点）。
 
 `yolo` 会直接放行这一档（它只对 Catastrophic 与 Unreadable 停手），`auto` 交给模型判，`default` / `allow-edits` 弹窗。理由与四条不可违反的约束见 [../adr/0018-an-unread-payload-is-a-refusal-not-a-pass.md](../adr/0018-an-unread-payload-is-a-refusal-not-a-pass.md)。
 

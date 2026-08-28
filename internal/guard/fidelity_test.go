@@ -267,6 +267,13 @@ exit 0
 type shellReading struct {
 	ran     []string // "rm -rf /", reconstructed from the recorder's own argv
 	created []string // file names that did not exist before the command ran
+	// unresolved reports that the shell could not find a program the command
+	// named. PATH holds the shim directory and nothing else, so this means "no
+	// stand-in exists for something here" — and therefore that whatever the row
+	// claims about the shell's behaviour was NOT measured. It is the witness
+	// predicate for rows pinned to Allow, where "the recorder saw nothing" is
+	// otherwise indistinguishable from "nothing could run".
+	unresolved bool
 }
 
 // newShellHarness installs the recorders and returns the work directory plus a
@@ -334,6 +341,9 @@ func newShellHarness(t *testing.T) (workdir string, run func(string) shellReadin
 			t.Logf("  (%q exited with %v: %s)", cmd, err, strings.TrimSpace(string(out)))
 		}
 		var r shellReading
+		// dash says "not found", bash says "command not found"; both contain
+		// the substring, on every platform this test runs on.
+		r.unresolved = strings.Contains(string(out), "not found")
 		if b, err := os.ReadFile(witness); err == nil {
 			for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
 				if line = strings.TrimSpace(line); line != "" {

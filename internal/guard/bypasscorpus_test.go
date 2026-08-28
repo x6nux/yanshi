@@ -35,8 +35,8 @@ import (
 // pinned as Allow. So a future edit cannot make a red row green by relaxing its
 // `want` — the shell has to agree.
 //
-// TestEveryStrictRowIsWitnessedOrSaysWhyNot exists because THAT SENTENCE WAS
-// ONLY TRUE OF TWO THIRDS OF THE ROWS. The differential assertion can only speak
+// TestEveryStrictRowIsWitnessedOrSaysWhyNot exists because THAT SENTENCE WAS ONLY
+// TRUE OF TWO THIRDS OF THE ROWS. The differential assertion can only speak
 // about a row the shell acted on, and 41 of 115 POSIX rows named a program that
 // was not on the shim PATH — so the shell did nothing, and their verdicts were
 // held by the table alone. A re-review demonstrated the consequence: it broke
@@ -44,6 +44,14 @@ import (
 // green. The third assertion makes that partition EXPLICIT — every strict row is
 // either witnessed or says on the line why it cannot be — and
 // TestTableOnlyRowsHaveNotGrown pins how many of the second kind there may be.
+//
+// TestEveryAllowRowIsWitnessedOrSaysWhyNot is the same bookkeeping for the rows
+// the one above skipped, and the skip was a hole rather than an economy: the
+// next re-review pinned `pkexec rm -rf /` — a command it had already witnessed
+// executing — to Allow with a plausible `why`, and the package stayed green.
+// The risk to an Allow row is not downgrading, it is a real bypass wearing a
+// justification, and the witness for it is a different claim (the shell
+// RESOLVED what the row names) rather than the same one negated.
 //
 // # What a row's `why` is for
 //
@@ -159,6 +167,24 @@ const (
 	noDeviceWitness = "the harm is to a raw block device, and the harness owns no device to " +
 		"witness the loss of"
 
+	// noUtilityShim: an ordinary read-only utility with no stand-in, so the
+	// reference shell reports "not found" and runs nothing. The row is still
+	// worth having — it pins that guard does not REFUSE the command — but the
+	// differential assertion is not what is holding it.
+	//
+	// A no-op stand-in would make the row look witnessed and witness nothing:
+	// "the shell ran a program that does nothing and nothing happened" is true
+	// of every command. The admission is the honest form.
+	noUtilityShim = "an ordinary utility with no stand-in on the shim PATH; the reference shell " +
+		"cannot run it, so the differential assertion says nothing about this row"
+
+	// noRsyncShim: a stand-in would have to emulate rsync's -e/--rsh handling,
+	// which is the thing being measured; delegating instead (run the -e operand)
+	// would be a copy of the reader under test. The rows it covers are pinned by
+	// the verdict table and by the relief table's own membership rule.
+	noRsyncShim = "witnessing it means emulating rsync's own -e handling, which is what the row " +
+		"measures; a stand-in that ran the -e operand would be a copy of the reader under test"
+
 	// noOutsideHomeWitness: the harness detects exactly one planted credential,
 	// $HOME/.ssh/authorized_keys under a temporary HOME. A row whose target is
 	// an absolute system path is unreachable by construction.
@@ -217,6 +243,9 @@ var bypassCorpus = []bypassRow{
 			"The negative control for splitPipeStages, which would grade this catastrophic — an " +
 			"unappealable refusal of a harmless command — if it folded `||` in with `|`"},
 	{cmd: `echo rm | xargs -I{} {} -rf /`, want: wantAllow,
+		tableOnly: "the xargs stand-in relays its argv and does not implement -I substitution, so the " +
+			"reference shell tries to run a program called `{}` and finds none. A real xargs WOULD " +
+			"run `rm -rf /` here, which is exactly what the row's justification is about",
 		why: "same boundary as the first row of this group: with -I the program word itself comes " +
 			"from stdin, so the string names no command"},
 	{cmd: `flock /tmp/lk rm -rf /`, want: wantFloor},
@@ -264,7 +293,7 @@ var bypassCorpus = []bypassRow{
 	// wrapped-form-passes inversion this package keeps closing.
 	{cmd: `ssh localhost rm -rf /`, want: wantFloor},
 	{cmd: `ssh localhost "rm -rf /"`, want: wantFloor},
-	{cmd: `ssh -p 22 localhost uptime`, want: wantAllow,
+	{cmd: `ssh -p 22 localhost uptime`, want: wantAllow, tableOnly: noUtilityShim,
 		why: "an ordinary remote command; the negative sample that stops the two rows above from " +
 			"being satisfied by refusing every ssh"},
 	{cmd: `ssh localhost`, want: wantAllow,
@@ -357,6 +386,8 @@ $X -rf /`, want: wantFloor},
 			"cannot see. It is the row that fails if unresolved expansions are blanked: blanking " +
 			"leaves a bare `rm -rf`, which the catastrophic tier refuses unappealably"},
 	{cmd: `$UNSET_PROGRAM -rf /`, want: wantAllow,
+		tableOnly: "the program word is an expansion the string never defines, so there is nothing " +
+			"for the shim PATH to hold — which is the row's own point",
 		why: "same direction: an unset variable expands to nothing and /bin/sh runs no command at all"},
 	{cmd: `BUILD_DIR=build; rm -rf $BUILD_DIR`, want: wantAllow,
 		why: "the value IS in the string, so the expansion resolves — to a path inside the work " +
@@ -401,10 +432,20 @@ $X -rf /`, want: wantFloor},
 	// it without needing a shell that has `+o`.
 	{cmd: `bash --rcfile -c "rm -rf /"`, want: wantFloor, tableOnly: noShellShim},
 	{cmd: `bash -c "bash -c \"bash -c 'rm -rf /'\""`, want: wantFloor, tableOnly: noShellShim},
-	{cmd: `bash script.sh`, want: wantAllow,
+	// The other POSIX escape the permissive lexer drops: a backslash before a
+	// SPACE. Three quoted fragments joined by two escaped blanks are ONE word to
+	// the shell, so the payload `rm -rf /` was in no reading of the string.
+	{cmd: `sh -c 'rm'\ '-rf'\ '/'`, want: wantFloor},
+	{cmd: `rm -rf my\ file`, want: wantAllow,
+		why: "the same escape on an ordinary path with a space in it. The escaping reading joins " +
+			"the two halves into one in-workdir target, and the literal reading sees two — both " +
+			"grade None, which is what stops the row above from being satisfied by refusing every " +
+			"escaped blank"},
+	{cmd: `bash script.sh`, want: wantAllow, tableOnly: noShellShim,
 		why: "a script path, not a -c payload. The negative sample for the rows above: without it " +
 			"they could be satisfied by treating every bash operand as a command"},
-	{cmd: `bash -x script.sh`, want: wantAllow, why: "same, with a flag in front of the script path"},
+	{cmd: `bash -x script.sh`, want: wantAllow, tableOnly: noShellShim,
+		why: "same, with a flag in front of the script path"},
 
 	// ---- A payload nobody read ----------------------------------------------
 	//
@@ -424,34 +465,59 @@ $X -rf /`, want: wantFloor},
 	// yolo walks through — for the same command. The tier is now read off the
 	// PAYLOAD: this one says `rm -rf /` whoever was going to run it.
 	{cmd: `fish -c "rm -rf /"`, want: wantFloor},
-	{cmd: `python3 script.py`, want: wantAllow,
+	{cmd: `python3 script.py`, want: wantAllow, tableOnly: noInterpreterShim,
 		why: "the payload is in a FILE, not in this string — the same boundary `cat script.sh | sh` " +
 			"has. It is the negative sample that stops the interpreter rows above from being " +
 			"satisfied by refusing every python invocation"},
-	{cmd: `awk '{print $1}' out10`, want: wantAllow,
-		why: "awk's program is a positional operand here, not a -c/-e payload, and an operand this " +
-			"reader does not treat as code is left alone"},
-	{cmd: `tail -c 100 out10`, want: wantAllow,
+	// An interpreter whose program is a POSITIONAL OPERAND, with no flag in
+	// front of it at all. The flag-driven scan could not reach this family and
+	// `awk 'BEGIN{system("rm -rf /")}'` measured Allow while /bin/sh ran
+	// `rm -rf /`; the same payload written `awk -e '…'` was already a prompt,
+	// so the defence turned on whether the author had typed an option.
+	{cmd: `awk 'BEGIN{system("rm -rf /")}'`, want: wantPrompt, tableOnly: noInterpreterShim},
+	{cmd: `awk '{print $1}' out10`, want: wantPrompt, tableOnly: noInterpreterShim},
+	// The negative samples for the row above, one per half of looksLikeStatement.
+	// Without them the positional rule is satisfied by prompting on every
+	// operand, which would put a prompt on most of a working day.
+	{cmd: `mkdir "my new dir"`, want: wantAllow, tableOnly: noUtilityShim,
+		why: "whitespace and nothing else. A bare space cannot be the discriminator for an operand " +
+			"no flag marked as code, or every quoted path and commit message becomes a payload"},
+	{cmd: `ls ${HOME}`, want: wantAllow, tableOnly: noUtilityShim,
+		why: "structural punctuation and nothing else — `cd $HOME`, `ls ${HOME}` and `cp $SRC $DST` " +
+			"are ordinary and carry no statement"},
+	{cmd: `awk -f prog.awk out10`, want: wantAllow, tableOnly: noInterpreterShim,
+		why: "the program is in a FILE, the same boundary `python3 script.py` has"},
+	// `rsync` was in the relief table with the justification "-e is the remote
+	// shell for the transfer" — and a remote shell for the transfer is a PROGRAM
+	// rsync execs. The entry was the failure direction its own table warns
+	// about: a program wrongly IN it is a silent pass.
+	{cmd: `rsync -e 'sh -c "rm -rf /"' a h:b`, want: wantFloor, tableOnly: noRsyncShim},
+	{cmd: `rsync --rsh='sh -c "rm -rf /"' a h:b`, want: wantFloor, tableOnly: noRsyncShim},
+	{cmd: `rsync -e "ssh -p 22" src dst`, want: wantPrompt, tableOnly: noRsyncShim},
+	{cmd: `tail -c 100 out10`, want: wantAllow, tableOnly: noUtilityShim,
 		why: "`-c` here is a byte count. The looksLikeCode discriminator is what separates it from " +
 			"`python3 -c`, and without this row that discriminator could be deleted unnoticed"},
-	{cmd: `cut -c 1-5 out10`, want: wantAllow, why: "same: a character range, not a program"},
-	{cmd: `gcc -c out10`, want: wantAllow, why: "same: compile-only, and the operand is a file name"},
-	{cmd: `grep -e "foo bar" out10`, want: wantAllow,
+	{cmd: `cut -c 1-5 out10`, want: wantAllow, tableOnly: noUtilityShim,
+		why: "same: a character range, not a program"},
+	{cmd: `gcc -c out10`, want: wantAllow, tableOnly: noUtilityShim,
+		why: "same: compile-only, and the operand is a file name"},
+	{cmd: `grep -e "foo bar" out10`, want: wantAllow, tableOnly: noUtilityShim,
 		why: "`-e` here is a PATTERN and the operand does contain a space, so it is the " +
 			"nonInterpreterPrograms relief table — not looksLikeCode — that keeps it out. Missing " +
 			"an entry there costs one prompt; this row is what proves the entry is live"},
-	{cmd: `git -c user.name=x commit -m "hi there"`, want: wantAllow, why: "same relief table"},
+	{cmd: `git -c user.name=x commit -m "hi there"`, want: wantAllow, tableOnly: noUtilityShim,
+		why: "same relief table"},
 
 	// ---- Storage destroyers reached through their own operands --------------
 	{cmd: `truncate -s 0 /dev/disk0`, want: wantFloor, tableOnly: noDeviceWitness},
 	{cmd: `tar -cf /dev/disk0 .`, want: wantFloor, tableOnly: noDeviceWitness},
-	{cmd: `tar -xf /dev/disk0 -C .`, want: wantAllow,
+	{cmd: `tar -xf /dev/disk0 -C .`, want: wantAllow, tableOnly: noUtilityShim,
 		why: "EXTRACTING from a device reads it. tar is in storageDestroyers under a narrower rule " +
 			"than the rest of that table (see isStorageDestruction), and this is the row that fails " +
 			"if the write-mode test is dropped and the whole program is refused"},
-	{cmd: `tar -cf backup.tar .`, want: wantAllow,
+	{cmd: `tar -cf backup.tar .`, want: wantAllow, tableOnly: noUtilityShim,
 		why: "creating an ordinary archive; the operand is a regular file, not a device"},
-	{cmd: `chattr -i /etc/passwd`, want: wantAllow,
+	{cmd: `chattr -i /etc/passwd`, want: wantAllow, tableOnly: noUtilityShim,
 		why: "clearing the immutable attribute destroys nothing — it is a PRECURSOR to a deletion, " +
 			"and the deletion that follows is what the gate grades. Measured and recorded rather " +
 			"than closed, because a table of `programs that make a later command possible` has no " +
@@ -514,6 +580,19 @@ $X -rf /`, want: wantFloor},
 	{cmd: `MSG='rm -rf /'; echo "$MSG"`, want: wantAllow,
 		why: "the quoted spelling of the same thing, which was already correct; it is here so the " +
 			"two rows above cannot be satisfied by ceasing to resolve assignments at all"},
+	// THE BILL FOR THAT FIX, and the shape that says where the give-up has to
+	// happen. A value carrying BOTH an operator and a quote character made the
+	// whole expansion unrenderable, so `$X` was not resolved at all and the
+	// guard read `X=…; $X`: Allow, while /bin/sh field-split the value and ran
+	// `rm -rf /` with `;`, `echo` and `"x"` as further operands. The give-up is
+	// now per FIELD, which is the smallest unit that cannot be rendered.
+	{cmd: `X='rm -rf / ; echo "x"'; $X`, want: wantFloor},
+	// Its sibling, and the one that shows the fix is not "quote everything": the
+	// `;` here has no space in front of it, so the field is `/;` — a PATH — and
+	// the shell deletes a file called `/;` rather than chaining. Out-of-scope is
+	// what that is, and the catastrophic reading it used to get was the
+	// over-strictness the row above it exists to record.
+	{cmd: `X="rm -rf /; echo 'x'"; $X`, want: wantPrompt},
 	{cmd: `echo k >| ~/.ssh/authorized_keys`, want: wantFloor,
 		why: "the `>|` over-strictness above, on a credential target; refused for the wrong reason " +
 			"but refused"},
@@ -527,7 +606,7 @@ $X -rf /`, want: wantFloor},
 	{cmd: `sh -c 'echo k > ~/.ssh/authorized_keys'`, want: wantPrompt},
 	{cmd: `eval "echo k > ~/.ssh/authorized_keys"`, want: wantPrompt},
 	{cmd: `su -c "echo k > ~/.ssh/authorized_keys"`, want: wantPrompt},
-	{cmd: `bash -c "echo hi > out.txt"`, want: wantAllow,
+	{cmd: `bash -c "echo hi > out.txt"`, want: wantAllow, tableOnly: noShellShim,
 		why: "the negative sample for the four rows above: an ordinary payload write, permitted by " +
 			"FS write `**`. Without it those four could be satisfied by refusing every -c payload"},
 	// The target is an ARGUMENT rather than a redirection. This was recorded as
@@ -540,6 +619,14 @@ $X -rf /`, want: wantFloor},
 	{cmd: `ln -sf /etc/passwd ~/.ssh/authorized_keys`, want: wantPrompt},
 	{cmd: `install -m 600 /dev/stdin ~/.ssh/authorized_keys`, want: wantPrompt},
 	{cmd: `sed -i s/x/y/ ~/.ssh/authorized_keys`, want: wantPrompt},
+	// sed writes from inside its SCRIPT too, which the `-i` requirement above
+	// says nothing about: `w FILE` and the `w` flag of `s///` create or truncate
+	// the named path with no in-place flag anywhere.
+	{cmd: `sed -e 'w /etc/shadow' f`, want: wantPrompt, tableOnly: noOutsideHomeWitness},
+	{cmd: `sed -e 's/x/y/w /etc/shadow' f`, want: wantPrompt, tableOnly: noOutsideHomeWitness},
+	{cmd: `sed 'w ~/.ssh/authorized_keys' f`, want: wantPrompt,
+		tableOnly: "sed's stand-in creates the operands it is GIVEN; the `w` target lives inside " +
+			"the script operand, so witnessing it needs a real sed"},
 	{cmd: `sed -i -e s/x/y/ ~/.ssh/authorized_keys`, want: wantPrompt},
 	{cmd: `dd of=/dev/null if=out10`, want: wantAllow,
 		why: "dd's of= IS read as a write target now, and /dev/null is an ordinary one. The " +
@@ -606,6 +693,27 @@ $X -rf /`, want: wantFloor},
 	{cmd: `powershell -EncodedCommand cgBtACAALQByAGYAIAAvAA==`, want: wantPrompt, interp: "powershell"},
 	{cmd: `powershell -enc cgBtACAALQByAGYAIAAvAA==`, want: wantPrompt, interp: "powershell"},
 	{cmd: `powershell -e cgBtACAALQByAGYAIAAvAA==`, want: wantPrompt, interp: "powershell"},
+	// `-ec` is where a prefix test alone was not enough. Microsoft documents the
+	// parameter as `-EncodedCommand | -e | -ec`, so `-ec` is an ALIAS rather
+	// than an abbreviation — `ec` is not a prefix of `encodedcommand` — and it
+	// is the spelling that turns up in the wild. It measured Allow while `-e`,
+	// one character shorter, was refused.
+	{cmd: `powershell -ec cgBtACAALQByAGYAIAAvAA==`, want: wantPrompt, interp: "powershell"},
+	{cmd: `pwsh -ec cgBtACAALQByAGYAIAAvAA==`, want: wantPrompt, interp: "powershell"},
+	{cmd: `powershell -EncodedArguments cgBtACAALQByAGYAIAAvAA==`, want: wantPrompt, interp: "powershell"},
+	// The same binder rule on the parameter that carries a COMMAND rather than a
+	// blob. The table held `-Command` and `-c` and nothing between them, so
+	// every abbreviation the binder accepts walked past a reader that had
+	// already been taught this exact lesson one parameter over.
+	{cmd: `powershell -Comm "Remove-Item -Recurse C:\"`, want: wantFloor, interp: "powershell"},
+	{cmd: `powershell -Comman "Remove-Item -Recurse C:\"`, want: wantFloor, interp: "powershell"},
+	{cmd: `pwsh -CommandWithArgs "Remove-Item -Recurse C:\"`, want: wantFloor, interp: "powershell"},
+	{cmd: `pwsh -cwa "Remove-Item -Recurse C:\"`, want: wantFloor, interp: "powershell"},
+	{cmd: `powershell -f C:\x.ps1`, want: wantAllow, interp: "powershell",
+		why: "`-File` is NOT a command carrier and is deliberately outside the prefix list: its " +
+			"operand is a script PATH, so the payload is in a file rather than in this string — " +
+			"the same boundary `bash script.sh` has. It is also the negative sample that stops the " +
+			"prefix rows above from being satisfied by treating every powershell flag as -Command"},
 	// Writing a file with a cmdlet is the ORDINARY spelling in this language, so
 	// a reader that only judged redirections judged almost nothing PowerShell
 	// writes.
@@ -728,7 +836,19 @@ func TestNoSpellingTheShellExecutesIsAllowed(t *testing.T) {
 // measurement of how much of this corpus the reference shell cannot reach.
 // Every one of the rows counted here can be flipped to Allow by an editor who
 // also breaks the defence it probes, and nothing in this package will notice.
-const tableOnlyRowCount = 24
+const tableOnlyRowCount = 32
+
+// unwitnessedAllowRowCount is the same measurement for rows pinned to Allow,
+// counted SEPARATELY because the two admissions are not the same size.
+//
+// A strict row with no witness says "this refusal rests on the author's
+// belief". An Allow row with no witness says something worse in kind: the
+// differential assertion cannot tell it apart from a real bypass with a
+// plausible justification — which is precisely the experiment a re-review ran,
+// pinning `pkexec rm -rf /` (already witnessed executing) to Allow and watching
+// the package stay green. Folding the two into one number would let a growing
+// pile of the second kind hide behind a shrinking pile of the first.
+const unwitnessedAllowRowCount = 18
 
 // TestTableOnlyRowsHaveNotGrown is the half of the bookkeeping that does not
 // need a shell, so it runs on the Windows leg too — where the differential
@@ -739,35 +859,113 @@ const tableOnlyRowCount = 24
 // gives about the ledger: a ceiling lets a row be added the moment another one
 // is removed, and the removal is what makes it invisible.
 func TestTableOnlyRowsHaveNotGrown(t *testing.T) {
-	n := 0
+	strict, allow := 0, 0
 	for _, row := range bypassCorpus {
 		if row.tableOnly == "" {
 			continue
 		}
-		n++
 		if row.want == wantAllow {
-			t.Errorf("corpus row %q is pinned to Allow and carries a tableOnly note; the note "+
-				"records that a STRICT verdict has no witness, and Allow is the weakest verdict "+
-				"there is — there is nothing for it to be silently downgraded to", row.cmd)
+			allow++
+		} else {
+			strict++
 		}
 	}
-	if n != tableOnlyRowCount {
-		t.Errorf("%d corpus rows are guarded by the verdict table alone, tableOnlyRowCount says %d. "+
-			"Going DOWN means a row gained a witness: lower the constant. Going UP means a row was "+
-			"added that the reference shell cannot check, and that is the thing this number exists "+
-			"to make visible — say so in the commit rather than editing the number quietly", n, tableOnlyRowCount)
+	if strict != tableOnlyRowCount {
+		t.Errorf("%d STRICT corpus rows are guarded by the verdict table alone, tableOnlyRowCount "+
+			"says %d. Going DOWN means a row gained a witness: lower the constant. Going UP means a "+
+			"row was added that the reference shell cannot check, and that is the thing this number "+
+			"exists to make visible — say so in the commit rather than editing the number quietly",
+			strict, tableOnlyRowCount)
+	}
+	if allow != unwitnessedAllowRowCount {
+		t.Errorf("%d ALLOW corpus rows are unconstrained by the reference shell, "+
+			"unwitnessedAllowRowCount says %d. Going UP means a row was pinned to Allow that the "+
+			"shell cannot check — which is how a real bypass gets a justification and stays green",
+			allow, unwitnessedAllowRowCount)
 	}
 }
 
 // TestEveryStrictRowIsWitnessedOrSaysWhyNot is Ruling W-B-8: the honesty half of
-// the catalogue must cover EVERY row, and the rows it cannot cover must say so
-// on the line rather than blending in.
+// the catalogue must cover every STRICT row, and the rows it cannot cover must
+// say so on the line rather than blending in.
 //
 // Both directions fail. A strict row the shell did act on may not carry a
 // tableOnly note (that is a dead entry, and a dead entry is a licence: the note
 // stays after the witness arrives, and the next editor reads it as permission).
 // A strict row the shell did NOT act on must carry one.
+//
+// Its Allow-side twin is the test below it; the two are separate because their
+// WITNESS PREDICATES are different claims, not because the loop is.
 func TestEveryStrictRowIsWitnessedOrSaysWhyNot(t *testing.T) {
+	forEachPOSIXCorpusRow(t, func(t *testing.T, row bypassRow, got shellReading, witnessed bool) {
+		if row.want == wantAllow {
+			return
+		}
+		switch {
+		case witnessed && row.tableOnly != "":
+			t.Errorf("corpus row %q carries a tableOnly note, but /bin/sh ran %q and the "+
+				"differential assertion DOES constrain it. Delete the note and lower "+
+				"tableOnlyRowCount", row.cmd, got.ran)
+		case !witnessed && row.tableOnly == "":
+			t.Errorf("corpus row %q is pinned to %s and the reference shell did nothing "+
+				"(ran=%q), so the only thing holding that verdict is this table. Give the "+
+				"program a stand-in in fidelity_test.go, or say on the line why it cannot "+
+				"have one and raise tableOnlyRowCount", row.cmd, row.want, got.ran)
+		}
+	})
+}
+
+// TestEveryAllowRowIsWitnessedOrSaysWhyNot is the hole a later re-review found
+// in the test above.
+//
+// That one covered STRICT rows only, on the reasoning that "Allow is the
+// weakest verdict there is — there is nothing for it to be silently downgraded
+// to". THAT REASONING NAMES THE WRONG RISK. The risk to an Allow row is not
+// that it gets downgraded; it is that a real bypass gets pinned as a known,
+// justified Allow. The re-review added
+//
+//	{cmd: `pkexec rm -rf /`, want: wantAllow, why: "pkexec is not a runner this package models"}
+//
+// — a command it had already witnessed executing `rm -rf /` under a real
+// /bin/sh — and the whole package stayed green, because `pkexec` was not on the
+// shim PATH so the differential assertion had nothing to say. That is the first
+// round's cheating experiment exactly, moved from a program that HAS a stand-in
+// to one that does not.
+//
+// # The witness predicate is a different claim
+//
+// For a strict row it is "the shell did something harmful". For an Allow row it
+// has to be the opposite claim, and "the recorder saw nothing" does not make
+// it: nothing is also what a shell produces when it cannot resolve the program
+// at all. So the predicate is that the shell RESOLVED everything the row named
+// (shellReading.unresolved) — which is exactly the condition under which the
+// destructive recorders would have caught a harmful argv if there had been one.
+func TestEveryAllowRowIsWitnessedOrSaysWhyNot(t *testing.T) {
+	forEachPOSIXCorpusRow(t, func(t *testing.T, row bypassRow, got shellReading, _ bool) {
+		if row.want != wantAllow {
+			return
+		}
+		switch {
+		case !got.unresolved && row.tableOnly != "":
+			t.Errorf("corpus row %q carries a tableOnly note, but the reference shell resolved "+
+				"everything it names and the differential assertion DOES constrain it. Delete "+
+				"the note and lower unwitnessedAllowRowCount", row.cmd)
+		case got.unresolved && row.tableOnly == "":
+			t.Errorf("corpus row %q is pinned to Allow and the reference shell could not resolve "+
+				"a program it names, so the differential assertion says NOTHING about it — an "+
+				"Allow can be a real bypass wearing a justification. Give the program a stand-in "+
+				"in fidelity_test.go, or say on the line why it cannot have one and raise "+
+				"unwitnessedAllowRowCount", row.cmd)
+		}
+	})
+}
+
+// forEachPOSIXCorpusRow runs every POSIX corpus row through the reference shell
+// and hands each row's reading to check, together with the strict-row witness
+// predicate. It exists so the two tests above measure the same thing from the
+// same harness instead of keeping two copies of the setup.
+func forEachPOSIXCorpusRow(t *testing.T, check func(*testing.T, bypassRow, shellReading, bool)) {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the reference reading comes from /bin/sh")
 	}
@@ -780,7 +978,7 @@ func TestEveryStrictRowIsWitnessedOrSaysWhyNot(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, row := range bypassCorpus {
-		if row.interp != "" || row.want == wantAllow {
+		if row.interp != "" {
 			continue
 		}
 		if err := os.Remove(keyPath); err != nil && !os.IsNotExist(err) {
@@ -788,18 +986,7 @@ func TestEveryStrictRowIsWitnessedOrSaysWhyNot(t *testing.T) {
 		}
 		got := run(row.cmd)
 		_, keyErr := os.Stat(keyPath)
-		witnessed := shellRanAHarmfulArgv(work, got.ran) || keyErr == nil
-		switch {
-		case witnessed && row.tableOnly != "":
-			t.Errorf("corpus row %q carries a tableOnly note, but /bin/sh ran %q and the "+
-				"differential assertion DOES constrain it. Delete the note and lower "+
-				"tableOnlyRowCount", row.cmd, got.ran)
-		case !witnessed && row.tableOnly == "":
-			t.Errorf("corpus row %q is pinned to %s and the reference shell did nothing "+
-				"(ran=%q), so the only thing holding that verdict is this table. Give the "+
-				"program a stand-in in fidelity_test.go, or say on the line why it cannot "+
-				"have one and raise tableOnlyRowCount", row.cmd, row.want, got.ran)
-		}
+		check(t, row, got, shellRanAHarmfulArgv(work, got.ran) || keyErr == nil)
 	}
 	if err := os.Remove(keyPath); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)

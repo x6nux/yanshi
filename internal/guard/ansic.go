@@ -91,6 +91,81 @@ var windowsShellWrappers = map[string]map[string]bool{
 	"cmd":        {"/c": true, "/k": true, "/r": true},
 }
 
+// powerShellCommandParams are the host parameters whose operand is a whole
+// PowerShell command, spelled out in full. The BINDER accepts any unambiguous
+// prefix of a parameter name, so matching these by prefix is what covers
+// `-Comm`, `-Comman` and the rest — an exact-spelling table listed `-Command`
+// and `-c` and let every abbreviation between them through.
+//
+// `-File` is deliberately absent. Its operand is a SCRIPT PATH, so the payload
+// is in a file rather than in this string — the same boundary `bash script.sh`
+// and `cat script.sh | sh` have, and reading it would mean reading the file.
+var powerShellCommandParams = []string{"-command", "-commandwithargs"}
+
+// powerShellCommandAliases are the host's hard-coded short names, which are NOT
+// prefixes of the parameter they stand for and therefore cannot come out of a
+// prefix test. `-cwa` is `-CommandWithArgs` (PowerShell 7.4), whose operand is a
+// command exactly as `-Command`'s is.
+var powerShellCommandAliases = map[string]bool{"-c": true, "-cwa": true}
+
+// powerShellEncodedParams are the host parameters whose operand is a base64
+// blob: a command in -EncodedCommand's case, its arguments in the other. Both
+// are unreadable here, which is the whole point — see opaque.go.
+var powerShellEncodedParams = []string{"-encodedcommand", "-encodedarguments"}
+
+// powerShellEncodedAliases is the same problem as powerShellCommandAliases, and
+// it cost a live bypass: Microsoft documents the parameter as
+// `-EncodedCommand | -e | -ec`, and `-ec` is the spelling that turns up in the
+// wild. `-e` and `-en` and `-enc` ARE prefixes and were covered; `-ec` is not a
+// prefix of anything and was Allow.
+var powerShellEncodedAliases = map[string]bool{"-ec": true}
+
+// isPowerShellHost reports whether program is a PowerShell host, whose
+// parameter binder accepts abbreviations. cmd.exe's `/c` is an exact spelling
+// and gets no prefix treatment.
+func isPowerShellHost(program string) bool {
+	return program == "powershell" || program == "pwsh"
+}
+
+// bindsPowerShellParam reports whether word abbreviates one of the given
+// parameter names the way PowerShell's binder would, or is one of the host's
+// hard-coded aliases.
+//
+// A single dash is not enough to bind anything (`-` is an operand), so a
+// two-character minimum stands in for the binder's ambiguity rule: every name
+// here starts with a different second letter than the host's other parameters
+// that matter, and a prefix short enough to be genuinely ambiguous is refused
+// by PowerShell itself.
+func bindsPowerShellParam(word string, params []string, aliases map[string]bool) bool {
+	l := strings.ToLower(word)
+	if aliases[l] {
+		return true
+	}
+	if len(l) < 2 {
+		return false
+	}
+	for _, p := range params {
+		if strings.HasPrefix(p, l) {
+			return true
+		}
+	}
+	return false
+}
+
+// windowsCommandFlag reports whether word is a flag of program whose operand is
+// a whole command.
+func windowsCommandFlag(program, word string) bool {
+	flags, ok := windowsShellWrappers[program]
+	if !ok {
+		return false
+	}
+	if flags[strings.ToLower(word)] {
+		return true
+	}
+	return isPowerShellHost(program) &&
+		bindsPowerShellParam(word, powerShellCommandParams, powerShellCommandAliases)
+}
+
 // unwrapWindowsShellCommand extracts the payload of a windowsShellWrappers
 // invocation. The flag match is case-insensitive because PowerShell's own
 // parameter binding is: `-Command`, `-command` and `-COMMAND` are one flag.
@@ -109,12 +184,11 @@ var windowsShellWrappers = map[string]map[string]bool{
 // with a space is the rarer spelling), and the alternative measured worse: the
 // payload was not read at all.
 func unwrapWindowsShellCommand(program string, args []string) (string, bool) {
-	flags, ok := windowsShellWrappers[program]
-	if !ok {
+	if _, ok := windowsShellWrappers[program]; !ok {
 		return "", false
 	}
 	for i, a := range args {
-		if flags[strings.ToLower(a)] && i+1 < len(args) {
+		if windowsCommandFlag(program, a) && i+1 < len(args) {
 			return strings.Join(args[i+1:], " "), true
 		}
 	}

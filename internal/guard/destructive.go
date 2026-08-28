@@ -211,13 +211,14 @@ func classifyDestruction(cmd, workdir string, depth int, topLevel bool) Destruct
 	if unescaped, hadEscape := unescapeWordLetters(cmd); hadEscape {
 		worst = maxDestruction(worst, classifyDestruction(unescaped, workdir, depth, topLevel))
 	}
-	// A backslash before a double quote is an ESCAPE inside double quotes, which
-	// the permissive lexer does not model so that `C:\` survives. Both readings
-	// are graded and the worse wins, for the same reason the escape pass above
-	// grades both: each one is right about a shape the other gets wrong. See
-	// lexShellLiteDoubleQuoteEscapes.
-	if strings.Contains(cmd, `\"`) {
-		if program, args, ok := lexShellLiteDoubleQuoteEscapes(cmd); ok {
+	// A backslash before a double quote is an ESCAPE inside double quotes, and a
+	// backslash before a BLANK is an escape outside them — neither is modelled
+	// by the permissive lexer, which keeps every backslash literal so that `C:\`
+	// survives. Both readings are graded and the worse wins, for the same reason
+	// the escape pass above grades both: each one is right about a shape the
+	// other gets wrong. See lexShellLitePOSIXEscapes.
+	if strings.Contains(cmd, `\"`) || strings.Contains(cmd, "\\ ") || strings.Contains(cmd, "\\\t") {
+		if program, args, ok := lexShellLitePOSIXEscapes(cmd); ok {
 			worst = maxDestruction(worst, classifyLexed(program, args, workdir, depth))
 		}
 	}
@@ -408,8 +409,8 @@ func classifyLexedArgv(program string, args []string, workdir string, depth int,
 	// recognisably catastrophic (`python3 -c "…" ` behind `sudo rm -rf /` in the
 	// same segment) still reports the worse of the two. See opaque.go.
 	if !read {
-		if payload, opaque := opaquePayload(program, args); opaque {
-			worst = maxDestruction(worst, gradeUnreadPayload(payload, workdir, depth))
+		if payload, marked, opaque := opaquePayload(program, args); opaque {
+			worst = maxDestruction(worst, gradeUnreadPayload(payload, marked, workdir, depth))
 		}
 	}
 	// Storage destruction (dd onto a device, mkfs, wipefs, ...) is graded
@@ -712,9 +713,17 @@ func lexShellLite(cmd string) (program string, args []string, ok bool) {
 	return lexShellLiteMode(cmd, false)
 }
 
-// lexShellLiteDoubleQuoteEscapes is lexShellLite with the ONE POSIX rule the
-// permissive lexer drops: inside double quotes, a backslash escapes `"`, `\`,
-// `$` and a backtick.
+// lexShellLitePOSIXEscapes is lexShellLite with the two POSIX escape rules the
+// permissive lexer drops: inside double quotes a backslash escapes `"`, `\`,
+// `$` and a backtick, and OUTSIDE quotes a backslash escapes a space, which
+// joins what looks like two words into one.
+//
+// The second rule arrived with `bash -c 'rm'\ '-rf'\ '/'`, measured Allow while
+// /bin/sh ran `rm -rf /`. The three quoted fragments and the two escaped spaces
+// are ONE word to the shell — `rm -rf /` — and the permissive lexer, which
+// treats every backslash as a literal, cut it into three. So the payload the
+// wrapper carries was in no reading of the string, which is the same failure
+// the double-quote rule above was added for, one escape convention over.
 //
 // It is a SECOND READING rather than a replacement, folded by
 // classifyDestruction with the more-severe rule, because the two readings
@@ -732,7 +741,7 @@ func lexShellLite(cmd string) (program string, args []string, ok bool) {
 // trailing separator sits against the closing quote; reading `\"` as an escape
 // there leaves the quote unterminated and the whole command unlexable, which
 // would turn a structural HardDeny into a pass.
-func lexShellLiteDoubleQuoteEscapes(cmd string) (program string, args []string, ok bool) {
+func lexShellLitePOSIXEscapes(cmd string) (program string, args []string, ok bool) {
 	return lexShellLiteMode(cmd, true)
 }
 
@@ -774,6 +783,12 @@ func lexShellLiteMode(cmd string, dqEscapes bool) (program string, args []string
 			continue
 		}
 		switch {
+		case dqEscapes && c == '\\' && i+1 < len(cmd) && (cmd[i+1] == ' ' || cmd[i+1] == '\t'):
+			// An escaped blank outside quotes is part of the word, not a
+			// separator. `'rm'\ '-rf'\ '/'` is one word to the shell.
+			cur.WriteByte(cmd[i+1])
+			inTok = true
+			i++
 		case c == '$' && i+1 < len(cmd) && cmd[i+1] == '\'':
 			lit, next, spanOK := execpolicy.DecodeANSICSpan(cmd, i+2)
 			if !spanOK {

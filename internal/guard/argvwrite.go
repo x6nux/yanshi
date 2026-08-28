@@ -126,9 +126,94 @@ func argvWriteTargets(program string, args []string) []string {
 	if !ok {
 		return nil
 	}
+	// A path named inside the program's own little language rather than in its
+	// argv. sed is the only one here; see sedScriptWriteTargets.
+	out := sedScriptWriteTargets(program, args)
 	if len(spec.requireFlags) > 0 && !hasAnyFlag(args, spec.requireFlags) {
+		return out
+	}
+	return append(out, argvWriteOperands(spec, args)...)
+}
+
+// sedScriptWriteTargets returns the files a sed SCRIPT writes.
+//
+// argvWriters gives sed a requireFlags of `-i`, on the reading that sed writes
+// nothing without it. That is true of its OPERANDS and false of its script:
+// `w FILE` and the `w` flag of `s///` create or truncate the named file, so
+// `sed -e 'w /etc/shadow' f` wrote a path the FS dimension never saw.
+//
+// The scan is deliberately shallow — sed's language is not parsed, only the two
+// spellings that name a file are looked for, and a `w` is only believed where
+// sed can put one: at the start of a command, after an address, or after the
+// closing delimiter of an s-command. `sed 's/low /high/'` contains the letters
+// but in none of those positions.
+func sedScriptWriteTargets(program string, args []string) []string {
+	if program != "sed" {
 		return nil
 	}
+	var out []string
+	sawScriptFlag := false
+	var operands []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			operands = append(operands, args[i+1:]...)
+			break
+		}
+		if !isFlagWord(a) {
+			operands = append(operands, a)
+			continue
+		}
+		switch {
+		case a == "-e" || a == "--expression":
+			sawScriptFlag = true
+			if i+1 < len(args) {
+				out = append(out, sedWriteFiles(args[i+1])...)
+				i++
+			}
+		case strings.HasPrefix(a, "--expression="):
+			sawScriptFlag = true
+			out = append(out, sedWriteFiles(strings.TrimPrefix(a, "--expression="))...)
+		case a == "-f" || a == "--file":
+			// The script is in a file, which is the same boundary
+			// `bash script.sh` has.
+			sawScriptFlag = true
+			i++
+		}
+	}
+	if !sawScriptFlag && len(operands) > 0 {
+		out = append(out, sedWriteFiles(operands[0])...)
+	}
+	return out
+}
+
+// sedWriteFiles finds the `w FILE` targets in one sed script.
+func sedWriteFiles(script string) []string {
+	var out []string
+	for _, piece := range strings.FieldsFunc(script, func(r rune) bool { return r == ';' || r == '\n' }) {
+		piece = strings.TrimSpace(piece)
+		i := strings.Index(piece, "w ")
+		if i < 0 {
+			continue
+		}
+		if i > 0 {
+			// The byte before a real `w` is an s-command's closing delimiter,
+			// the end of a numeric or `$` address, or another flag letter of the
+			// same s-command (`s/x/y/gw FILE`).
+			if p := piece[i-1]; p != '/' && p != '$' && !(p >= '0' && p <= '9') && !isASCIILetter(p) {
+				continue
+			}
+		}
+		if f := strings.TrimSpace(piece[i+2:]); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// argvWriteOperands is argvWriteTargets' argv walk, split out so a program that
+// also names paths inside its own script language can have both.
+func argvWriteOperands(spec argvWriteSpec, args []string) []string {
 	var named []string
 	var operands []string
 	sawValueFlag := false

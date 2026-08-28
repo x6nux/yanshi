@@ -202,10 +202,28 @@ const expansionOperatorBytes = ";&|<>`()\n\r"
 // an operator is emitted single-quoted, which every reader downstream already
 // treats as data.
 //
-// A value containing a quote character of its own cannot be re-emitted by this
-// scheme (there is no escape for `'` inside `'…'` that lexShellLite reads), so
-// it reports false and the expansion is left unresolved — the same
-// "resolve only what can be read" rule the rest of the file follows.
+// THE BAIL-OUT IS PER FIELD, NOT PER VALUE, and the difference was a live
+// bypass. A FIELD that has to be re-quoted and already contains a `'` cannot be
+// re-emitted by this scheme (there is no escape for `'` inside `'…'` that
+// lexShellLite reads), so that one reports false. Testing the WHOLE value for
+// either quote character instead threw away the reading whenever a quote
+// appeared ANYWHERE in it, including in a field that needed no quoting at all:
+//
+//	X='rm -rf / ; echo "x"'; $X
+//
+// The single-quoted assignment puts a `"` in the value, the value also carries
+// a `;`, and the old test saw both and gave up — so `$X` was not expanded, the
+// guard read `X=…; $X` and returned Allow. /bin/sh does not re-scan the result
+// for operators either, but it DOES field-split it, so it ran `rm` with `-rf`,
+// `/`, `;`, `echo` and `"x"` as operands: `rm -rf /` really executed. Per
+// field, the `;` is quoted and the `"x"` is copied through, which is exactly
+// the argv the shell builds.
+//
+// Giving up is still the right answer for the field it applies to, but it has
+// to be the SMALLEST unit that cannot be rendered — the rest of the reading is
+// evidence, and discarding evidence because one word beside it is unreadable is
+// the "not having read it is not the same as having read a safe one" mistake in
+// the other direction.
 func (e *expander) emitExpansion(v string, quoted bool) (string, bool) {
 	if quoted {
 		// The surrounding double quotes are already in the output, so operators
@@ -231,14 +249,15 @@ func (e *expander) emitExpansion(v string, quoted bool) (string, bool) {
 	if !strings.ContainsAny(normalized, expansionOperatorBytes) {
 		return normalized, true
 	}
-	if strings.ContainsAny(normalized, "'\"") {
-		return "", false
-	}
 	fields := strings.Split(normalized, " ")
 	for i, f := range fields {
-		if strings.ContainsAny(f, expansionOperatorBytes) {
-			fields[i] = "'" + f + "'"
+		if !strings.ContainsAny(f, expansionOperatorBytes) {
+			continue
 		}
+		if strings.Contains(f, "'") {
+			return "", false
+		}
+		fields[i] = "'" + f + "'"
 	}
 	return strings.Join(fields, " "), true
 }
