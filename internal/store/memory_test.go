@@ -79,6 +79,11 @@ func TestMemory_TraceResolvesAfterArchive(t *testing.T) {
 
 	before, err := s.MemorySource(id)
 	require.NoError(t, err)
+	// POSITIVE CONTROL. Without it the comparison below is satisfied by a
+	// MemorySource that returns nothing on both sides — measured: gutting the
+	// resolver to `return nil, nil` left this test green while the clause-1 test
+	// went red.
+	require.Len(t, before, 3, "the source must resolve BEFORE the archive too")
 
 	packed, err := s.CompressSession(sid)
 	require.NoError(t, err)

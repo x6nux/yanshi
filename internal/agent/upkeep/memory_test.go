@@ -322,3 +322,30 @@ func idsFromDistillPrompt(prompt string) []string {
 	}
 	return out
 }
+
+// TestMemoryWorker_ExtractedMemoriesCarryProvenance pins W-D-07 at the CALL
+// SITE rather than at the store API.
+//
+// Measured before it existed: swapping this worker back to WriteMemoryScoped —
+// which drops the provenance and is the one-identifier edit a refactor makes by
+// accident — left every package green, including the store tests that cover
+// MemorySource itself. A guarded API with an unguarded caller is the shape this
+// repository keeps finding, so the assertion has to be that THIS worker's rows
+// resolve, not that some row could.
+func TestMemoryWorker_ExtractedMemoriesCarryProvenance(t *testing.T) {
+	s := openStore(t)
+	sid := finishedSession(t, s)
+	New(s, Config{Model: &scriptedModel{extract: func(string) string { return noteReply(2) }}}).
+		RunOnce(context.Background())
+
+	ms, err := s.RecallMemoryScoped(50, store.MemoryFilter{SessionID: sid})
+	require.NoError(t, err)
+	require.Len(t, ms, 2)
+	for _, mem := range ms {
+		src, err := s.MemorySource(mem.ID)
+		require.NoErrorf(t, err, "memory %s records no source log position", mem.ID)
+		require.NotEmpty(t, src, "the recorded position resolves to no messages")
+		require.Equal(t, sid, src[0].SessionID,
+			"the source must be the session the note was extracted from")
+	}
+}
