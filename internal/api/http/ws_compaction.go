@@ -410,6 +410,14 @@ func windowBoundary(kept []int, logTop, flushedFrom int) (hidden int, pinned []i
 const compactionNotDurable = "compaction skipped: the conversation could not be saved, " +
 	"so nothing was dropped from the context"
 
+// compactionNotAligned is shown when the live window and the durable log stopped
+// agreeing. Distinct from compactionNotDurable because the cause and the operator's
+// next step differ: nothing failed to write, the two views diverged, and the
+// honest report is that the context is larger than it should be rather than that
+// the disk is broken.
+const compactionNotAligned = "compaction skipped: the conversation and its saved copy " +
+	"no longer line up, so nothing was dropped from the context"
+
 // commitCompaction installs the compacted window, makes it durable, and records
 // the boundary that lets a later restore rebuild it (INF3 / ADR-0015).
 //
@@ -425,7 +433,7 @@ const compactionNotDurable = "compaction skipped: the conversation could not be 
 // one. The originals were flushed by the caller before compaction ran, so
 // nothing is lost either way; what the rollback avoids is a live window whose
 // durable boundary describes something else.
-func (cs *connSession) commitCompaction(s *Server, newHist []*schema.Message) bool {
+func (cs *connSession) commitCompaction(s *Server, newHist []*schema.Message) (bool, string) {
 	oldHist := cs.history
 	// cs.seq is the next free row in the durable log, i.e. where the summary
 	// (and C3's eviction map) are about to land.
@@ -445,19 +453,25 @@ func (cs *connSession) commitCompaction(s *Server, newHist []*schema.Message) bo
 		if err != nil {
 			slog.Warn("compaction boundary not recorded; context will not be evicted",
 				"session", cs.sessionID, "error", err)
-			return false
+			return false, compactionNotDurable
+		}
+		// Constraint 6: checked here, before a single message is evicted, so a
+		// refusal costs nothing that was not already spent and leaves the window
+		// untouched rather than half-applied.
+		if !alignedWithLog(oldHist, oldRows) {
+			return false, compactionNotAligned
 		}
 	}
 
 	cs.history = newHist
 	if !cs.flushHistory(s) {
 		cs.history = oldHist
-		return false
+		return false, compactionNotDurable
 	}
 	if !recording {
 		// The same short circuit flushHistory applies: nothing was persisted,
 		// so there is no boundary to record and nothing to restore from.
-		return true
+		return true, ""
 	}
 	kept := keptWindowSeqs(oldHist, newHist, oldRows)
 	// The rows the flush just wrote (the summary, and C3's eviction map) are in
@@ -471,7 +485,55 @@ func (cs *connSession) commitCompaction(s *Server, newHist []*schema.Message) bo
 		slog.Warn("compaction boundary not recorded; context will not be evicted",
 			"session", cs.sessionID, "hidden_seq", hidden, "error", err)
 		cs.history = oldHist
+		return false, compactionNotDurable
+	}
+	return true, ""
+}
+
+// alignedWithLog reports whether the live window still maps one-to-one onto the
+// rows the projection returned, which is the cross-layer invariant every
+// boundary calculation here rests on: THE PRE-FLUSH PROJECTION IS THE ACTIVE
+// WINDOW.
+//
+// That invariant is not guaranteed, and assuming it was is the mistake this
+// function exists to stop repeating. It can be broken by an ordinary
+// conversation: flushHistory de-duplicates against the WHOLE log including rows
+// already hidden behind a boundary, so a model that repeats a sentence
+// byte-identical to a hidden one has that sentence silently dropped by ON
+// CONFLICT and never written. Measured on the real WS path: 6 window rows, 5
+// projected.
+//
+// A FAILURE HERE MUST REFUSE THE COMPACTION (ADR-0015 constraint 6). The
+// caller therefore checks this BEFORE it evicts anything, so refusing costs
+// only the summary call that was already spent, and the window is left oversized
+// but complete — the same direction C1 chose for a failed flush. The previous
+// version instead carried on and wrote a boundary with no pins, whose measured
+// effect was NOT the "keeps its recent tail" this comment used to claim: with no
+// kept seqs, windowBoundary clamps to the start of the post-compaction flush and
+// the restored window is the SUMMARY ALONE. A five-message window came back as
+// one. Guessing a boundary is worse than not compacting, every time.
+//
+// Content is deliberately not compared, only role and the tool identifiers.
+// Those three are stored verbatim while content is redacted on write, so
+// comparing text would fail on every session that ever carried a secret and
+// refuse all of their compactions.
+func alignedWithLog(oldHist []*schema.Message, oldRows []store.Message) bool {
+	want := storeMessagesFor(oldHist)
+	if len(want) != len(oldRows) {
+		slog.Warn("live window does not match the durable log; refusing to compact",
+			"window_rows", len(want), "log_rows", len(oldRows),
+			"action", "the context stays oversized but complete; a message the model "+
+				"repeated verbatim from evicted history is the known cause")
 		return false
+	}
+	for i := range want {
+		if want[i].Role != oldRows[i].Role ||
+			want[i].ToolCallID != oldRows[i].ToolCallID ||
+			want[i].ToolName != oldRows[i].ToolName {
+			slog.Warn("live window does not match the durable log; refusing to compact",
+				"row", i, "action", "the context stays oversized but complete")
+			return false
+		}
 	}
 	return true
 }
@@ -502,30 +564,9 @@ func (cs *connSession) commitCompaction(s *Server, newHist []*schema.Message) bo
 // fails the identity test. completeToolPairs puts its row back, which is also
 // what keeps ADR-0015 constraint 5(b) true no matter how this set was derived.
 //
-// The alignment is verified rather than assumed, on role and the tool
-// identifiers only. Content is deliberately NOT compared: the store redacts
-// secrets on write, so a durable row legitimately differs from the window
-// message it came from, and comparing text would silently disable pinning on
-// exactly the sessions that handle credentials. A failed check returns no pins
-// at all, degrading to the kept tail rather than to a wrong window.
+// Alignment is CHECKED SEPARATELY AND FIRST, by alignedWithLog, because a
+// failure there is a refusal rather than a degradation. See its doc.
 func keptWindowSeqs(oldHist, newHist []*schema.Message, oldRows []store.Message) []int {
-	want := storeMessagesFor(oldHist)
-	if len(want) != len(oldRows) {
-		slog.Warn("compaction window does not align with the durable log; pinning nothing",
-			"window_rows", len(want), "log_rows", len(oldRows),
-			"action", "the window keeps its recent tail; older pinned messages stay searchable")
-		return nil
-	}
-	for i := range want {
-		if want[i].Role != oldRows[i].Role ||
-			want[i].ToolCallID != oldRows[i].ToolCallID ||
-			want[i].ToolName != oldRows[i].ToolName {
-			slog.Warn("compaction window does not align with the durable log; pinning nothing",
-				"row", i, "action", "the window keeps its recent tail")
-			return nil
-		}
-	}
-
 	survived := make(map[*schema.Message]bool, len(newHist))
 	for _, m := range newHist {
 		survived[m] = true
@@ -717,7 +758,7 @@ func maybeAutoCompact(ctx context.Context, s *Server,
 	if !did {
 		return
 	}
-	if !cs.commitCompaction(s, newHist) {
+	if ok, _ := cs.commitCompaction(s, newHist); !ok {
 		return // window unchanged — same silent no-op as an under-threshold turn
 	}
 	cs.tokensIn = ta // refresh the footer ctx counter (statusFrame reads cs.tokensIn)
@@ -790,10 +831,10 @@ func compactNow(ctx context.Context, s *Server,
 		conn.write(cs.statusFrame(s))
 		return
 	}
-	if !cs.commitCompaction(s, newHist) {
+	if ok, why := cs.commitCompaction(s, newHist); !ok {
 		// Same reasoning as the pre-compaction flush above: an explicit request
 		// that did not happen has to say so, not resolve as "nothing changed".
-		conn.write(proto.NewError(compactionNotDurable))
+		conn.write(proto.NewError(why))
 		conn.write(cs.statusFrame(s))
 		return
 	}

@@ -148,6 +148,23 @@ func (s *Store) AppendMessages(sessionID string, msgs []Message) (inserted int, 
 	}
 	batch := make([]Message, len(msgs))
 	copy(batch, msgs)
+	// REDACT BEFORE DERIVING KEYS, so a key is a function of the text that is
+	// actually stored. Deriving from the raw text and storing the redacted text
+	// makes the key permanently unreachable from the row: a reconnect rebuilds
+	// the live window FROM the redacted rows, the next flush hashes that
+	// redacted text, nothing matches, and the whole window is inserted again.
+	// Measured on a session with a registered secret: the log grew by one copy
+	// of every message on each reconnect, 2 to 3 to 4 to 5, with no bound.
+	//
+	// Redaction is idempotent and is a no-op when no redactor is injected, so
+	// this changes nothing for sessions that never carried a secret. For one
+	// that did, the first flush after the upgrade re-inserts the window once —
+	// the same one-off it was already paying every reconnect — and is stable
+	// from then on.
+	for i := range batch {
+		batch[i].Content = s.redact(batch[i].Content)
+		batch[i].ToolArgs = s.redact(batch[i].ToolArgs)
+	}
 	AssignDedupKeys(batch)
 
 	now := time.Now().Unix()
@@ -168,8 +185,8 @@ func (s *Store) AppendMessages(sessionID string, msgs []Message) (inserted int, 
 				   (id, session_id, seq, role, content, tool_call_id, tool_name, tool_args, dedup_key, created_at)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				 ON CONFLICT(session_id, dedup_key) WHERE dedup_key <> '' DO NOTHING`,
-				newID(), sessionID, seq, m.Role, s.redact(m.Content),
-				m.ToolCallID, m.ToolName, s.redact(m.ToolArgs), m.DedupKey, now,
+				newID(), sessionID, seq, m.Role, m.Content,
+				m.ToolCallID, m.ToolName, m.ToolArgs, m.DedupKey, now,
 			)
 			if e != nil {
 				return fmt.Errorf("store: append message seq=%d: %w", seq, e)

@@ -802,18 +802,29 @@ func TestForkSession_PreservesToolFields(t *testing.T) {
 // message that happens to be byte-identical to one it inherited.
 //
 // Inheriting the keys (see above) is what makes this worth pinning, because the
-// naive reading is that the inherited row now suppresses the new one. It does
-// not, and the reason is the shape the two production callers actually use:
+// naive reading is that the inherited row now suppresses the new one.
 //
-//   - flushHistory re-flushes the WHOLE window, so AssignDedupKeys sees both
-//     copies in one batch and gives the second one ordinal 1 — a different key.
+// It does not, but the reason is NARROWER than an earlier version of this
+// comment claimed, and the difference matters. What is true:
+//
+//   - flushHistory re-flushes the WHOLE window, so while both copies are IN the
+//     window AssignDedupKeys sees them together and gives the second one
+//     ordinal 1 — a different key, and it is recorded.
 //   - tools.milestone supplies its own nonce'd key, so it never derives one
 //     from content at all.
 //
+// What is NOT true is that this covers every case. Once the first copy has been
+// evicted from the window it is no longer in the batch, while ON CONFLICT still
+// matches it in the log — so the repeat IS suppressed and never written. That is
+// a property of de-duplicating against the whole log rather than anything to do
+// with forks: the identical sequence on a compacted SOURCE session behaves the
+// same way. It is what ADR-0015 constraint 6 exists for, and
+// http.alignedWithLog now detects it and refuses to compact rather than
+// computing a boundary from positions that do not line up.
+//
 // A caller that appends ONLY the new duplicate, with no key and without its
-// predecessor in the batch, cannot be distinguished from a re-flush and is
-// skipped. That is the pre-existing meaning of a content-derived key, not a
-// fork-specific hazard: the same call on the SOURCE session is skipped too.
+// predecessor in the batch, is likewise indistinguishable from a re-flush and is
+// skipped — again on the source session too, not just on a fork.
 func TestForkThenAppend_DoesNotSkipRows(t *testing.T) {
 	s, _ := openTempStore(t)
 	sid := newSession(t, s)

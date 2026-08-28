@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
+	"github.com/x6nux/yanshi/internal/secrets"
 	"github.com/x6nux/yanshi/internal/store"
 )
 
@@ -891,4 +892,184 @@ func TestCompleteToolPairs(t *testing.T) {
 		"an empty tool_call_id cannot be paired up, and guessing would be how an "+
 			"orphan gets manufactured rather than avoided")
 	assert.Nil(t, completeToolPairs(nil, rows))
+}
+
+// ---------------------------------------------------------------------------
+// INF3 round 3: the cross-layer invariant, asserted directly
+// ---------------------------------------------------------------------------
+
+// assertWindowMatchesLog checks the invariant every boundary calculation rests
+// on — THE PROJECTION IS THE ACTIVE WINDOW — using the same predicate production
+// gates on, so the test cannot drift from the check it is about.
+//
+// Content is compared separately and only when the session has no redactor. A
+// redacted session's live window legitimately holds the raw secret while its
+// rows hold the mask; that difference is the feature, and the invariant the
+// boundary needs is structural.
+func assertWindowMatchesLog(t *testing.T, st *store.Store, sid string, hist []*schema.Message, redacted bool) {
+	t.Helper()
+	proj, err := st.ProjectWindow(sid)
+	require.NoError(t, err)
+	rows := storeMessagesFor(hist)
+	require.Equal(t, len(rows), len(proj),
+		"the live window has %d rows but projects to %d: every boundary this "+
+			"package computes assumes these are the same list", len(rows), len(proj))
+	assert.True(t, alignedWithLog(hist, proj),
+		"the window and its projection diverged structurally")
+	if !redacted {
+		assert.Equal(t, rowSigs(proj), rowSigs(rows))
+	}
+}
+
+// TestWindowMatchesLogAcrossShapes pins the invariant in every shape a session
+// reaches it from. It was previously asserted nowhere, and two of these five
+// were measured broken.
+func TestWindowMatchesLogAcrossShapes(t *testing.T) {
+	t.Run("fresh compaction", func(t *testing.T) {
+		st, sid, compacted, _ := compactedFixture(t)
+		assertWindowMatchesLog(t, st, sid, compacted, false)
+	})
+
+	t.Run("after a reconnect", func(t *testing.T) {
+		st, sid, _, srv := compactedFixture(t)
+		fresh := &connSession{perm: &permModeState{}}
+		require.NoError(t, fresh.loadSession(srv, sid))
+		assertWindowMatchesLog(t, st, sid, fresh.history, false)
+	})
+
+	t.Run("after a second compaction", func(t *testing.T) {
+		st, sid, _, srv := compactedFixture(t)
+		fresh := &connSession{perm: &permModeState{}}
+		require.NoError(t, fresh.loadSession(srv, sid))
+		fresh.history = append(fresh.history, labelledHistory("second", 8)...)
+		wc, client, cleanup := newWSPair(t)
+		defer cleanup()
+		_ = client
+		fm := einollm.NewFakeModel([]string{"SECOND SUMMARY"}, nil)
+		maybeAutoCompact(context.Background(), srv,
+			map[string]model.BaseChatModel{"fm": fm}, wc, fresh)
+		assertWindowMatchesLog(t, st, sid, fresh.history, false)
+	})
+
+	t.Run("a fork of a compacted session", func(t *testing.T) {
+		st, sid, _, srv := compactedFixture(t)
+		forkID, err := st.ForkSession(sid, -1)
+		require.NoError(t, err)
+		forked := &connSession{perm: &permModeState{}}
+		require.NoError(t, forked.loadSession(srv, forkID))
+		assertWindowMatchesLog(t, st, forkID, forked.history, false)
+
+		// And it survives the fork's first flush, which is where the inherited
+		// boundary used to be overwritten by a duplicated window.
+		forked.persistMessages(srv)
+		assertWindowMatchesLog(t, st, forkID, forked.history, false)
+	})
+
+	t.Run("a session with a redactor", func(t *testing.T) {
+		// The dedup key used to be derived from the RAW text while the row
+		// stored the masked text, so a reconnect — which rebuilds the window
+		// from the masked rows — hashed something the log had never seen and
+		// re-inserted the entire window. Measured growth per reconnect: 2, 3,
+		// 4, 5. bootstrap installs a redactor unconditionally, so this is the
+		// ordinary configuration rather than an exotic one.
+		st := persistStore(t)
+		red := secrets.NewRedactor()
+		red.Register("sk-live-abcdef123456")
+		st.SetRedactor(red)
+		sid, err := st.CreateSession("s")
+		require.NoError(t, err)
+		srv := &Server{store: st}
+		cs := &connSession{perm: &permModeState{}, sessionID: sid}
+		cs.history = []*schema.Message{
+			schema.UserMessage("here is my key sk-live-abcdef123456, use it"),
+			schema.AssistantMessage("noted, I will not echo it", nil),
+		}
+		cs.persistMessages(srv)
+
+		rows, err := st.Messages(sid)
+		require.NoError(t, err)
+		require.Len(t, rows, 2)
+		require.NotContains(t, rows[0].Content, "sk-live-abcdef123456",
+			"the secret must not reach the database")
+
+		// Three reconnect + flush cycles. Each one used to add a full copy.
+		for i := 0; i < 3; i++ {
+			next := &connSession{perm: &permModeState{}}
+			require.NoError(t, next.loadSession(srv, sid))
+			next.persistMessages(srv)
+			rows, err = st.Messages(sid)
+			require.NoError(t, err)
+			require.Len(t, rows, 2, "reconnect %d duplicated the log", i+1)
+			assertWindowMatchesLog(t, st, sid, next.history, true)
+		}
+	})
+}
+
+// TestCompactionRefusedWhenWindowAndLogDisagree is ADR-0015 constraint 6, driven
+// through the real WS path by the conversation that actually causes it.
+//
+// flushHistory de-duplicates against the WHOLE log, including rows already
+// hidden behind a boundary. So a model that repeats a sentence byte-identical to
+// an evicted one has that sentence dropped by ON CONFLICT and never written: the
+// window has a row the log does not. Compacting from there would compute a
+// boundary against the wrong positions, and the previous behaviour — carry on
+// and write a boundary with no pins — restored the SUMMARY ALONE, five messages
+// down to one.
+//
+// The required behaviour is to refuse: the context stays oversized but complete,
+// which is the direction C1 already chose for a failed flush.
+func TestCompactionRefusedWhenWindowAndLogDisagree(t *testing.T) {
+	st, sid, compacted, srv := compactedFixture(t)
+	hidden, err := st.HiddenSeq(sid)
+	require.NoError(t, err)
+	require.Greater(t, hidden, 0)
+
+	rows, err := st.Messages(sid)
+	require.NoError(t, err)
+	var evicted string
+	for _, r := range rows {
+		if r.Seq < hidden && r.Role == store.RoleAssistant && r.Content != "" {
+			evicted = r.Content
+			break
+		}
+	}
+	require.NotEmpty(t, evicted, "the fixture must have evicted some assistant prose")
+
+	// The model says the same thing again, word for word.
+	cs := &connSession{perm: &permModeState{}}
+	require.NoError(t, cs.loadSession(srv, sid))
+	cs.history = append(cs.history, schema.AssistantMessage(evicted, nil))
+	cs.persistMessages(srv)
+
+	proj, err := st.ProjectWindow(sid)
+	require.NoError(t, err)
+	require.Less(t, len(proj), len(storeMessagesFor(cs.history)),
+		"the repeated line must have been swallowed by dedup — that is the trigger")
+
+	before := append([]*schema.Message(nil), cs.history...)
+	beforeEvents, err := st.ContextEvents(sid)
+	require.NoError(t, err)
+
+	wc, client, cleanup := newWSPair(t)
+	defer cleanup()
+	_ = client
+	fm := einollm.NewFakeModel([]string{"SECOND SUMMARY"}, nil)
+	maybeAutoCompact(context.Background(), srv,
+		map[string]model.BaseChatModel{"fm": fm}, wc, cs)
+
+	assert.Equal(t, msgSigs(before), msgSigs(cs.history),
+		"a compaction that cannot locate its window must leave the window alone")
+	afterEvents, err := st.ContextEvents(sid)
+	require.NoError(t, err)
+	assert.Len(t, afterEvents, len(beforeEvents),
+		"no boundary may be written when the positions it would be built from "+
+			"are not trustworthy")
+
+	// And the restored window is still the conversation, not a lone summary.
+	again := &connSession{perm: &permModeState{}}
+	require.NoError(t, again.loadSession(srv, sid))
+	assert.GreaterOrEqual(t, len(again.history), len(compacted),
+		"refusing leaves the context oversized but complete; it must never "+
+			"shrink to the summary alone")
+	assertToolPairsIntact(t, again.history)
 }
