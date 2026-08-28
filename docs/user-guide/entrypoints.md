@@ -136,7 +136,9 @@ Usage of goal:
   -max-iters int
     	maximum goal loop iterations (default 5)
   -max-tokens int
-    	token budget for the whole goal run (0 = unlimited)
+    	token budget for the whole goal run (0 = unlimited); when resuming, a value typed here replaces the stored one
+  -reset
+    	discard the saved resume point for -workdir and exit, so the next run starts over with a full budget
   -tier string
     	difficulty tier: "auto" (model classifies, keyword table as fallback) or t0..t4 (quick-fix, standard, designed, team, autonomous) (default "auto")
   -workdir string

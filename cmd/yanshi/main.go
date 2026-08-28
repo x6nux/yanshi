@@ -812,16 +812,24 @@ func runGoal(args []string) int {
 	workdir := fs.String("workdir", ".", "working directory for implementation")
 	agent := fs.String("agent", "claudecode", "external agent for implementation (real path)")
 	maxIters := fs.Int("max-iters", 5, "maximum goal loop iterations")
-	maxTokens := fs.Int("max-tokens", 0, "token budget for the whole goal run (0 = unlimited)")
+	maxTokens := fs.Int("max-tokens", 0, "token budget for the whole goal run (0 = unlimited); when resuming, a value typed here replaces the stored one")
 	goalText := fs.String("goal", "", "goal text (alternatively, pass as positional arg)")
 	tierFlag := fs.String("tier", "auto", `difficulty tier: "auto" (model classifies, keyword table as fallback) or t0..t4 (quick-fix, standard, designed, team, autonomous)`)
 	history := fs.Int("history", 0, "print the last N goal run records and exit (0 = run a goal)")
+	reset := fs.Bool("reset", false, "discard the saved resume point for -workdir and exit, so the next run starts over with a full budget")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 
 	if *history > 0 {
 		return printGoalHistory(*configPath, *history, os.Stdout)
+	}
+	// Ahead of the goal-text check: clearing a resume point is about the
+	// working directory, not about any particular goal, so requiring the
+	// operator to retype the goal text they are trying to abandon would be
+	// backwards.
+	if *reset {
+		return resetGoalRun(*configPath, *workdir, os.Stdout)
 	}
 
 	// Goal text: -goal flag takes priority, then first positional arg.
@@ -1003,18 +1011,24 @@ func runGoal(args []string) int {
 }
 
 // absWorkdir converts a relative path to absolute.
+//
+// The result is cleaned because it is not only a path any more: the goal loop
+// keys its resume point on it. Without this, `-workdir /repo` and
+// `-workdir /repo/` are two different keys, so a trailing slash typed on the
+// second run makes the first run's progress and spent budget silently vanish —
+// a fresh start with a fresh budget and no message saying why.
 func absWorkdir(p string) (string, error) {
 	if p == "" || p == "." {
 		return os.Getwd()
 	}
 	if strings.Contains(p, ":") || strings.HasPrefix(p, "/") || strings.HasPrefix(p, "\\") {
-		return p, nil // already absolute (Windows drive letter or Unix root)
+		return filepath.Clean(p), nil // already absolute (Windows drive letter or Unix root)
 	}
 	wd, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
-	return wd + string(os.PathSeparator) + p, nil
+	return filepath.Clean(wd + string(os.PathSeparator) + p), nil
 }
 
 // resolveGoalTier maps the -tier flag to a Tier via the shared goalloop mapping.
@@ -1116,6 +1130,38 @@ func runLightweightGoal(ctx context.Context, app *bootstrap.App, tier goalloop.T
 // is the column that matters: "the run stopped" and "the run stopped because
 // it ran out of tokens" are different facts, and only the second tells you
 // whether to raise the budget.
+// resetGoalRun discards the goal loop's saved resume point for workdir, so the
+// next run of that goal starts from iteration 1 with its budget whole again.
+//
+// It opens the store directly rather than going through bootstrap.Build, the
+// same way printGoalHistory does: this touches one kv row and has no reason to
+// need a model provider or an agent CLI to be configured.
+func resetGoalRun(configPath, workdir string, out io.Writer) int {
+	wd, err := absWorkdir(workdir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "yanshi goal -reset: bad workdir: %v\n", err)
+		return exitErr
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "yanshi goal -reset: config: %v\n", err)
+		return exitErr
+	}
+	st, err := store.Open(cfg.Storage.SQLitePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "yanshi goal -reset: open store: %v\n", err)
+		return exitErr
+	}
+	defer st.Close()
+
+	if err := goalloop.ResetGoalState(st, wd); err != nil {
+		fmt.Fprintf(os.Stderr, "yanshi goal -reset: %v\n", err)
+		return exitErr
+	}
+	fmt.Fprintf(out, "goal state cleared for %s\n", wd)
+	return exitOK
+}
+
 func printGoalHistory(configPath string, limit int, out io.Writer) int {
 	cfg, err := config.Load(configPath)
 	if err != nil {
