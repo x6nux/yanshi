@@ -317,6 +317,13 @@ func (s *Store) migrate() error {
 	); err != nil {
 		return err
 	}
+	// INF3: pinned_seqs arrived after context_events shipped, so CREATE TABLE IF
+	// NOT EXISTS skips it on every database that already has the table — which is
+	// every database the previous round touched. Without this line the column
+	// exists only for fresh installs, and an upgrade fails on the first read.
+	if err := s.addColumnIfMissing("context_events", "pinned_seqs", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	// C13: memory consolidation lineage. A distillation writes a merged row and
 	// marks its inputs superseded — it never deletes — so these three columns
 	// are what make the merge auditable and reversible. Pre-C13 rows default to
@@ -504,9 +511,14 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
 
 -- INF3 (ADR-0015): compaction markers. The messages table stays byte-identical
 -- and append-only; what changes is that the active window is now a PROJECTION
--- over it rather than a raw SELECT. A 'compact' event says "seq < hidden_seq no
--- longer enters the window"; an 'undo' event pops the most recent one. Nothing
--- is ever updated or deleted here — reverting is expressed by appending.
+-- over it rather than a raw SELECT. A 'compact' event says "the kept tail starts
+-- at hidden_seq, plus these scattered survivors below it"; an 'undo' event pops
+-- the most recent one. Nothing is ever updated or deleted here — reverting is
+-- expressed by appending.
+--
+-- pinned_seqs is not an optimisation. ctxcompact.Plan pins messages ANYWHERE in
+-- the history, so a compacted window is a set with holes and no single watermark
+-- describes it; see store.contextBoundary for the full reversal.
 --
 -- No foreign key and no DeleteSession cascade, deliberately. Session ids are
 -- random and never reused, so events left behind by a deleted session are
@@ -519,6 +531,7 @@ CREATE TABLE IF NOT EXISTS context_events (
     session_id  TEXT    NOT NULL,
     kind        TEXT    NOT NULL,
     hidden_seq  INTEGER NOT NULL,
+    pinned_seqs TEXT    NOT NULL DEFAULT '',
     created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_context_events_session

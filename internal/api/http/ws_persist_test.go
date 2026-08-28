@@ -5,6 +5,7 @@ package http
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -536,16 +537,13 @@ func compactedFixture(t *testing.T) (*store.Store, string, []*schema.Message, *S
 // window came back LARGER than it went in, the summary was paid for and thrown
 // away, and the next turn compacted the same history again.
 //
-// What the assertions pin, and why they are not "restored == compacted": the
-// boundary is one integer, so the projection can only express a CONTIGUOUS
-// suffix of the log, while ctxcompact.Plan pins every user-original message
-// wherever it sits. On this fixture the compacted window is
-// [user request, tool call, tool result, summary] and the user request is at
-// seq 0 with eight evicted messages after it — a hole no watermark can
-// describe. So the guarantee is one-directional and that is what is checked:
-// the restored window is a suffix of the compacted one, never larger, and
-// contains nothing compaction evicted. The last property is the one that fails
-// loudly on the old code, where all eight evicted messages came back.
+// The assertion is EQUALITY, message for message (ADR-0015 constraint 5). On
+// this fixture the compacted window is [user request, tool call, tool result,
+// summary] and the user request sits at seq 0 with eight evicted messages after
+// it — a hole in the middle. An earlier cut of the boundary carried a single
+// watermark, could only name a suffix, and silently dropped that opening
+// request: the model came back from a restore not knowing what it had been
+// asked to do. pinned_seqs is what closes the hole.
 func TestReconnectPreservesCompaction(t *testing.T) {
 	_, sid, compacted, srv := compactedFixture(t)
 
@@ -570,7 +568,7 @@ func TestRestoreSessionPreservesCompaction(t *testing.T) {
 	assertRestoredWindow(t, fresh.history, compacted)
 
 	// The durable watermark stays a LOG coordinate even though the window is a
-	// suffix — commitCompaction subtracts from it to place the next boundary.
+	// subset — commitCompaction derives the next boundary from it.
 	all, err := st.Messages(sid)
 	require.NoError(t, err)
 	assert.Equal(t, len(all), fresh.seq)
@@ -578,61 +576,96 @@ func TestRestoreSessionPreservesCompaction(t *testing.T) {
 		"the originals must still be in the log, just out of the window")
 }
 
-// assertRestoredWindow holds both restore paths to the same contract.
+// assertRestoredWindow holds both restore paths to the same contract: the
+// restored window IS the compacted window, message for message.
 func assertRestoredWindow(t *testing.T, restored, compacted []*schema.Message) {
 	t.Helper()
-	require.NotEmpty(t, restored)
-	require.LessOrEqual(t, len(restored), len(compacted),
-		"restored %d messages from a compacted window of %d: the projection is "+
-			"missing or too wide, so a restore undoes compaction and the summary "+
-			"is paid for again next turn", len(restored), len(compacted))
+	require.Equal(t, msgSigs(compacted), msgSigs(restored),
+		"the restored window must equal the compacted one message for message: "+
+			"anything extra is an evicted message coming back (the bug), anything "+
+			"missing is a message ctxcompact.Plan judged least droppable")
+	assertToolPairsIntact(t, restored)
+}
 
-	// Nothing compaction evicted may reappear. On the unprojected code every one
-	// of the eight evicted progress reports came back.
-	for _, m := range restored {
-		assert.NotContains(t, m.Content, "an ordinary progress report",
-			"an evicted message came back into the window")
+// assertToolPairsIntact: every tool result in the window must have its call in
+// the same window (ADR-0015 constraint 5b). A boundary that cuts between them
+// leaves an orphan result, and providers reject the whole request rather than
+// the one message — so this fails as a hard error at runtime, not as degraded
+// quality.
+func assertToolPairsIntact(t *testing.T, msgs []*schema.Message) {
+	t.Helper()
+	seen := map[string]bool{}
+	for _, m := range msgs {
+		if m == nil {
+			continue
+		}
+		for _, tc := range m.ToolCalls {
+			seen[tc.ID] = true
+		}
+		if m.Role == schema.Tool {
+			assert.True(t, seen[m.ToolCallID],
+				"tool result %q has no preceding tool call in the window", m.ToolCallID)
+		}
 	}
+}
 
-	// And what did come back is exactly the tail of the compacted window —
-	// same messages, same order, not merely the same count.
-	want := msgSigs(compacted)[len(compacted)-len(restored):]
-	assert.Equal(t, want, msgSigs(restored))
-
-	require.Contains(t, restored[len(restored)-1].Content, "SUMMARY",
-		"the summary must survive the projection")
+// labelledHistory is evictableHistory with per-message distinct text.
+//
+// evictableHistory repeats one string, which is exactly the shape that makes
+// the durable log's dedup keys alias: AppendMessages identifies rows by a hash
+// that only distinguishes byte-identical siblings by their ordinal within the
+// flushed batch, and compaction changes that batch. Any test that appends a
+// SECOND round of history needs distinct text, or it is measuring the aliasing
+// rather than the boundary.
+func labelledHistory(label string, n int) []*schema.Message {
+	out := []*schema.Message{schema.UserMessage("start the " + label + " phase")}
+	for i := 0; i < n; i++ {
+		out = append(out, schema.AssistantMessage(fmt.Sprintf(
+			"%s progress note %d, %s", label, i, strings.Repeat("with detail ", 8)), nil))
+	}
+	return out
 }
 
 // TestSecondCompactionAfterRestoreAdvancesTheBoundary: compaction boundaries
 // stack, and the second one is computed from a session that was rebuilt from a
 // projection rather than grown in memory.
 //
-// That is the case where the watermark is easiest to get wrong. cs.seq is a LOG
-// coordinate — commitCompaction subtracts the kept tail from it — but a restore
+// That is the case where the boundary is easiest to get wrong. cs.seq is a LOG
+// coordinate — commitCompaction derives the boundary from it — but a restore
 // only loads the WINDOW, so deriving cs.seq from the restored slice (as the
-// shared snapshot mapper does) would make the next boundary point into the
-// middle of history and un-hide everything the first compaction evicted.
+// shared snapshot mapper does) would aim the next boundary into the middle of
+// history and un-hide everything the first compaction evicted.
+//
+// It also pins that the PINS survive a second round: the pin list belongs to the
+// event, so an undo has to restore the previous event's pins rather than clear
+// them.
 func TestSecondCompactionAfterRestoreAdvancesTheBoundary(t *testing.T) {
 	st, sid, _, srv := compactedFixture(t)
 
 	first, err := st.HiddenSeq(sid)
 	require.NoError(t, err)
 	require.Greater(t, first, 0, "the first compaction must have set a boundary")
+	firstEvents, err := st.ContextEvents(sid)
+	require.NoError(t, err)
+	require.Len(t, firstEvents, 1)
+	firstPins := firstEvents[0].PinnedSeqs
+	require.NotEmpty(t, firstPins, "the opening user request sits below the tail and must be pinned")
 
-	// Reconnect, then run another turn's worth of evictable history on top.
+	// Reconnect, then run another turn's worth of history on top.
 	fresh := &connSession{perm: &permModeState{}}
 	require.NoError(t, fresh.loadSession(srv, sid))
 	rows, err := st.Messages(sid)
 	require.NoError(t, err)
 	require.Equal(t, len(rows), fresh.seq, "cs.seq must be a log coordinate, not a window length")
 
-	fresh.history = append(fresh.history, evictableHistory(8)...)
+	fresh.history = append(fresh.history, labelledHistory("second", 8)...)
 	wc, client, cleanup := newWSPair(t)
 	defer cleanup()
 	_ = client
 	fm := einollm.NewFakeModel([]string{"SECOND SUMMARY"}, nil)
 	maybeAutoCompact(context.Background(), srv,
 		map[string]model.BaseChatModel{"fm": fm}, wc, fresh)
+	compacted := fresh.history
 
 	second, err := st.HiddenSeq(sid)
 	require.NoError(t, err)
@@ -640,17 +673,89 @@ func TestSecondCompactionAfterRestoreAdvancesTheBoundary(t *testing.T) {
 		"a later compaction must move the boundary forward, never back over "+
 			"history an earlier one already superseded")
 
-	// And a restore after both still shows nothing that was evicted.
+	// A restore after both rounds still reproduces the window exactly.
 	again := &connSession{perm: &permModeState{}}
 	require.NoError(t, again.loadSession(srv, sid))
-	for _, m := range again.history {
-		assert.NotContains(t, m.Content, "an ordinary progress report")
-	}
-	assert.Contains(t, again.history[len(again.history)-1].Content, "SUMMARY")
+	assertRestoredWindow(t, again.history, compacted)
 
-	// Undo pops exactly one layer, back to the first boundary.
-	require.NoError(t, st.AppendContextEvent(sid, store.ContextEventUndo, 0))
+	// Undo pops exactly one layer — back to the first boundary AND its pins.
+	require.NoError(t, st.AppendContextEvent(sid, store.ContextEventUndo, 0, nil))
 	back, err := st.HiddenSeq(sid)
 	require.NoError(t, err)
 	assert.Equal(t, first, back)
+	restored := &connSession{perm: &permModeState{}}
+	require.NoError(t, restored.loadSession(srv, sid))
+	for _, seq := range firstPins {
+		assert.Contains(t, msgSigs(restored.history), msgSig(&schema.Message{
+			Role: schema.User, Content: rows[seq].Content}),
+			"undo must restore the previous event's pins, not clear them")
+	}
+}
+
+// TestWindowBoundary is a direct unit test of the split that decides what a
+// restore sees. The previous round's equivalent function had NO test: a review
+// probe put `return 0` on its first line and the whole package stayed green,
+// because every assertion elsewhere was satisfied by the degenerate
+// "summary only" window it produced.
+func TestWindowBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		kept        []int
+		logTop      int
+		flushedFrom int
+		wantHidden  int
+		wantPinned  []int
+	}{{
+		// The measured production shape: an opening user request at seq 0, eight
+		// evicted messages, then the kept tool pair and the summary.
+		name: "hole in the middle", kept: []int{0, 9, 10, 11}, logTop: 12, flushedFrom: 11,
+		wantHidden: 9, wantPinned: []int{0},
+	}, {
+		// A clean suffix needs no pins at all — the range says everything.
+		name: "contiguous tail", kept: []int{7, 8, 9}, logTop: 10, flushedFrom: 9,
+		wantHidden: 7, wantPinned: nil,
+	}, {
+		// Nothing was evicted: hidden 0 means "the whole log is the window", and
+		// ProjectWindow then runs the plain unbounded query.
+		name: "everything kept", kept: []int{0, 1, 2}, logTop: 3, flushedFrom: 2,
+		wantHidden: 0, wantPinned: nil,
+	}, {
+		// The fail-safe. A lookup that resolved nothing must not put hidden at
+		// the log top, which would project an EMPTY window; it clamps to where
+		// the post-compaction flush began, so the summary is always included.
+		name: "lookup found nothing", kept: nil, logTop: 12, flushedFrom: 11,
+		wantHidden: 11, wantPinned: nil,
+	}, {
+		// Scattered pins stay scattered; only the contiguous run at the top
+		// becomes the range.
+		name: "several pins", kept: []int{0, 3, 4, 20, 21}, logTop: 22, flushedFrom: 21,
+		wantHidden: 20, wantPinned: []int{0, 3, 4},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			hidden, pinned := windowBoundary(tc.kept, tc.logTop, tc.flushedFrom)
+			assert.Equal(t, tc.wantHidden, hidden)
+			assert.Equal(t, tc.wantPinned, pinned)
+
+			// The property the two fields exist for: together they select
+			// exactly `kept` and nothing else.
+			selected := map[int]bool{}
+			for _, s := range tc.kept {
+				if s >= hidden {
+					selected[s] = true
+				}
+			}
+			for _, s := range pinned {
+				selected[s] = true
+			}
+			for _, s := range tc.kept {
+				assert.True(t, selected[s], "seq %d was kept but the boundary drops it", s)
+			}
+			for s := hidden; s < tc.logTop; s++ {
+				if len(tc.kept) > 0 {
+					assert.Contains(t, tc.kept, s,
+						"seq %d is inside the range but was not in the window", s)
+				}
+			}
+		})
+	}
 }

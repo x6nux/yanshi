@@ -354,38 +354,54 @@ func (cs *connSession) flushHistory(s *Server) bool {
 	return true
 }
 
-// keptTailRows counts the durable log rows behind the trailing run of messages
-// that compaction kept verbatim.
+// windowBoundary splits the compacted window's row positions into ADR-0015's
+// two fields: where the contiguous kept tail starts, and the scattered
+// survivors below it.
 //
-// ctxcompact.Assemble builds the new window out of the very *schema.Message
-// values it was handed, appending only the freshly minted eviction map and
-// summary at the tail, so pointer identity is an exact test for "this message
-// survived". Walking backwards from the end of the old window stops at the
-// first evicted message, and that stopping point is what makes the answer
-// usable as a boundary: the durable log is ordered by seq and a projection can
-// only express a contiguous suffix of it.
+// kept is every seq the compacted window occupies, logTop is the log's next
+// free seq after the post-compaction flush, and flushedFrom is where that flush
+// began writing. The result reproduces `kept` EXACTLY — the projection selects
+// `seq >= hidden OR seq IN pinned`, every seq in [hidden, logTop) is kept by
+// construction of the walk, and every kept seq below hidden is listed — which
+// is what ADR-0015's fifth constraint demands. No message Plan pinned is lost
+// and no evicted message is readmitted, in either direction.
 //
-// Messages pinned ABOVE the stopping point are not expressible that way.
-// ctxcompact.Plan pins every user-original message wherever it sits, so the
-// pinned set is generally NOT a suffix — a window of "first user request +
-// recent tail + summary" has a hole in the middle that no single watermark can
-// describe. Those messages stay in the log and stay searchable; what the
-// boundary guarantees is the property the bug violated, namely that a restored
-// window never contains anything compaction evicted and never grows.
+// It walks DOWN FROM THE LOG TOP over real row positions rather than counting
+// backwards through the window's messages. The earlier version did the latter,
+// assuming the window's trailing messages occupy the log's trailing rows, and
+// that assumption is false: AppendMessages identifies rows by dedup key, so a
+// window containing byte-identical duplicates has its tail messages resolve to
+// EARLIER rows and the log's real tail is something else entirely. Measured on
+// a session compacted twice — the count-backwards boundary readmitted the first
+// compaction's summary, a message the second compaction had evicted.
 //
-// An Assemble that copied its inputs instead of reusing them would make this
-// return 0, degrading the restored window to "summary only" — smaller than
-// intended, never larger, never internally inconsistent.
-func keptTailRows(oldHist, newHist []*schema.Message) int {
-	kept := make(map[*schema.Message]bool, len(newHist))
-	for _, m := range newHist {
-		kept[m] = true
+// The clamp to flushedFrom is the fail-safe. Rows at or above it were written by
+// the flush that just ran (the summary, and C3's eviction map), so they are in
+// the window whether or not the lookup that produced `kept` found them. Without
+// it a lookup that resolved nothing would place hidden at the log top and
+// project an EMPTY window — an agent that has forgotten the conversation and
+// says nothing about it.
+func windowBoundary(kept []int, logTop, flushedFrom int) (hidden int, pinned []int) {
+	set := make(map[int]bool, len(kept))
+	for _, s := range kept {
+		set[s] = true
 	}
-	first := len(oldHist)
-	for first > 0 && oldHist[first-1] != nil && kept[oldHist[first-1]] {
-		first--
+	hidden = logTop
+	for hidden > 0 && set[hidden-1] {
+		hidden--
 	}
-	return len(storeMessagesFor(oldHist[first:]))
+	if hidden > flushedFrom {
+		hidden = flushedFrom
+	}
+	if hidden < 0 {
+		hidden = 0
+	}
+	for _, s := range kept {
+		if s < hidden {
+			pinned = append(pinned, s)
+		}
+	}
+	return hidden, pinned
 }
 
 // compactionNotDurable is the message the manual path shows when a compaction
@@ -424,17 +440,54 @@ func (cs *connSession) commitCompaction(s *Server, newHist []*schema.Message) bo
 		// so there is no boundary to record and nothing to restore from.
 		return true
 	}
-	hidden := boundary - keptTailRows(oldHist, newHist)
-	if hidden < 0 {
-		hidden = 0
+	kept, err := cs.windowSeqs(s, newHist)
+	if err != nil {
+		slog.Warn("compaction boundary not recorded; context will not be evicted",
+			"session", cs.sessionID, "error", err)
+		cs.history = oldHist
+		return false
 	}
-	if err := s.store.AppendContextEvent(cs.sessionID, store.ContextEventCompact, hidden); err != nil {
+	hidden, pinned := windowBoundary(kept, cs.seq, boundary)
+	if err := s.store.AppendContextEvent(cs.sessionID, store.ContextEventCompact, hidden, pinned); err != nil {
 		slog.Warn("compaction boundary not recorded; context will not be evicted",
 			"session", cs.sessionID, "hidden_seq", hidden, "error", err)
 		cs.history = oldHist
 		return false
 	}
 	return true
+}
+
+// windowSeqs locates every durable row the compacted window occupies.
+//
+// It reuses the identity the durable log already assigns rather than inventing
+// a second one. store.AssignDedupKeys is a pure hash of a message,
+// AppendMessages runs it over exactly the batch flushHistory just wrote, and
+// messages carries a unique index on (session_id, dedup_key) — so re-deriving
+// the keys here and looking them up yields the window's row positions. That is
+// why AppendMessages does not have to grow a per-row return value, which would
+// have changed a signature with several other callers.
+//
+// A key that resolves to nothing is simply absent from the result, and
+// windowBoundary's clamp keeps the window non-empty in that case. The one shape
+// known to resolve to nothing is a row written by a path that leaves dedup_key
+// empty (the legacy AppendMessage, and forks) — the next flush re-inserts those
+// with real keys, so the lookup finds the live row.
+//
+// KNOWN ALIASING, and it is a property of the log rather than of this function:
+// two BYTE-IDENTICAL messages in one window hash to keys that differ only by
+// their ordinal within the flushed batch, and compaction changes that batch. A
+// duplicate can therefore resolve to an earlier row with identical content. The
+// log itself already takes that position — AppendMessages' ON CONFLICT skipped
+// the insert on exactly that basis — so the window gets the right text at a
+// possibly earlier position, never text that is not in the window.
+func (cs *connSession) windowSeqs(s *Server, newHist []*schema.Message) ([]int, error) {
+	rows := storeMessagesFor(newHist)
+	store.AssignDedupKeys(rows)
+	keys := make([]string, 0, len(rows))
+	for _, r := range rows {
+		keys = append(keys, r.DedupKey)
+	}
+	return s.store.SeqsForDedupKeys(cs.sessionID, keys)
 }
 
 // persistMessages makes the completed turn durable.

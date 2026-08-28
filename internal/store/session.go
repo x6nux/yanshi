@@ -165,21 +165,31 @@ func (s *Store) SessionMessageCount(sessionID string) (int, error) {
 // paging — must use MessagesPage instead, because the durable log is expected
 // to outgrow any context window that could hold it.
 func (s *Store) Messages(sessionID string) ([]Message, error) {
-	return s.messagesFromSeq(sessionID, 0)
+	return s.messagesInWindow(sessionID, 0, nil)
 }
 
-// messagesFromSeq is the shared range reader behind Messages and ProjectWindow.
+// messagesInWindow is the shared reader behind Messages and ProjectWindow: the
+// kept tail from fromSeq, unioned with the scattered pinned rows below it.
 //
-// fromSeq <= 0 emits the unbounded statement with no seq predicate at all, so a
-// projection over a session that has no compaction boundary does not merely
-// return the same rows as Messages — it runs the identical query. ADR-0015's
-// second constraint ("old sessions project byte-identically") is therefore a
-// property of the code rather than something a test has to keep re-checking,
-// and there is only one place a new message column has to be added.
-func (s *Store) messagesFromSeq(sessionID string, fromSeq int) ([]Message, error) {
+// THE DEGENERATE CASES EMIT THE ORIGINAL STATEMENT, not an equivalent one.
+// fromSeq <= 0 appends no predicate whatsoever, so a session with no compaction
+// boundary does not merely return the same rows as Messages — it runs the
+// identical query, and pins are redundant there because the whole log is already
+// in the window. An empty pin list likewise falls back to the plain range, which
+// is also what stops the builder from emitting "seq IN ()", a SQLite syntax
+// error rather than an empty match. ADR-0015's second constraint is therefore a
+// property of the code, and there is one place to add a new message column.
+func (s *Store) messagesInWindow(sessionID string, fromSeq int, pinned []int) ([]Message, error) {
 	q := "SELECT " + messageColumns + " FROM messages WHERE session_id = ?"
 	args := []any{sessionID}
-	if fromSeq > 0 {
+	switch {
+	case fromSeq > 0 && len(pinned) > 0:
+		q += " AND (seq >= ? OR seq IN (" + placeholders(len(pinned)) + "))"
+		args = append(args, fromSeq)
+		for _, p := range pinned {
+			args = append(args, p)
+		}
+	case fromSeq > 0:
 		q += " AND seq >= ?"
 		args = append(args, fromSeq)
 	}
@@ -297,6 +307,14 @@ func (s *Store) SnapshotSessionForRevert(sessionID string) (SessionRevertSnapsho
 
 // TruncateSessionForRevert atomically snapshots a session, deletes messages
 // with seq >= fromSeq, and updates turns. Any failure rolls back both changes.
+//
+// It also compensates the context-event log in the same transaction (INF3).
+// Deleting rows a compaction boundary points at leaves that boundary describing
+// a position past the end of the log, and the projection then selects ZERO rows:
+// the model comes back from the next restore with no conversation at all and no
+// error to show for it. Measured before this was wired: hidden_seq 9, two rows
+// surviving, window empty. The compensation is an append (constraint 1 forbids
+// editing the events), so the revert and the undo are one atomic act.
 func (s *Store) TruncateSessionForRevert(
 	sessionID string, fromSeq, turns int,
 ) (SessionRevertSnapshot, error) {
@@ -316,6 +334,9 @@ func (s *Store) TruncateSessionForRevert(
 			"DELETE FROM messages WHERE session_id=? AND seq>=?", sessionID, fromSeq,
 		); e != nil {
 			return fmt.Errorf("store: truncate messages: %w", e)
+		}
+		if e := undoBoundariesAtOrAfterTx(tx, sessionID, fromSeq); e != nil {
+			return e
 		}
 		res, e := tx.Exec(
 			"UPDATE sessions SET turns=?, updated_at=? WHERE id=?",

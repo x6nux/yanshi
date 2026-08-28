@@ -122,6 +122,7 @@ func (s *Store) ForkSession(srcID string, fromSeq int) (string, error) {
 		); err != nil {
 			return fmt.Errorf("ForkSession: insert session: %w", err)
 		}
+		maxCopied := -1
 		for _, m := range toCopy {
 			msgID := newID()
 			if _, err := tx.Exec(
@@ -132,8 +133,18 @@ func (s *Store) ForkSession(srcID string, fromSeq int) (string, error) {
 			); err != nil {
 				return fmt.Errorf("ForkSession: insert message seq=%d: %w", m.Seq, err)
 			}
+			if m.Seq > maxCopied {
+				maxCopied = m.Seq
+			}
 		}
-		return nil
+		// INF3: the fork inherits the source's compaction boundary. Seq values
+		// are copied verbatim above, so the boundary transfers as-is. See
+		// store.copyBoundaryTx for why inheriting is the right semantics — the
+		// short version is that a fork branches the conversation, and after a
+		// compaction the conversation's state IS the compacted window; starting
+		// the fork from the raw transcript would hand it every original the
+		// summary already replaced and charge for that summary again.
+		return copyBoundaryTx(tx, srcID, forkID, maxCopied)
 	})
 	if err != nil {
 		return "", err
