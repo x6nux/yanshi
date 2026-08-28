@@ -145,7 +145,25 @@ var sensitiveAbsolutePaths = []string{
 // credential path that resolves INSIDE the working directory is still matched:
 // a project that keeps a .git-credentials file in its own tree holds a real
 // token, and "it is in the repo" is not evidence that reading it is intended.
+// A path carrying an unresolved parameter expansion gets a SECOND reading with
+// the expansion elided, because the table above matches on literal directory
+// segments and an expansion spliced into one breaks the match without changing
+// where the write lands. Measured: `echo k > ~/.s${x}sh/authorized_keys` planted
+// a key with no prompt, as did `~/.ssh${x}/authorized_keys`. Blanking is the
+// right reading HERE and the wrong one for the deletion gate — see
+// elideExpansions for why the two dimensions take opposite decisions.
 func IsSensitivePath(p, workdir string) (string, bool) {
+	if entry, hit := sensitivePathHit(p, workdir); hit {
+		return entry, true
+	}
+	if elided, changed := elideExpansions(p); changed {
+		return sensitivePathHit(elided, workdir)
+	}
+	return "", false
+}
+
+// sensitivePathHit is IsSensitivePath for ONE spelling of the path.
+func sensitivePathHit(p, workdir string) (string, bool) {
 	norm, ok := normalizePath(p, workdir)
 	if !ok {
 		return "", false

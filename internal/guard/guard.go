@@ -188,6 +188,30 @@ func New() *Guard { return &Guard{} }
 // Allow) is the Prompt itself, byte for byte what short-circuiting returned,
 // and every other combination is at least as strict.
 func (g *Guard) Check(p PermissionProfile, a Action) Decision {
+	d := g.check(p, a)
+	// SECOND READING: the command after the parameter expansions the string
+	// itself defines. `rm -rf "${x:-/}"` carries no `$(`, so nothing above it
+	// re-splits or re-decodes anything; it was measured walking a straight line
+	// from a plain-looking string to Allow while /bin/sh ran `rm -rf /`.
+	//
+	// Folded with moreSevere and never substituted for the first reading, so a
+	// resolution can only reveal danger — the rule classifyLexed already applies
+	// to wrapper payloads. expandKnownParameters resolves nothing whose value is
+	// absent from the string, which is what keeps `rm -rf $BUILD_DIR` out of the
+	// catastrophic tier; see its header.
+	if a.Shell != "" {
+		if expanded, changed := expandKnownParameters(a.Shell); changed {
+			b := a
+			b.Shell = expanded
+			d = moreSevere(d, g.check(p, b))
+		}
+	}
+	return d
+}
+
+// check is Check for ONE reading of the command. It is unexported so the second
+// reading cannot recurse: the expanded string is graded once, as written.
+func (g *Guard) check(p PermissionProfile, a Action) Decision {
 	floor := g.checkDestructive(a)
 	if floor.Verdict == HardDeny {
 		return floor
