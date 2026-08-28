@@ -16,10 +16,12 @@ import (
 //  4. messages carrying an error marker
 //  5. messages carrying a diff/patch marker
 //
-// Then two corrections, in order. unpinStaleSummaries removes any summary the
-// rules above caught, and EnforceToolCallPairs fixes up the set so tool_call
-// and tool_result stay paired (bug②). If history already ends in a summary,
-// returns an empty summarize set (bug⑦ — no summary-of-summary).
+// Then two corrections, AND THE ORDER BETWEEN THEM IS LOAD-BEARING (see the
+// call site): EnforceToolCallPairs first, so tool_call and tool_result stay
+// paired (bug②) and the pin set is final; then unpinStaleSummaries, which
+// removes any summary the rules above caught but only once it can see that
+// final set. If history already ends in a summary, returns an empty summarize
+// set (bug⑦ — no summary-of-summary).
 func Plan(msgs []*schema.Message, opts PlanOpts) *PlanResult {
 	res := &PlanResult{}
 	if len(msgs) == 0 {
@@ -75,10 +77,25 @@ func Plan(msgs []*schema.Message, opts PlanOpts) *PlanResult {
 		}
 	}
 
-	unpinStaleSummaries(msgs, pinned)
-
 	// fixpoint: keep tool pairs intact, drop orphans
 	EnforceToolCallPairs(msgs, pinned)
+
+	// ⚠️ THIS MUST STAY AFTER EnforceToolCallPairs. unpinStaleSummaries asks
+	// whether any real conversation will be summarized, and only the FINAL pin
+	// set can answer that. EnforceToolCallPairs is the step that produces the
+	// final set — it both pins counterparts in and drops orphans out — so a
+	// reading taken before it is of an intermediate state. Measured with these
+	// two lines the other way round: a tool result whose tool_call was pinned by
+	// an error marker, but which nothing pinned on its own, looked like unpinned
+	// conversation; the guard passed on it, the stale summary was unpinned, and
+	// pair repair then pinned the tool result back, leaving the summary ALONE in
+	// the summarize set — the exact state the guard exists to prevent.
+	//
+	// The reverse dependency does not exist, which is what makes the order a
+	// free choice rather than a trade: a summary carries no ToolCalls and no
+	// ToolCallID, so EnforceToolCallPairs can neither observe nor move one, and
+	// unpinning one afterwards cannot orphan anything it just repaired.
+	unpinStaleSummaries(msgs, pinned)
 
 	// collect ascending (Assemble depends on ascending PinnedIndices)
 	for i := 0; i < len(msgs); i++ {
@@ -183,6 +200,11 @@ func unpinStaleSummaries(msgs []*schema.Message, pinned map[int]bool) {
 // hasUnpinnedContent reports whether the summarize set already holds a message
 // that is CONVERSATION rather than a compaction artefact — the only thing a
 // fresh summary can actually be built out of.
+//
+// It reads pinned as authoritative, so it is only meaningful once the pin set
+// is FINAL. Call it before EnforceToolCallPairs and it answers about a set that
+// is still going to change under it; see Plan's call site for the failure that
+// produced.
 func hasUnpinnedContent(msgs []*schema.Message, pinned map[int]bool) bool {
 	for i, m := range msgs {
 		if pinned[i] || m == nil {

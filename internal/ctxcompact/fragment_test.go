@@ -283,6 +283,10 @@ func TestContextFragment_StaleSummaryAloneIsNotWorthAModelCall(t *testing.T) {
 	plan := Plan(msgs, PlanOpts{KeepRecent: 2})
 	assert.Empty(t, plan.SummarizeIndices,
 		"a lone stale summary is not content to fold — leave Run its free exit")
+	// Same shape check the tool-pair route uses. Both routes into this defect
+	// were disguised by a FALLING token count, so the durable property is what
+	// goes into the summary call, not what comes out of it.
+	assertSummarizeSetIsNotJustStaleFragments(t, msgs, plan)
 
 	rec := &recordingSummarizer{Return: "fresh summary"}
 	res, err := Run(context.Background(), msgs, PlanOpts{KeepRecent: 2},
@@ -295,4 +299,82 @@ func TestContextFragment_StaleSummaryAloneIsNotWorthAModelCall(t *testing.T) {
 
 	// The stale summary is still there: nothing was dropped in exchange.
 	assert.Len(t, fragmentsIn(res.Messages), 1)
+}
+
+// TestContextFragment_ToolPairRepairDoesNotStrandAStaleSummary is the second
+// route into the defect TestContextFragment_StaleSummaryAloneIsNotWorthAModelCall
+// was written to close. That test covers a history where every message is
+// user-original; this one covers a history where the summarize set looks
+// non-empty when hasUnpinnedContent runs and is empty by the time Plan returns.
+//
+// The mechanism is an ORDERING bug, not a logic bug. hasUnpinnedContent asks
+// "is there real conversation left to fold this stale summary into", and the
+// only honest answer comes from the FINAL pin set. Run it before
+// EnforceToolCallPairs and it sees an intermediate one:
+//
+//	msgs[2] is a tool result whose tool_call (msgs[1]) is pinned by the error
+//	marker, but which nothing pins on its own. At that moment it reads as
+//	unpinned conversation, so the guard says "yes, there is content" and unpins
+//	the stale summary. EnforceToolCallPairs then pins msgs[2] back — correctly,
+//	since severing a tool_call from its result is a 400 from the provider — and
+//	the stale summary is left alone in the summarize set.
+//
+// THIS ONE IS NASTIER THAN THE ORIGINAL. The original produced a summary that
+// was no smaller, so maybeCompact's `TokensAfter >= TokensBefore` gate threw it
+// away. Here the numbers fall (133 -> 119 as measured), so the mid-turn path
+// scores it a SUCCESS, arms the cooldown, and installs a summary-of-a-summary —
+// exactly the semantics bug⑦'s short-circuit exists to prevent, reached from
+// the one angle bug⑦ cannot see, since it only inspects the LAST message.
+//
+// Fixture is the reviewer's, reproduced verbatim so the two agree on the shape.
+func TestContextFragment_ToolPairRepairDoesNotStrandAStaleSummary(t *testing.T) {
+	msgs := []*schema.Message{
+		{Role: schema.User, Content: "please fix the bug"}, // rule 2
+		{ // rule 4: the error marker pins it, and it carries the tool_call
+			Role:      schema.Assistant,
+			Content:   "retrying after error: connection refused",
+			ToolCalls: []schema.ToolCall{{ID: "tc1", Function: schema.FunctionCall{Name: "shell_run"}}},
+		},
+		{Role: schema.Tool, Content: "ok", ToolCallID: "tc1"}, // nothing pins this on its own
+		{Role: schema.User, Content: "thanks, continuing"},    // rule 2
+		MarkFragment(KindSummary, "an earlier summary of an earlier conversation"),
+		{Role: schema.User, Content: "one more thing"}, // tail + rule 2
+	}
+
+	got := Plan(msgs, PlanOpts{KeepRecent: 1})
+
+	// The tool result must end up pinned — that is EnforceToolCallPairs doing
+	// its job, and it is what invalidates the pre-pairing view of the pin set.
+	assert.Contains(t, got.PinnedIndices, 2, "premise: pair repair pins the tool result back")
+
+	// THE PROPERTY: the summarize set must never be nothing but a stale summary.
+	// Asserted as a general shape rather than as "SummarizeIndices is empty", so
+	// a third route into the same state is caught too.
+	assertSummarizeSetIsNotJustStaleFragments(t, msgs, got)
+}
+
+// assertSummarizeSetIsNotJustStaleFragments fails when everything Plan chose to
+// summarize is a compaction artefact.
+//
+// It exists because BOTH routes into this defect were disguised the same way:
+// the token count went DOWN, so every caller-side sanity check scored the
+// result a successful compaction. "No error" and "it got smaller" are both
+// satisfied by summarizing a summary. The only thing that distinguishes the
+// broken state is what went INTO the summary call, so that is what this checks.
+func assertSummarizeSetIsNotJustStaleFragments(t *testing.T, msgs []*schema.Message, plan *PlanResult) {
+	t.Helper()
+	if len(plan.SummarizeIndices) == 0 {
+		return // nothing to summarize is Run's free exit — the safe outcome
+	}
+	for _, i := range plan.SummarizeIndices {
+		if i < 0 || i >= len(msgs) {
+			continue
+		}
+		if _, isFragment := parseFragment(msgs[i]); !isFragment {
+			return // real conversation is present; the summary has something to fold in
+		}
+	}
+	t.Fatalf("the summarize set is nothing but compaction artefacts (indices %v): "+
+		"this pays a model call to summarize a summary, and the token count still "+
+		"falls, so no caller-side gate catches it", plan.SummarizeIndices)
 }
