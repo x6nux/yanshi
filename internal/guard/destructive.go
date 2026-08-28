@@ -46,8 +46,16 @@ var deletionPrograms = map[string]bool{
 // glob/expansion/trailing-backslash tokens (*, $HOME, C:\) — exactly the
 // catastrophic forms we must catch. Instead it uses a permissive tokenizer
 // (lexShellLite). Commands containing a control operator (&&, ;, |, >, $(, …)
-// defer to DestructionNone so the shell-metachar HardDeny in checkShell fires
-// rather than being short-circuited by a Prompt here.
+// are SPLIT and every segment graded, the most severe verdict winning.
+//
+// That split used to happen only inside a wrapper payload: at the top level a
+// chained command returned DestructionNone so checkShell's whole-string
+// metacharacter HardDeny would refuse it instead. INF1 (ADR-0004 supplement)
+// took that receiver away — checkShell now judges `ls && rm -rf /` segment by
+// segment and finds two individually-plausible commands — so the deferral
+// became a hole and the split moved to the top level too. This is the only
+// reason INF1 is a refinement of the metacharacter defence rather than a
+// removal of it.
 //
 // Two obfuscations are seen THROUGH rather than refused, because the visible
 // text of a command is not always what runs (see ansic.go for the rationale):
@@ -73,37 +81,36 @@ func ClassifyDestruction(cmd, workdir string) Destruction {
 // the verdict computed so far still stands, so exhausting the budget cannot
 // turn a Catastrophic into a None.
 //
-// topLevel decides what a control operator MEANS, and the distinction is
-// load-bearing. At the top level a chained command is handed to checkShell's
-// structural metacharacter HardDeny by returning DestructionNone - classifying
-// it here would short-circuit that stronger refusal with a mere Prompt. Inside
-// a wrapper payload no such handoff exists: checkShell only ever sees the OUTER
-// string, and `bash -c "ls && rm -rf /"` presents it with a metacharacter-free
-// command. So an inner chain is split and every segment is classified. Without
-// that split, chaining inside a wrapper would launder a command past both gates
-// at once.
+// topLevel no longer decides whether a chain is split — both levels split now
+// (see ClassifyDestruction). What it still decides is whether an ANSI-C-encoded
+// chain is decoded and re-split: a command whose operators are spelled in hex
+// carries no literal operator, so the split above does not fire and the decoded
+// form has to be re-examined. Inside a wrapper payload lexShellLite already
+// decodes ANSI-C per token, so repeating it there would only re-walk ground the
+// wrapper descent has covered.
 func classifyDestruction(cmd, workdir string, depth int, topLevel bool) Destruction {
 	if strings.TrimSpace(cmd) == "" {
 		return DestructionNone
 	}
 	if hasControlOperator(cmd) {
-		if topLevel {
-			return DestructionNone
-		}
-		worst := DestructionNone
-		for _, seg := range splitControlSegments(cmd) {
-			if d := classifyDestruction(seg, workdir, depth, false); d > worst {
-				worst = d
+		if segs, ok := splitIntoStrictlySmallerSegments(cmd); ok {
+			worst := DestructionNone
+			for _, seg := range segs {
+				if d := classifyDestruction(seg, workdir, depth, false); d > worst {
+					worst = d
+				}
 			}
+			return worst
 		}
-		return worst
+		// The splitter found no boundary it agrees with (the operator was
+		// inside quotes). Fall through and classify the command as written.
 	}
 	// A chain whose operators are ANSI-C encoded reaches here with a raw string
-	// that has no metacharacter in it — so checkShell's structural HardDeny will
-	// NOT fire, and the "defer to that dimension" branch above would be
-	// deferring to nobody. `ls $'\x26\x26' rm -rf /` is exactly that shape.
-	// Since there is no stronger gate downstream to hand it to, classify the
-	// decoded segments here instead, the same way a wrapper payload is handled.
+	// that has no literal operator in it, so the split above did not fire and
+	// checkShell's segmenter sees one innocent-looking command. The hex
+	// spelling of an && chain is exactly that shape. Decode and re-classify:
+	// this is the only place the encoded form is expanded to a chain, since
+	// lexShellLite decodes per token and a decoded token never word-splits.
 	if topLevel {
 		if decoded, wasEncoded := decodeANSIC(cmd); wasEncoded && hasControlOperator(decoded) {
 			return classifyDestruction(decoded, workdir, depth, false)
@@ -222,6 +229,30 @@ func classifyLexed(program string, args []string, workdir string, depth int) Des
 // command simply fails to match a deletion program and contributes
 // DestructionNone - because an extra fragment costs nothing while a missed
 // segment is a laundered `rm -rf /`.
+// splitIntoStrictlySmallerSegments is splitControlSegments plus the termination
+// proof its recursive caller needs.
+//
+// hasControlOperator is a bare strings.Contains scan while splitControlSegments
+// honours quotes, so the two disagree on `grep "a|b" x`: the first says "there
+// is a pipe", the second hands back the identical string because that pipe is
+// data. classifyDestruction then recurses on an input that never shrinks.
+// Measured, before this guard existed: `classifyDestruction("grep \"a|b\" x",
+// wd, maxUnwrapDepth, false)` overflows the goroutine stack. It was unreachable
+// only because the top level used to bail out on any control operator, and
+// INF1 needed exactly that bail-out removed — the deletion gate has to see
+// every segment of `ls && rm -rf /` now that checkShell no longer refuses the
+// whole chain.
+//
+// ok=false means "no boundary this splitter agrees with"; the caller must then
+// classify the string as written rather than recurse.
+func splitIntoStrictlySmallerSegments(cmd string) ([]string, bool) {
+	segs := splitControlSegments(cmd)
+	if len(segs) == 1 && strings.TrimSpace(segs[0]) == strings.TrimSpace(cmd) {
+		return nil, false
+	}
+	return segs, true
+}
+
 func splitControlSegments(cmd string) []string {
 	var segs []string
 	var cur strings.Builder

@@ -117,15 +117,17 @@ func TestClassifyDestruction_ObfuscatedAndWrapped(t *testing.T) {
 		{"ansi-c in a benign command", `printf $'\n'`, DestructionNone},
 		{"grep with a tab escape", `grep $'\t' file.txt`, DestructionNone},
 
-		// A chain whose operators are VISIBLE in the raw string — even inside a
-		// wrapper's quotes — still defers to checkShell's structural
-		// metacharacter HardDeny, which tests the raw string and is the
-		// stronger refusal of the two.
-		{"plain chain defers to metachar deny", `ls && rm -rf /`, DestructionNone},
-		{"chain inside a wrapper is still visible to checkShell", `bash -c "ls && rm -rf /"`, DestructionNone},
-		// When the operators are ANSI-C ENCODED there is no metacharacter in
-		// the raw string, so checkShell will not fire and there is no stronger
-		// gate to defer to. Those are classified here instead.
+		// A chain whose operators are VISIBLE in the raw string used to answer
+		// DestructionNone here and lean on checkShell's whole-string
+		// metacharacter HardDeny. INF1 (ADR-0004 supplement) made checkShell
+		// judge such a chain segment by segment, which left that deferral
+		// pointing at nobody, so the chain is now split and graded here.
+		// Flipping either of these back to DestructionNone is what "INF1 was a
+		// loosening" would look like.
+		{"plain chain is split and graded", `ls && rm -rf /`, DestructionCatastrophic},
+		{"chain inside a wrapper is split and graded", `bash -c "ls && rm -rf /"`, DestructionCatastrophic},
+		// ANSI-C ENCODED operators leave no literal operator in the raw string,
+		// so the split above cannot fire; the decode branch is what catches them.
 		{"encoded chain inside a wrapper", `bash -c $'ls \x26\x26 rm -rf /'`, DestructionCatastrophic},
 		{"encoded chain at top level", `ls $'\x26\x26' rm -rf /`, DestructionCatastrophic},
 	}

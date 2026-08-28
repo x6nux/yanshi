@@ -17,10 +17,34 @@ type RedirectSpec struct {
 
 // Segment is a single executable inside a pipeline / control chain. A simple
 // `go test ./...` parses to one Segment with Program="go", Args=["test","./..."].
+//
+// Two of the fields are populated by ParseCommandList only, and Parse leaves
+// them zero. That asymmetry is deliberate rather than an omission: Parse
+// describes ONE command for the rule engine, which matches on program and
+// argument words and has no use for either field, while ParseCommandList
+// describes a command LIST for the guard, which has to know how the segments
+// are joined and what the operator's own source text was.
 type Segment struct {
 	Program   string
 	Args      []string
 	Redirects []RedirectSpec
+
+	// Operator is the control operator that separates this segment from the
+	// NEXT one (AndIf, OrIf, Pipe, Semi), or NoOperator on the last segment.
+	// ParseCommandList only.
+	Operator TokenKind
+
+	// Text is the VERBATIM source slice this segment was cut from, whitespace
+	// trimmed. ParseCommandList only.
+	//
+	// It is a slice rather than a re-join of Program+Args because the guard
+	// matches profile globs against it, and a re-join loses quoting: the
+	// policy layer would be matching `rm -rf /my dir` (two targets) against a
+	// pattern written for `rm -rf "/my dir"` (one). For a single-segment
+	// command Text is therefore byte-identical to the trimmed input, which is
+	// what keeps the segmented guard path behaviour-identical to the
+	// whole-string one for every unchained command.
+	Text string
 }
 
 // Command is the fully parsed shell command. Segments is non-empty; Control

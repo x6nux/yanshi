@@ -32,7 +32,19 @@ const (
 	// leading fd digit and optional &-and-digit suffix) so the parser can
 	// report it verbatim.
 	Redirect
+	// Semi is ";" — the sequencing operator. Lex never emits it: a ";" inside
+	// the single command Lex describes is a syntax error, and passing it
+	// through as an ordinary word character is what let `a;b` reach the rule
+	// engine as a program literally named "a;b". Only ParseCommandList, which
+	// segments a whole command LIST, produces it (as Segment.Operator).
+	Semi
 )
+
+// NoOperator is Segment.Operator's zero value: it marks the LAST segment of a
+// command list, the one no control operator follows. It is spelled as a named
+// constant rather than left as a bare Word because "Operator == Word" reads
+// like a claim about a token kind when it is really the absence of one.
+const NoOperator = Word
 
 // Token is a single lexeme produced by Lex.
 type Token struct {

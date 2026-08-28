@@ -44,8 +44,17 @@ func TestClassifyDestruction(t *testing.T) {
 		{"rm -rf workdir itself", "rm -rf /home/me/proj", DestructionCatastrophic},
 		{"rm -rf ancestor of workdir", "rm -rf /home/me", DestructionCatastrophic},
 
-		// Chained/malformed commands defer to the shell-metachar HardDeny.
-		{"chained rm", "rm -rf / && echo hi", DestructionNone},
+		// Chained commands are split and graded segment by segment (INF1);
+		// they used to answer None and lean on the shell-metachar HardDeny.
+		{"chained rm", "rm -rf / && echo hi", DestructionCatastrophic},
+		{"chained rm, dangerous half last", "echo hi ; rm -rf /", DestructionCatastrophic},
+		{"chained rm, piped", "echo hi | rm -rf /", DestructionCatastrophic},
+		{"chained rm with a redirect", "rm -rf / > /dev/null", DestructionCatastrophic},
+		{"chain of benign commands stays None", "ls && echo hi", DestructionNone},
+		// A control operator INSIDE quotes is data. The splitter honours quotes
+		// while the has-operator scan does not, so this is the shape whose
+		// split-and-recurse never shrank its input (measured: stack overflow).
+		{"quoted operator is data, not a boundary", `grep "a|b" file.txt`, DestructionNone},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
