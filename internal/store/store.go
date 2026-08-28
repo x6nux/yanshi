@@ -6,12 +6,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/x6nux/yanshi/internal/secrets"
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
 )
 
 // sqlOpener is a test-visible indirection over sql.Open that allows tests
@@ -109,6 +111,15 @@ var DefaultOptions = OpenOptions{
 // modernc creates a database file *named that literal string* in the current
 // working directory — silently, with no error to notice. storage.sqlite_path
 // has no config default, so an omitted key reaches every caller here.
+//
+// An UNREADABLE database file self-heals instead of refusing to start: the file
+// is moved aside and an empty one takes its place. yanshi ships as one local
+// binary, so a corrupt yanshi.db otherwise means the TUI never comes up and the
+// user has no second tool to repair it with — losing history is bad, losing the
+// program that could have told you the history was lost is worse. The old file
+// is renamed, never deleted, and the backup path is logged so the data is still
+// there for anyone who wants to salvage it. See isCorruptDB for why the trigger
+// is deliberately narrow.
 func OpenWith(path string, opts OpenOptions) (*Store, error) {
 	if path == "" {
 		return nil, errors.New("store: empty database path")
@@ -125,8 +136,34 @@ func OpenWith(path string, opts OpenOptions) (*Store, error) {
 	if ckpt == 0 {
 		ckpt = DefaultOptions.WALAutoCheckpoint
 	}
-	dsn := buildDSN(path, busyMs, ckpt)
-	db, err := sqlOpener("sqlite", dsn)
+	s, err := openPrepared(path, maxOpen, busyMs, ckpt)
+	if err == nil || !isCorruptDB(err) {
+		return s, err
+	}
+	backup, mvErr := quarantineCorrupt(path)
+	if mvErr != nil {
+		return nil, err
+	}
+	healed, healErr := openPrepared(path, maxOpen, busyMs, ckpt)
+	if healErr != nil {
+		// The rebuild failed too, so report the ORIGINAL failure and hand back
+		// nothing. Returning a Store that cannot be written to would push the
+		// same error out to whichever feature happens to touch storage first,
+		// somewhere far from the reason — refusing to start is the honest
+		// answer once self-healing has itself failed.
+		return nil, err
+	}
+	slog.Warn("store: database was unreadable; moved it aside and started an empty one",
+		"path", path, "backup", backup, "err", err)
+	return healed, nil
+}
+
+// openPrepared opens path, sizes the pool, applies the pragmas and runs the
+// migrations. It closes the handle and returns a nil Store on every failure,
+// which is what lets OpenWith rename the file afterwards: Windows refuses to
+// rename a file that is still open.
+func openPrepared(path string, maxOpen, busyMs, autoCkpt int) (*Store, error) {
+	db, err := sqlOpener("sqlite", buildDSN(path, busyMs, autoCkpt))
 	if err != nil {
 		return nil, err
 	}
@@ -148,6 +185,59 @@ func OpenWith(path string, opts OpenOptions) (*Store, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// SQLite result codes meaning "this file is not a usable database".
+const (
+	sqliteCorrupt = 11 // SQLITE_CORRUPT — disk image is malformed
+	sqliteNotADB  = 26 // SQLITE_NOTADB — header is not SQLite's
+)
+
+// isCorruptDB reports whether err says the file itself is unreadable, as
+// opposed to something about this attempt to use it having gone wrong.
+//
+// The predicate is this narrow ON PURPOSE, because the caller's response is to
+// rename the user's data away. A read-only file, a full disk, a permissions
+// problem or an outright bug in migrate() all produce errors that a rebuild
+// would appear to "fix" — by discarding a database that was fine. Widening
+// this turns every transient storage fault into data loss.
+// internal/store::TestOpenWith_MigrateFailsOnReadOnlyDB is the test that goes
+// red if it widens: it breaks migrate() on a perfectly good database and
+// requires OpenWith to fail rather than quarantine it.
+//
+// Detection REACTS to the failed open rather than probing with PRAGMA
+// integrity_check. integrity_check is strictly more sensitive — measured, a
+// real database whose tail has been overwritten with garbage opens, migrates
+// and serves reads without complaint, and integrity_check would flag it — but
+// it reads every page on every startup, and throwing away a database that
+// still answers every query is a worse outcome than leaving it alone.
+func isCorruptDB(err error) bool {
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	return se.Code() == sqliteCorrupt || se.Code() == sqliteNotADB
+}
+
+// quarantineCorrupt renames the unreadable database out of the way and returns
+// the backup path.
+//
+// The WAL and SHM sidecars move with it, which is not tidiness: a -wal file
+// left beside a fresh database still belongs to the file that was just taken
+// away, and SQLite would try to recover the new database from it. If one
+// cannot be moved it is deleted instead — leaving it in place is the one
+// outcome that must not happen.
+func quarantineCorrupt(path string) (string, error) {
+	backup := path + ".corrupt-" + strconv.FormatInt(time.Now().Unix(), 10)
+	if err := os.Rename(path, backup); err != nil {
+		return "", err
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if err := os.Rename(path+suffix, backup+suffix); err != nil {
+			_ = os.Remove(path + suffix)
+		}
+	}
+	return backup, nil
 }
 
 // buildDSN appends the _pragma query string for per-connection PRAGMAs (modernc

@@ -1,11 +1,15 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -173,4 +177,156 @@ func getSessionUpdatedAt(t *testing.T, st *Store, sessionID string) int64 {
 	var updatedAt int64
 	require.NoError(t, st.DB.QueryRow("SELECT updated_at FROM sessions WHERE id=?", sessionID).Scan(&updatedAt))
 	return updatedAt
+}
+
+// corruptShapes are database files that SQLite genuinely refuses, established
+// by measurement rather than assumption. Several plausible-looking kinds of
+// damage do NOT qualify: an empty file opens as a fresh database, and a real
+// database whose tail is overwritten with garbage opens, migrates and serves
+// reads without a word. Only these two shapes actually produce SQLITE_NOTADB
+// or SQLITE_CORRUPT, so only these two exercise the self-heal.
+var corruptShapes = map[string]func(t *testing.T, path string){
+	// SQLITE_NOTADB (26): the header is not SQLite's at all.
+	"garbage from byte zero": func(t *testing.T, path string) {
+		t.Helper()
+		junk := make([]byte, 8192)
+		for i := range junk {
+			junk[i] = byte(i*31 + 7)
+		}
+		require.NoError(t, os.WriteFile(path, junk, 0o600))
+	},
+	// SQLITE_CORRUPT (11): a valid header over a smashed schema b-tree, which
+	// is what a half-written page or a bad sector actually looks like.
+	"valid header over a smashed schema page": func(t *testing.T, path string) {
+		t.Helper()
+		st, err := Open(path)
+		require.NoError(t, err)
+		_, err = st.CreateSession("data the user cares about")
+		require.NoError(t, err)
+		require.NoError(t, st.Close())
+
+		raw, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.Greater(t, len(raw), 4096)
+		for i := 100; i < 4096; i++ {
+			raw[i] = 0x5A
+		}
+		require.NoError(t, os.WriteFile(path, raw, 0o600))
+	},
+}
+
+// TestOpenWith_RecoversFromCorruptDatabase proves an unreadable database file
+// lets the process start anyway, with the old file preserved and its location
+// logged. yanshi is a single local binary: if a corrupt yanshi.db kept the TUI
+// from starting, the user would have no second tool to repair it with.
+func TestOpenWith_RecoversFromCorruptDatabase(t *testing.T) {
+	for name, corrupt := range corruptShapes {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "yanshi.db")
+			corrupt(t, path)
+			before, err := os.ReadFile(path)
+			require.NoError(t, err)
+
+			// Confirm the fixture is really broken, so a passing test cannot
+			// mean "SQLite tolerated this and no healing ever happened".
+			raw, err := sqlOpener("sqlite", buildDSN(path, 5000, 1000))
+			require.NoError(t, err)
+			_, execErr := raw.Exec("PRAGMA journal_mode=WAL")
+			raw.Close()
+			require.Error(t, execErr, "fixture %q is not actually corrupt", name)
+			require.True(t, isCorruptDB(execErr), "fixture %q fails for the wrong reason: %v", name, execErr)
+
+			var logged bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn})))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			st, err := OpenWith(path, DefaultOptions)
+			require.NoError(t, err, "a corrupt database must not stop the process from starting")
+			require.NotNil(t, st)
+			defer st.Close()
+
+			// The store is usable, not merely non-nil.
+			id, err := st.CreateSession("after the heal")
+			require.NoError(t, err)
+			list, err := st.ListSessions(0)
+			require.NoError(t, err)
+			require.Len(t, list, 1, "the rebuilt database starts empty")
+			assert.Equal(t, id, list[0].ID)
+
+			// The old file was moved aside, not deleted, and its bytes survive.
+			entries, err := os.ReadDir(dir)
+			require.NoError(t, err)
+			var backup string
+			for _, e := range entries {
+				if strings.HasPrefix(e.Name(), "yanshi.db.corrupt-") && !strings.HasSuffix(e.Name(), "-wal") && !strings.HasSuffix(e.Name(), "-shm") {
+					backup = filepath.Join(dir, e.Name())
+				}
+			}
+			require.NotEmpty(t, backup, "the corrupt file must be preserved, not discarded: %v", entries)
+			saved, err := os.ReadFile(backup)
+			require.NoError(t, err)
+			assert.Equal(t, before, saved, "the quarantined file must be byte-identical to the original")
+
+			// The backup path is in the log, which is the only way a user ever
+			// learns their history was set aside and where it went.
+			assert.Contains(t, logged.String(), filepath.Base(backup),
+				"the backup path must be logged; got %q", logged.String())
+		})
+	}
+}
+
+// TestOpenWith_DoesNotQuarantineARecoverableFailure is the counterweight to the
+// test above: self-healing renames the user's data away, so it must fire only
+// for a file SQLite cannot read, never for a failure that is about this attempt
+// to open it. Here the database is perfectly good and the filesystem is what
+// says no.
+func TestOpenWith_DoesNotQuarantineARecoverableFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "yanshi.db")
+
+	st, err := Open(path)
+	require.NoError(t, err)
+	wanted, err := st.CreateSession("data that must survive")
+	require.NoError(t, err)
+	_, err = st.DB.Exec("DROP TABLE IF EXISTS vcs_repos") // force migrate() to write
+	require.NoError(t, err)
+	require.NoError(t, st.Close())
+
+	good, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.NoError(t, os.Chmod(path, 0o400))
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+	if _, err := OpenWith(path, DefaultOptions); err == nil {
+		t.Skip("filesystem ignores the read-only bit here; nothing to assert")
+	}
+
+	// The file is still where it was, unchanged, and nothing was quarantined.
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, good, after, "a read-only database must not be rewritten")
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		assert.NotContains(t, e.Name(), ".corrupt-",
+			"a recoverable failure must never quarantine the database")
+	}
+
+	// And the data is still readable once the filesystem cooperates again.
+	// SQLite creates -wal/-shm with the same mode as the database, so the open
+	// that just failed left read-only sidecars behind; they are empty (it never
+	// got past the first pragma) and would otherwise keep the reopen read-only.
+	require.NoError(t, os.Chmod(path, 0o600))
+	for _, sfx := range []string{"-wal", "-shm"} {
+		_ = os.Remove(path + sfx)
+	}
+	reopened, err := Open(path)
+	require.NoError(t, err)
+	defer reopened.Close()
+	list, err := reopened.ListSessions(0)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, wanted, list[0].ID)
 }
