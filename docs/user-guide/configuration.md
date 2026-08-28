@@ -145,6 +145,7 @@ C15 TUI 偏好：`keymap`（默认 default）、`theme`（默认 default）、`v
 | storage.wal_max_open_conns | int | |
 | storage.busy_timeout_ms | int | |
 | storage.wal_auto_checkpoint | int | |
+| storage.retention_days | int | |
 
 ### token
 

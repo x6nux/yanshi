@@ -765,6 +765,25 @@ CREATE TABLE IF NOT EXISTS context_events (
 CREATE INDEX IF NOT EXISTS idx_context_events_session
     ON context_events(session_id, id);
 
+-- W-D-04: cold storage. One gzip blob per session, holding every row that used
+-- to sit in the messages table. Per-session rather than per-row because a single
+-- chat message does not compress — the win comes from the shared vocabulary
+-- across a whole transcript.
+--
+-- DO NOT CONFUSE THIS WITH sessions.archived (V10). That flag hides a session
+-- from the active list and changes nothing about storage; this table IS the
+-- storage. A session can be in either state independently of the other, which is
+-- why the names here avoid the word "archived" entirely.
+--
+-- max_seq is the highest seq inside the blob. It is here rather than derived so
+-- ProjectWindow's stale-boundary backstop can keep working on a compressed
+-- session without inflating the blob to answer one integer.
+CREATE TABLE IF NOT EXISTS cold_sessions (
+    session_id TEXT PRIMARY KEY,
+    blob       BLOB    NOT NULL,
+    max_seq    INTEGER NOT NULL
+);
+
 -- S6: permission decisions. The records auditPermission already built existed
 -- only as stderr log lines, so "who approved that rm last night" was
 -- unanswerable the moment the terminal scrolled. cmd_digest is a REDACTED

@@ -179,6 +179,13 @@ func (s *Store) Messages(sessionID string) ([]Message, error) {
 // is also what stops the builder from emitting "seq IN ()", a SQLite syntax
 // error rather than an empty match. ADR-0015's second constraint is therefore a
 // property of the code, and there is one place to add a new message column.
+//
+// A ZERO-ROW RESULT FALLS BACK TO COLD STORAGE (W-D-04). The fallback lives
+// here, at the shared reader, rather than in each of Messages / ProjectWindow /
+// the fork and snapshot paths, so compression cannot be transparent for one
+// caller and invisible for another. filterWindow re-applies the same boundary
+// to the decompressed slice — see its doc for why skipping that would undo
+// every compaction the cold session ever ran.
 func (s *Store) messagesInWindow(sessionID string, fromSeq int, pinned []int) ([]Message, error) {
 	q := "SELECT " + messageColumns + " FROM messages WHERE session_id = ?"
 	args := []any{sessionID}
@@ -199,7 +206,15 @@ func (s *Store) messagesInWindow(sessionID string, fromSeq int, pinned []int) ([
 		return nil, err
 	}
 	defer rows.Close()
-	return scanMessages(rows)
+	msgs, err := scanMessages(rows)
+	if err != nil || len(msgs) > 0 {
+		return msgs, err
+	}
+	cold, ok, err := s.coldMessages(sessionID)
+	if err != nil || !ok {
+		return msgs, err
+	}
+	return filterWindow(cold, fromSeq, pinned), nil
 }
 
 func newID() string {

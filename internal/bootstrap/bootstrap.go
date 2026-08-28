@@ -50,6 +50,8 @@ import (
 	"github.com/x6nux/yanshi/internal/vcs"
 
 	agentregistry "github.com/x6nux/yanshi/internal/agent/registry"
+
+	"github.com/x6nux/yanshi/internal/agent/upkeep"
 )
 
 // visionUsageAccumulator is the auxiliary model token usage sink (Tier G).
@@ -172,6 +174,15 @@ type App struct {
 	// outside Shutdown has any business stopping it: a caller that cancelled
 	// it early would leave every dead server permanently marked Ready.
 	mcpHealthCancel context.CancelFunc
+
+	// Upkeep is the W-D background maintenance loop (cold-session compression,
+	// cross-session memory extraction). Nil only when the store is nil.
+	//
+	// Shutdown must Wait() on it for the same reason C1Scheduler does: a sweep
+	// in flight is mid-transaction, and closing the store underneath it turns a
+	// routine compression into "database is closed" — with the rows already
+	// deleted if the timing is unlucky.
+	Upkeep *upkeep.Worker
 
 	// C1Scheduler is the automation tick loop started by BuildAutomation as a
 	// goroutine over the root context. Nil when C1 failed to build.
@@ -1015,6 +1026,11 @@ func Build(opts Options) (*App, error) {
 	}
 	allTools = append(allTools, c1Tools...)
 
+	// W-D: the background upkeep sweep. It runs over the SAME root ctx as the
+	// automation scheduler, so App.cancel stops both and App.Shutdown joins
+	// both before closing the store.
+	upkeepWorker := BuildUpkeep(ctx, *cfg, st)
+
 	// T12: tool_batch dispatches over the assembled registry, so it is a
 	// member of the list it reads. Construction must happen BEFORE the
 	// toolNames snapshot (so GOV5 sees the name and the profile entry is not
@@ -1472,6 +1488,7 @@ func Build(opts Options) (*App, error) {
 		LSP:             lspMgr,
 		MCP:             mcpManager,
 		C1Scheduler:     c1Scheduler,
+		Upkeep:          upkeepWorker,
 		Approvals:       approvalMgr,
 		ShellManager:    shellManager,
 		SecureFactory:   secureFactory,
@@ -1690,6 +1707,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if a.C1Scheduler != nil {
 		a.C1Scheduler.Wait()
 	}
+	// Same reasoning, same ordering: the upkeep sweep observes a.cancel()
+	// above, and a compression in flight must finish before the store closes —
+	// it has already written the blob and is about to delete the rows.
+	a.Upkeep.Wait()
 	if err := a.Server.Shutdown(ctx); err != nil {
 		errs = append(errs, err)
 	}

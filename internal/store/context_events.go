@@ -273,6 +273,13 @@ func (s *Store) HiddenSeq(sessionID string) (int, error) {
 // maxMessageSeq returns the highest seq in a session's durable log, or -1 for an
 // empty session. It is what makes "this boundary describes rows that are no
 // longer there" answerable, rather than being inferred from an empty result.
+//
+// It consults cold storage (W-D-04) when `messages` is empty, because
+// compression is a path that removes rows and the backstop below exists for
+// exactly those. Reading only `messages` would report -1 for every compressed
+// session, and -1 short-circuits the backstop as "empty session, nothing to be
+// stale about" — disarming the check on the one shape it was written for. The
+// stored max_seq answers this without inflating the blob.
 func (s *Store) maxMessageSeq(sessionID string) (int, error) {
 	var maxSeq sql.NullInt64
 	if err := s.DB.QueryRow(
@@ -280,10 +287,17 @@ func (s *Store) maxMessageSeq(sessionID string) (int, error) {
 	).Scan(&maxSeq); err != nil {
 		return 0, err
 	}
-	if !maxSeq.Valid {
-		return -1, nil
+	if maxSeq.Valid {
+		return int(maxSeq.Int64), nil
 	}
-	return int(maxSeq.Int64), nil
+	cold, ok, err := s.coldMaxSeq(sessionID)
+	if err != nil {
+		return 0, err
+	}
+	if ok {
+		return cold, nil
+	}
+	return -1, nil
 }
 
 // placeholders renders n comma-separated SQL parameter markers. Callers must

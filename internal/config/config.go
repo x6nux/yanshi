@@ -483,6 +483,19 @@ type StorageConfig struct {
 	BusyTimeoutMs int `yaml:"busy_timeout_ms"`
 	// WALAutoCheckpoint 是 wal_autocheckpoint 页阈值（F1）。0/省略=1000；负数=禁用被动 checkpoint（不推荐）。
 	WALAutoCheckpoint int `yaml:"wal_auto_checkpoint"`
+
+	// RetentionDays 是冷会话压缩的空闲阈值（W-D-04）：超过这么多天没有活动的
+	// 会话，其消息被整体序列化 + gzip 存进 cold_sessions，原行删除。读取侧透明
+	// 回退解压，所以对话内容一条不少。
+	//
+	// **0/省略 = 永久保留，不压缩任何东西**，与引入本字段前逐字节一致。这不是
+	// 保守的默认值而是唯一安全的默认值：压缩会把冷会话移出 FTS 索引，
+	// history_search 从此找不到它们，这个代价必须由操作员显式选择。
+	//
+	// **到期是压缩不是删除。** 本字段永远不会让任何一条消息消失；删除只有
+	// store.DeleteSession 这一条显式路径。名字里的 "retention" 沿用 spec 的
+	// 措辞，语义以这段注释为准。
+	RetentionDays int `yaml:"retention_days"`
 }
 
 // LLMConfig configures the available LLM providers.
