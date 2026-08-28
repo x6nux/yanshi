@@ -81,7 +81,27 @@ shell 维度先拆段（见下一节），再对**每一段**过下面两层，�
 
 - **命令替换在双引号里也拒，只有单引号里才是数据。** `"$(…)"` 和 `` "`…`" `` 在 POSIX shell 里照样执行替换，所以 `rm -rf "$(echo /)"` 与不带引号的写法是同一件事，判决也是同一档。曾经不是：`rm -rf "$(echo /)"`、`eval "$(echo rm) -rf /"`、`echo k > "$(echo ~/.ssh/authorized_keys)"` 等六种拼法实测走到 Allow，而 `/bin/sh` 真的删了根、真的写了 `authorized_keys`。`echo '$(1+1)'` 这种单引号写法照常可用。
 
-**`shell_run` 带 `env: "powershell"` 时换一个读法。** PowerShell 的转义符是反引号、路径分隔符是反斜杠，POSIX shell 恰好反过来，所以用 POSIX 的读法去读一条 PowerShell 命令会把路径里的分隔符全吃掉 —— `Remove-Item -Recurse C:\temp` 的目标会变成 `C:temp`。它同样是「对词的内容宽容、对结构严格」：`$(…)`、`@(…)`、`${…}`、括号分组、脚本块 `{ }`、here-string、调用运算符与后台的 `&`、`#` 注释、`<`（PowerShell 本身就不支持）、裸换行、未闭合引号与结尾反引号一律拒绝，且同样是结构性 HardDeny。`cmd` **不走**这个读法（它的转义符是第三种，`^`），仍按 POSIX 读。
+**`shell_run` 带 `env: "powershell"` 时换一个读法。** PowerShell 的转义符是反引号、路径分隔符是反斜杠，POSIX shell 恰好反过来，所以用 POSIX 的读法去读一条 PowerShell 命令会把路径里的分隔符全吃掉 —— `Remove-Item -Recurse C:\temp` 的目标会变成 `C:temp`。它同样是「对词的内容宽容、对结构严格」：`$(…)`、`@(…)`、`${…}`、括号分组、脚本块 `{ }`、here-string、调用运算符与后台的 `&`、`#` 注释、`<`（PowerShell 本身就不支持）、裸换行、未闭合引号与结尾反引号一律拒绝，且同样是结构性 HardDeny。`cmd` **不走**这个读法，仍按 POSIX 读 —— 见下面那条已知边界。
+
+> ⚠️ **已知边界：Windows 上的 `cmd.exe` 命令目前按 POSIX 规则解析，它的 `^` 转义不被识别。**
+>
+> 这不是免责声明，是让你据此做决定的一条事实。`cmd` 的转义符是第三种（`^`），本仓只有 POSIX 与
+> PowerShell 两个 reader，所以一条写给 cmd 的命令是被 POSIX 的规则读的：`^` 在 POSIX 那边不是转义符，
+> 会被当成普通字符留在词里；而 POSIX 的 `\` 是转义符，在 cmd 那边却是路径分隔符，于是
+> `del C:\temp` 这类路径的分隔符会在读的时候被吃掉。
+>
+> **影响什么。** `env` 留空或写 `auto` 时，**Windows 上解析成 `cmd`**（`internal/shell::ShellArgv`），
+> 所以这是 Windows 的默认路径而不是一个偏门配置。受影响的是**按命令文本做判断的那两层**：
+> `shell.patterns` 白名单/黑名单的 glob 匹配，以及重定向目标进 fs 维度时的路径。
+> **不受影响的是破坏性删除门** —— 它用的是自己那个宽容的词法器（两种读法都判、取更严的），
+> 与 reader 的选择无关，所以 `rd /s C:\` 一类照样拦得住。
+>
+> **你可以怎么做。** ① 在 Windows 上想依赖 shell 白名单时，把 `env` 显式写成 `powershell`
+> （有专门的 reader）；② 或者不要在 pattern 里依赖 `^` 与 `\` 的转义语义，用更粗的 glob，
+> 靠交互式审批而不是靠 pattern 精确匹配来收口。
+>
+> 审批缓存这一侧已经把 cmd 当成**独立语言**了（`approval.Scope.Interpreter`），所以一条 cmd 命令
+> 的批准不会串到同样文本的 sh 命令上——**分开的是 scope，不是 reader**。
 
 理由、代价与不变量见 [../adr/0004-guard-stateless-and-shell-metachar-hardblock.md](../adr/0004-guard-stateless-and-shell-metachar-hardblock.md) 的补充后果一节。
 
@@ -114,7 +134,7 @@ profile **不是**按 `agents[].profile` 字段选的 —— 那个字段今天*
 | `auto` | 灾难性删除直接拦、越界删除弹窗；**其余一切交给 AI 判断**（`guard.AutoApprovalPrompt`），Go 侧没有静态白/黑名单。模型拿到完整命令原文 + 会话上下文（用户最近的请求、workdir、策略拒绝理由）答 ALLOW/ASK。风险类别写在提示词里，四组：伸出项目之外（提权/关机/磁盘/系统账户/防火墙/系统包管理器/定时任务/远程执行）、不可逆（force-push、删除 VCS 未记录的东西、容器逃逸）、**执行没人读过的代码**（下载即执行、从 `/tmp` `~/Downloads` 跑脚本 —— 远程脚本必须先落盘审计）、数据外泄（外传项目内容/凭据、`env` 把 API key 打进 transcript）。无模型、超时、出错、回复读不懂 → 一律弹窗；auto 退化成 manual，不退化成放行。无阈值可调。 |
 | `plan` | 只读，写操作一律拒绝。 |
 
-> **`yolo` 不是"放行所有"。** 结构性 HardDeny（shell 结构读不出来、未知 policy、execpolicy parse-error）与灾难性删除在任何模式下都拦得住；强制批准工具（下一节）也一样。`yolo` 越过的是 **profile 说的"不"**。
+> **`yolo` 不是"放行所有"。** 结构性 HardDeny（shell 结构读不出来、未知 policy、execpolicy parse-error、**命令嵌套深过 guard 愿意拆的层数**）与灾难性删除在任何模式下都拦得住；强制批准工具（下一节）也一样。`yolo` 越过的是 **profile 说的"不"**。权威枚举在本页上面那一节，这里是提示框，不是清单。
 
 > SSE 备用路径用静态 profile，**不支持**交互式弹窗（见 [../adr/0010-sse-static-profile-no-interactive-perm.md](../adr/0010-sse-static-profile-no-interactive-perm.md)）。
 
