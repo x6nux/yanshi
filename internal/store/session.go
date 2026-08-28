@@ -65,6 +65,13 @@ func (s *Store) AppendMessage(sessionID string, seq int, role, content string) e
 	id := newID()
 	now := time.Now().Unix()
 	return s.WriteTx(context.Background(), func(tx *sql.Tx) error {
+		// Same rule as AppendMessages: a compressed session gets its rows back
+		// before one is written on top of them (thawColdSessionTx). The caller
+		// picks seq here, and SessionMessageCount — where every caller gets it
+		// from — counts the archived rows too, so the two halves agree.
+		if err := thawColdSessionTx(tx, sessionID); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(
 			`INSERT INTO messages (id, session_id, seq, role, content, created_at)
 			 VALUES (?, ?, ?, ?, ?, ?)`,
@@ -151,11 +158,41 @@ func (s *Store) DeleteSession(sessionID string) error {
 	})
 }
 
-// SessionMessageCount returns the number of messages in a session.
+// SessionMessageCount returns the number of messages in a session, INCLUDING
+// the ones a compression moved into cold storage (W-D-04).
+//
+// Counting only `messages` reports 0 for every compressed session, and all
+// three callers are hurt by that in a different way: the TUI session list shows
+// every archived conversation as empty, connSession.loadSession takes it as the
+// log coordinate a later compaction boundary is computed from, and api/v1 uses
+// it as the seq to write the next turn AT — which lands the new row on top of
+// seq 0 of the archived transcript. That last one is a live resume path, not
+// the revert machinery an earlier note mistook it for.
+//
+// The cold half is answered from the stored max_seq rather than by decompressing
+// the blob, so listing sessions stays O(1) per row. max_seq+1 is the row count
+// because seq is dense: AppendMessages assigns it from MAX(seq)+1 one row at a
+// time, and the only deletes are whole sessions and suffixes
+// (TruncateSessionForRevert). It is also, exactly, the next free seq — which is
+// what two of the three callers actually want from it.
 func (s *Store) SessionMessageCount(sessionID string) (int, error) {
 	var count int
-	err := s.DB.QueryRow("SELECT COUNT(*) FROM messages WHERE session_id = ?", sessionID).Scan(&count)
-	return count, err
+	if err := s.DB.QueryRow(
+		"SELECT COUNT(*) FROM messages WHERE session_id = ?", sessionID,
+	).Scan(&count); err != nil {
+		return 0, err
+	}
+	if count > 0 {
+		return count, nil
+	}
+	cold, ok, err := s.coldMaxSeq(sessionID)
+	if err != nil {
+		return 0, err
+	}
+	if ok {
+		return cold + 1, nil
+	}
+	return 0, nil
 }
 
 // Messages returns ALL of a session's messages ordered by sequence.

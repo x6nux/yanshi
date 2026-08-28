@@ -138,6 +138,59 @@ func (s *Store) CompressSession(sessionID string) (int, error) {
 	return packed, nil
 }
 
+// thawColdSessionTx puts a compressed session's rows back before anything is
+// appended to it, and is a no-op for a session that was never compressed.
+//
+// IT IS WHAT KEEPS "READABLE BYTE FOR BYTE" TRUE ACROSS A WRITE. Compression
+// leaves `messages` empty for the session, and two things then conspire:
+// messagesInWindow only consults the blob when the live query returns ZERO
+// rows, and AppendMessages takes its watermark from MAX(seq) over that same
+// empty table. So the first row written to a compressed session both restarts
+// seq at 0 — colliding with every archived row and stranding the boundary above
+// the new log — and makes the table non-empty, which switches the cold fallback
+// off for good. Measured before this existed: a 10-message session compressed,
+// then sent one more message, read back as ONE message, permanently.
+//
+// Thawing rather than teaching every reader to union the blob in: a session
+// being written to is not cold, and putting the rows back restores the FTS
+// index (history_search finds it again), makes it eligible for a later
+// compression sweep instead of being excluded forever by IdleSessions'
+// skipCompressed, and leaves exactly one shape of truth in `messages`.
+//
+// The rows go back with their original ids, seqs and dedup keys, so the log is
+// byte-identical to what CompressSession packed. It runs inside the caller's
+// write transaction, so a failure anywhere leaves the blob untouched.
+func thawColdSessionTx(tx *sql.Tx, sessionID string) error {
+	var blob []byte
+	switch err := tx.QueryRow(
+		"SELECT blob FROM cold_sessions WHERE session_id = ?", sessionID,
+	).Scan(&blob); {
+	case err == sql.ErrNoRows:
+		return nil
+	case err != nil:
+		return fmt.Errorf("store: probe cold session: %w", err)
+	}
+	msgs, err := decodeColdBlob(blob)
+	if err != nil {
+		return fmt.Errorf("store: thaw cold session %s: %w", sessionID, err)
+	}
+	for _, m := range msgs {
+		if _, err := tx.Exec(
+			`INSERT INTO messages
+			   (id, session_id, seq, role, content, tool_call_id, tool_name, tool_args, dedup_key, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			m.ID, sessionID, m.Seq, m.Role, m.Content,
+			m.ToolCallID, m.ToolName, m.ToolArgs, m.DedupKey, m.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("store: thaw message %s: %w", m.ID, err)
+		}
+	}
+	if _, err := tx.Exec("DELETE FROM cold_sessions WHERE session_id = ?", sessionID); err != nil {
+		return fmt.Errorf("store: drop thawed cold session: %w", err)
+	}
+	return nil
+}
+
 // messagesTx reads a session's whole log inside a caller's transaction, so the
 // rows that get packed are the rows that get deleted.
 func messagesTx(tx *sql.Tx, sessionID string) ([]Message, error) {

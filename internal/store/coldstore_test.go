@@ -322,3 +322,125 @@ func TestColdStore_UnreadableBlobIsAnErrorNotAnEmptyWindow(t *testing.T) {
 	_, err = s.Messages(sid)
 	require.Error(t, err)
 }
+
+// TestColdStore_AppendingToACompressedSessionKeepsTheWholeArchive is the
+// regression for the shape that made a cold session unreadable FOREVER after
+// one further message.
+//
+// Two mechanisms had to meet: messagesInWindow only consults the blob when the
+// live query returns zero rows, and AppendMessages read its watermark from
+// MAX(seq) over the table compression had just emptied. So the first appended
+// row restarted seq at 0 AND made the table non-empty, which switched the cold
+// fallback off permanently. Measured on this exact fixture before the fix:
+// Messages() went 10 -> 10 -> 1.
+//
+// Removing the thawColdSessionTx call from AppendMessages makes this red.
+func TestColdStore_AppendingToACompressedSessionKeepsTheWholeArchive(t *testing.T) {
+	s := openTestStore(t)
+	sid := coldFixture(t, s, 10)
+	before, err := s.Messages(sid)
+	require.NoError(t, err)
+	require.Len(t, before, 10)
+
+	_, err = s.CompressSession(sid)
+	require.NoError(t, err)
+
+	inserted, next, err := s.AppendMessages(sid,
+		[]Message{{Role: RoleUser, Content: "one more thing"}})
+	require.NoError(t, err)
+	require.Equal(t, 1, inserted)
+	require.Equal(t, 11, next, "seq must continue past the archived rows, not restart")
+
+	after, err := s.Messages(sid)
+	require.NoError(t, err)
+	require.Len(t, after, 11)
+	require.Equal(t, before, after[:10], "every archived row must come back verbatim")
+	require.Equal(t, 10, after[10].Seq)
+
+	// The thaw is what restores the FTS index too: deleting the rows fired
+	// messages_ad, so a session that stayed cold is unsearchable, and a session
+	// being written to again must not be.
+	hits, err := s.SearchMessages(sid, "diff", 20)
+	require.NoError(t, err)
+	require.NotEmpty(t, hits, "thawed rows must be back in the full-text index")
+
+	// It is also eligible for a later compression sweep again — IdleSessions
+	// excludes anything still listed in cold_sessions, which is exactly the row
+	// the thaw removed.
+	idle, err := s.IdleSessions(time.Now().Unix()+3600, 10, true)
+	require.NoError(t, err)
+	require.Contains(t, idle, sid)
+}
+
+// TestColdStore_AppendKeepsTheCompactionBoundary is the other half: the WS
+// reconnect path re-flushes the whole projected window (flushHistory), and that
+// is a write to a compressed session.
+//
+// Before the fix the re-flush wrote the four surviving messages as seqs 0..3
+// while the boundary still said hidden_seq=7, which sits past the end of the new
+// log. ProjectWindow's stale-boundary backstop then returned the FULL transcript
+// on every read — the compaction permanently undone, which is the bug ADR-0015
+// exists to prevent, re-entering through the storage door.
+func TestColdStore_AppendKeepsTheCompactionBoundary(t *testing.T) {
+	s := openTestStore(t)
+	sid := coldFixture(t, s, 10)
+	require.NoError(t, s.AppendContextEvent(sid, ContextEventCompact, 7, []int{1}))
+
+	window, err := s.ProjectWindow(sid)
+	require.NoError(t, err)
+	require.Len(t, window, 4)
+
+	_, err = s.CompressSession(sid)
+	require.NoError(t, err)
+
+	// Exactly what connSession.flushHistory does after a reconnect.
+	inserted, _, err := s.AppendMessages(sid, window)
+	require.NoError(t, err)
+	require.Zero(t, inserted, "re-flushing an already durable window must insert nothing")
+
+	again, err := s.ProjectWindow(sid)
+	require.NoError(t, err)
+	require.Equal(t, window, again, "the compaction must survive the round trip")
+
+	all, err := s.Messages(sid)
+	require.NoError(t, err)
+	require.Len(t, all, 10, "the originals the summary replaced are still readable")
+
+	hidden, err := s.HiddenSeq(sid)
+	require.NoError(t, err)
+	require.Equal(t, 7, hidden)
+}
+
+// TestColdStore_CompressedSessionStillCountsItsMessages pins the cold half of
+// SessionMessageCount.
+//
+// A zero here is not cosmetic: api/v1 writes the next turn AT this seq, so a
+// compressed session resumed over v1 lands its new row on top of the archived
+// seq 0, and connSession.loadSession takes the same number as the log
+// coordinate a later compaction boundary is derived from. The TUI session list
+// showing every archived conversation as empty is the visible third of it.
+func TestColdStore_CompressedSessionStillCountsItsMessages(t *testing.T) {
+	s := openTestStore(t)
+	sid := coldFixture(t, s, 10)
+	_, err := s.CompressSession(sid)
+	require.NoError(t, err)
+
+	count, err := s.SessionMessageCount(sid)
+	require.NoError(t, err)
+	require.Equal(t, 10, count)
+
+	// AppendMessage takes the seq from that count, so the two halves must agree:
+	// the new row lands past the archive rather than on top of it.
+	require.NoError(t, s.AppendMessage(sid, count, RoleUser, "resumed over v1"))
+	all, err := s.Messages(sid)
+	require.NoError(t, err)
+	require.Len(t, all, 11)
+	require.Equal(t, "resumed over v1", all[10].Content)
+	require.Equal(t, 10, all[10].Seq)
+
+	// A session that was never compressed reports the plain row count, and one
+	// that never existed reports zero rather than the cold branch's off-by-one.
+	missing, err := s.SessionMessageCount("no-such-session")
+	require.NoError(t, err)
+	require.Zero(t, missing)
+}

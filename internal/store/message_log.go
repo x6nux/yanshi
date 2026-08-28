@@ -169,6 +169,13 @@ func (s *Store) AppendMessages(sessionID string, msgs []Message) (inserted int, 
 
 	now := time.Now().Unix()
 	err = s.WriteTx(context.Background(), func(tx *sql.Tx) error {
+		// A COMPRESSED SESSION IS THAWED FIRST, in this transaction, before the
+		// watermark is read. Reading MAX(seq) over the empty table a compression
+		// leaves behind restarts seq at 0 on top of the archived rows; see
+		// thawColdSessionTx for the whole failure.
+		if e := thawColdSessionTx(tx, sessionID); e != nil {
+			return e
+		}
 		var maxSeq sql.NullInt64
 		if e := tx.QueryRow(
 			"SELECT MAX(seq) FROM messages WHERE session_id = ?", sessionID,

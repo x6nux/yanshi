@@ -88,9 +88,14 @@ func TestMemory_TraceResolvesAfterArchive(t *testing.T) {
 	packed, err := s.CompressSession(sid)
 	require.NoError(t, err)
 	require.Equal(t, 6, packed, "the archive must actually have run")
-	n, err := s.SessionMessageCount(sid)
-	require.NoError(t, err)
-	require.Zero(t, n, "the rows must really be gone, or the test proves nothing")
+	// Counted straight off `messages`, not via SessionMessageCount: that
+	// reports the ARCHIVED rows too (they are still the session's messages, and
+	// a caller taking it as the next free seq would otherwise overwrite them),
+	// so it can no longer answer "did the live rows go away".
+	var live int
+	require.NoError(t, s.DB.QueryRow(
+		"SELECT COUNT(*) FROM messages WHERE session_id = ?", sid).Scan(&live))
+	require.Zero(t, live, "the rows must really be gone, or the test proves nothing")
 
 	after, err := s.MemorySource(id)
 	require.NoError(t, err)
