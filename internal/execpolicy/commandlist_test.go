@@ -10,23 +10,22 @@ import (
 // TestParseCommandListSplitsOnEveryControlOperator pins the four operators the
 // guard now judges segment by segment. `;` is the one that has no Lex support
 // at all, so it is the one a regression would most plausibly drop.
+//
+// WHICH operator joined two segments is no longer reported (Segment.Operator is
+// gone — see that type's doc), so what is asserted is the SPLIT: where the
+// boundaries fall and what text lands on each side. That is the whole of what
+// the guard consumes, and it is the property a regression would break.
 func TestParseCommandListSplitsOnEveryControlOperator(t *testing.T) {
 	cases := []struct {
 		raw   string
 		texts []string
-		ops   []execpolicy.TokenKind
 	}{
-		{"git status && go test", []string{"git status", "go test"},
-			[]execpolicy.TokenKind{execpolicy.AndIf, execpolicy.NoOperator}},
-		{"git status || go test", []string{"git status", "go test"},
-			[]execpolicy.TokenKind{execpolicy.OrIf, execpolicy.NoOperator}},
-		{"git status ; go test", []string{"git status", "go test"},
-			[]execpolicy.TokenKind{execpolicy.Semi, execpolicy.NoOperator}},
-		{"cat f | grep x", []string{"cat f", "grep x"},
-			[]execpolicy.TokenKind{execpolicy.Pipe, execpolicy.NoOperator}},
-		{"a && b ; c | d", []string{"a", "b", "c", "d"},
-			[]execpolicy.TokenKind{execpolicy.AndIf, execpolicy.Semi, execpolicy.Pipe, execpolicy.NoOperator}},
-		{"ls;", []string{"ls"}, []execpolicy.TokenKind{execpolicy.Semi}},
+		{"git status && go test", []string{"git status", "go test"}},
+		{"git status || go test", []string{"git status", "go test"}},
+		{"git status ; go test", []string{"git status", "go test"}},
+		{"cat f | grep x", []string{"cat f", "grep x"}},
+		{"a && b ; c | d", []string{"a", "b", "c", "d"}},
+		{"ls;", []string{"ls"}},
 	}
 	for _, tc := range cases {
 		segs, err := execpolicy.ParseCommandList(tc.raw)
@@ -39,9 +38,6 @@ func TestParseCommandListSplitsOnEveryControlOperator(t *testing.T) {
 		for i, seg := range segs {
 			if seg.Text != tc.texts[i] {
 				t.Errorf("ParseCommandList(%q) segment %d Text = %q, want %q", tc.raw, i, seg.Text, tc.texts[i])
-			}
-			if seg.Operator != tc.ops[i] {
-				t.Errorf("ParseCommandList(%q) segment %d Operator = %v, want %v", tc.raw, i, seg.Operator, tc.ops[i])
 			}
 		}
 	}

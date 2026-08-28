@@ -50,11 +50,13 @@ import (
 //
 // Program/Args are the unquoted words (Program normalized the same way
 // Parse normalizes it, so prefix rules match across `/usr/bin/go` and `go.exe`).
-// Redirects carry the operator and its target word. Operator is the control
-// operator that separates this segment from the NEXT one, NoOperator on the
-// last. Text is the VERBATIM source slice for this segment — not a re-join of
-// Program+Args, because re-joining loses quoting and `rm -rf "/my dir"` would
-// come back as two targets.
+// Redirects carry the operator and its target word. Text is the VERBATIM source
+// slice for this segment — not a re-join of Program+Args, because re-joining
+// loses quoting and `rm -rf "/my dir"` would come back as two targets.
+//
+// WHICH operator joined this segment to the next one is deliberately not
+// reported. It was, until W-B-03/W-B-04 landed without a consumer for it; see
+// Segment's own doc.
 func ParseCommandList(raw string) ([]Segment, error) {
 	s := &listScanner{raw: raw, segFrom: -1}
 	if err := s.run(); err != nil {
@@ -139,17 +141,16 @@ func (s *listScanner) run() error {
 		case c == '(' || c == ')':
 			return fmt.Errorf("execpolicy: subshell grouping rejected")
 		case c == ';':
-			if err := s.flushSegment(Semi); err != nil {
+			if err := s.flushSegment(); err != nil {
 				return err
 			}
 			s.i++
 		case c == '|':
-			op := Pipe
 			width := 1
 			if s.peek(1) == '|' {
-				op, width = OrIf, 2
+				width = 2
 			}
-			if err := s.flushSegment(op); err != nil {
+			if err := s.flushSegment(); err != nil {
 				return err
 			}
 			s.i += width
@@ -221,7 +222,7 @@ func (s *listScanner) scanQuoted(quote byte) error {
 // there is nothing left to report a denial to.
 func (s *listScanner) scanAmpersand() error {
 	if s.peek(1) == '&' {
-		if err := s.flushSegment(AndIf); err != nil {
+		if err := s.flushSegment(); err != nil {
 			return err
 		}
 		s.i += 2
@@ -348,14 +349,13 @@ func (s *listScanner) flushWord() {
 	s.words = append(s.words, w)
 }
 
-// flushSegment closes the current segment, tags it with the operator that
-// separates it from the next one, and resets the accumulators.
+// flushSegment closes the current segment and resets the accumulators.
 //
 // An operator with no segment in front of it is a parse error rather than an
 // empty segment: `; ls` and `a ;; b` are shell syntax errors, and inventing an
 // empty command for them would let a malformed string reach the policy layer as
 // something the policy layer thinks it understood.
-func (s *listScanner) flushSegment(op TokenKind) error {
+func (s *listScanner) flushSegment() error {
 	s.flushWord()
 	if s.pendingRedirect >= 0 {
 		return fmt.Errorf("execpolicy: redirect %q missing target", s.redirs[s.pendingRedirect].Operator)
@@ -367,7 +367,6 @@ func (s *listScanner) flushSegment(op TokenKind) error {
 	seg := Segment{
 		Program:   normalizeProgram(s.words[0]),
 		Redirects: s.redirs,
-		Operator:  op,
 		Text:      text,
 	}
 	if len(s.words) > 1 {
@@ -394,5 +393,5 @@ func (s *listScanner) finish() error {
 		}
 		return nil
 	}
-	return s.flushSegment(NoOperator)
+	return s.flushSegment()
 }

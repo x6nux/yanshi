@@ -193,11 +193,36 @@ func permissionCallback(ctx context.Context) (func(PermissionRequest) Permission
 }
 
 // scopeFromAction converts a guard.Action to the matching approval.Scope. For
-// shell_run, the command is parsed via execpolicy so the scope identifies the
-// exact program + argument prefix; otherwise the action's tool/fs/net fields
-// are mirrored directly. A shell command that fails to parse or contains a
-// control operator cannot become an approval scope (fail-closed — the user
-// cannot pre-approve a chained command).
+// shell_run the command is parsed so the scope identifies the exact program,
+// argument vector and redirections; otherwise the action's tool/fs/net fields
+// are mirrored directly. A shell command that cannot be read, or that carries
+// more than one executable segment, cannot become an approval scope
+// (fail-closed — the user cannot pre-approve a chained command).
+//
+// # Why ParseCommandList and not Parse (W-B-04 / W-B-06)
+//
+// It used the STRICT lexer, and that was wrong in both directions at once.
+//
+// Too strict on word CONTENT: Parse rejects globs and $VAR because the rule
+// engine cannot honestly match a word whose value it cannot see. Correct for
+// rules; here a scope error is a hard DenyErr, so `ls *.go` under a glob
+// profile was refused OUTRIGHT — the guard said Prompt and no prompt was ever
+// shown. That also made the approval cache unreachable for the whole class of
+// commands most likely to be re-run.
+//
+// Too loose on STRUCTURE: Parse's lexer never emits ";", so `ls; rm -rf /`
+// came back as one segment whose program word is `ls;`. Subshell parens and a
+// raw newline got through the same way. This function's own doc claimed to
+// refuse chains, and CLAUDE.md cited that claim as the last line of defence
+// keeping a chain from reaching an interactive approval; it was measured false
+// for three spellings.
+//
+// ParseCommandList is lenient about content and strict about structure, which
+// is exactly the pair a scope needs. Whitespace folding and quote stripping —
+// W-B-06's "same command, same cache entry" — then come for free, because the
+// scope is built from PARSED WORDS. Argument order is deliberately not
+// normalized: the spec's warning is that under-normalization is an annoyance
+// while over-normalization is a security hole, and two orders are two commands.
 func scopeFromAction(action guard.Action) (approval.Scope, error) {
 	scope := approval.Scope{
 		Tool:  action.Tool,
@@ -208,15 +233,18 @@ func scopeFromAction(action guard.Action) (approval.Scope, error) {
 	if action.Shell == "" {
 		return scope, nil
 	}
-	cmd, err := execpolicy.Parse(action.Shell)
+	segs, err := execpolicy.ParseCommandList(action.Shell)
 	if err != nil {
 		return approval.Scope{}, err
 	}
-	if len(cmd.Segments) != 1 {
+	if len(segs) != 1 {
 		return approval.Scope{}, fmt.Errorf("approval: shell scope requires one executable segment")
 	}
-	scope.Program = cmd.Segments[0].Program
-	scope.Prefix = append([]string(nil), cmd.Segments[0].Args...)
+	scope.Program = segs[0].Program
+	scope.Prefix = append([]string(nil), segs[0].Args...)
+	for _, r := range segs[0].Redirects {
+		scope.Redirects = append(scope.Redirects, r.Operator+" "+r.Target)
+	}
 	// A command that executes a script file carries the script's content hash
 	// too, so an approval for "run install.sh" stops applying the moment
 	// install.sh changes. See approval.Scope.ScriptHash.

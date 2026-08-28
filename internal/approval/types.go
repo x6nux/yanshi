@@ -52,6 +52,22 @@ type Scope struct {
 	Paths   []string `json:"paths,omitempty"`
 	Host    string   `json:"host,omitempty"`
 
+	// Redirects carries the shell command's redirections, one entry per
+	// redirection, rendered as "<operator> <target>". It is part of the scope
+	// because a redirection is WHERE THE COMMAND WRITES, and the argument
+	// vector does not mention it: execpolicy puts the target in
+	// Segment.Redirects, not in Args.
+	//
+	// Measured before this field existed: `echo x > out.txt` and
+	// `echo x >> /etc/sudoers` produced byte-identical scopes, so approving the
+	// first for the session auto-allowed the second with no prompt. The guard's
+	// FS dimension judges the target correctly on the way in; without this the
+	// approval cache then remembered a decision that was never about it.
+	//
+	// The order is the source order and is NOT sorted. `> a 2> b` and `> b 2> a`
+	// are different commands.
+	Redirects []string `json:"redirects,omitempty"`
+
 	// ScriptHash is the SHA-256 of the script a shell command executes, set
 	// only when the command runs a script FILE (`sh x.sh`, `./x.sh`,
 	// `node x.js`). It is what makes a rule about running a script safe to

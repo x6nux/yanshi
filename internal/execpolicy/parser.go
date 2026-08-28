@@ -22,29 +22,25 @@ type RedirectSpec struct {
 // Segment is a single executable inside a pipeline / control chain. A simple
 // `go test ./...` parses to one Segment with Program="go", Args=["test","./..."].
 //
-// Two of the fields are populated by ParseCommandList only, and Parse leaves
-// them zero. Parse describes ONE command for the rule engine, which matches on
-// program and argument words and has no use for either; ParseCommandList
-// describes a command LIST, where a segment's verbatim source text is what the
-// guard matches profile globs against.
+// Text is populated by ParseCommandList only, and Parse leaves it zero. Parse
+// describes ONE command for the rule engine, which matches on program and
+// argument words and has no use for it; ParseCommandList describes a command
+// LIST, where a segment's verbatim source text is what the guard matches
+// profile globs against.
 //
-// Operator is the exception, and the honest statement about it today is that
-// nothing in production reads it: the guard folds every segment's verdict with
-// moreSevere, an operation that does not care whether the segments were joined
-// with `&&` or `|`. It is populated because the reader that would care —
-// per-operator reasoning about which segments actually run — is W-B-03/W-B-04's
-// job, and a scanner that discarded the operator would have to be re-opened to
-// get it back. If those work packages land without a reader for it, delete the
-// field rather than leave a value nobody consumes.
+// There WAS a third such field, Operator, carrying the control operator that
+// joined a segment to the next one. It was kept on the argument that W-B-03 /
+// W-B-04 would be the reader that cared. Those landed and did not: the guard
+// folds every segment's verdict with moreSevere, which does not care whether
+// the segments were joined with `&&` or `|`, and the approval scope refuses
+// multi-segment commands outright rather than reasoning about how they were
+// joined. It is deleted rather than kept for a hypothetical third consumer. A
+// scanner that needs it again can re-emit it in the same three lines that were
+// removed.
 type Segment struct {
 	Program   string
 	Args      []string
 	Redirects []RedirectSpec
-
-	// Operator is the control operator that separates this segment from the
-	// NEXT one (AndIf, OrIf, Pipe, Semi), or NoOperator on the last segment.
-	// ParseCommandList only.
-	Operator TokenKind
 
 	// Text is the VERBATIM source slice this segment was cut from, whitespace
 	// trimmed. ParseCommandList only.
