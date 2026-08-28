@@ -1076,3 +1076,34 @@ func TestNewCommandsAreReachableByTyping(t *testing.T) {
 		assert.Equal(t, tc.frame, rs.frames[0].Type)
 	}
 }
+
+// TestModel_Sessions_RendersTheTruncationNote closes the client half of the
+// bounded session list.
+//
+// The server sends one page and says so in the frame's text; a client that
+// dropped that text would put the truncation back where it started — bounded on
+// the wire, unbounded-looking on screen — and a prefix presented as the whole
+// list is how a session that is safe on disk gets reported as lost. Dropping
+// either the assignment in applyEvent or the line in render makes this red.
+func TestModel_Sessions_RendersTheTruncationNote(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	m.entries = append(m.entries, &sessionsEntry{})
+	m = m.applyEvent(cli.StreamEvent{
+		Kind:     "sessions",
+		Text:     "showing the 500 most recently updated sessions; older ones are not listed",
+		Sessions: []proto.SessionInfo{{ID: "abc123", Title: "my chat"}},
+	})
+	se := m.lastSessionsEntry()
+	require.NotNil(t, se)
+	assert.Contains(t, se.render(80, m.spinner), "older ones are not listed")
+
+	// And nothing extra when the page was the whole list: a warning printed
+	// every time stops being read.
+	m2 := newModel(&fakeSession{}, "/proj")
+	m2.entries = append(m2.entries, &sessionsEntry{})
+	m2 = m2.applyEvent(cli.StreamEvent{
+		Kind:     "sessions",
+		Sessions: []proto.SessionInfo{{ID: "abc123", Title: "my chat"}},
+	})
+	assert.NotContains(t, m2.lastSessionsEntry().render(80, m2.spinner), "not listed")
+}
