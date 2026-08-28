@@ -48,7 +48,11 @@ CREATE INDEX IF NOT EXISTS idx_context_events_session
 
 `hidden_seq` 因此只表达**保留尾部的起点**，`pinned_seqs` 补上尾部之下的散落 pin。两者合起来才等于活动窗口。
 
-边界由 WS 压缩路径在**压缩后那次 flush 之后**算出。尾部起点锚定在保留尾部展开成的行数上（`log_top − rows(kept tail)`）；散落 pin 的 seq 通过 `AssignDedupKeys` + `messages` 上 `(session_id, dedup_key)` 的唯一索引反查得到 —— 复用既有去重机制，不需要改 `AppendMessages` 的签名。
+边界由 WS 压缩路径在**压缩后那次 flush 之后**算出，**按位置而不是按内容**。
+
+「按内容」那条路走过一次并被证伪，值得留在这里：初版用 `AssignDedupKeys` + `messages` 上 `(session_id, dedup_key)` 的唯一索引反查每条存活消息的 seq。它看起来是在复用既有机制，实际带着一个致命的别名 —— **dedup key 含批内序号，而压缩恰好改变了批次组成**。压缩前 flush 写 `[X, "ok", Y, "ok"]` 得到 key `ok#0`/`ok#1`；压缩后 flush 只写 `["ok"(第二条), Z]`，存活那条的批内序号变成 0，于是撞上**第一条** "ok" 的 key，解析到错误的 seq。后果不止是顺序错位：它能把 tool_result 排到它的 tool_call 之前，产出 orphan result，provider 硬拒整个请求。触发条件只是「窗口里有两条字节相同的消息」，比如连着两次 "continue"。
+
+**所以让 `AppendMessages` 返回逐行 seq 也救不了** —— 返回的仍是别名后的那个。现在的做法是从日志顶端按真实行位置向下走，把压缩后窗口逐条对齐到它实际占据的行（`internal/api/http/ws_compaction.go` 的 `windowBoundary` / `keptWindowSeqs`），全程不碰 `dedup_key`。
 
 撤销就是再 append 一条 `undo`。日志本身一个字节都不变。
 
@@ -64,6 +68,10 @@ CREATE INDEX IF NOT EXISTS idx_context_events_session
   **「行」这个限定词是必要的，不是措辞含糊。** 日志存的是行不是消息，而两者不是一一对应：`storeMessagesFor` 把「一条带 ToolCalls 的 assistant」拆成散文行 + 每个 tool call 一行，`restoreMessages` 则把相邻的重新合起来。于是往返之后**内容、顺序、配对三样都原样保留，唯独分组会变** —— 窗口里作为两条消息存在的东西可能回来时是一条。这不是本决策引入的，`restoreMessages` 早于它存在；provider 对两种分组都接受，所以它无害。约束在**行**这一层是精确可断言的，在消息层只是「基本成立」，因此断言写在行层。若日后有人需要分组也保真，那要在日志里加一个「本行与上一行同属一条消息」的标记，是另一条 ADR。
 - **不可违反的约束 3：`ctxcompact` 的三步不变。** `Plan` / `EnforceToolCallPairs` / `Assemble` 操作的是投影出来的切片，本决策只改「切片从哪来」。`internal/ctxcompact` 不得因此 import `internal/store`（GOV1：那会让一个纯函数包长出存储依赖）。
 - **不可违反的约束 4：`takeChunk` 的超窗上界照旧成立。** 真实上界仍是「窗口 + 历史中最大不可分割段」，随并行工具数线性增长。它是分块摘要的性质，与存储模型无关 —— 不得因本决策宣称它被解决。
+- **不可违反的约束 6：对齐失败时拒绝压缩，绝不写一个猜出来的边界。** 整套边界计算建立在一条跨层不变量上 —— **flush 前的投影就是活动窗口**。这条不变量**实测可以被普通对话违反**（`flushHistory` 对整条日志去重，包括已隐藏的行，所以模型压缩后重复一句与隐藏行逐字节相同的话，那句就永远写不进日志），因此「它不会被违反」不能作为设计前提。
+
+  违反时唯一可接受的行为是**放弃这次压缩**（上层照旧收到「没压」，窗口偏大但完整），或把边界退回上一次的值。**不可接受的是照压不误再写一个对不上的边界** —— 那条路实测的结果是窗口只剩摘要一条，保留尾部与全部 pin 一起丢掉。方向必须与 C1 的持久化先行一致：**宁可窗口偏大，不可丢内容**。此处曾把「退化成仅保留尾部」写进注释，实测为假；任何关于退化行为的说法都要跑过再写。
+
 - 代价：压缩路径多一次写。它在同一个 `WriteTx` 里，与 flush 相邻，量级可忽略；但**事件写失败必须与 flush 失败同等对待** —— 拒绝压缩，而不是压缩了却不记标记（那会让下一次重连把刚驱逐的东西全拉回来，即今天的 bug）。
 
 ## 关联
