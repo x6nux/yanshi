@@ -486,6 +486,12 @@ func TestRedirectTargetIsJudgedByTheFSDimension(t *testing.T) {
 		"echo hi &> out.txt",
 		"go build 2> err.log",
 		"git status && echo hi > out.txt",
+		// `>&file` writes the file on bash, sh and zsh. It was read as a
+		// descriptor duplication, so the target never reached checkFS and this
+		// spelling came back Allow while `>` on the same path was refused.
+		"echo hi >& out.txt",
+		"echo hi >&out.txt",
+		"echo hi 2>& out.txt",
 	} {
 		if d := g.Check(prof, segAction(cmd)); d.Verdict == Allow {
 			t.Errorf("Check(%q) = Allow; the redirect target never reached the FS dimension", cmd)
@@ -517,13 +523,23 @@ func TestRedirectIntoTheCredentialDenylistPrompts(t *testing.T) {
 		Shell: ShellPerm{Policy: "allowlist", Patterns: []string{"*"}},
 		Net:   NetPerm{Allow: true},
 	}
-	cmd := "echo ssh-rsa AAAA > ~/.ssh/authorized_keys"
-	d := g.Check(prof, segAction(cmd))
-	if d.Verdict != Prompt {
-		t.Fatalf("Check(%q) = %v (%s), want Prompt from the credential denylist", cmd, d.Verdict, d.Reason)
-	}
-	if !strings.Contains(d.Reason, ".ssh") {
-		t.Errorf("Reason = %q; want it to name the credential path it refused", d.Reason)
+	// Every spelling that a real shell resolves to "write this file". `>&` is
+	// here because it was measured planting a key with no prompt: it was read
+	// as a descriptor duplication, so the path was never handed to checkFS.
+	for _, cmd := range []string{
+		"echo ssh-rsa AAAA > ~/.ssh/authorized_keys",
+		"echo ssh-rsa AAAA >> ~/.ssh/authorized_keys",
+		"echo ssh-rsa AAAA &> ~/.ssh/authorized_keys",
+		"echo ssh-rsa AAAA >& ~/.ssh/authorized_keys",
+		"echo ssh-rsa AAAA >&~/.ssh/authorized_keys",
+	} {
+		d := g.Check(prof, segAction(cmd))
+		if d.Verdict != Prompt {
+			t.Fatalf("Check(%q) = %v (%s), want Prompt from the credential denylist", cmd, d.Verdict, d.Reason)
+		}
+		if !strings.Contains(d.Reason, ".ssh") {
+			t.Errorf("Check(%q).Reason = %q; want it to name the credential path it refused", cmd, d.Reason)
+		}
 	}
 }
 

@@ -250,18 +250,56 @@ func (s *listScanner) scanRedirect() error {
 		return fmt.Errorf("execpolicy: process substitution rejected")
 	}
 	if s.peek(0) == '&' {
-		op += "&"
-		s.i++
-		for s.i < len(s.raw) && s.raw[s.i] >= '0' && s.raw[s.i] <= '9' {
-			op += string(s.raw[s.i])
-			s.i++
+		// `>&word` is a descriptor duplication ONLY when word is a plain fd
+		// number (`2>&1`, `>&2`) or the close token (`>&-`). Measured on bash,
+		// sh and zsh: every other spelling WRITES THE FILE named word — `echo x
+		// >& ./t` leaves "x" in ./t on all three. Reading it as a duplication
+		// left RedirectSpec.Target empty, checkRedirectTargets skips empty
+		// targets, and `echo ssh-rsa … >& ~/.ssh/authorized_keys` was measured
+		// planting a key on disk with no prompt while the `>` spelling of the
+		// same command was refused by the credential denylist.
+		//
+		// The digit run is looked at before it is consumed, because `>&1x` is a
+		// file called "1x" and the digits have to stay available as the first
+		// bytes of the target word.
+		digits := s.i + 1
+		for digits < len(s.raw) && s.raw[digits] >= '0' && s.raw[digits] <= '9' {
+			digits++
 		}
-		// `>&1` is a descriptor duplication: it has no path target.
-		s.redirs = append(s.redirs, RedirectSpec{Operator: fd + op})
+		if digits > s.i+1 && isRedirectWordBoundary(byteAtOrZero(s.raw, digits)) {
+			s.redirs = append(s.redirs, RedirectSpec{Operator: fd + op + "&" + s.raw[s.i+1:digits]})
+			s.i = digits
+			return nil
+		}
+		if byteAtOrZero(s.raw, s.i+1) == '-' {
+			s.redirs = append(s.redirs, RedirectSpec{Operator: fd + op + "&-"})
+			s.i += 2
+			return nil
+		}
+		s.i++
+		s.pushRedirect(fd + op + "&")
 		return nil
 	}
 	s.pushRedirect(fd + op)
 	return nil
+}
+
+// isRedirectWordBoundary reports whether b ends a shell word. Zero stands for
+// end-of-string. It is what tells `2>&1` (a descriptor number, then nothing)
+// from `>&1x` (a file called "1x").
+func isRedirectWordBoundary(b byte) bool {
+	switch b {
+	case 0, ' ', '\t', '\n', '\r', ';', '|', '&', '<', '>', '`', '(', ')':
+		return true
+	}
+	return false
+}
+
+func byteAtOrZero(s string, i int) byte {
+	if i >= len(s) {
+		return 0
+	}
+	return s[i]
 }
 
 // pushRedirect records an operator whose target is the next word.

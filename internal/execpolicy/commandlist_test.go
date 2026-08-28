@@ -155,6 +155,22 @@ func TestParseCommandListExtractsRedirectTargets(t *testing.T) {
 		{"go build 2>err.log", []string{"2>"}, []string{"err.log"}},
 		{"go build &> all.log", []string{"&>"}, []string{"all.log"}},
 		{"go build > o.txt 2>&1", []string{">", "2>&1"}, []string{"o.txt", ""}},
+		// `>&word` with a NON-NUMERIC word writes the file, on bash, sh and
+		// zsh alike. Reading it as a descriptor duplication left the target
+		// empty and the write invisible to the FS dimension; measured, that
+		// planted a key in ~/.ssh/authorized_keys with no prompt while the `>`
+		// spelling of the same command was refused.
+		{"echo x >& out.txt", []string{">&"}, []string{"out.txt"}},
+		{"echo x >&out.txt", []string{">&"}, []string{"out.txt"}},
+		{"echo x >& ~/.ssh/authorized_keys", []string{">&"}, []string{"~/.ssh/authorized_keys"}},
+		{"echo x 2>& out.txt", []string{"2>&"}, []string{"out.txt"}},
+		{"cat <& in.txt", []string{"<&"}, []string{"in.txt"}},
+		// …and the two spellings that really do name no file. `>&1x` is the
+		// discriminator between them: the digits are the start of a filename,
+		// not a descriptor, so consuming them eagerly would lose the target.
+		{"go build >&2", []string{">&2"}, []string{""}},
+		{"go build >&-", []string{">&-"}, []string{""}},
+		{"echo x >&1x", []string{">&"}, []string{"1x"}},
 	}
 	for _, tc := range cases {
 		segs, err := execpolicy.ParseCommandList(tc.raw)
