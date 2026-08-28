@@ -214,6 +214,17 @@ func newID() string {
 type SessionRevertSnapshot struct {
 	Meta     SessionSummary
 	Messages []Message
+	// HiddenSeq / PinnedSeqs capture the context-window boundary (INF3) as it
+	// stood when the snapshot was taken, so restoring the rows also restores
+	// which of them the model sees. Without them the restore is asymmetric: a
+	// truncation pops the boundary by appending undo events, and putting only
+	// the rows back leaves those undos standing — the whole transcript returns
+	// to the window and the next turn pays for a fresh summary.
+	//
+	// Zero means "no boundary", which is both the honest reading of a snapshot
+	// taken before any compaction and what a pre-INF3 JSON payload decodes to.
+	HiddenSeq  int
+	PinnedSeqs []int
 }
 
 // EncodeSessionRevertSnapshot serializes the exact durable state saved on an
@@ -284,6 +295,11 @@ func snapshotSessionTx(tx *sql.Tx, sessionID string) (SessionRevertSnapshot, err
 	if err := rows.Err(); err != nil {
 		return SessionRevertSnapshot{}, fmt.Errorf("store: iterate snapshot messages: %w", err)
 	}
+	b, err := boundaryTx(tx, sessionID)
+	if err != nil {
+		return SessionRevertSnapshot{}, err
+	}
+	snap.HiddenSeq, snap.PinnedSeqs = b.HiddenSeq, b.PinnedSeqs
 	return snap, nil
 }
 
@@ -364,6 +380,12 @@ func (s *Store) TruncateSessionForRevert(
 // and message set with an exact snapshot. The handler uses it both to compensate
 // a failed VCS phase and to expand durable history when restoring a pre-revert
 // undo seam. Any failure is fatal and surfaced to the client.
+//
+// It restores the context-window boundary along with the rows (INF3). Putting
+// only the rows back is not a restore: the truncation this compensates already
+// popped the boundary by appending undo events, and those events do not go away,
+// so the window silently reverted to the full transcript — measured at 4
+// messages before a failed revert and 11 after. See store.restoreBoundaryTx.
 func (s *Store) RestoreSessionAfterFailedRevert(snap SessionRevertSnapshot) error {
 	if snap.Meta.ID == "" {
 		return fmt.Errorf("store: empty session compensation snapshot")
@@ -409,6 +431,8 @@ func (s *Store) RestoreSessionAfterFailedRevert(snap SessionRevertSnapshot) erro
 		if n != 1 {
 			return fmt.Errorf("store: restore session meta affected %d rows", n)
 		}
-		return nil
+		return restoreBoundaryTx(tx, m.ID, contextBoundary{
+			HiddenSeq: snap.HiddenSeq, PinnedSeqs: snap.PinnedSeqs,
+		})
 	})
 }

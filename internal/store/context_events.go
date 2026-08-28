@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -269,49 +270,20 @@ func (s *Store) HiddenSeq(sessionID string) (int, error) {
 	return b.HiddenSeq, nil
 }
 
-// SeqsForDedupKeys resolves durable-log rows back to their sequence numbers.
-//
-// This is how the WS layer learns where the compacted window's messages ended
-// up: it re-derives the same dedup keys AppendMessages assigned (they are a pure
-// hash of the message, so the derivation is reproducible), and this looks them
-// up through the (session_id, dedup_key) unique index. Reusing the existing
-// identity mechanism is what keeps AppendMessages' signature — and therefore its
-// other callers — untouched.
-//
-// Keys that match nothing are silently absent from the result. That is the right
-// shape for the caller: a message whose row cannot be located simply does not
-// get pinned, so the window falls back to the kept tail rather than failing.
-func (s *Store) SeqsForDedupKeys(sessionID string, keys []string) ([]int, error) {
-	if sessionID == "" {
-		return nil, fmt.Errorf("store: seqs for dedup keys: empty session id")
+// maxMessageSeq returns the highest seq in a session's durable log, or -1 for an
+// empty session. It is what makes "this boundary describes rows that are no
+// longer there" answerable, rather than being inferred from an empty result.
+func (s *Store) maxMessageSeq(sessionID string) (int, error) {
+	var maxSeq sql.NullInt64
+	if err := s.DB.QueryRow(
+		"SELECT MAX(seq) FROM messages WHERE session_id = ?", sessionID,
+	).Scan(&maxSeq); err != nil {
+		return 0, err
 	}
-	args := []any{sessionID}
-	for _, k := range keys {
-		if k != "" {
-			args = append(args, k)
-		}
+	if !maxSeq.Valid {
+		return -1, nil
 	}
-	if len(args) == 1 {
-		return nil, nil // no usable keys; never emit "IN ()", which SQLite rejects
-	}
-	rows, err := s.DB.Query(
-		"SELECT seq FROM messages WHERE session_id = ? AND dedup_key IN ("+
-			placeholders(len(args)-1)+") ORDER BY seq ASC",
-		args...,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []int
-	for rows.Next() {
-		var seq int
-		if err := rows.Scan(&seq); err != nil {
-			return nil, err
-		}
-		out = append(out, seq)
-	}
-	return out, rows.Err()
+	return int(maxSeq.Int64), nil
 }
 
 // placeholders renders n comma-separated SQL parameter markers. Callers must
@@ -345,32 +317,138 @@ func (s *Store) ProjectWindow(sessionID string) ([]Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(msgs) > 0 || b.HiddenSeq == 0 {
+	if b.HiddenSeq == 0 {
 		return msgs, nil
 	}
-	// BACKSTOP, NOT THE MECHANISM. A boundary that selects nothing means it now
-	// points past the end of the log — something moved the rows it was
-	// describing. The mechanism that prevents this is that every path which
-	// removes message rows must append a compensating event in the SAME
-	// transaction (see undoBoundariesAtOrAfterTx, wired into
-	// TruncateSessionForRevert). This branch exists because the failure mode is
-	// intolerable and silent: an empty window is not a smaller context, it is an
-	// agent that has forgotten the entire conversation and says nothing about
-	// it. Returning the raw transcript degrades to the pre-INF3 behaviour, which
-	// is a bug we have already survived.
+
+	// BACKSTOP, NOT THE MECHANISM. The mechanism is that every path which
+	// removes message rows compensates the boundary in the SAME transaction —
+	// undoBoundariesAtOrAfterTx on the way down, restoreBoundaryTx on the way
+	// back up. This branch exists because the failure it catches is silent: a
+	// window that lost its conversation is not a smaller context, it is an agent
+	// that has forgotten what it was doing and reports nothing wrong.
 	//
-	// Do NOT read this as "the clamp handles it". A new path that deletes rows
-	// still has to append its own event, or every restore in between silently
-	// gets the whole transcript back.
+	// THE TEST IS "DOES THE BOUNDARY STILL DESCRIBE ROWS THAT EXIST", not "did
+	// the query come back empty". Those are different questions and the
+	// difference was measured: a boundary can point past the end of the log
+	// while ONE pinned row below it survives, and an emptiness test then sees a
+	// one-row result, reports nothing, and hands the model a single message out
+	// of a conversation.
+	//
+	// Do NOT read this as "the clamp handles it". A new path that removes rows
+	// still has to compensate, or every restore in between gets the whole
+	// transcript back and pays for a fresh summary on the next turn.
+	maxSeq, err := s.maxMessageSeq(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if maxSeq < 0 {
+		return msgs, nil // empty session: nothing to be stale about
+	}
+	if b.HiddenSeq <= maxSeq {
+		// The tail is still inside the log. Individual pins may not be — that
+		// costs one message rather than the conversation, so it is reported and
+		// not escalated.
+		if missing := countMissingPins(b.PinnedSeqs, msgs); missing > 0 {
+			slog.Warn("context boundary pins rows that are gone; those messages are missing from the window",
+				"session", sessionID, "missing", missing, "hidden_seq", b.HiddenSeq,
+				"action", "expected after a history edit; the next compaction rewrites the boundary")
+		}
+		return msgs, nil
+	}
 	all, err := s.Messages(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	if len(all) > 0 {
-		slog.Warn("context boundary points past the end of the log; projecting the full transcript",
-			"session", sessionID, "hidden_seq", b.HiddenSeq, "messages", len(all))
-	}
+	slog.Warn("context boundary points past the end of the log; projecting the full transcript",
+		"session", sessionID, "hidden_seq", b.HiddenSeq, "max_seq", maxSeq, "messages", len(all),
+		"action", "a path removed message rows without compensating the boundary; "+
+			"the window is oversized until the next compaction rewrites it")
 	return all, nil
+}
+
+// countMissingPins reports how many pinned seqs did not come back in the
+// projection, i.e. name rows that no longer exist.
+func countMissingPins(pins []int, msgs []Message) int {
+	if len(pins) == 0 {
+		return 0
+	}
+	present := make(map[int]bool, len(msgs))
+	for _, m := range msgs {
+		present[m.Seq] = true
+	}
+	var missing int
+	for _, p := range pins {
+		if !present[p] {
+			missing++
+		}
+	}
+	return missing
+}
+
+// restoreBoundaryTx puts a previously captured boundary back.
+//
+// It is the PUSH half of undoBoundariesAtOrAfterTx's pop, and the asymmetry is
+// what made it necessary: a truncation appends undo events, and a compensating
+// restore that only put the message rows back left those undos standing, so the
+// boundary stayed at zero and the whole transcript came back into the window —
+// this design's original bug, entering through the rollback door. Measured:
+// hidden 9 before the failed revert, 0 after, window 4 messages to 11.
+//
+// Expressed by appending, like everything else here (constraint 1). It compares
+// before writing so a compensation that changed nothing appends nothing, which
+// keeps the stack depth stable across repeated failures.
+func restoreBoundaryTx(tx *sql.Tx, sessionID string, want contextBoundary) error {
+	rows, err := tx.Query(contextEventsQuery, sessionID)
+	if err != nil {
+		return fmt.Errorf("store: read context events: %w", err)
+	}
+	events, err := scanContextEvents(rows)
+	if err != nil {
+		return fmt.Errorf("store: scan context events: %w", err)
+	}
+	stack := foldContextEvents(events)
+	var current contextBoundary
+	if len(stack) > 0 {
+		current = stack[len(stack)-1]
+	}
+	if current.HiddenSeq == want.HiddenSeq && slices.Equal(current.PinnedSeqs, want.PinnedSeqs) {
+		return nil
+	}
+	now := time.Now().Unix()
+	if want.HiddenSeq == 0 {
+		// The snapshot predates any compaction: pop back to the raw transcript.
+		for i := len(stack); i > 0; i-- {
+			if err := appendContextEventTx(tx, sessionID, ContextEventUndo, 0, "", now); err != nil {
+				return fmt.Errorf("store: restore context boundary: %w", err)
+			}
+		}
+		return nil
+	}
+	encoded, err := encodePinnedSeqs(want.PinnedSeqs)
+	if err != nil {
+		return err
+	}
+	return appendContextEventTx(tx, sessionID, ContextEventCompact, want.HiddenSeq, encoded, now)
+}
+
+// boundaryTx folds the session's live boundary inside a caller's transaction, so
+// a snapshot taken before a mutation records the boundary that mutation is about
+// to invalidate.
+func boundaryTx(tx *sql.Tx, sessionID string) (contextBoundary, error) {
+	rows, err := tx.Query(contextEventsQuery, sessionID)
+	if err != nil {
+		return contextBoundary{}, fmt.Errorf("store: read context events: %w", err)
+	}
+	events, err := scanContextEvents(rows)
+	if err != nil {
+		return contextBoundary{}, fmt.Errorf("store: scan context events: %w", err)
+	}
+	stack := foldContextEvents(events)
+	if len(stack) == 0 {
+		return contextBoundary{}, nil
+	}
+	return stack[len(stack)-1], nil
 }
 
 // undoBoundariesAtOrAfterTx compensates, by appending, for message rows about to

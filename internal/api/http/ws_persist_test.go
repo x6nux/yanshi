@@ -580,11 +580,25 @@ func TestRestoreSessionPreservesCompaction(t *testing.T) {
 // restored window IS the compacted window, message for message.
 func assertRestoredWindow(t *testing.T, restored, compacted []*schema.Message) {
 	t.Helper()
-	require.Equal(t, msgSigs(compacted), msgSigs(restored),
+	// assert, not require: a require here aborts before the pairing check ever
+	// runs, and since equality IMPLIES intact pairing (the compacted window is
+	// pair-consistent by ctxcompact.EnforceToolCallPairs), that ordering made
+	// the second assertion unable to fail at either call site. Both run now, so
+	// a broken window reports which of the two properties it broke.
+	assert.Equal(t, msgSigs(compacted), msgSigs(restored),
 		"the restored window must equal the compacted one message for message: "+
 			"anything extra is an evicted message coming back (the bug), anything "+
 			"missing is a message ctxcompact.Plan judged least droppable")
 	assertToolPairsIntact(t, restored)
+}
+
+// rowSigs renders durable rows for comparison, in order.
+func rowSigs(rows []store.Message) []string {
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.Role+"|"+r.ToolCallID+"|"+r.ToolName+"|"+r.ToolArgs+"|"+r.Content)
+	}
+	return out
 }
 
 // assertToolPairsIntact: every tool result in the window must have its call in
@@ -758,4 +772,123 @@ func TestWindowBoundary(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRestorePreservesOrderWithDuplicateMessages is the constraint-5 regression
+// for message IDENTITY, and it is the shape that broke the previous design.
+//
+// The window here contains byte-identical assistant prose — saying "continue"
+// twice is an entirely ordinary conversation — plus a tool call and its result.
+// The old boundary located the window's rows by dedup key, whose only
+// discriminator between identical siblings is their ordinal within the flushed
+// batch, and compaction is exactly the operation that changes that batch. A
+// survivor therefore resolved to an EARLIER twin's seq, and since the projection
+// is ordered by seq the window came back in a different order than it went out.
+//
+// Order is not cosmetic here. A review constructed the case where the shifted
+// row is a tool_result landing ahead of its tool_call: providers reject that
+// request outright rather than degrading it, so the session simply stops working
+// after a restore.
+func TestRestorePreservesOrderWithDuplicateMessages(t *testing.T) {
+	st := persistStore(t)
+	sid, err := st.CreateSession("s")
+	require.NoError(t, err)
+	fm := einollm.NewFakeModel([]string{"SUMMARY"}, nil)
+	srv := &Server{
+		store:      st,
+		compaction: CompactionConfig{Model: "fm", Threshold: 0.05, ContextWindow: 4000, KeepRecent: 2},
+	}
+	cs := &connSession{perm: &permModeState{}, sessionID: sid}
+
+	// Byte-identical prose on both sides of the evicted region, so a
+	// content-addressed boundary has two candidates for each survivor.
+	dup := "continue " + strings.Repeat("and more detail ", 8)
+	cs.history = []*schema.Message{schema.UserMessage("kick off the work")}
+	cs.history = append(cs.history, schema.AssistantMessage(dup, nil))
+	cs.history = append(cs.history, labelledHistory("middle", 6)...)
+	cs.history = append(cs.history,
+		schema.AssistantMessage(dup, nil),
+		&schema.Message{Role: schema.Assistant,
+			ToolCalls: []schema.ToolCall{toolCall("c1", "shell_run", `{"cmd":"go test ./..."}`)}},
+		&schema.Message{Role: schema.Tool, ToolCallID: "c1", ToolName: "shell_run",
+			Content: "ok " + strings.Repeat("and more detail ", 8)})
+	before := len(cs.history)
+
+	wc, client, cleanup := newWSPair(t)
+	defer cleanup()
+	_ = client
+	maybeAutoCompact(context.Background(), srv,
+		map[string]model.BaseChatModel{"fm": fm}, wc, cs)
+	require.Less(t, len(cs.history), before, "compaction must fire on this fixture")
+	compacted := cs.history
+	cs.persistMessages(srv)
+
+	fresh := &connSession{perm: &permModeState{}}
+	require.NoError(t, fresh.loadSession(srv, sid))
+
+	// Asserted at the ROW layer, which is where a boundary operates and where
+	// the aliasing showed up. The message layer cannot carry this assertion for
+	// this fixture: storeMessagesFor splits an assistant's prose and its tool
+	// calls into separate rows, and restoreMessages re-joins adjacent ones into
+	// a single message, so a window that happened to hold them as two messages
+	// legitimately comes back as one. That regrouping preserves content, order
+	// and pairing; a shuffled survivor preserves none of them, and this
+	// comparison still fails on it.
+	assert.Equal(t, rowSigs(storeMessagesFor(compacted)), rowSigs(storeMessagesFor(fresh.history)),
+		"duplicate messages must not shuffle the restored window: a boundary "+
+			"derived from content cannot tell two identical messages apart, and "+
+			"resolves the survivor to its earlier twin's position")
+	assertToolPairsIntact(t, fresh.history)
+}
+
+// TestAssertToolPairsIntactCanFail keeps the constraint-5(b) checker honest.
+//
+// The checker is only worth having if it fails on the shape it exists for, and
+// at its other two call sites it cannot: they compare the whole window for
+// equality first, and an equal window is pair-consistent by construction. This
+// hands it the orphan directly.
+func TestAssertToolPairsIntactCanFail(t *testing.T) {
+	orphan := []*schema.Message{
+		{Role: schema.Tool, ToolCallID: "c1", ToolName: "shell_run", Content: "result"},
+		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{toolCall("c1", "shell_run", "{}")}},
+	}
+	var spy testing.T
+	assertToolPairsIntact(&spy, orphan)
+	assert.True(t, spy.Failed(),
+		"a tool result ahead of its call is the exact shape providers reject; "+
+			"the checker must not pass it")
+
+	ok := []*schema.Message{
+		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{toolCall("c1", "shell_run", "{}")}},
+		{Role: schema.Tool, ToolCallID: "c1", ToolName: "shell_run", Content: "result"},
+	}
+	var clean testing.T
+	assertToolPairsIntact(&clean, ok)
+	assert.False(t, clean.Failed(), "a properly ordered pair must pass")
+}
+
+// TestCompleteToolPairs covers the boundary-level half of constraint 5(b): the
+// kept set is repaired before it is stored, whatever produced it.
+//
+// The case it exists for is real rather than defensive. ctxcompact.FoldToolResults
+// runs after Assemble and REPLACES the tool results it rewrites, so a folded
+// result fails the pointer-identity test that decides what survived — its call
+// would be pinned without it, and the window would restore with an orphan call.
+func TestCompleteToolPairs(t *testing.T) {
+	rows := []store.Message{
+		{Seq: 0, Role: store.RoleUser, Content: "go"},
+		{Seq: 1, Role: store.RoleToolCall, ToolCallID: "c1", ToolName: "shell_run"},
+		{Seq: 2, Role: store.RoleToolResult, ToolCallID: "c1", ToolName: "shell_run"},
+		{Seq: 3, Role: store.RoleToolResult, ToolCallID: "", ToolName: "shell_run"},
+	}
+	assert.Equal(t, []int{1, 2}, completeToolPairs([]int{1}, rows),
+		"a kept call must bring its result")
+	assert.Equal(t, []int{1, 2}, completeToolPairs([]int{2}, rows),
+		"a kept result must bring its call")
+	assert.Equal(t, []int{0}, completeToolPairs([]int{0}, rows),
+		"a non-tool row pulls nothing in")
+	assert.Equal(t, []int{3}, completeToolPairs([]int{3}, rows),
+		"an empty tool_call_id cannot be paired up, and guessing would be how an "+
+			"orphan gets manufactured rather than avoided")
+	assert.Nil(t, completeToolPairs(nil, rows))
 }

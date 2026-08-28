@@ -54,11 +54,18 @@ func (s *Store) ForkSession(srcID string, fromSeq int) (string, error) {
 		//
 		// The tool_* columns come along: a fork that copied only role+content
 		// would silently drop every tool_call / tool_result row's payload, which
-		// is the exact loss C1's durable log exists to prevent. dedup_key is
-		// deliberately NOT copied — the fork's rows are new identities in a new
-		// session, and re-deriving them is AppendMessages' job, not a copy's.
+		// is the exact loss C1's durable log exists to prevent.
+		//
+		// dedup_key COMES ALONG TOO, and it has to. The unique index is
+		// (session_id, dedup_key), so copying keys across sessions cannot
+		// collide. Leaving them empty looks harmless — the partial index skips
+		// '' — but that is exactly the problem: AppendMessages then finds no
+		// conflict and the fork's FIRST flush re-inserts the entire window on
+		// top of the log. Measured with the inherited boundary below: 12 rows
+		// and a 4-message window became 16 rows and 8 messages, every message
+		// twice, on the first turn after /fork.
 		rows, err := tx.Query(
-			"SELECT seq, role, content, tool_call_id, tool_name, tool_args FROM messages WHERE session_id = ? ORDER BY seq ASC",
+			"SELECT seq, role, content, tool_call_id, tool_name, tool_args, dedup_key FROM messages WHERE session_id = ? ORDER BY seq ASC",
 			srcID,
 		)
 		if err != nil {
@@ -71,12 +78,13 @@ func (s *Store) ForkSession(srcID string, fromSeq int) (string, error) {
 			ToolCallID string
 			ToolName   string
 			ToolArgs   string
+			DedupKey   string
 		}
 		var allMsgs []srcMsg
 		for rows.Next() {
 			var m srcMsg
 			if err := rows.Scan(&m.Seq, &m.Role, &m.Content,
-				&m.ToolCallID, &m.ToolName, &m.ToolArgs); err != nil {
+				&m.ToolCallID, &m.ToolName, &m.ToolArgs, &m.DedupKey); err != nil {
 				rows.Close()
 				return fmt.Errorf("ForkSession: scan message: %w", err)
 			}
@@ -126,10 +134,10 @@ func (s *Store) ForkSession(srcID string, fromSeq int) (string, error) {
 		for _, m := range toCopy {
 			msgID := newID()
 			if _, err := tx.Exec(
-				`INSERT INTO messages (id, session_id, seq, role, content, tool_call_id, tool_name, tool_args, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO messages (id, session_id, seq, role, content, tool_call_id, tool_name, tool_args, dedup_key, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				msgID, forkID, m.Seq, m.Role, m.Content,
-				m.ToolCallID, m.ToolName, m.ToolArgs, now,
+				m.ToolCallID, m.ToolName, m.ToolArgs, m.DedupKey, now,
 			); err != nil {
 				return fmt.Errorf("ForkSession: insert message seq=%d: %w", m.Seq, err)
 			}

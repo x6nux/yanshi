@@ -784,17 +784,36 @@ func TestForkSession_PreservesToolFields(t *testing.T) {
 	assert.Equal(t, "fs_write", got[1].ToolName)
 	assert.Equal(t, `{"path":"x"}`, got[1].ToolArgs)
 	assert.Equal(t, "wrote 12 bytes", got[2].Content)
-	// The fork's rows are new identities, so they must NOT inherit dedup keys —
-	// otherwise a later flush in the fork would treat the source's history as
-	// already durable in the fork and skip real messages.
+	// The fork's rows DO inherit dedup keys, and the rule was reversed
+	// deliberately (INF3 / ADR-0015). The keys say "this message is already
+	// durable in this session", which is exactly true of a copied row — and
+	// leaving them empty made the partial unique index skip them, so the fork's
+	// first whole-window flush re-inserted its entire history. Measured with an
+	// inherited compaction boundary: 12 rows and a 4-message window became 16
+	// rows and 8 messages, every message twice, on the first turn after /fork.
+	// The unique index is (session_id, dedup_key), so copying across sessions
+	// cannot collide.
 	for _, m := range got {
-		assert.Empty(t, m.DedupKey, "fork rows must not inherit the source's dedup keys")
+		assert.NotEmpty(t, m.DedupKey, "fork rows must inherit the source's dedup keys")
 	}
 }
 
-// TestForkThenAppend_DoesNotSkipRows is the observable consequence of the
-// dedup-key rule above: a fork must be able to record new messages that happen
-// to be byte-identical to messages it inherited.
+// TestForkThenAppend_DoesNotSkipRows: a fork must still be able to record a new
+// message that happens to be byte-identical to one it inherited.
+//
+// Inheriting the keys (see above) is what makes this worth pinning, because the
+// naive reading is that the inherited row now suppresses the new one. It does
+// not, and the reason is the shape the two production callers actually use:
+//
+//   - flushHistory re-flushes the WHOLE window, so AssignDedupKeys sees both
+//     copies in one batch and gives the second one ordinal 1 — a different key.
+//   - tools.milestone supplies its own nonce'd key, so it never derives one
+//     from content at all.
+//
+// A caller that appends ONLY the new duplicate, with no key and without its
+// predecessor in the batch, cannot be distinguished from a re-flush and is
+// skipped. That is the pre-existing meaning of a content-derived key, not a
+// fork-specific hazard: the same call on the SOURCE session is skipped too.
 func TestForkThenAppend_DoesNotSkipRows(t *testing.T) {
 	s, _ := openTempStore(t)
 	sid := newSession(t, s)
@@ -803,9 +822,50 @@ func TestForkThenAppend_DoesNotSkipRows(t *testing.T) {
 
 	forkID, err := s.ForkSession(sid, -1)
 	require.NoError(t, err)
-	n, _, err := s.AppendMessages(forkID, []Message{{Role: RoleUser, Content: "same text"}})
+
+	// The whole-window shape, i.e. what flushHistory does.
+	n, _, err := s.AppendMessages(forkID, []Message{
+		{Role: RoleUser, Content: "same text"},
+		{Role: RoleUser, Content: "same text"},
+	})
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "an inherited row must not suppress a genuinely new one")
+
+	got, err := s.Messages(forkID)
+	require.NoError(t, err)
+	assert.Len(t, got, 2, "the inherited row is kept once and the new one is added")
+
+	// The explicit-key shape, i.e. what tools.milestone does.
+	n, _, err = s.AppendMessages(forkID, []Message{
+		{Role: RoleUser, Content: "same text", DedupKey: "explicit:1"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "an explicit key is never suppressed by an inherited row")
+}
+
+// TestForkThenFlushDoesNotDuplicateTheLog is the regression the rule reversal
+// exists for: re-flushing an unchanged inherited window must write nothing.
+func TestForkThenFlushDoesNotDuplicateTheLog(t *testing.T) {
+	s, _ := openTempStore(t)
+	sid := newSession(t, s)
+	window := []Message{
+		{Role: RoleUser, Content: "do the thing"},
+		{Role: RoleAssistant, Content: "on it"},
+		{Role: RoleToolCall, ToolCallID: "c1", ToolName: "shell_run", ToolArgs: `{"cmd":"ls"}`},
+		{Role: RoleToolResult, ToolCallID: "c1", ToolName: "shell_run", Content: "a.go"},
+	}
+	_, _, err := s.AppendMessages(sid, window)
+	require.NoError(t, err)
+
+	forkID, err := s.ForkSession(sid, -1)
+	require.NoError(t, err)
+	inserted, _, err := s.AppendMessages(forkID, window)
+	require.NoError(t, err)
+	assert.Zero(t, inserted, "the inherited window is already durable in the fork")
+
+	got, err := s.Messages(forkID)
+	require.NoError(t, err)
+	assert.Len(t, got, len(window), "a re-flush must not double the fork's log")
 }
 
 // ---------------------------------------------------------------------------

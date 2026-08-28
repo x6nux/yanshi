@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"io/fs"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -241,12 +242,10 @@ func TestContextEventsTableIsAppendOnly(t *testing.T) {
 					return true
 				}
 				sql := normalizeSQL(lit.Value)
-				for _, forbidden := range []string{"UPDATE CONTEXT_EVENTS", "DELETE FROM CONTEXT_EVENTS"} {
-					if strings.Contains(sql, forbidden) {
-						t.Errorf("%s: %q mutates context_events; ADR-0015 constraint 1 makes "+
-							"this table INSERT-only — express the change by appending an event",
-							fset.Position(lit.Pos()), forbidden)
-					}
+				if m := mutatesContextEvents.FindString(sql); m != "" {
+					t.Errorf("%s: %q mutates context_events; ADR-0015 constraint 1 makes "+
+						"this table INSERT-only — express the change by appending an event",
+						fset.Position(lit.Pos()), m)
 				}
 				return true
 			})
@@ -255,6 +254,16 @@ func TestContextEventsTableIsAppendOnly(t *testing.T) {
 	}
 	require.Greater(t, scanned, 100, "the scan found almost no sources; it would pass vacuously")
 }
+
+// mutatesContextEvents matches a write against the table under any spelling
+// normalizeSQL leaves behind.
+//
+// The optional schema qualifier is not hypothetical: SQLite accepts
+// `main.context_events`, and a plain-substring version of this check was
+// measured letting exactly that through while catching the other three
+// spellings — the one form someone reaches for after a bare DELETE is rejected.
+var mutatesContextEvents = regexp.MustCompile(
+	`(?:UPDATE|DELETE FROM) (?:[A-Z_][A-Z0-9_]*\.)?CONTEXT_EVENTS`)
 
 // normalizeSQL folds a Go string literal into a single upper-case line with
 // SQLite's three identifier quotings stripped, so whitespace and quoting cannot
@@ -539,4 +548,103 @@ func TestContextEventsUpgradeAddsPinnedSeqs(t *testing.T) {
 	assert.Equal(t, 5, events[0].HiddenSeq)
 	assert.Nil(t, events[0].PinnedSeqs,
 		"a pre-column row must read back as 'no pins', which is what it meant")
+}
+
+// TestFailedRevertCompensationRestoresTheBoundary is the pop/push symmetry.
+//
+// TruncateSessionForRevert pops the boundary by appending undo events. When the
+// VCS phase then fails, RestoreSessionAfterFailedRevert puts the rows back — and
+// used to leave those undos standing, so the boundary stayed at zero and the
+// whole transcript came back into the window. Measured: hidden 9 before, 0
+// after; a 4-message window became 11. That is this design's original bug
+// arriving through the rollback door, and unlike the truncation case it is not
+// even detectable afterwards, because every row is present and correct.
+func TestFailedRevertCompensationRestoresTheBoundary(t *testing.T) {
+	s, sid := projectionFixture(t, 12)
+	require.NoError(t, s.AppendContextEvent(sid, ContextEventCompact, 9, []int{0}))
+	before, err := s.ProjectWindow(sid)
+	require.NoError(t, err)
+	require.Equal(t, []int{0, 9, 10, 11}, seqsOf(before))
+
+	// Phase 1: truncate (which pops the boundary), exactly as the seam handler
+	// does before it calls into VCS.
+	snap, err := s.TruncateSessionForRevert(sid, 2, 1)
+	require.NoError(t, err)
+	hidden, err := s.HiddenSeq(sid)
+	require.NoError(t, err)
+	require.Equal(t, 0, hidden, "the truncation must have popped the boundary")
+
+	// Phase 2: the VCS revert fails, so the handler compensates.
+	require.NoError(t, s.RestoreSessionAfterFailedRevert(snap))
+
+	after, err := s.ProjectWindow(sid)
+	require.NoError(t, err)
+	assert.Equal(t, before, after,
+		"a compensated revert must restore the WINDOW, not just the rows")
+	hidden, err = s.HiddenSeq(sid)
+	require.NoError(t, err)
+	assert.Equal(t, 9, hidden)
+}
+
+// TestCompensationIsIdempotent: compensating twice must not deepen the stack, or
+// a later undo would pop back to a boundary the user never saw.
+func TestCompensationIsIdempotent(t *testing.T) {
+	s, sid := projectionFixture(t, 12)
+	require.NoError(t, s.AppendContextEvent(sid, ContextEventCompact, 9, []int{0}))
+	snap, err := s.SnapshotSessionForRevert(sid)
+	require.NoError(t, err)
+
+	require.NoError(t, s.RestoreSessionAfterFailedRevert(snap))
+	require.NoError(t, s.RestoreSessionAfterFailedRevert(snap))
+
+	events, err := s.ContextEvents(sid)
+	require.NoError(t, err)
+	assert.Len(t, events, 1, "a compensation that changes nothing must append nothing")
+}
+
+// TestCompensationRestoresTheAbsenceOfABoundary: a snapshot taken before any
+// compaction must compensate back to "no boundary", not leave a later one
+// standing.
+func TestCompensationRestoresTheAbsenceOfABoundary(t *testing.T) {
+	s, sid := projectionFixture(t, 12)
+	snap, err := s.SnapshotSessionForRevert(sid)
+	require.NoError(t, err)
+	require.NoError(t, s.AppendContextEvent(sid, ContextEventCompact, 9, nil))
+
+	require.NoError(t, s.RestoreSessionAfterFailedRevert(snap))
+
+	hidden, err := s.HiddenSeq(sid)
+	require.NoError(t, err)
+	assert.Equal(t, 0, hidden)
+	window, err := s.ProjectWindow(sid)
+	require.NoError(t, err)
+	assert.Len(t, window, 12)
+}
+
+// TestProjectWindow_BackstopFiresWhenAPinSurvivesAStaleBoundary.
+//
+// The backstop's first version asked "did the query come back empty". That is
+// the wrong question, and the difference is reachable: a boundary can point past
+// the end of the log while one PINNED row below it still exists, so the
+// projection returns that single row, the emptiness test is satisfied, and the
+// model is handed one message out of a conversation with nothing logged.
+func TestProjectWindow_BackstopFiresWhenAPinSurvivesAStaleBoundary(t *testing.T) {
+	s, sid := projectionFixture(t, 12)
+	// hidden past the end of the log, pin [0] still present — the exact state a
+	// truncation without compensation leaves behind.
+	require.NoError(t, s.AppendContextEvent(sid, ContextEventCompact, 9, []int{0}))
+	// Forged directly rather than through TruncateSessionForRevert, because that
+	// path now compensates — this is the state the backstop exists for, i.e. the
+	// one some FUTURE row-removing path leaves behind by forgetting to.
+	_, err := s.DB.Exec("DELETE FROM messages WHERE session_id=? AND seq>=?", sid, 2)
+	require.NoError(t, err)
+
+	window, err := s.ProjectWindow(sid)
+	require.NoError(t, err)
+	all, err := s.Messages(sid)
+	require.NoError(t, err)
+	require.Len(t, all, 2)
+	assert.Equal(t, all, window,
+		"a stale boundary must degrade to the full transcript even when a pin "+
+			"below it happens to survive — one message is not a conversation")
 }
