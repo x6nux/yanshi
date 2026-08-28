@@ -97,16 +97,37 @@ func TestGoalLoopResumeIsWired(t *testing.T) {
 	})
 
 	var real map[string]string
-	for _, c := range configs {
+	realIndex := -1
+	for i, c := range configs {
 		if _, ok := c["State"]; !ok {
 			continue
 		}
 		require.Nil(t, real, "only one goalloop.Config may wire State; found several")
-		real = c
+		real, realIndex = c, i
 	}
 	require.NotNil(t, real,
 		"no goalloop.Config in runGoal sets State — the goal loop neither persists "+
 			"nor resumes, and no other test notices")
+
+	// WHICH literal carries State, not just that one does. Identifying the real
+	// path by "it is the one with State" is impersonatable: moving State and
+	// BudgetExplicit off the real literal and onto the fake one in the same edit
+	// leaves State appearing exactly once, so the fake answers for the real and
+	// every field below is checked against the wrong literal. Measured — the
+	// whole assertion passed under that compound mutation.
+	//
+	// runGoal builds the fake demo Config in the `if` branch and the real one in
+	// the `else`, so the real literal is the second in source order. That is
+	// positional and a branch reorder would have to update this line; that edit
+	// is visible in review, whereas the impersonation was not.
+	require.Len(t, configs, 2,
+		"runGoal should build exactly two goalloop.Configs (fake demo path, real path); "+
+			"if that changed, the positional check below needs rethinking")
+	require.Equal(t, 1, realIndex,
+		"State is wired on the FIRST goalloop.Config — that is the fake demo path. "+
+			"The demo is supposed to run identically every time; persisting its resume "+
+			"point means a demo run can be resumed into, and the real path is left "+
+			"without one")
 
 	for field, value := range want {
 		require.Equalf(t, value, real[field],
