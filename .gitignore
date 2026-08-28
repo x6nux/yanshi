@@ -81,3 +81,6 @@ deps_raw.txt
 
 # Benchmark output written by scripts/bench.sh (old.txt/new.txt baselines).
 .bench-results/
+
+# serena MCP 工具产物
+.serena/
