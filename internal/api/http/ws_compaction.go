@@ -808,8 +808,7 @@ func maybeAutoCompact(ctx context.Context, s *Server,
 		cs.reportCompactionBlocked(s, conn, why)
 		return // window unchanged, but no longer silently so
 	}
-	cs.compactionBlocked = "" // a successful compaction clears the warning
-	cs.tokensIn = ta          // refresh the footer ctx counter (statusFrame reads cs.tokensIn)
+	cs.tokensIn = ta // refresh the footer ctx counter (statusFrame reads cs.tokensIn)
 	st := cs.statusFrame(s)
 	st.Compacted, st.TokensBefore, st.TokensAfter = true, tb, ta
 	conn.write(st)
@@ -838,6 +837,11 @@ func maybeAutoCompact(ctx context.Context, s *Server,
 func compactNow(ctx context.Context, s *Server,
 	models map[string]model.BaseChatModel, conn *wsConn, cs *connSession) {
 
+	// Same rule as the auto path: the flag describes the outcome of the MOST
+	// RECENT attempt, so every attempt starts by clearing it and only a refusal
+	// sets it. Clearing on success instead would leave a stale warning on any
+	// path that returns before the success line.
+	cs.compactionBlocked = ""
 	kr := keepRecentOrDefault(s.compaction.KeepRecent)
 	sumModel := compactionModel(s.compaction, models, cs.model)
 	if sumModel == nil {
@@ -888,8 +892,7 @@ func compactNow(ctx context.Context, s *Server,
 		conn.write(cs.statusFrame(s))
 		return
 	}
-	cs.compactionBlocked = "" // a successful compaction clears the warning
-	cs.tokensIn = ta          // refresh the footer ctx counter (statusFrame reads cs.tokensIn)
+	cs.tokensIn = ta // refresh the footer ctx counter (statusFrame reads cs.tokensIn)
 	st := cs.statusFrame(s)
 	st.Compacted, st.TokensBefore, st.TokensAfter = true, tb, ta
 	conn.write(st)

@@ -1235,22 +1235,39 @@ func TestRefusedCompactionIsVisibleOnStatus(t *testing.T) {
 	later := cs.statusFrame(srv)
 	assert.Equal(t, f.CompactionBlocked, later.CompactionBlocked)
 
-	// A compaction that succeeds clears it. Same session, aligned window.
-	st2, sid2, _, srv2 := compactedFixture(t)
-	_ = st2
-	ok := &connSession{perm: &permModeState{}}
-	require.NoError(t, ok.loadSession(srv2, sid2))
-	ok.compactionBlocked = "stale"
-	ok.history = append(ok.history, labelledHistory("third", 8)...)
-	ok.persistMessages(srv2)
-	wc2, client2, cleanup2 := newWSPair(t)
-	defer cleanup2()
-	_ = client2
-	maybeAutoCompact(context.Background(), srv2,
-		map[string]model.BaseChatModel{"fm": einollm.NewFakeModel([]string{"OK"}, nil)}, wc2, ok)
-	assert.Empty(t, ok.compactionBlocked,
-		"a successful compaction must clear the warning, or it becomes noise "+
-			"nobody reads")
+	// A later attempt that does NOT refuse must clear it, or the warning becomes
+	// noise nobody reads. Both entry points are checked, because they clear at
+	// different places and a probe on either one has to be caught.
+	for _, tc := range []struct {
+		name string
+		run  func(srv *Server, conn *wsConn, cs *connSession, models map[string]model.BaseChatModel)
+	}{
+		{"auto", func(srv *Server, conn *wsConn, cs *connSession, ms map[string]model.BaseChatModel) {
+			maybeAutoCompact(context.Background(), srv, ms, conn, cs)
+		}},
+		{"manual /compact", func(srv *Server, conn *wsConn, cs *connSession, ms map[string]model.BaseChatModel) {
+			compactNow(context.Background(), srv, ms, conn, cs)
+		}},
+	} {
+		t.Run(tc.name+" clears a stale warning", func(t *testing.T) {
+			_, sid2, _, srv2 := compactedFixture(t)
+			clean := &connSession{perm: &permModeState{}}
+			require.NoError(t, clean.loadSession(srv2, sid2))
+			clean.compactionBlocked = "stale, from an earlier attempt"
+			clean.history = append(clean.history, labelledHistory("third", 8)...)
+			clean.persistMessages(srv2)
+
+			wc2, client2, cleanup2 := newWSPair(t)
+			defer cleanup2()
+			_ = client2
+			tc.run(srv2, wc2, clean,
+				map[string]model.BaseChatModel{"fm": einollm.NewFakeModel([]string{"OK"}, nil)})
+
+			assert.Empty(t, clean.compactionBlocked)
+			assert.Empty(t, clean.statusFrame(srv2).CompactionBlocked,
+				"a stale warning must not outlive the attempt that cleared it")
+		})
+	}
 }
 
 // TestTruncationSeqCountsRowsNotMessages pins the message-count / row-count
