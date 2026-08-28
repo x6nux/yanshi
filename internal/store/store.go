@@ -210,6 +210,12 @@ func healCorrupt(path string, maxOpen, busyMs, autoCkpt int, openErr error) (*St
 	// below SUCCEEDS, because SQLite simply creates a new database at the now
 	// empty path. Bailing out on mvErr turned that recoverable state into a
 	// refusal to start. Only the reopen decides.
+	//
+	// With the recheck above in place this is defence in depth, not a live
+	// path, and no test distinguishes it — measured, restoring the early return
+	// leaves the suite green. It stays because "the rename failed" is not
+	// evidence about whether the database can be opened, and only the thing
+	// that answers that question should be allowed to fail the boot.
 	backup, mvErr := quarantineCorrupt(path)
 	healed, healErr := openPrepared(path, maxOpen, busyMs, autoCkpt)
 	if healErr != nil {

@@ -612,14 +612,23 @@ func TestOpenWith_ConcurrentHealersDoNotDestroyEachOthersDatabase(t *testing.T) 
 	require.NoError(t, err)
 }
 
-// TestHealCorrupt_SucceedsWhenTheFileIsAlreadyGone covers the quarantine-failed
-// path, which used to return early and refuse to start.
+// TestHealCorrupt_SucceedsWhenTheFileIsAlreadyGone covers the outcome a racing
+// peer must not be able to turn into a refusal to boot.
 //
-// It is reachable: a racing healer can move the file between this process's
-// failed open and its rename, so the rename fails with ENOENT while the reopen
-// SUCCEEDS — SQLite just creates a new database at the now-empty path. Bailing
-// out on the rename error turned a recoverable state into a refusal to boot.
-// Only the reopen gets to decide.
+// A peer can move the file between this process's failed open and its rename,
+// leaving the path empty. What actually delivers the recovery here is the
+// RECHECK under the lock: it opens the now-empty path successfully and returns
+// before quarantine is ever reached.
+//
+// Be precise about what this does and does not pin. Removing the old
+// `if mvErr != nil { return nil, openErr }` early return was a correctness fix
+// — a rename that fails because the file is already gone must not veto a reopen
+// that would have succeeded — but NO test distinguishes its presence, this one
+// included. Probed: restoring the early return leaves the suite green, and so
+// does restoring it while also ablating the recheck, because an ablated recheck
+// still CALLS openPrepared and that call recreates the file, after which the
+// rename succeeds. The deletion is defence in depth, and unguarded; it is
+// recorded that way rather than dressed up as a tested invariant.
 func TestHealCorrupt_SucceedsWhenTheFileIsAlreadyGone(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "yanshi.db")
@@ -667,4 +676,55 @@ func TestAcquireHealLock_IsExclusiveAndReclaimsStaleLocks(t *testing.T) {
 	unlock3, won3 := acquireHealLock(path)
 	require.True(t, won3, "a lock older than healLockTTL must be taken over")
 	unlock3()
+}
+
+// TestHealCorrupt_DoesNotQuarantineADatabaseAPeerAlreadyRepaired pins the
+// recheck under the heal lock, which is the last thing standing between a
+// concurrent boot and data loss.
+//
+// The sequence is the one the lock cannot prevent by itself: this process fails
+// its open on a corrupt file, a peer wins the lock and repairs the database,
+// the peer releases, and only then does this process acquire the lock. Its
+// original error is now stale — the file at path is a healthy database with the
+// peer's data in it — so quarantining on the strength of that stale diagnosis
+// would rename away a database another process is actively using.
+//
+// Driving healCorrupt directly is deliberate: reaching this window through
+// OpenWith requires the lock to change hands at one exact instant, which is not
+// something a test should be asked to hit reliably.
+func TestHealCorrupt_DoesNotQuarantineADatabaseAPeerAlreadyRepaired(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "yanshi.db")
+	corruptShapes["garbage from byte zero"](t, path)
+
+	// Our own failed open — the diagnosis we are about to act on.
+	_, openErr := openPrepared(path, 4, 5000, 1000)
+	require.Error(t, openErr)
+	require.True(t, isCorruptDB(openErr))
+
+	// A peer heals it out from under us and writes something we must not lose.
+	require.NoError(t, os.Remove(path))
+	peer, err := Open(path)
+	require.NoError(t, err)
+	peerSession, err := peer.CreateSession("the peer's data")
+	require.NoError(t, err)
+	require.NoError(t, peer.Close())
+
+	st, err := healCorrupt(path, 4, 5000, 1000, openErr)
+	require.NoError(t, err)
+	require.NotNil(t, st)
+	defer st.Close()
+
+	// We must have adopted the peer's database, not replaced it.
+	list, err := st.ListSessions(0)
+	require.NoError(t, err)
+	require.Len(t, list, 1, "the peer's database must be adopted, not rebuilt empty")
+	assert.Equal(t, peerSession, list[0].ID)
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		assert.NotContains(t, e.Name(), ".corrupt-",
+			"a database a peer already repaired must not be quarantined on a stale diagnosis")
+	}
 }
