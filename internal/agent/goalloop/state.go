@@ -25,15 +25,34 @@ type StateStore interface {
 	KVSet(key, value string) error
 }
 
+// BudgetSet records which budget limits the operator set EXPLICITLY for this
+// run, per Budget field. It is the tie-breaker between a persisted budget and
+// the one the caller supplied, and it exists because the two look identical by
+// the time they reach the Loop: a value typed on the command line and a value
+// that fell out of a config default are both just ints.
+//
+// Value-based guesses ("it differs from the default, so it was typed") are
+// wrong in both directions here — -max-tokens 0 is a real instruction to lift
+// the limit, and typing the default value is still typing it. Only the flag
+// package knows, via FlagSet.Visit, which is why this arrives as its own field
+// instead of being inferred.
+//
+// The zero value means nothing was explicit, so a resumed run keeps its
+// persisted budget.
+type BudgetSet struct {
+	MaxIterations bool
+	MaxTokens     bool
+}
+
 // GoalState is the durable slice of an in-flight goal run: enough to restart
 // the process and pick the run back up where it stopped, with the budget it
 // had left rather than a fresh one.
 //
 // Every field is read on resume, none is write-only:
 //   - Objective is the resume predicate (see Loop.loadState).
-//   - Budget is authoritative for the resumed run — the whole point of
-//     persisting it is that a restart must not silently hand the run a new
-//     budget out of config defaults.
+//   - Budget is what a resumed run falls back on, so that a restart does not
+//     silently reset the limits to whatever config defaults happen to say.
+//     An explicitly typed flag still beats it — see resolveResumeBudget.
 //   - Iterations is the count already executed; the resumed run starts at
 //     Iterations+1.
 //   - Usage seeds the shared UsageSink so the token budget resumes mid-spend
@@ -48,6 +67,36 @@ type GoalState struct {
 	Iterations int    `json:"iterations"`
 	Usage      Usage  `json:"usage"`
 	Complete   bool   `json:"complete"`
+}
+
+// resolveResumeBudget picks the budget a resumed run must use, per field:
+// an explicitly typed limit wins, anything else falls back to the persisted
+// one.
+//
+// The precedence is that way round for a reason on each side. Config defaults
+// must NOT win, because nobody re-types their budget after a crash and letting
+// the defaults back in is exactly how a budget gets silently reset — the bug
+// this whole file exists to fix. But an explicit flag must win, because the
+// alternative is the operator editing a value, seeing no effect, and having to
+// go dig the old one out of the database (the priority INF2 fixes elsewhere in
+// this repo, in the same direction).
+//
+// A newly typed limit that is already below what the run has spent needs no
+// special case, and deliberately does not get one: the resumed run is simply
+// over budget on the new ceiling, so the existing termination paths fire on
+// the first check — StopReasonTokenBudget before iterating for MaxTokens, and
+// the "max iterations reached" decision for MaxIterations, because the resumed
+// start index is past the new limit. Lowering a budget below the spend ends
+// the run; it does not error and it does not refund.
+func resolveResumeBudget(caller, saved Budget, explicit BudgetSet) Budget {
+	out := saved
+	if explicit.MaxIterations {
+		out.MaxIterations = caller.MaxIterations
+	}
+	if explicit.MaxTokens {
+		out.MaxTokens = caller.MaxTokens
+	}
+	return out
 }
 
 // goalStateKey is the kv key holding the resumable state for a working

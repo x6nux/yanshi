@@ -52,6 +52,47 @@ func firstIteration(out *int) func(Event) {
 	}
 }
 
+// readGoalState decodes the persisted row for goal through st. It is what the
+// "stored in SQLite" half of the acceptance is checked against, and it is
+// deliberately read through a handle the writing Loop never held.
+func readGoalState(t *testing.T, st *store.Store, goal Goal) GoalState {
+	t.Helper()
+	blob, ok, err := st.KVGet(goalStateKey(goal.Workdir))
+	require.NoError(t, err)
+	require.True(t, ok, "goal state must be in SQLite, readable by another handle")
+	var s GoalState
+	require.NoError(t, json.Unmarshal([]byte(blob), &s))
+	return s
+}
+
+// budgetLoop builds a Loop that bills perIteration tokens per cycle and never
+// passes evaluation, so it runs until one of the two budgets stops it.
+func budgetLoop(budget Budget, explicit BudgetSet, sink *UsageSink, st StateStore, perIteration int) *Loop {
+	return New(Config{
+		Planner:        &chargingPlanner{sink: sink, perCall: Usage{TotalTokens: perIteration}},
+		Implementer:    &FakeImplementer{Result: "done"},
+		Evaluators:     []Evaluator{&CounterEvaluator{passAt: 100}},
+		Judge:          AggregateJudge{},
+		Budget:         budget,
+		Sink:           sink,
+		State:          st,
+		BudgetExplicit: explicit,
+	})
+}
+
+// seedTokenExhaustedRun runs a goal until its token budget stops it, leaving a
+// real persisted row behind with iterations still unspent. Resume tests build
+// on this rather than hand-writing state, so they exercise the writer too.
+func seedTokenExhaustedRun(t *testing.T, dbPath string, goal Goal, budget Budget, perIteration int) (*Loop, Decision) {
+	t.Helper()
+	l := budgetLoop(budget, BudgetSet{}, &UsageSink{}, openStore(t, dbPath), perIteration)
+	d, err := l.Run(context.Background(), goal, nil)
+	require.NoError(t, err)
+	require.Equal(t, StopReasonTokenBudget, d.StopReason)
+	require.Less(t, l.Iterations(), budget.MaxIterations, "iterations must still be available")
+	return l, d
+}
+
 // TestGoalLoop_ResumesAfterRestart is the acceptance for W-D-16: the
 // objective and BOTH budgets live in SQLite, and a restarted process picks the
 // run up where it stopped instead of replaying it from iteration 1 with a
@@ -130,58 +171,35 @@ func TestGoalLoop_ResumesAfterRestart(t *testing.T) {
 		// the first process stops on tokens with iterations still to spare.
 		budget := Budget{MaxIterations: maxIters, MaxTokens: stopAfter*perIteration - 50}
 
-		sink1 := &UsageSink{}
-		loop1 := New(Config{
-			Planner:     &chargingPlanner{sink: sink1, perCall: Usage{TotalTokens: perIteration}},
-			Implementer: &FakeImplementer{Result: "done"},
-			Evaluators:  []Evaluator{&CounterEvaluator{passAt: 100}},
-			Judge:       AggregateJudge{},
-			Budget:      budget,
-			Sink:        sink1,
-			State:       openStore(t, dbPath),
-		})
-		decision1, err := loop1.Run(context.Background(), goal, nil)
-		require.NoError(t, err)
-		require.Equal(t, StopReasonTokenBudget, decision1.StopReason)
-		require.Less(t, loop1.Iterations(), maxIters, "iterations must still be available")
+		loop1, decision1 := seedTokenExhaustedRun(t, dbPath, goal, budget, perIteration)
 
 		// The persisted row is the contract: objective plus BOTH budget fields.
 		st2 := openStore(t, dbPath)
-		blob, ok, err := st2.KVGet(goalStateKey(goal.Workdir))
-		require.NoError(t, err)
-		require.True(t, ok, "goal state must be in SQLite, readable by another handle")
-		var persisted GoalState
-		require.NoError(t, json.Unmarshal([]byte(blob), &persisted))
+		persisted := readGoalState(t, st2, goal)
 		assert.Equal(t, goal.Text, persisted.Objective)
-		assert.Equal(t, budget.MaxIterations, persisted.Budget.MaxIterations)
-		assert.Equal(t, budget.MaxTokens, persisted.Budget.MaxTokens)
+		assert.Equal(t, budget, persisted.Budget, "both limits must be stored, not just the one that bit")
 		assert.Equal(t, decision1.Usage.Total(), persisted.Usage.Total())
 
 		// --- restart, with the roomy budget a config default would supply ---
 		// This is the realistic shape of the bug: nobody re-types the tight
 		// budget after a crash, so a resumed run that honoured the caller's
-		// budget would hand itself a brand new one.
+		// budget would hand itself a brand new one. Nothing is explicit here,
+		// so the persisted budget must survive intact.
 		sink2 := &UsageSink{}
-		loop2 := New(Config{
-			Planner:     &chargingPlanner{sink: sink2, perCall: Usage{TotalTokens: perIteration}},
-			Implementer: &FakeImplementer{Result: "done"},
-			Evaluators:  []Evaluator{&CounterEvaluator{passAt: 100}},
-			Judge:       AggregateJudge{},
-			Budget:      Budget{MaxIterations: 99, MaxTokens: 99999},
-			Sink:        sink2,
-			State:       st2,
-		})
+		loop2 := budgetLoop(Budget{MaxIterations: 99, MaxTokens: 99999}, BudgetSet{}, sink2, st2, perIteration)
 		var ranAt int
 		var announced bool
 		record := firstIteration(&ranAt)
 		decision2, err := loop2.Run(context.Background(), goal, func(e Event) {
 			record(e)
-			if e.Phase == "State" && strings.Contains(e.Detail, "overrides") {
+			if e.Phase == "State" && strings.Contains(e.Detail, "persisted budget") {
 				announced = true
 			}
 		})
 		require.NoError(t, err)
 		assert.True(t, announced, "a budget override must be reported, not applied in silence")
+		assert.Equal(t, budget, readGoalState(t, st2, goal).Budget,
+			"an unset flag must not overwrite the stored budget with a config default")
 
 		assert.Equal(t, StopReasonTokenBudget, decision2.StopReason,
 			"the spent tokens must still be spent after a restart")
@@ -193,6 +211,97 @@ func TestGoalLoop_ResumesAfterRestart(t *testing.T) {
 		assert.Zero(t, ranAt, "an exhausted token budget must buy zero further phases")
 		assert.Equal(t, loop1.Iterations(), loop2.Iterations(),
 			"an exhausted token budget must buy zero further iterations")
+	})
+
+	// An operator who types a new limit must get it. The persisted budget only
+	// outranks values nobody chose — otherwise raising a budget after a crash
+	// would mean editing a flag, seeing nothing happen, and having to dig the
+	// old number out of SQLite.
+	t.Run("an explicit flag beats the persisted budget", func(t *testing.T) {
+		t.Parallel()
+		dbPath := filepath.Join(t.TempDir(), "explicit.db")
+		goal := Goal{Text: "widen the retry window", Workdir: "/repo/retry"}
+		budget := Budget{MaxIterations: maxIters, MaxTokens: stopAfter*perIteration - 50}
+
+		loop1, decision1 := seedTokenExhaustedRun(t, dbPath, goal, budget, perIteration)
+		spent := decision1.Usage.Total()
+		left := maxIters - loop1.Iterations()
+		require.Positive(t, left)
+
+		// Only -max-tokens is typed. -max-iters is not, so it must still come
+		// from the store even though the caller's struct carries a value for it.
+		raised := Budget{MaxIterations: 99, MaxTokens: spent + left*perIteration}
+		st2 := openStore(t, dbPath)
+		sink2 := &UsageSink{}
+		loop2 := budgetLoop(raised, BudgetSet{MaxTokens: true}, sink2, st2, perIteration)
+		var ranAt int
+		var announced bool
+		record := firstIteration(&ranAt)
+		decision2, err := loop2.Run(context.Background(), goal, func(e Event) {
+			record(e)
+			if e.Phase == "State" && strings.Contains(e.Detail, "explicit budget") {
+				announced = true
+			}
+		})
+		require.NoError(t, err)
+
+		assert.True(t, announced, "the override must be reported in the other direction too")
+		assert.Equal(t, loop1.Iterations()+1, ranAt, "the raised budget buys work, from the resume point")
+		assert.Equal(t, maxIters, loop2.Iterations(),
+			"MaxIterations was not typed, so it must still come from the store, not the caller's 99")
+		assert.NotEqual(t, StopReasonTokenBudget, decision2.StopReason)
+
+		after := readGoalState(t, st2, goal)
+		assert.Equal(t, raised.MaxTokens, after.Budget.MaxTokens,
+			"a typed limit becomes the new persisted fact")
+		assert.Equal(t, budget.MaxIterations, after.Budget.MaxIterations,
+			"an untyped limit must not be overwritten by the caller's value")
+	})
+
+	// Lowering a limit below what the run already spent is defined behaviour,
+	// not an error: the run is simply over budget on the new ceiling and stops
+	// through the paths that already exist.
+	t.Run("an explicit limit below the spend ends the run", func(t *testing.T) {
+		t.Parallel()
+		goal := Goal{Text: "shrink the image", Workdir: "/repo/image"}
+		budget := Budget{MaxIterations: maxIters, MaxTokens: stopAfter*perIteration - 50}
+
+		t.Run("tokens", func(t *testing.T) {
+			t.Parallel()
+			dbPath := filepath.Join(t.TempDir(), "lowtokens.db")
+			loop1, decision1 := seedTokenExhaustedRun(t, dbPath, goal, budget, perIteration)
+			lowered := Budget{MaxIterations: maxIters, MaxTokens: decision1.Usage.Total() - 1}
+
+			loop2 := budgetLoop(lowered, BudgetSet{MaxTokens: true}, &UsageSink{}, openStore(t, dbPath), perIteration)
+			var ranAt int
+			decision2, err := loop2.Run(context.Background(), goal, firstIteration(&ranAt))
+			require.NoError(t, err)
+			assert.Equal(t, StopReasonTokenBudget, decision2.StopReason)
+			assert.Zero(t, ranAt, "no phase may run once the new ceiling is already breached")
+			assert.Equal(t, loop1.Iterations(), loop2.Iterations())
+		})
+
+		t.Run("iterations", func(t *testing.T) {
+			t.Parallel()
+			dbPath := filepath.Join(t.TempDir(), "lowiters.db")
+			loop1, _ := seedTokenExhaustedRun(t, dbPath, goal, budget, perIteration)
+			// One fewer iteration than already ran, and enough tokens that only
+			// the iteration limit can be what stops it.
+			lowered := Budget{MaxIterations: loop1.Iterations() - 1, MaxTokens: 99999}
+
+			loop2 := budgetLoop(lowered, BudgetSet{MaxIterations: true, MaxTokens: true},
+				&UsageSink{}, openStore(t, dbPath), perIteration)
+			var ranAt int
+			decision2, err := loop2.Run(context.Background(), goal, firstIteration(&ranAt))
+			require.NoError(t, err)
+			// The exhaustion path, not the token path. StopReason itself is not
+			// asserted directly: the default tier turns max_iterations into
+			// escalate, which is pre-existing behaviour this test is not about.
+			assert.Contains(t, decision2.Summary, "max iterations")
+			assert.NotEqual(t, StopReasonTokenBudget, decision2.StopReason)
+			assert.Zero(t, ranAt, "the resume point is past the new limit, so nothing runs")
+			assert.False(t, decision2.Complete)
+		})
 	})
 
 	t.Run("a finished goal starts over", func(t *testing.T) {

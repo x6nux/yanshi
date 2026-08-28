@@ -972,6 +972,9 @@ func runGoal(args []string) int {
 			// — the fake path is a self-contained demo whose whole point is to
 			// run identically every time.
 			State: loopStore,
+			// Which limits the operator typed, so a resumed run can tell a
+			// deliberate new budget from a config default reasserting itself.
+			BudgetExplicit: explicitBudgetFlags(fs),
 		})
 	}
 

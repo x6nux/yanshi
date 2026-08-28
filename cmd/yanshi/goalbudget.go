@@ -30,3 +30,24 @@ func resolveGoalBudget(fs *flag.FlagSet, flagTokens, flagIters int, cfg config.G
 	}
 	return b
 }
+
+// explicitBudgetFlags reports which budget limits were typed on this command
+// line, for the goal loop to weigh against a budget it resumed from the store.
+//
+// Only flags actually present count — a limit that came from the `goal:` config
+// block is exactly the default value a restart must NOT be allowed to silently
+// reinstate over the persisted one. Deriving this from resolveGoalBudget's
+// result instead would be wrong for the same reason its own comment gives:
+// values cannot distinguish typed from defaulted.
+func explicitBudgetFlags(fs *flag.FlagSet) goalloop.BudgetSet {
+	var set goalloop.BudgetSet
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "max-tokens":
+			set.MaxTokens = true
+		case "max-iters":
+			set.MaxIterations = true
+		}
+	})
+	return set
+}

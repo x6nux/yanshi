@@ -28,7 +28,16 @@ type Config struct {
 	// stopped instead of replaying the goal from iteration 1 with a budget
 	// reset to zero (W-D-16). A nil State disables persistence and leaves Run's
 	// behaviour exactly as it was before.
+	//
+	// Only the multi-iteration path (T3-T4) has a resume point to persist. The
+	// lightweight T0-T2 path is a single orchestrator turn with no "where it
+	// stopped" to come back to, so it deliberately does not carry one.
 	State StateStore
+	// BudgetExplicit marks which Budget limits the operator typed for this run,
+	// deciding who wins when a resumed run's persisted budget disagrees with
+	// the one above. See BudgetSet and resolveResumeBudget. The zero value —
+	// nothing explicit — hands the decision to the persisted budget.
+	BudgetExplicit BudgetSet
 }
 
 // Loop is the Goal Loop controller. It repeatedly runs
@@ -136,14 +145,19 @@ func (l *Loop) Run(ctx context.Context, g Goal, onEvent func(Event)) (Decision, 
 		if l.cfg.Sink != nil {
 			l.cfg.Sink.Add(saved.Usage)
 		}
-		// The persisted budget wins. Taking the caller's instead would reopen
-		// the exact hole this resume path closes — a restart picking up new
-		// config defaults is precisely how a budget gets silently reset — so
-		// the override is announced rather than applied in silence.
-		if saved.Budget != l.cfg.Budget {
-			emit("State", fmt.Sprintf("persisted budget %+v overrides %+v", saved.Budget, l.cfg.Budget), saved.Iterations)
-			l.cfg.Budget = saved.Budget
+		// Explicit flags beat the persisted budget; everything else loses to
+		// it. Either way the loser is named out loud rather than dropped in
+		// silence — both directions are surprising to somebody.
+		effective := resolveResumeBudget(l.cfg.Budget, saved.Budget, l.cfg.BudgetExplicit)
+		switch {
+		case effective != saved.Budget:
+			emit("State", fmt.Sprintf("explicit budget %+v overrides persisted %+v", effective, saved.Budget), saved.Iterations)
+		case effective != l.cfg.Budget:
+			emit("State", fmt.Sprintf("persisted budget %+v overrides %+v", effective, l.cfg.Budget), saved.Iterations)
 		}
+		// Assigning unconditionally is what writes an explicit new limit back
+		// to the store, since saveState persists whatever cfg.Budget ends up as.
+		l.cfg.Budget = effective
 		emit("State", fmt.Sprintf("resuming at iteration %d/%d with %d tokens already spent",
 			first, l.cfg.Budget.MaxIterations, saved.Usage.Total()), saved.Iterations)
 	}
