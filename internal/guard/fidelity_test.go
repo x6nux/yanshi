@@ -1,6 +1,7 @@
 package guard
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/x6nux/yanshi/internal/execpolicy"
 )
@@ -107,7 +109,17 @@ func newShellHarness(t *testing.T) (workdir string, run func(string) shellReadin
 			t.Fatal(err)
 		}
 		before := dirEntries(t, work)
-		c := exec.Command("/bin/sh", "-c", cmd)
+		// A corpus row is attacker-shaped text run through a real shell, and
+		// some of the shapes worth measuring are loops. `until false; do rm -rf
+		// /; done` is a legitimate row (the reserved word is the axis) and it
+		// never returns — measured: it hung the whole package until this
+		// deadline existed, calling the recorder forever. A row that outlives
+		// the deadline is killed and reported as having run nothing, which the
+		// witness assertion then flags as a mislabelled row rather than passing
+		// silently.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		c := exec.CommandContext(ctx, "/bin/sh", "-c", cmd)
 		c.Dir = work
 		// PATH carries the shim directory alone: an unshimmed program cannot be
 		// resolved at all, so a bug in this harness fails closed.
