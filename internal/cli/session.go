@@ -20,6 +20,14 @@ type Options struct {
 	Server     string // force remote (skip discovery) when non-empty
 	InProcess  bool   // force in-process (skip discovery)
 	Root       string // project root (cwd); defaults to os.Getwd at Run time
+
+	// SelfHeal allows an in-process bootstrap to move an UNREADABLE database
+	// aside and start empty rather than fail. Only the interactive TUI sets it
+	// (cmd/yanshi), because only there is refusing to start a dead end: exec
+	// and headless print the error to a user who is already watching and can
+	// act on it, so discarding their history on their behalf would be strictly
+	// worse. See bootstrap.Options.SelfHeal.
+	SelfHeal bool
 }
 
 // Session resolves and holds a backend, bootstrapping an in-process backend
@@ -28,6 +36,9 @@ type Session struct {
 	root       string
 	configPath string
 	fakeModel  bool
+	// selfHeal is forwarded to bootstrap.Build in bootstrapOwner. Set only by
+	// the interactive TUI; see Options.SelfHeal.
+	selfHeal bool
 
 	// forced modes, set by setForced from Options (Server/InProcess). When set
 	// they short-circuit Resolve past lockfile discovery.
@@ -62,6 +73,7 @@ func NewSession(opts Options) *Session {
 		}
 	}
 	s := newSession(root, opts.ConfigPath, opts.FakeModel)
+	s.selfHeal = opts.SelfHeal
 	s.setForced(opts.Server, opts.InProcess)
 	return s
 }
@@ -127,7 +139,17 @@ func (s *Session) connectRemote(ctx context.Context, baseURL string) error {
 // lockfile Acquire loses to a concurrent owner, the local server is torn down
 // and we connect to the winner instead.
 func (s *Session) bootstrapOwner(ctx context.Context) error {
-	app, err := bootstrap.Build(bootstrap.Options{ConfigPath: s.configPath, FakeModel: s.fakeModel, TUIMode: true})
+	// Build runs BEFORE lockfile.Acquire, so two windows starting together both
+	// reach it and only one goes on to win. That order is deliberate — Acquire
+	// advertises an address, and other clients treat an advertised address that
+	// is not yet serving as stale and delete the lockfile, so the window
+	// between claiming and serving is kept as short as possible. The cost is
+	// that healing can be attempted concurrently; store.healCorrupt makes that
+	// safe with a cross-process lock rather than this call site with an
+	// ordering change that would widen the advertise-before-serve window.
+	app, err := bootstrap.Build(bootstrap.Options{
+		ConfigPath: s.configPath, FakeModel: s.fakeModel, TUIMode: true, SelfHeal: s.selfHeal,
+	})
 	if err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
 	}

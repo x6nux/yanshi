@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/base64"
 	"testing"
 	"time"
 
@@ -21,7 +22,13 @@ func TestListSessions_OrderAndCount(t *testing.T) {
 	id2, err := s.CreateSession("second")
 	require.NoError(t, err)
 
-	// Touch the first session so it becomes most-recently-updated.
+	// Touch the first session so it becomes most-recently-updated. The sleep
+	// is what makes "most-recently-updated" true rather than merely intended:
+	// updated_at is second-granular, so appending in the same second as id2's
+	// creation leaves the two TIED, and the assertions below would then be
+	// reading whatever order the tie-break happens to produce instead of the
+	// recency this test is named for.
+	time.Sleep(time.Second)
 	require.NoError(t, s.AppendMessage(id1, 0, "user", "hello"))
 
 	list, err := s.ListSessions(0)
@@ -49,6 +56,133 @@ func TestListSessions_ZeroSessions(t *testing.T) {
 	list, err := s.ListSessions(0)
 	require.NoError(t, err)
 	assert.Empty(t, list)
+}
+
+// TestListSessions_CursorPaginationIsStable proves the cursor keeps a paging
+// walk free of duplicates and gaps while the list is being written to.
+//
+// The fixture creates five sessions, reads page 1, then creates two MORE before
+// asking for page 2. That middle step is the entire point: the list is ordered
+// updated_at DESC, so the new rows land at the front, and an OFFSET-based page
+// 2 would skip past them and re-serve rows the caller already has. The union of
+// the two pages must be exactly the first four of the original five, in order,
+// with the two newcomers nowhere in sight — they sort ahead of the cursor, i.e.
+// on a page the walk has already gone past.
+//
+// The five fixtures are created in a single second on purpose, so every one of
+// them shares an updated_at. That makes the id tie-break in listSessionsWhere
+// load-bearing: with only `updated_at DESC` the tie group has no defined order,
+// so the cursor's id selects an arbitrary subset of it and page 2 stops being
+// the next two rows. The intruders, by contrast, are created a full second
+// later so they sort strictly ahead of the whole group — within one second the
+// order is by random id, and an "intruder" could then legitimately land behind
+// the cursor, which is ordinary keyset behaviour rather than the front-insertion
+// this test is about.
+func TestListSessions_CursorPaginationIsStable(t *testing.T) {
+	s, err := Open(":memory:")
+	require.NoError(t, err)
+	defer s.Close()
+
+	var original []string
+	for i := 0; i < 5; i++ {
+		id, err := s.CreateSession("session")
+		require.NoError(t, err)
+		original = append(original, id)
+	}
+
+	// The authoritative order, taken from the unpaged read so the test cannot
+	// disagree with ListSessions about what "page 1 then page 2" should be.
+	full, err := s.ListSessions(0)
+	require.NoError(t, err)
+	require.Len(t, full, 5)
+
+	page1, err := s.ListSessionsPage("", 2)
+	require.NoError(t, err)
+	require.Len(t, page1.Sessions, 2)
+	require.NotEmpty(t, page1.NextCursor, "five rows, page size two: there is a page 2")
+
+	// Mutate the list mid-walk: two brand-new sessions jump to the front.
+	time.Sleep(1100 * time.Millisecond) // updated_at is second-granular
+	var intruders []string
+	for i := 0; i < 2; i++ {
+		id, err := s.CreateSession("inserted-mid-walk")
+		require.NoError(t, err)
+		intruders = append(intruders, id)
+	}
+
+	page2, err := s.ListSessionsPage(page1.NextCursor, 2)
+	require.NoError(t, err)
+	require.Len(t, page2.Sessions, 2)
+
+	var walked []string
+	for _, ss := range append(append([]SessionSummary{}, page1.Sessions...), page2.Sessions...) {
+		walked = append(walked, ss.ID)
+	}
+
+	want := []string{full[0].ID, full[1].ID, full[2].ID, full[3].ID}
+	assert.Equal(t, want, walked, "the walk is the first four rows of the pre-insert order")
+
+	// No duplicates, and no intruder smuggled in.
+	seen := map[string]bool{}
+	for _, id := range walked {
+		assert.False(t, seen[id], "session %s served twice", id)
+		seen[id] = true
+	}
+	for _, id := range intruders {
+		assert.NotContains(t, seen, id, "a session created mid-walk must not appear behind the cursor")
+	}
+	assert.Subset(t, original, walked, "every walked row is one of the originals")
+
+	// Walking to the end terminates, and NextCursor empties exactly once the
+	// last row has been delivered rather than one page later. The round-trip
+	// count is asserted because it is the only thing that notices the
+	// difference: emitting a cursor for every full page still terminates and
+	// still returns all seven rows, it just bills the caller for one extra
+	// query that comes back empty.
+	var all []string
+	cursor := ""
+	pages := 0
+	for range 20 {
+		p, err := s.ListSessionsPage(cursor, 2)
+		require.NoError(t, err)
+		pages++
+		for _, ss := range p.Sessions {
+			all = append(all, ss.ID)
+		}
+		cursor = p.NextCursor
+		if cursor == "" {
+			break
+		}
+	}
+	assert.Empty(t, cursor, "the walk terminated")
+	assert.Len(t, all, 7, "all five originals plus the two inserted mid-walk")
+	assert.Equal(t, 4, pages, "7 rows at 2 per page is 4 round trips, not 5 with an empty one")
+}
+
+// TestListSessionsPage_RejectsMalformedCursor proves a corrupt token is an
+// error rather than a silent restart at page 1, which would look to the caller
+// like progress while re-serving the newest sessions forever.
+func TestListSessionsPage_RejectsMalformedCursor(t *testing.T) {
+	s, err := Open(":memory:")
+	require.NoError(t, err)
+	defer s.Close()
+
+	_, err = s.CreateSession("only")
+	require.NoError(t, err)
+
+	for name, tok := range map[string]string{
+		"not base64":     "!!!not-base64!!!",
+		"no separator":   base64.RawURLEncoding.EncodeToString([]byte("1700000000")),
+		"empty id":       base64.RawURLEncoding.EncodeToString([]byte("1700000000|")),
+		"bad timestamp":  base64.RawURLEncoding.EncodeToString([]byte("yesterday|abc")),
+		"truncated pair": base64.RawURLEncoding.EncodeToString([]byte("|")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			page, err := s.ListSessionsPage(tok, 2)
+			assert.Error(t, err)
+			assert.Empty(t, page.Sessions, "a rejected cursor returns no rows, not page 1")
+		})
+	}
 }
 
 // TestGetSession_Missing proves GetSession on an absent id returns (nil, nil)
@@ -99,4 +233,150 @@ func TestListArchivedSessions_RoundTrip(t *testing.T) {
 	archived, err = s.ListArchivedSessions(0)
 	require.NoError(t, err)
 	assert.Empty(t, archived)
+}
+
+// TestListSessionsWhere_CursorWithEmptyWhereClause guards the SQL joiner.
+// Every caller today passes a non-empty WHERE fragment, so an unconditional
+// " AND ..." looks harmless — but it produces "FROM sessions AND (...)", which
+// is a syntax error discovered at runtime by whoever adds the first unfiltered
+// list rather than by the compiler here.
+func TestListSessionsWhere_CursorWithEmptyWhereClause(t *testing.T) {
+	s, err := Open(":memory:")
+	require.NoError(t, err)
+	defer s.Close()
+
+	for i := 0; i < 3; i++ {
+		_, err := s.CreateSession("s")
+		require.NoError(t, err)
+	}
+	all, err := s.listSessionsWhere("", 0, nil)
+	require.NoError(t, err)
+	require.Len(t, all, 3)
+
+	// Page past the first row with no WHERE fragment at all.
+	after := &sessionCursor{UpdatedAt: all[0].UpdatedAt, ID: all[0].ID}
+	rest, err := s.listSessionsWhere("", 0, after)
+	require.NoError(t, err, "an empty WHERE fragment must still produce valid SQL")
+	require.Len(t, rest, 2)
+	assert.Equal(t, all[1].ID, rest[0].ID)
+	assert.Equal(t, all[2].ID, rest[1].ID)
+}
+
+// TestListSessionsPage_ConcurrentUpdateCanDropARow pins a LIMITATION, not a
+// feature. Keyset paging on a MUTABLE sort key guarantees no duplicates, but
+// not completeness: touching a session the walk has not reached yet moves it
+// ahead of the cursor, where the walk will never look again.
+//
+// It is pinned because the doc comment on ListSessionsPage would otherwise be
+// the only record of it, and the natural reading of "cursors fix OFFSET paging"
+// is that they fix both halves. They do not. If a caller ever needs every row
+// exactly once, this test is where the change of sort key gets noticed.
+func TestListSessionsPage_ConcurrentUpdateCanDropARow(t *testing.T) {
+	s, err := Open(":memory:")
+	require.NoError(t, err)
+	defer s.Close()
+
+	for i := 0; i < 5; i++ {
+		_, err := s.CreateSession("s")
+		require.NoError(t, err)
+	}
+	full, err := s.ListSessions(0)
+	require.NoError(t, err)
+	require.Len(t, full, 5)
+
+	page1, err := s.ListSessionsPage("", 2)
+	require.NoError(t, err)
+	require.Len(t, page1.Sessions, 2)
+
+	// Touch a row the walk has NOT reached yet: the last one.
+	time.Sleep(1100 * time.Millisecond) // updated_at is second-granular
+	require.NoError(t, s.AppendMessage(full[4].ID, 0, "user", "touched mid-walk"))
+
+	seen := map[string]bool{}
+	for _, ss := range page1.Sessions {
+		seen[ss.ID] = true
+	}
+	cursor := page1.NextCursor
+	for cursor != "" {
+		p, err := s.ListSessionsPage(cursor, 2)
+		require.NoError(t, err)
+		for _, ss := range p.Sessions {
+			require.False(t, seen[ss.ID], "keyset paging must never serve a row twice")
+			seen[ss.ID] = true
+		}
+		cursor = p.NextCursor
+	}
+
+	assert.Len(t, seen, 4, "the touched row jumped ahead of the cursor and was missed")
+	assert.NotContains(t, seen, full[4].ID,
+		"this is the documented gap: a row updated ahead of the walk is not returned")
+}
+
+// TestListSessionsPage_RestoredSessionCanBeServedTwice pins the duplicate half
+// of the keyset limitation, using the production writer that causes it.
+//
+// The comment on ListSessionsPage used to claim a row "can never be served
+// twice however much the table churns", which is false whenever updated_at
+// moves BACKWARDS. RestoreSessionAfterFailedRevert does exactly that: it
+// rewrites session metadata from a pre-rollback snapshot, so a session the walk
+// has already passed reappears in front of the cursor and is served again.
+// Driving it through that method rather than a hand-written UPDATE is the
+// point — it proves the shape is reachable in production, not just in SQL.
+func TestListSessionsPage_RestoredSessionCanBeServedTwice(t *testing.T) {
+	s, err := Open(":memory:")
+	require.NoError(t, err)
+	defer s.Close()
+
+	// The target is created and snapshotted FIRST, in its own second, so the
+	// snapshot carries an updated_at strictly older than every other row. That
+	// strictness is required, not stylistic: within one second the ordering
+	// tie-break is the random session id, so a restored row would land ahead of
+	// or behind the cursor at random and this test would pass about 5 times in 6.
+	target, err := s.CreateSession("target")
+	require.NoError(t, err)
+	require.NoError(t, s.AppendMessage(target, 0, "user", "hello"))
+	snap, err := s.TruncateSessionForRevert(target, 1, 0)
+	require.NoError(t, err)
+
+	// Three more, a full second later, so they all outrank the snapshot.
+	time.Sleep(1100 * time.Millisecond) // updated_at is second-granular
+	for i := 0; i < 3; i++ {
+		id, err := s.CreateSession("other")
+		require.NoError(t, err)
+		require.NoError(t, s.AppendMessage(id, 0, "user", "hello"))
+	}
+
+	// A new turn on the target moves it to the front, so the walk serves it first.
+	time.Sleep(1100 * time.Millisecond)
+	require.NoError(t, s.AppendMessage(target, 1, "user", "a new turn"))
+
+	page1, err := s.ListSessionsPage("", 2)
+	require.NoError(t, err)
+	require.Len(t, page1.Sessions, 2)
+	served := []string{page1.Sessions[0].ID, page1.Sessions[1].ID}
+	require.Equal(t, target, page1.Sessions[0].ID, "the target must be served first")
+	require.NotEmpty(t, page1.NextCursor)
+
+	// The revert fails, so the compensation restores the OLD metadata — which
+	// puts updated_at back BEHIND the cursor the walk is already holding.
+	require.NoError(t, s.RestoreSessionAfterFailedRevert(snap))
+
+	cursor := page1.NextCursor
+	for cursor != "" {
+		p, err := s.ListSessionsPage(cursor, 2)
+		require.NoError(t, err)
+		for _, ss := range p.Sessions {
+			served = append(served, ss.ID)
+		}
+		cursor = p.NextCursor
+	}
+
+	count := 0
+	for _, id := range served {
+		if id == target {
+			count++
+		}
+	}
+	assert.Equal(t, 2, count,
+		"a session whose updated_at moved backwards is served twice; walk was %v", served)
 }

@@ -415,12 +415,110 @@ func TestSearchMessages_IsSessionScoped(t *testing.T) {
 	assert.Len(t, hits, 1)
 }
 
+// TestSearchMessages_AcrossSessions: an empty sessionID used to be an error
+// ("store: search messages: empty session id"). It now means "every
+// session", which is what lets a question like "how did we fix that bug last
+// week" be answered at all: the caller does not know, and should not have to
+// know, which past session holds the fix.
+//
+// Three sessions are seeded on purpose, not two: a fixture where only one
+// session has any hits cannot distinguish "scoping was silently dropped" from
+// "the cross-session code path was never exercised" — the test needs to see
+// rows from more than one session in a single result set to prove the search
+// actually spans sessions rather than just tolerating an empty argument.
+func TestSearchMessages_AcrossSessions(t *testing.T) {
+	s, _ := openTempStore(t)
+	a := newSession(t, s)
+	b := newSession(t, s)
+	c := newSession(t, s)
+
+	_, _, err := s.AppendMessages(a, []Message{
+		{Role: RoleUser, Content: "deploying the new release pipeline"},
+		{Role: RoleAssistant, Content: "there was a flaky test in the guard package"},
+	})
+	require.NoError(t, err)
+	_, _, err = s.AppendMessages(b, []Message{
+		{Role: RoleUser, Content: "looking at a flaky scheduler retry"},
+		{Role: RoleAssistant, Content: "root cause: ONLYINSESSIONB raced on the lock"},
+	})
+	require.NoError(t, err)
+	_, _, err = s.AppendMessages(c, []Message{
+		{Role: RoleUser, Content: "unrelated conversation about pizza toppings"},
+	})
+	require.NoError(t, err)
+
+	// The old error is gone.
+	hits, err := s.SearchMessages("", "flaky", 0)
+	require.NoError(t, err)
+	require.NotEmpty(t, hits, "cross-session search must find the term")
+
+	seen := map[string]bool{}
+	for _, h := range hits {
+		require.NotEmpty(t, h.SessionID, "every hit must say which session it came from")
+		seen[h.SessionID] = true
+	}
+	assert.True(t, seen[a], "session A's hit must be present")
+	assert.True(t, seen[b], "session B's hit must be present")
+	assert.False(t, seen[c], "session C never mentioned the term")
+	assert.Greater(t, len(seen), 1,
+		"a fixture with hits in only one session cannot prove the search is cross-session")
+
+	// A term that exists only in session B must still be found with no
+	// session filter applied.
+	hits, err = s.SearchMessages("", "ONLYINSESSIONB", 0)
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	assert.Equal(t, b, hits[0].SessionID)
+
+	// limit still applies to the COMBINED cross-session result set, not
+	// per-session.
+	hits, err = s.SearchMessages("", "flaky", 1)
+	require.NoError(t, err)
+	assert.Len(t, hits, 1, "limit must bound the merged result, not each session separately")
+}
+
+// TestSearchMessages_AcrossSessionsCJK: the cross-session path must go
+// through the same W-A-03 CJK fallback as the single-session path
+// (SearchMessages routes on hasCJK before it knows whether sessionID is
+// empty). Getting this wrong is invisible in English: FTS5's default
+// tokenizer would still match ASCII text, and only a Chinese query would
+// silently come back empty — which is exactly the failure mode a
+// NoError-only assertion would miss, so this test also pins the hit count and
+// the actual content, not just the absence of an error.
+func TestSearchMessages_AcrossSessionsCJK(t *testing.T) {
+	s, _ := openTempStore(t)
+	a := newSession(t, s)
+	b := newSession(t, s)
+	c := newSession(t, s)
+
+	require.NoError(t, s.AppendMessage(a, 0, RoleUser, "项目的截止日期是周二，需要跟进"))
+	require.NoError(t, s.AppendMessage(b, 0, RoleUser, "张伟说这个项目的截止日期可能推迟"))
+	require.NoError(t, s.AppendMessage(c, 0, RoleUser, "今天天气很好，适合散步"))
+
+	hits, err := s.SearchMessages("", "截止日期", 0)
+	require.NoError(t, err)
+	require.Len(t, hits, 2, "the term appears in exactly two sessions")
+
+	bySession := map[string]MessageSearchHit{}
+	for _, h := range hits {
+		bySession[h.SessionID] = h
+	}
+	require.Contains(t, bySession, a)
+	require.Contains(t, bySession, b)
+	assert.Equal(t, "项目的截止日期是周二，需要跟进", bySession[a].Content)
+	assert.Equal(t, "张伟说这个项目的截止日期可能推迟", bySession[b].Content)
+	assert.Contains(t, bySession[a].Snippet, "截止日期")
+	assert.Contains(t, bySession[b].Snippet, "截止日期")
+}
+
+// TestSearchMessages_Rejects: an empty QUERY is still an error (there is
+// nothing to search for). An empty SESSION id is no longer one of these
+// cases — see TestSearchMessages_AcrossSessions — so this test only pins the
+// query-side validation now.
 func TestSearchMessages_Rejects(t *testing.T) {
 	s, _ := openTempStore(t)
 	sid := newSession(t, s)
-	_, err := s.SearchMessages("", "x", 0)
-	assert.Error(t, err, "empty session id must not become a wildcard")
-	_, err = s.SearchMessages(sid, "   ", 0)
+	_, err := s.SearchMessages(sid, "   ", 0)
 	assert.Error(t, err, "empty query must not match everything")
 }
 
@@ -686,17 +784,47 @@ func TestForkSession_PreservesToolFields(t *testing.T) {
 	assert.Equal(t, "fs_write", got[1].ToolName)
 	assert.Equal(t, `{"path":"x"}`, got[1].ToolArgs)
 	assert.Equal(t, "wrote 12 bytes", got[2].Content)
-	// The fork's rows are new identities, so they must NOT inherit dedup keys —
-	// otherwise a later flush in the fork would treat the source's history as
-	// already durable in the fork and skip real messages.
+	// The fork's rows DO inherit dedup keys, and the rule was reversed
+	// deliberately (INF3 / ADR-0015). The keys say "this message is already
+	// durable in this session", which is exactly true of a copied row — and
+	// leaving them empty made the partial unique index skip them, so the fork's
+	// first whole-window flush re-inserted its entire history. Measured with an
+	// inherited compaction boundary: 12 rows and a 4-message window became 16
+	// rows and 8 messages, every message twice, on the first turn after /fork.
+	// The unique index is (session_id, dedup_key), so copying across sessions
+	// cannot collide.
 	for _, m := range got {
-		assert.Empty(t, m.DedupKey, "fork rows must not inherit the source's dedup keys")
+		assert.NotEmpty(t, m.DedupKey, "fork rows must inherit the source's dedup keys")
 	}
 }
 
-// TestForkThenAppend_DoesNotSkipRows is the observable consequence of the
-// dedup-key rule above: a fork must be able to record new messages that happen
-// to be byte-identical to messages it inherited.
+// TestForkThenAppend_DoesNotSkipRows: a fork must still be able to record a new
+// message that happens to be byte-identical to one it inherited.
+//
+// Inheriting the keys (see above) is what makes this worth pinning, because the
+// naive reading is that the inherited row now suppresses the new one.
+//
+// It does not, but the reason is NARROWER than an earlier version of this
+// comment claimed, and the difference matters. What is true:
+//
+//   - flushHistory re-flushes the WHOLE window, so while both copies are IN the
+//     window AssignDedupKeys sees them together and gives the second one
+//     ordinal 1 — a different key, and it is recorded.
+//   - tools.milestone supplies its own nonce'd key, so it never derives one
+//     from content at all.
+//
+// What is NOT true is that this covers every case. Once the first copy has been
+// evicted from the window it is no longer in the batch, while ON CONFLICT still
+// matches it in the log — so the repeat IS suppressed and never written. That is
+// a property of de-duplicating against the whole log rather than anything to do
+// with forks: the identical sequence on a compacted SOURCE session behaves the
+// same way. It is what ADR-0015 constraint 6 exists for, and
+// http.alignedWithLog now detects it and refuses to compact rather than
+// computing a boundary from positions that do not line up.
+//
+// A caller that appends ONLY the new duplicate, with no key and without its
+// predecessor in the batch, is likewise indistinguishable from a re-flush and is
+// skipped — again on the source session too, not just on a fork.
 func TestForkThenAppend_DoesNotSkipRows(t *testing.T) {
 	s, _ := openTempStore(t)
 	sid := newSession(t, s)
@@ -705,9 +833,50 @@ func TestForkThenAppend_DoesNotSkipRows(t *testing.T) {
 
 	forkID, err := s.ForkSession(sid, -1)
 	require.NoError(t, err)
-	n, _, err := s.AppendMessages(forkID, []Message{{Role: RoleUser, Content: "same text"}})
+
+	// The whole-window shape, i.e. what flushHistory does.
+	n, _, err := s.AppendMessages(forkID, []Message{
+		{Role: RoleUser, Content: "same text"},
+		{Role: RoleUser, Content: "same text"},
+	})
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "an inherited row must not suppress a genuinely new one")
+
+	got, err := s.Messages(forkID)
+	require.NoError(t, err)
+	assert.Len(t, got, 2, "the inherited row is kept once and the new one is added")
+
+	// The explicit-key shape, i.e. what tools.milestone does.
+	n, _, err = s.AppendMessages(forkID, []Message{
+		{Role: RoleUser, Content: "same text", DedupKey: "explicit:1"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "an explicit key is never suppressed by an inherited row")
+}
+
+// TestForkThenFlushDoesNotDuplicateTheLog is the regression the rule reversal
+// exists for: re-flushing an unchanged inherited window must write nothing.
+func TestForkThenFlushDoesNotDuplicateTheLog(t *testing.T) {
+	s, _ := openTempStore(t)
+	sid := newSession(t, s)
+	window := []Message{
+		{Role: RoleUser, Content: "do the thing"},
+		{Role: RoleAssistant, Content: "on it"},
+		{Role: RoleToolCall, ToolCallID: "c1", ToolName: "shell_run", ToolArgs: `{"cmd":"ls"}`},
+		{Role: RoleToolResult, ToolCallID: "c1", ToolName: "shell_run", Content: "a.go"},
+	}
+	_, _, err := s.AppendMessages(sid, window)
+	require.NoError(t, err)
+
+	forkID, err := s.ForkSession(sid, -1)
+	require.NoError(t, err)
+	inserted, _, err := s.AppendMessages(forkID, window)
+	require.NoError(t, err)
+	assert.Zero(t, inserted, "the inherited window is already durable in the fork")
+
+	got, err := s.Messages(forkID)
+	require.NoError(t, err)
+	assert.Len(t, got, len(window), "a re-flush must not double the fork's log")
 }
 
 // ---------------------------------------------------------------------------

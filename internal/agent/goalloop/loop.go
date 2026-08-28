@@ -23,6 +23,21 @@ type Config struct {
 	// pipeline, which is set by the caller via the components above. Zero value
 	// (TierQuickFix) is safe.
 	Tier Tier
+	// State persists the run's progress — objective, both budgets, iterations
+	// executed and tokens spent — so a restarted process resumes where it
+	// stopped instead of replaying the goal from iteration 1 with a budget
+	// reset to zero (W-D-16). A nil State disables persistence and leaves Run's
+	// behaviour exactly as it was before.
+	//
+	// Only the multi-iteration path (T3-T4) has a resume point to persist. The
+	// lightweight T0-T2 path is a single orchestrator turn with no "where it
+	// stopped" to come back to, so it deliberately does not carry one.
+	State StateStore
+	// BudgetExplicit marks which Budget limits the operator typed for this run,
+	// deciding who wins when a resumed run's persisted budget disagrees with
+	// the one above. See BudgetSet and resolveResumeBudget. The zero value —
+	// nothing explicit — hands the decision to the persisted budget.
+	BudgetExplicit BudgetSet
 }
 
 // Loop is the Goal Loop controller. It repeatedly runs
@@ -31,6 +46,11 @@ type Config struct {
 type Loop struct {
 	cfg        Config
 	iterations int
+	// persistedIter is the last iteration that ran to completion, which is what
+	// gets written to the store — as opposed to iterations, which counts the
+	// one currently in flight too. Resuming from the in-flight number would
+	// skip an iteration that was paid for but never finished.
+	persistedIter int
 }
 
 // New creates a Loop with the given Config.
@@ -84,7 +104,9 @@ func (l *Loop) budgetExceededDecision(at string) Decision {
 }
 
 // Event represents a phase event emitted during the loop.
-// Phase is one of "Plan", "Implement", "Evaluate", "Judge", "Done".
+// Phase is one of "State", "Plan", "Implement", "Evaluate", "Judge", "Done".
+// "State" carries resume and persistence notices (iteration 0 when emitted
+// before the first cycle) and never indicates a failed run.
 type Event struct {
 	Phase     string
 	Iteration int
@@ -102,6 +124,11 @@ func (l *Loop) Iterations() int {
 //   - the context is cancelled (returns ctx.Err()),
 //   - the token budget is exceeded (returns a budget-exceeded Decision), or
 //   - MaxIterations is reached without completion (returns an incomplete Decision).
+//
+// When Config.State is wired, Run resumes a previously interrupted run of the
+// same goal in the same working directory: it starts at the next iteration and
+// carries the earlier token spend forward, so neither budget is reset by the
+// restart.
 func (l *Loop) Run(ctx context.Context, g Goal, onEvent func(Event)) (Decision, error) {
 	emit := func(phase, detail string, iter int) {
 		if onEvent != nil {
@@ -109,7 +136,61 @@ func (l *Loop) Run(ctx context.Context, g Goal, onEvent func(Event)) (Decision, 
 		}
 	}
 
-	for iter := 1; iter <= l.cfg.Budget.MaxIterations; iter++ {
+	first := 1
+	saved, resumed, err := l.loadState(g)
+	if err != nil {
+		emit("State", fmt.Sprintf("unreadable, starting from iteration 1: %v", err), 0)
+	} else if resumed {
+		first = saved.Iterations + 1
+		l.iterations = saved.Iterations
+		// Restoring this too is load-bearing: the final flush below writes it
+		// back, so leaving it at zero would let a resumed run that stops
+		// immediately (an already-blown budget, say) erase the progress it
+		// just read.
+		l.persistedIter = saved.Iterations
+		// Seeding the shared sink is what makes the TOKEN budget resume rather
+		// than reset: spent() reads the sink and nothing else, so a fresh
+		// process would otherwise report zero spend and grant the run its
+		// whole MaxTokens over again.
+		if l.cfg.Sink != nil {
+			l.cfg.Sink.Add(saved.Usage)
+		}
+		// Explicit flags beat the persisted budget; everything else loses to
+		// it. Either way the loser is named out loud rather than dropped in
+		// silence — both directions are surprising to somebody.
+		// Both arms can fire at once — one limit typed, the other not — so
+		// these are independent ifs rather than a switch. As a switch the
+		// second case went unreported in exactly the mixed situation where the
+		// operator is most likely to be surprised by it.
+		effective := resolveResumeBudget(l.cfg.Budget, saved.Budget, l.cfg.BudgetExplicit)
+		if effective != saved.Budget {
+			emit("State", fmt.Sprintf("explicit budget %+v overrides persisted %+v", effective, saved.Budget), saved.Iterations)
+		}
+		if effective != l.cfg.Budget {
+			emit("State", fmt.Sprintf("persisted budget %+v overrides %+v", effective, l.cfg.Budget), saved.Iterations)
+		}
+		// Assigning unconditionally is what writes an explicit new limit back
+		// to the store, since saveState persists whatever cfg.Budget ends up as.
+		l.cfg.Budget = effective
+		emit("State", fmt.Sprintf("resuming at iteration %d/%d with %d tokens already spent",
+			first, l.cfg.Budget.MaxIterations, saved.Usage.Total()), saved.Iterations)
+	}
+
+	// Final flush. It catches the exits that end a run without finishing an
+	// iteration — cancellation, an already-blown budget, a planner or judge
+	// error — so the spend they incurred is recorded. It is NOT the primary
+	// write: a deferred function does not run when the process is SIGKILLed,
+	// OOM-killed or loses power, and those are exactly the interruptions this
+	// mechanism exists to come back from. The durable record is written inside
+	// the loop, once per completed iteration.
+	complete := false
+	defer func() {
+		if err := l.saveState(g, complete); err != nil {
+			emit("State", fmt.Sprintf("persist failed: %v", err), l.iterations)
+		}
+	}()
+
+	for iter := first; iter <= l.cfg.Budget.MaxIterations; iter++ {
 		// Context cancellation.
 		if err := ctx.Err(); err != nil {
 			return Decision{}, err
@@ -165,6 +246,15 @@ func (l *Loop) Run(ctx context.Context, g Goal, onEvent func(Event)) (Decision, 
 		if err != nil {
 			emit("Judge", fmt.Sprintf("error: %v", err), iter)
 			return Decision{}, fmt.Errorf("judge error (iteration %d): %w", iter, err)
+		}
+
+		// The iteration is over, so commit it now rather than at return: a run
+		// killed outright between here and the next judgement still comes back
+		// having kept this iteration's progress and its spend.
+		complete = decision.Complete
+		l.persistedIter = iter
+		if err := l.saveState(g, complete); err != nil {
+			emit("State", fmt.Sprintf("persist failed: %v", err), iter)
 		}
 
 		if decision.Complete {

@@ -71,20 +71,28 @@ func TestEnsureTurnIDs_FillsEmptyTags(t *testing.T) {
 	assert.NotEmpty(t, ids.TurnID)
 }
 
-// TestFlushRunners_ClearsCache proves FlushRunners removes all cached runners.
-func TestFlushRunners_ClearsCache(t *testing.T) {
+// TestRunnerFor_ModelIDIsPartOfTheCacheKey replaces TestFlushRunners_ClearsCache,
+// which tested a method that has since been deleted for having nothing to evict.
+//
+// The property worth keeping is the one flushing was mistaken for a fix to: a
+// runner bakes in the compaction window resolved from the turn's model id, so
+// two ids reaching the same model POINTER must not share one. That is reachable
+// — a request naming a model the registry lacks leaves opts.Model nil and keeps
+// the requested id, landing on o.rawModel under a second name.
+func TestRunnerFor_ModelIDIsPartOfTheCacheKey(t *testing.T) {
 	fm := einollm.NewFakeModel([]string{"ok"}, nil)
 	o, err := New(Config{Model: fm})
 	require.NoError(t, err)
 
-	r1 := o.runnerFor(fm, false, "")
-	require.NotNil(t, r1)
+	same := o.runnerFor(fm, false, "alpha")
+	require.NotNil(t, same)
+	assert.Same(t, same, o.runnerFor(fm, false, "alpha"), "one key must memoise one runner")
 
-	o.FlushRunners()
-
-	r2 := o.runnerFor(fm, false, "")
-	require.NotNil(t, r2)
-	assert.NotSame(t, r1, r2, "FlushRunners cleared the cache")
+	other := o.runnerFor(fm, false, "beta")
+	require.NotNil(t, other)
+	assert.NotSame(t, same, other,
+		"a second model id reused the first one's runner, and with it the compaction "+
+			"window sized for the wrong provider")
 }
 
 // TestRunnerFor_BuildErrorReturnsNil proves that when adk.NewChatModelAgent fails, runnerFor returns nil.

@@ -146,26 +146,60 @@ func (c *CompactingModel) Stream(ctx context.Context, msgs []*schema.Message, op
 // summarization failed, or Plan pinned everything (no actual shrink). On a
 // summarization failure it returns the original input so the inner call
 // surfaces any real error.
+//
+// # The cooldown is armed on BOTH outcomes, and that is the fix for a retry storm
+//
+// It used to be armed only on success. In isolation that reads right — a
+// rejected compaction is one the context still needs — but this is the MID-TURN
+// path, and the ADK ReAct loop calls Generate on EVERY iteration with the full
+// accumulated history. An unarmed gate therefore re-attempted the identical
+// doomed compaction once per iteration, each attempt a paid summary model call
+// against a history that had not changed and against which nothing could
+// succeed that had not already failed. The failure was completely silent: no
+// error, no event, a correct final answer, and a provider bill proportional to
+// the length of the turn.
+//
+// Arming on failure does not strand an over-large context, because
+// shouldCompact checks HardForceFraction BEFORE the cooldown gate: at the
+// hard-force fraction the cooldown is overridden and compaction retries anyway.
+// The net effect is to rate-limit a failing retry to once per CooldownTokens of
+// growth instead of once per iteration.
+//
+// ⚠️ THAT ORDERING IS LOAD-BEARING, NOT INCIDENTAL. It is the only thing making
+// this safe, and it is exactly what the rule this replaced was protecting: a
+// context refused a retry keeps growing until the provider call does not fit.
+// Move the hard-force check below the cooldown gate, or let HardForceFraction
+// reach a production path as 0, and that failure returns — silently, since the
+// symptom is a context that quietly stops being compacted.
+// TestHardForceBypassesCooldown_SoArmingOnFailureIsSafe guards the coupling and
+// names it; read it before changing either gate.
 func (c *CompactingModel) maybeCompact(ctx context.Context, msgs []*schema.Message) ([]*schema.Message, bool) {
 	if !c.shouldCompact(msgs) {
 		return msgs, false
 	}
+	// Measured before the call and used for the cooldown on either outcome. On
+	// the success path this is exactly Result.TokensBefore, which ctxcompact.Run
+	// computes the same way from the same slice; taking it here means the
+	// failure path — where res may be nil — has a size to arm with too.
+	attempted := ctxcompact.EstimateTokens(msgs)
+
 	cb := compactCallback(ctx)
 	res, err := ctxcompact.Run(ctx, msgs,
 		ctxcompact.PlanOpts{KeepRecent: c.planKeepRecent()},
 		ctxcompact.RunOpts{ModelWindow: c.ContextWindow, ChunkThreshold: 0.9, Redactor: c.Redactor},
 		c.Inner, cb)
+
+	c.cmMu.Lock()
+	c.lastCompactTokens = attempted
+	c.didCompact = true
+	c.lastCompactAt = time.Now()
+	c.cmMu.Unlock()
+
 	if err != nil || res.TokensAfter >= res.TokensBefore {
 		// best-effort: forward the original history. If it's over-window, the
 		// real inner call surfaces the error rather than aborting mid-turn.
 		return msgs, false
 	}
-	// Update cooldown state after a successful compaction.
-	c.cmMu.Lock()
-	c.lastCompactTokens = res.TokensBefore
-	c.didCompact = true
-	c.lastCompactAt = time.Now()
-	c.cmMu.Unlock()
 	return res.Messages, true
 }
 

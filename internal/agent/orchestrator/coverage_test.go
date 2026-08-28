@@ -180,10 +180,6 @@ func TestExtractErrorResult_WithErrorField(t *testing.T) {
 	assert.Equal(t, "something broke", got)
 }
 
-// ---------------------------------------------------------------------------
-// env.go: probe helper returns "" for nonexistent commands
-// ---------------------------------------------------------------------------
-
-func TestProbe_Nonexistent(t *testing.T) {
-	assert.Equal(t, "", probe("nonexistent_cmd_xyz"))
-}
+// env.go's local `probe` — a copy of execprobe.Run with the timeout removed —
+// is gone, and with it TestProbe_Nonexistent. The behaviour it covered lives at
+// the one remaining implementation: execprobe.TestRun_NonexistentCommandReturnsEmpty.

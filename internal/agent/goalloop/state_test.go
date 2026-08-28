@@ -1,0 +1,606 @@
+package goalloop
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/x6nux/yanshi/internal/store"
+)
+
+// cancellingImplementer cancels the run's context once it has been called
+// after times, standing in for the interruption W-D-16 is about (Ctrl-C, a
+// crash, a machine reboot) at a point where the loop is mid-goal.
+type cancellingImplementer struct {
+	after  int
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (i *cancellingImplementer) Implement(context.Context, Plan, string) (string, error) {
+	i.calls++
+	if i.calls >= i.after {
+		i.cancel()
+	}
+	return "done", nil
+}
+
+// openStore opens a real SQLite store at path. Each call is a separate handle:
+// the resume tests depend on that, because a single handle would let the
+// assertions pass on nothing more durable than an in-process map.
+func openStore(t *testing.T, path string) *store.Store {
+	t.Helper()
+	st, err := store.Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
+
+// firstIteration returns an onEvent callback recording the iteration number of
+// the first non-"State" event, i.e. where the loop actually resumed work.
+func firstIteration(out *int) func(Event) {
+	*out = 0
+	return func(e Event) {
+		if e.Phase != "State" && *out == 0 {
+			*out = e.Iteration
+		}
+	}
+}
+
+// readGoalState decodes the persisted row for goal through st. It is what the
+// "stored in SQLite" half of the acceptance is checked against, and it is
+// deliberately read through a handle the writing Loop never held.
+func readGoalState(t *testing.T, st *store.Store, goal Goal) goalState {
+	t.Helper()
+	blob, ok, err := st.KVGet(goalStateKey(goal.Workdir))
+	require.NoError(t, err)
+	require.True(t, ok, "goal state must be in SQLite, readable by another handle")
+	var s goalState
+	require.NoError(t, json.Unmarshal([]byte(blob), &s))
+	return s
+}
+
+// budgetLoop builds a Loop that bills perIteration tokens per cycle and never
+// passes evaluation, so it runs until one of the two budgets stops it.
+func budgetLoop(budget Budget, explicit BudgetSet, sink *UsageSink, st StateStore, perIteration int) *Loop {
+	return New(Config{
+		Planner:        &chargingPlanner{sink: sink, perCall: Usage{TotalTokens: perIteration}},
+		Implementer:    &FakeImplementer{Result: "done"},
+		Evaluators:     []Evaluator{&CounterEvaluator{passAt: 100}},
+		Judge:          AggregateJudge{},
+		Budget:         budget,
+		Sink:           sink,
+		State:          st,
+		BudgetExplicit: explicit,
+	})
+}
+
+// seedTokenExhaustedRun runs a goal until its token budget stops it, leaving a
+// real persisted row behind with iterations still unspent. Resume tests build
+// on this rather than hand-writing state, so they exercise the writer too.
+// It returns the terminal Decision and the state as read back from the file,
+// deliberately not Loop.Iterations(): the run stops part-way through an
+// iteration, and only the ones that finished may count towards the resume
+// point. Every caller below builds its expectations on the durable number for
+// that reason.
+func seedTokenExhaustedRun(t *testing.T, dbPath string, goal Goal, budget Budget, perIteration int) (Decision, goalState) {
+	t.Helper()
+	l := budgetLoop(budget, BudgetSet{}, &UsageSink{}, openStore(t, dbPath), perIteration)
+	d, err := l.Run(context.Background(), goal, nil)
+	require.NoError(t, err)
+	require.Equal(t, StopReasonTokenBudget, d.StopReason)
+
+	saved := readGoalState(t, openStore(t, dbPath), goal)
+	require.Positive(t, saved.Iterations, "at least one iteration must have been committed")
+	require.Less(t, saved.Iterations, l.Iterations(),
+		"the fixture must stop mid-iteration, so the aborted one is not counted")
+	require.Less(t, saved.Iterations, budget.MaxIterations, "iterations must still be available")
+	return d, saved
+}
+
+// TestGoalLoop_ResumesAfterRestart is the acceptance for W-D-16: the
+// objective and BOTH budgets live in SQLite, and a restarted process picks the
+// run up where it stopped instead of replaying it from iteration 1 with a
+// fresh budget.
+//
+// Both budgets are asserted separately because they fail differently. A reset
+// iteration count is visible in the terminal — the run obviously starts over.
+// A reset token count is not: the loop keeps going and simply costs twice as
+// much, which is why the subtest below asserts the resumed run does no work at
+// all rather than merely that a counter is right.
+func TestGoalLoop_ResumesAfterRestart(t *testing.T) {
+	t.Parallel()
+
+	const (
+		perIteration = 100
+		maxIters     = 6
+		stopAfter    = 3
+	)
+
+	t.Run("iteration budget is not reset", func(t *testing.T) {
+		t.Parallel()
+		dbPath := filepath.Join(t.TempDir(), "iters.db")
+		goal := Goal{Text: "make the parser accept trailing commas", Workdir: "/repo/parser"}
+		budget := Budget{MaxIterations: maxIters} // MaxTokens 0: token budget off
+
+		// --- first process: interrupted after stopAfter iterations ---
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		sink1 := &UsageSink{}
+		impl := &cancellingImplementer{after: stopAfter, cancel: cancel}
+		loop1 := New(Config{
+			Planner:     &chargingPlanner{sink: sink1, perCall: Usage{TotalTokens: perIteration}},
+			Implementer: impl,
+			Evaluators:  []Evaluator{&CounterEvaluator{passAt: 100}},
+			Judge:       AggregateJudge{},
+			Budget:      budget,
+			Sink:        sink1,
+			State:       openStore(t, dbPath),
+		})
+		_, err := loop1.Run(ctx, goal, nil)
+		require.ErrorIs(t, err, context.Canceled, "fixture must stop mid-goal, not run to exhaustion")
+		require.Equal(t, stopAfter, loop1.Iterations())
+
+		// --- restart: a brand new Loop over a second handle on the same file ---
+		sink2 := &UsageSink{}
+		loop2 := New(Config{
+			Planner:     &chargingPlanner{sink: sink2, perCall: Usage{TotalTokens: perIteration}},
+			Implementer: &FakeImplementer{Result: "done"},
+			Evaluators:  []Evaluator{&CounterEvaluator{passAt: 100}},
+			Judge:       AggregateJudge{},
+			Budget:      budget,
+			Sink:        sink2,
+			State:       openStore(t, dbPath),
+		})
+		var resumedAt int
+		decision, err := loop2.Run(context.Background(), goal, firstIteration(&resumedAt))
+		require.NoError(t, err)
+
+		// chargingPlanner bills the sink once per iteration, so the spend added
+		// after the restart is also the count of iterations it was allowed.
+		assert.Equal(t, stopAfter+1, resumedAt, "must resume at N+1, not replay from 1")
+		assert.Equal(t, (maxIters-stopAfter)*perIteration,
+			sink2.Snapshot().Total()-stopAfter*perIteration,
+			"only the iterations left in the budget may run")
+		assert.Equal(t, maxIters, loop2.Iterations())
+		assert.False(t, decision.Complete)
+		assert.Equal(t, maxIters*perIteration, decision.Usage.Total(),
+			"spend from before the restart must be carried forward, not dropped")
+	})
+
+	t.Run("token budget is not reset", func(t *testing.T) {
+		t.Parallel()
+		dbPath := filepath.Join(t.TempDir(), "tokens.db")
+		goal := Goal{Text: "port the exporter to the new API", Workdir: "/repo/exporter"}
+		// Tight enough that stopAfter iterations of planning overshoot it, so
+		// the first process stops on tokens with iterations still to spare.
+		budget := Budget{MaxIterations: maxIters, MaxTokens: stopAfter*perIteration - 50}
+
+		decision1, saved1 := seedTokenExhaustedRun(t, dbPath, goal, budget, perIteration)
+
+		// The persisted row is the contract: objective plus BOTH budget fields.
+		st2 := openStore(t, dbPath)
+		persisted := readGoalState(t, st2, goal)
+		assert.Equal(t, goal.Text, persisted.Objective)
+		assert.Equal(t, budget, persisted.Budget, "both limits must be stored, not just the one that bit")
+		assert.Equal(t, decision1.Usage.Total(), persisted.Usage.Total())
+
+		// --- restart, with the roomy budget a config default would supply ---
+		// This is the realistic shape of the bug: nobody re-types the tight
+		// budget after a crash, so a resumed run that honoured the caller's
+		// budget would hand itself a brand new one. Nothing is explicit here,
+		// so the persisted budget must survive intact.
+		sink2 := &UsageSink{}
+		loop2 := budgetLoop(Budget{MaxIterations: 99, MaxTokens: 99999}, BudgetSet{}, sink2, st2, perIteration)
+		var ranAt int
+		var announced bool
+		record := firstIteration(&ranAt)
+		decision2, err := loop2.Run(context.Background(), goal, func(e Event) {
+			record(e)
+			if e.Phase == "State" && strings.Contains(e.Detail, "persisted budget") {
+				announced = true
+			}
+		})
+		require.NoError(t, err)
+		assert.True(t, announced, "a budget override must be reported, not applied in silence")
+		assert.Equal(t, budget, readGoalState(t, st2, goal).Budget,
+			"an unset flag must not overwrite the stored budget with a config default")
+
+		assert.Equal(t, StopReasonTokenBudget, decision2.StopReason,
+			"the spent tokens must still be spent after a restart")
+		// Comparing token totals is NOT enough here, and the probe proved it:
+		// an unseeded sink spends the same total again from zero and lands on
+		// the same number. What separates the two is that a resumed run must
+		// buy nothing at all — no phase runs, and the iteration count does not
+		// move — because the budget was already gone before it started.
+		assert.Zero(t, ranAt, "an exhausted token budget must buy zero further phases")
+		assert.Equal(t, saved1.Iterations, loop2.Iterations(),
+			"an exhausted token budget must buy zero further iterations")
+	})
+
+	// An operator who types a new limit must get it. The persisted budget only
+	// outranks values nobody chose — otherwise raising a budget after a crash
+	// would mean editing a flag, seeing nothing happen, and having to dig the
+	// old number out of SQLite.
+	t.Run("an explicit flag beats the persisted budget", func(t *testing.T) {
+		t.Parallel()
+		dbPath := filepath.Join(t.TempDir(), "explicit.db")
+		goal := Goal{Text: "widen the retry window", Workdir: "/repo/retry"}
+		budget := Budget{MaxIterations: maxIters, MaxTokens: stopAfter*perIteration - 50}
+
+		decision1, saved1 := seedTokenExhaustedRun(t, dbPath, goal, budget, perIteration)
+		spent := decision1.Usage.Total()
+		left := maxIters - saved1.Iterations
+		require.Positive(t, left)
+
+		// Only -max-tokens is typed. -max-iters is not, so it must still come
+		// from the store even though the caller's struct carries a value for it.
+		raised := Budget{MaxIterations: 99, MaxTokens: spent + left*perIteration}
+		st2 := openStore(t, dbPath)
+		sink2 := &UsageSink{}
+		loop2 := budgetLoop(raised, BudgetSet{MaxTokens: true}, sink2, st2, perIteration)
+		var ranAt int
+		var notes []string
+		record := firstIteration(&ranAt)
+		decision2, err := loop2.Run(context.Background(), goal, func(e Event) {
+			record(e)
+			stateEvents(&notes)(e)
+		})
+		require.NoError(t, err)
+
+		// This is the MIXED case — the flag won MaxTokens, the store won
+		// MaxIterations — so both halves have to be reported. Announcing only
+		// the first leaves the operator's untouched limit coming from a source
+		// they were never told about, which is the situation they are least
+		// likely to guess.
+		joined := strings.Join(notes, "\n")
+		assert.Contains(t, joined, "explicit budget", "the flag's win must be reported")
+		assert.Contains(t, joined, "persisted budget", "and so must the store's, in the same run")
+		assert.Equal(t, saved1.Iterations+1, ranAt, "the raised budget buys work, from the resume point")
+		assert.Equal(t, maxIters, loop2.Iterations(),
+			"MaxIterations was not typed, so it must still come from the store, not the caller's 99")
+		assert.NotEqual(t, StopReasonTokenBudget, decision2.StopReason)
+
+		after := readGoalState(t, st2, goal)
+		assert.Equal(t, raised.MaxTokens, after.Budget.MaxTokens,
+			"a typed limit becomes the new persisted fact")
+		assert.Equal(t, budget.MaxIterations, after.Budget.MaxIterations,
+			"an untyped limit must not be overwritten by the caller's value")
+	})
+
+	// Lowering a limit below what the run already spent is defined behaviour,
+	// not an error: the run is simply over budget on the new ceiling and stops
+	// through the paths that already exist.
+	t.Run("an explicit limit below the spend ends the run", func(t *testing.T) {
+		t.Parallel()
+		goal := Goal{Text: "shrink the image", Workdir: "/repo/image"}
+		budget := Budget{MaxIterations: maxIters, MaxTokens: stopAfter*perIteration - 50}
+
+		t.Run("tokens", func(t *testing.T) {
+			t.Parallel()
+			dbPath := filepath.Join(t.TempDir(), "lowtokens.db")
+			decision1, saved1 := seedTokenExhaustedRun(t, dbPath, goal, budget, perIteration)
+			lowered := Budget{MaxIterations: maxIters, MaxTokens: decision1.Usage.Total() - 1}
+
+			st2 := openStore(t, dbPath)
+			loop2 := budgetLoop(lowered, BudgetSet{MaxTokens: true}, &UsageSink{}, st2, perIteration)
+			var ranAt int
+			decision2, err := loop2.Run(context.Background(), goal, firstIteration(&ranAt))
+			require.NoError(t, err)
+			assert.Equal(t, StopReasonTokenBudget, decision2.StopReason)
+			assert.Zero(t, ranAt, "no phase may run once the new ceiling is already breached")
+			assert.Equal(t, saved1.Iterations, loop2.Iterations())
+
+			// A run that stops before doing anything still takes the final
+			// flush on the way out, and that flush writes the position back.
+			// If it wrote a position this run never established, stopping
+			// early would quietly destroy the progress it had just loaded —
+			// and the next restart would replay the whole goal.
+			assert.Equal(t, saved1.Iterations, readGoalState(t, st2, goal).Iterations,
+				"stopping immediately must not overwrite the resume point with zero")
+		})
+
+		t.Run("iterations", func(t *testing.T) {
+			t.Parallel()
+			dbPath := filepath.Join(t.TempDir(), "lowiters.db")
+			_, saved1 := seedTokenExhaustedRun(t, dbPath, goal, budget, perIteration)
+			// One fewer iteration than already committed, and enough tokens that
+			// only the iteration limit can be what stops it.
+			lowered := Budget{MaxIterations: saved1.Iterations - 1, MaxTokens: 99999}
+
+			loop2 := budgetLoop(lowered, BudgetSet{MaxIterations: true, MaxTokens: true},
+				&UsageSink{}, openStore(t, dbPath), perIteration)
+			var ranAt int
+			decision2, err := loop2.Run(context.Background(), goal, firstIteration(&ranAt))
+			require.NoError(t, err)
+			// The exhaustion path, not the token path. StopReason itself is not
+			// asserted directly: the default tier turns max_iterations into
+			// escalate, which is pre-existing behaviour this test is not about.
+			assert.Contains(t, decision2.Summary, "max iterations")
+			assert.NotEqual(t, StopReasonTokenBudget, decision2.StopReason)
+			assert.Zero(t, ranAt, "the resume point is past the new limit, so nothing runs")
+			assert.False(t, decision2.Complete)
+		})
+	})
+
+	t.Run("a finished goal starts over", func(t *testing.T) {
+		t.Parallel()
+		dbPath := filepath.Join(t.TempDir(), "done.db")
+		goal := Goal{Text: "add the flag", Workdir: "/repo/flag"}
+		budget := Budget{MaxIterations: 2}
+
+		run := func(st StateStore) (*Loop, Decision, int) {
+			l := New(Config{
+				Planner:     FakePlanner{Steps: []string{"s1"}},
+				Implementer: &FakeImplementer{Result: "done"},
+				Evaluators:  []Evaluator{&CounterEvaluator{passAt: 1}},
+				Judge:       AggregateJudge{},
+				Budget:      budget,
+				Sink:        &UsageSink{},
+				State:       st,
+			})
+			var at int
+			d, err := l.Run(context.Background(), goal, firstIteration(&at))
+			require.NoError(t, err)
+			return l, d, at
+		}
+
+		_, d1, _ := run(openStore(t, dbPath))
+		require.True(t, d1.Complete)
+
+		// Without the Complete flag the second run would load Iterations == 1
+		// and start at 2 — or, once the budget is used up, refuse to run at all.
+		_, d2, at := run(openStore(t, dbPath))
+		assert.True(t, d2.Complete)
+		assert.Equal(t, 1, at, "a completed goal is not resumable; it starts fresh")
+	})
+
+	t.Run("a different objective in the same workdir starts over", func(t *testing.T) {
+		t.Parallel()
+		dbPath := filepath.Join(t.TempDir(), "other.db")
+		workdir := "/repo/shared"
+		budget := Budget{MaxIterations: 3}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		loop1 := New(Config{
+			Planner:     FakePlanner{Steps: []string{"s1"}},
+			Implementer: &cancellingImplementer{after: 1, cancel: cancel},
+			Evaluators:  []Evaluator{&CounterEvaluator{passAt: 100}},
+			Judge:       AggregateJudge{},
+			Budget:      budget,
+			Sink:        &UsageSink{},
+			State:       openStore(t, dbPath),
+		})
+		_, err := loop1.Run(ctx, Goal{Text: "first goal", Workdir: workdir}, nil)
+		require.ErrorIs(t, err, context.Canceled)
+
+		loop2 := New(Config{
+			Planner:     FakePlanner{Steps: []string{"s1"}},
+			Implementer: &FakeImplementer{Result: "done"},
+			Evaluators:  []Evaluator{&CounterEvaluator{passAt: 1}},
+			Judge:       AggregateJudge{},
+			Budget:      budget,
+			Sink:        &UsageSink{},
+			State:       openStore(t, dbPath),
+		})
+		var at int
+		_, err = loop2.Run(context.Background(), Goal{Text: "second goal", Workdir: workdir}, firstIteration(&at))
+		require.NoError(t, err)
+		assert.Equal(t, 1, at, "a new objective must not inherit the old run's position")
+	})
+}
+
+// TestGoalLoop_NoStateStoreIsUnchanged pins the zero-value contract: a Config
+// without a StateStore must behave exactly as it did before resume existed.
+// Persistence that turns itself on by default would silently truncate runs
+// whose state happens to be lying around.
+func TestGoalLoop_NoStateStoreIsUnchanged(t *testing.T) {
+	t.Parallel()
+	loop := New(Config{
+		Planner:     FakePlanner{Steps: []string{"s1"}},
+		Implementer: &FakeImplementer{Result: "done"},
+		Evaluators:  []Evaluator{&CounterEvaluator{passAt: 100}},
+		Judge:       AggregateJudge{},
+		Budget:      Budget{MaxIterations: 2},
+	})
+	var at int
+	decision, err := loop.Run(context.Background(), Goal{Text: "x"}, firstIteration(&at))
+	require.NoError(t, err)
+	assert.Equal(t, 1, at)
+	assert.Equal(t, 2, loop.Iterations())
+	assert.False(t, decision.Complete)
+}
+
+// implementerFunc adapts a function to Implementer, for fixtures that need to
+// observe the world from inside an iteration.
+type implementerFunc func(context.Context, Plan, string) (string, error)
+
+func (f implementerFunc) Implement(ctx context.Context, p Plan, wd string) (string, error) {
+	return f(ctx, p, wd)
+}
+
+// mapStateStore is an in-memory StateStore that can be made to fail. It is
+// what the StateStore port's "goalloop stays testable without SQLite"
+// justification is worth in practice — without a test that uses one, that
+// reasoning has no reader — and it reaches the two error paths a real store
+// will not produce on demand.
+type mapStateStore struct {
+	rows   map[string]string
+	getErr error
+	setErr error
+	writes int
+}
+
+func newMapStateStore() *mapStateStore { return &mapStateStore{rows: map[string]string{}} }
+
+func (m *mapStateStore) KVGet(key string) (string, bool, error) {
+	if m.getErr != nil {
+		return "", false, m.getErr
+	}
+	v, ok := m.rows[key]
+	return v, ok, nil
+}
+
+func (m *mapStateStore) KVSet(key, value string) error {
+	if m.setErr != nil {
+		return m.setErr
+	}
+	m.writes++
+	m.rows[key] = value
+	return nil
+}
+
+// stateEvents collects the detail of every "State" event.
+func stateEvents(out *[]string) func(Event) {
+	return func(e Event) {
+		if e.Phase == "State" {
+			*out = append(*out, e.Detail)
+		}
+	}
+}
+
+// TestGoalLoop_CommitsEachIterationBeforeExit is the SIGKILL case. A deferred
+// flush covers only the polite exits; a process that is killed outright, runs
+// out of memory or loses power runs no Go code at all, and coming back from
+// exactly that is what this feature is for.
+//
+// It is checked from inside the run rather than after it: the state is read
+// through a second handle partway through iteration 3, at a point no deferred
+// function has executed. Whatever is readable there is what a SIGKILL would
+// have left behind.
+func TestGoalLoop_CommitsEachIterationBeforeExit(t *testing.T) {
+	t.Parallel()
+	dbPath := filepath.Join(t.TempDir(), "midrun.db")
+	goal := Goal{Text: "commit as you go", Workdir: "/repo/midrun"}
+	reader := openStore(t, dbPath)
+
+	const observeAt = 3
+	var seenAt3 goalState
+	var calls int
+	loop := New(Config{
+		Planner: FakePlanner{Steps: []string{"s1"}},
+		Implementer: implementerFunc(func(context.Context, Plan, string) (string, error) {
+			calls++
+			if calls == observeAt {
+				seenAt3 = readGoalState(t, reader, goal)
+			}
+			return "done", nil
+		}),
+		Evaluators: []Evaluator{&CounterEvaluator{passAt: 100}},
+		Judge:      AggregateJudge{},
+		Budget:     Budget{MaxIterations: 5},
+		Sink:       &UsageSink{},
+		State:      openStore(t, dbPath),
+	})
+	_, err := loop.Run(context.Background(), goal, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, observeAt-1, seenAt3.Iterations,
+		"the finished iterations must already be on disk while the run is still going")
+	assert.Equal(t, goal.Text, seenAt3.Objective)
+	assert.False(t, seenAt3.Complete)
+}
+
+// TestGoalLoop_UnreadableStateStartsOver covers the recovery paths: a corrupt
+// row and a store that cannot be read are both reasons to lose the resume
+// point, never reasons to refuse to run the goal.
+func TestGoalLoop_UnreadableStateStartsOver(t *testing.T) {
+	t.Parallel()
+	goal := Goal{Text: "recover", Workdir: "/repo/recover"}
+
+	run := func(t *testing.T, st *mapStateStore) (int, []string) {
+		t.Helper()
+		loop := budgetLoop(Budget{MaxIterations: 2}, BudgetSet{}, &UsageSink{}, st, 10)
+		var at int
+		var notes []string
+		record := firstIteration(&at)
+		_, err := loop.Run(context.Background(), goal, func(e Event) {
+			record(e)
+			stateEvents(&notes)(e)
+		})
+		require.NoError(t, err, "a broken state store must not fail the run")
+		return at, notes
+	}
+
+	t.Run("corrupt row", func(t *testing.T) {
+		t.Parallel()
+		st := newMapStateStore()
+		st.rows[goalStateKey(goal.Workdir)] = "{not json"
+		at, notes := run(t, st)
+		assert.Equal(t, 1, at, "an undecodable row means start over, not stop")
+		assert.Contains(t, strings.Join(notes, "\n"), "unreadable",
+			"losing a resume point must be said out loud")
+		assert.Positive(t, st.writes, "and the run must go on to overwrite it")
+	})
+
+	t.Run("unreadable store", func(t *testing.T) {
+		t.Parallel()
+		st := newMapStateStore()
+		st.getErr = errors.New("disk on fire")
+		at, notes := run(t, st)
+		assert.Equal(t, 1, at)
+		assert.Contains(t, strings.Join(notes, "\n"), "disk on fire")
+	})
+
+	t.Run("unwritable store", func(t *testing.T) {
+		t.Parallel()
+		st := newMapStateStore()
+		st.setErr = errors.New("read-only filesystem")
+		at, notes := run(t, st)
+		assert.Equal(t, 1, at, "a run that cannot save its position still has to do the work")
+		assert.Contains(t, strings.Join(notes, "\n"), "persist failed")
+	})
+}
+
+// TestGoalLoop_ExplicitZeroTokenBudgetLiftsTheResumedLimit is the end-to-end
+// half of why BudgetSet exists at all. `-max-tokens 0` means "no limit this
+// run", and it is the case any value-based guess gets wrong, because 0 is also
+// the flag's default. The flag-level check lives in cmd/yanshi; this one
+// proves the instruction survives all the way to a resumed run.
+func TestGoalLoop_ExplicitZeroTokenBudgetLiftsTheResumedLimit(t *testing.T) {
+	t.Parallel()
+	dbPath := filepath.Join(t.TempDir(), "zero.db")
+	goal := Goal{Text: "unbounded now", Workdir: "/repo/zero"}
+	budget := Budget{MaxIterations: 6, MaxTokens: 250}
+
+	_, saved := seedTokenExhaustedRun(t, dbPath, goal, budget, 100)
+
+	st2 := openStore(t, dbPath)
+	loop2 := budgetLoop(Budget{MaxIterations: 6, MaxTokens: 0}, BudgetSet{MaxTokens: true},
+		&UsageSink{}, st2, 100)
+	var ranAt int
+	decision, err := loop2.Run(context.Background(), goal, firstIteration(&ranAt))
+	require.NoError(t, err)
+
+	assert.Equal(t, saved.Iterations+1, ranAt, "an explicit 0 must lift the limit, not reinstate it")
+	assert.Equal(t, 6, loop2.Iterations(), "the run continues to the iteration budget instead")
+	assert.NotEqual(t, StopReasonTokenBudget, decision.StopReason)
+	assert.Zero(t, readGoalState(t, st2, goal).Budget.MaxTokens,
+		"and 0 becomes the new persisted limit")
+}
+
+// TestResetGoalState covers the supported escape hatch from a resumed budget.
+func TestResetGoalState(t *testing.T) {
+	t.Parallel()
+	dbPath := filepath.Join(t.TempDir(), "reset.db")
+	goal := Goal{Text: "start me over", Workdir: "/repo/reset"}
+	budget := Budget{MaxIterations: 6, MaxTokens: 250}
+
+	seedTokenExhaustedRun(t, dbPath, goal, budget, 100)
+
+	st2 := openStore(t, dbPath)
+	require.NoError(t, ResetGoalState(st2, goal.Workdir))
+
+	loop2 := budgetLoop(budget, BudgetSet{}, &UsageSink{}, st2, 100)
+	var ranAt int
+	_, err := loop2.Run(context.Background(), goal, firstIteration(&ranAt))
+	require.NoError(t, err)
+	assert.Equal(t, 1, ranAt, "after a reset the goal starts from the top with its full budget")
+}

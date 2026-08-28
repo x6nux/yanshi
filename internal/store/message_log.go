@@ -148,10 +148,34 @@ func (s *Store) AppendMessages(sessionID string, msgs []Message) (inserted int, 
 	}
 	batch := make([]Message, len(msgs))
 	copy(batch, msgs)
+	// REDACT BEFORE DERIVING KEYS, so a key is a function of the text that is
+	// actually stored. Deriving from the raw text and storing the redacted text
+	// makes the key permanently unreachable from the row: a reconnect rebuilds
+	// the live window FROM the redacted rows, the next flush hashes that
+	// redacted text, nothing matches, and the whole window is inserted again.
+	// Measured on a session with a registered secret: the log grew by one copy
+	// of every message on each reconnect, 2 to 3 to 4 to 5, with no bound.
+	//
+	// Redaction is idempotent and is a no-op when no redactor is injected, so
+	// this changes nothing for sessions that never carried a secret. For one
+	// that did, the first flush after the upgrade re-inserts the window once —
+	// the same one-off it was already paying every reconnect — and is stable
+	// from then on.
+	for i := range batch {
+		batch[i].Content = s.redact(batch[i].Content)
+		batch[i].ToolArgs = s.redact(batch[i].ToolArgs)
+	}
 	AssignDedupKeys(batch)
 
 	now := time.Now().Unix()
 	err = s.WriteTx(context.Background(), func(tx *sql.Tx) error {
+		// A COMPRESSED SESSION IS THAWED FIRST, in this transaction, before the
+		// watermark is read. Reading MAX(seq) over the empty table a compression
+		// leaves behind restarts seq at 0 on top of the archived rows; see
+		// thawColdSessionTx for the whole failure.
+		if e := thawColdSessionTx(tx, sessionID); e != nil {
+			return e
+		}
 		var maxSeq sql.NullInt64
 		if e := tx.QueryRow(
 			"SELECT MAX(seq) FROM messages WHERE session_id = ?", sessionID,
@@ -168,8 +192,8 @@ func (s *Store) AppendMessages(sessionID string, msgs []Message) (inserted int, 
 				   (id, session_id, seq, role, content, tool_call_id, tool_name, tool_args, dedup_key, created_at)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				 ON CONFLICT(session_id, dedup_key) WHERE dedup_key <> '' DO NOTHING`,
-				newID(), sessionID, seq, m.Role, s.redact(m.Content),
-				m.ToolCallID, m.ToolName, s.redact(m.ToolArgs), m.DedupKey, now,
+				newID(), sessionID, seq, m.Role, m.Content,
+				m.ToolCallID, m.ToolName, m.ToolArgs, m.DedupKey, now,
 			)
 			if e != nil {
 				return fmt.Errorf("store: append message seq=%d: %w", seq, e)
@@ -287,37 +311,59 @@ type MessageSearchHit struct {
 	Snippet string
 }
 
-// SearchMessages runs an FTS5 query over a session's durable log.
+// SearchMessages runs an FTS5 query over the durable log.
 //
-// Scoped to one session on purpose: cross-session recall is a different
-// capability with a different authorisation question (whose conversation is
-// this?), and silently widening a search tool to every conversation on the box
-// is not a default anyone asked for. An empty sessionID is an error rather than
-// a wildcard for the same reason.
+// sessionID scopes the search to one conversation. An EMPTY sessionID means
+// "every conversation in this store" rather than an error — this is what makes
+// "how did we fix that bug last week" answerable at all, since the caller
+// asking that question does not know, and should not have to know, which past
+// session the fix lives in.
+//
+// Scoping remains the DEFAULT for the model-facing path: history_search sends
+// an empty id only when its caller sets all_sessions, and it never accepts a
+// session id as an argument. The distinction that matters is targeting, not
+// breadth — a model must not be able to read one specific session it was never
+// attached to by guessing its id, and a global switch cannot express that.
+//
+// The search does NOT skip messages a compaction has since hidden from any
+// live context window (see ProjectWindow). That is deliberate, not an
+// oversight: the entire point of cross-session recall is finding text that
+// compaction summarised away, so filtering by what is currently "visible"
+// would make the feature unable to do the one thing it exists for.
 //
 // Both the prose (content) and the tool arguments (tool_args) are indexed, so
 // "the command that failed" is findable by the path it touched and not only by
 // the words in the error.
+//
+// Ranking is relevance first (FTS5's bm25-derived rank), recency second: rows
+// tied on rank are ordered by created_at DESC, then by seq DESC as a final,
+// deterministic tiebreak for rows that share a created_at second (Unix()
+// resolution is one second, and a batch append can write many rows in one).
+// A weighted blend of the two signals was considered and rejected — there is
+// no calibration data to derive weights from, and two-level ordering is the
+// simplest shape that is still fully explainable.
 func (s *Store) SearchMessages(sessionID, query string, limit int) ([]MessageSearchHit, error) {
-	if sessionID == "" {
-		return nil, fmt.Errorf("store: search messages: empty session id")
-	}
 	if strings.TrimSpace(query) == "" {
 		return nil, fmt.Errorf("store: search messages: empty query")
 	}
 	if hasCJK(query) {
 		return s.searchMessagesCJK(sessionID, query, limit)
 	}
-	rows, err := s.DB.Query(
-		`SELECT `+prefixed(messageColumns, "m.")+`,
-		        snippet(messages_fts, -1, '«', '»', ' … ', 24)
-		 FROM messages_fts f
-		 JOIN messages m ON m.rowid = f.rowid
-		 WHERE messages_fts MATCH ? AND m.session_id = ?
-		 ORDER BY rank
-		 LIMIT ?`,
-		query, sessionID, clampLimit(limit),
-	)
+	var q strings.Builder
+	q.WriteString(`SELECT ` + prefixed(messageColumns, "m.") + `,
+	        snippet(messages_fts, -1, '«', '»', ' … ', 24)
+	 FROM messages_fts f
+	 JOIN messages m ON m.rowid = f.rowid
+	 WHERE messages_fts MATCH ?`)
+	args := []any{query}
+	if sessionID != "" {
+		q.WriteString(" AND m.session_id = ?")
+		args = append(args, sessionID)
+	}
+	q.WriteString(" ORDER BY rank, m.created_at DESC, m.seq DESC LIMIT ?")
+	args = append(args, clampLimit(limit))
+
+	rows, err := s.DB.Query(q.String(), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -349,10 +395,11 @@ func (s *Store) SearchMessages(sessionID, query string, limit int) ([]MessageSea
 // reversible, and zero-impact on the English path — English queries never
 // reach this function (see hasCJK).
 //
-// The cost is explicit: no bm25 ranking, so results are ordered by seq
-// descending (newest first); no FTS5 snippet(), so cjkSnippet builds one by
-// hand. Both beat the status quo of zero hits. maxCJKFallbackRows bounds the
-// scan on top of ORDER BY, because LIKE '%…%' is a full table scan.
+// The cost is explicit: no bm25 ranking, so results are ordered by recency
+// (newest first — see the sessionID paragraph below for the exact columns);
+// no FTS5 snippet(), so cjkSnippet builds one by hand. Both beat the status
+// quo of zero hits. maxCJKFallbackRows bounds the scan on top of ORDER BY,
+// because LIKE '%…%' is a full table scan.
 //
 // query is FTS5 MATCH syntax, same as the non-CJK path — history_search's own
 // error message tells the model to "use double quotes for phrases, OR / NOT
@@ -360,6 +407,16 @@ func (s *Store) SearchMessages(sessionID, query string, limit int) ([]MessageSea
 // OR'd exactly like memory_autorecall's. parseFTSTerms recovers the terms and
 // likeAnyTermClause matches a row if any of them is found in either column,
 // which is the LIKE-side equivalent of MATCH's OR.
+//
+// sessionID is optional here for the same reason it is optional in
+// SearchMessages: an empty value means "every session", which this path must
+// honour rather than silently staying single-session, or a Chinese
+// cross-session query would return zero hits while its English sibling
+// worked. Ordering is by created_at DESC (this path has no bm25 rank to sort
+// by first) with seq DESC as a tiebreak for rows sharing a created_at second;
+// within one session that reproduces the plain seq-DESC order this path used
+// before cross-session search existed, since seq only ever increases with
+// created_at.
 func (s *Store) searchMessagesCJK(sessionID, query string, limit int) ([]MessageSearchHit, error) {
 	terms := parseFTSTerms(query)
 	clause, args := likeAnyTermClause([]string{"m.content", "m.tool_args"}, terms)
@@ -367,17 +424,19 @@ func (s *Store) searchMessagesCJK(sessionID, query string, limit int) ([]Message
 	if n > maxCJKFallbackRows {
 		n = maxCJKFallbackRows
 	}
-	all := append([]any{sessionID}, args...)
+	var q strings.Builder
+	q.WriteString(`SELECT ` + prefixed(messageColumns, "m.") + `
+	 FROM messages m
+	 WHERE (` + clause + `)`)
+	all := args
+	if sessionID != "" {
+		q.WriteString(" AND m.session_id = ?")
+		all = append(all, sessionID)
+	}
+	q.WriteString(" ORDER BY m.created_at DESC, m.seq DESC LIMIT ?")
 	all = append(all, n)
-	rows, err := s.DB.Query(
-		`SELECT `+prefixed(messageColumns, "m.")+`
-		 FROM messages m
-		 WHERE m.session_id = ?
-		   AND (`+clause+`)
-		 ORDER BY m.seq DESC
-		 LIMIT ?`,
-		all...,
-	)
+
+	rows, err := s.DB.Query(q.String(), all...)
 	if err != nil {
 		return nil, err
 	}

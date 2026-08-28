@@ -82,6 +82,7 @@ Usage:
   yanshi acp     [-config config.yaml] [-fake-model]
   yanshi doctor [-config FILE] [-json] [-release] [-fix] [-fix-only LIST] [-fix-dry-run]
   yanshi pr      <PR-number> | <full-URL>
+  yanshi enqueue [-config FILE] <session-id> <message...> | -list <session-id>
   yanshi auth    status|logout|device [-provider NAME] [-account NAME]
   yanshi auth    mcp-login <server> | mcp-logout <server>
 
@@ -145,6 +146,11 @@ Subcommands:
            never deletes a database.
   pr       Fetch a GitHub pull request into the session as context. Takes a
            PR number (run from the repo directory) or a full URL (any repo).
+  enqueue  Queue a user message for a session, connected or not. It is stored
+           in the project database and delivered, in enqueue order, the next
+           time that session is resumed by a headless run ("exec -resume" or
+           "chat --no-tui -resume"); the interactive TUI has no -resume flag.
+           -list shows what is waiting without consuming it.
   auth     Manage authenticated sessions: RFC 8628 device flow (status /
            logout / device) and MCP OAuth (mcp-login / mcp-logout, the
            authorization_code + PKCE flow for an enterprise MCP server; the

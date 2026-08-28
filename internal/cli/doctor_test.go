@@ -639,3 +639,67 @@ func TestDoctorSurvivesAnIncompleteEnvironment(t *testing.T) {
 		}
 	}
 }
+
+// writeCorruptDB writes a file SQLite refuses to open (SQLITE_NOTADB: the
+// header is not SQLite's). Measured shapes that do NOT work: an empty file
+// opens as a fresh database, and a real database with its tail overwritten
+// opens and serves reads normally.
+func writeCorruptDB(t *testing.T, path string) []byte {
+	t.Helper()
+	junk := make([]byte, 8192)
+	for i := range junk {
+		junk[i] = byte(i*31 + 7)
+	}
+	if err := os.WriteFile(path, junk, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return junk
+}
+
+// TestDoctorChecksNeverQuarantineTheDatabase is the consumer-side guard on
+// store.OpenOptions.SelfHeal defaulting to false.
+//
+// `yanshi doctor` is a READ-ONLY diagnostic. If its store opens ever gained
+// self-healing, running "check whether anything is wrong" would move the user's
+// database aside and then report that the database is fine — the diagnosis
+// would destroy the evidence and then deny the symptom. Both checks that open
+// the store are covered, because they open it independently.
+func TestDoctorChecksNeverQuarantineTheDatabase(t *testing.T) {
+	for name, check := range map[string]func(*config.Config, error) CheckResult{
+		"database": checkDatabase,
+		"wal":      checkWAL,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "yanshi.db")
+			before := writeCorruptDB(t, path)
+
+			cfg := &config.Config{Storage: config.StorageConfig{SQLitePath: path}}
+			res := check(cfg, nil)
+
+			// It must REPORT the problem rather than act on it.
+			if res.Status == StatusOK {
+				t.Fatalf("a corrupt database must not be reported as healthy: %+v", res)
+			}
+
+			// And it must have left the file exactly as it found it.
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Error("doctor must not modify the database it inspects")
+			}
+
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range entries {
+				if strings.Contains(e.Name(), ".corrupt-") {
+					t.Errorf("a read-only diagnostic must never quarantine the database: found %s", e.Name())
+				}
+			}
+		})
+	}
+}

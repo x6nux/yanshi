@@ -3,6 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -101,12 +104,54 @@ func (s *Store) WriteMemory(kind, content string) (string, error) {
 // returns its id. Empty dimension fields are stored as the empty string — the
 // same value pre-C14 rows carry — so an unscoped search still finds the row.
 func (s *Store) WriteMemoryScoped(kind, content string, dims MemoryFilter) (string, error) {
+	return s.writeMemory(kind, content, dims, "", 0)
+}
+
+// WriteMemoryFromSession is WriteMemoryScoped plus provenance (W-D-07): the row
+// records WHICH log slice it was derived from, so it can be traced back later.
+//
+// The source is derived here rather than taken as a parameter because every
+// writer would compute the same thing and one of them would eventually compute
+// it differently. It is dims.SessionID's CURRENT CONTEXT WINDOW START — the
+// first row of the slice the writer was looking at, which is what ProjectWindow
+// hands both production writers (the upkeep extraction worker reads the window
+// directly; memory_write is called by a model whose prompt IS that window).
+//
+// A memory written with no session (the SSE path, a bare sub-agent) records no
+// provenance and behaves exactly like WriteMemoryScoped — inventing a source
+// would be worse than recording none, for the reason memoryDims gives about
+// inventing a dimension.
+//
+// A FAILURE TO READ THE BOUNDARY IS NOT A FAILURE TO WRITE THE MEMORY. The
+// memory is the asset; provenance is metadata about it. Losing the note because
+// the event log could not be read would trade the thing being recorded for the
+// record of where it came from.
+func (s *Store) WriteMemoryFromSession(kind, content string, dims MemoryFilter) (string, error) {
+	if dims.SessionID == "" {
+		return s.writeMemory(kind, content, dims, "", 0)
+	}
+	b, err := s.boundary(dims.SessionID)
+	if err != nil {
+		slog.Warn("store: could not record memory provenance; writing the memory without it",
+			"session", dims.SessionID, "error", err)
+		return s.writeMemory(kind, content, dims, "", 0)
+	}
+	return s.writeMemory(kind, content, dims, dims.SessionID, b.HiddenSeq)
+}
+
+// writeMemory is the single INSERT behind both writers, so a new column cannot
+// be added to one and forgotten in the other.
+func (s *Store) writeMemory(
+	kind, content string, dims MemoryFilter, srcSession string, srcSeq int,
+) (string, error) {
 	id := newID()
 	now := time.Now().Unix()
 	err := s.WriteTx(context.Background(), func(tx *sql.Tx) error {
 		_, e := tx.Exec(
-			"INSERT INTO memories (id, kind, content, session_id, agent_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-			id, kind, content, dims.SessionID, dims.AgentID, now,
+			`INSERT INTO memories
+			   (id, kind, content, session_id, agent_id, created_at, source_session_id, source_seq)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, kind, content, dims.SessionID, dims.AgentID, now, srcSession, srcSeq,
 		)
 		return e
 	})
@@ -114,6 +159,104 @@ func (s *Store) WriteMemoryScoped(kind, content string, dims MemoryFilter) (stri
 		return "", err
 	}
 	return id, nil
+}
+
+// ErrNoMemorySource reports that a memory carries no recorded provenance.
+//
+// A distinct error rather than an empty slice because the two answers demand
+// different things of a caller: "nobody wrote down where this came from" (every
+// pre-W-D-07 row, and every memory written without a session) is permanent,
+// while an empty result from a resolved source means the rows themselves are
+// gone and something removed history it should not have.
+var ErrNoMemorySource = errors.New("store: memory has no recorded source")
+
+// MemorySource returns the log slice a memory was derived from (W-D-07), or
+// ErrNoMemorySource when none was recorded.
+//
+// IT RESOLVES THROUGH messagesInWindow, which is ProjectWindow's own reader, so
+// provenance survives everything that reader already survives — in particular
+// W-D-04 compression, where the rows have been deleted and live inside a gzip
+// blob. That is the second half of the acceptance and it is bought by reusing
+// the path rather than writing a second one: a private SELECT over `messages`
+// would return nothing for an archived session and look like "the source is
+// gone" instead of "the source moved".
+//
+// The slice is the log FROM the recorded position, not a fixed excerpt, so it
+// grows as the session continues. That is deliberate: the durable fact is the
+// POSITION, and rendering it as "the conversation from here on" is the only
+// reading that stays true without a second column to pin the far end.
+func (s *Store) MemorySource(memoryID string) ([]Message, error) {
+	var sess string
+	var seq int
+	err := s.DB.QueryRow(
+		"SELECT source_session_id, source_seq FROM memories WHERE id = ?", memoryID,
+	).Scan(&sess, &seq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("store: memory %q not found", memoryID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if sess == "" {
+		return nil, ErrNoMemorySource
+	}
+	return s.messagesInWindow(sess, seq, nil)
+}
+
+// ClearMemories deletes every memory matching dims and returns how many it
+// removed (W-D-12). A ZERO FILTER CLEARS THE WHOLE TABLE — which is the point,
+// and why the callers of this function all sit behind an explicit confirmation.
+//
+// IT IGNORES IncludeSuperseded AND ALWAYS CLEARS SUPERSEDED ROWS TOO. The
+// default filter hides them from retrieval, so honouring it here would leave
+// every consolidated original in the table after a "clear": invisible to
+// search, still on disk, and still returned by the audit switch that exists to
+// read them. "Cleared" has to mean gone.
+//
+// Deleting rather than superseding, unlike ApplyDistillation: a wipe that left
+// the rows readable through the audit switch would be a rename.
+//
+// IT IS NOT AN ERASURE, AND THE DOC HERE USED TO SAY IT WAS. The earlier
+// wording — "the user asking for it is asking for the bytes to stop existing" —
+// was falsified by the very next change in its own work package: W-D-06 gzips
+// the WHOLE memories table into `checkpoints.memories` on every /checkpoint
+// create and on every /checkpoint restore, so a cleared memory is still on disk
+// in those blobs and comes back verbatim from a plain
+// `/checkpoint restore <id> memory yes`. Measured on a memory whose content was
+// an API key.
+//
+// PURGING THOSE BLOBS WAS TRIED AND REJECTED, for two reasons that both point
+// the same way. It would delete the capability store.restoreMemoriesTx exists
+// for and names in its own doc — "undoing an accidental wipe" is one of the two
+// reasons anybody restores this dimension, and a clear that shredded the
+// snapshots would leave a mistyped /memory-clear unrecoverable. And it would
+// still not deliver erasure: the text a memory was distilled FROM is in
+// `messages`, which no clear has ever touched.
+//
+// So the honest contract is the narrow one: the rows leave `memories` and stop
+// being retrievable. Callers that need the user to know the difference say so —
+// see the reply handleClearMemories writes when checkpoints exist. Erasure of
+// secret text is secrets redaction's job, on the way in.
+func (s *Store) ClearMemories(dims MemoryFilter) (int, error) {
+	dims.IncludeSuperseded = true
+	cond, args := dims.where("")
+	var deleted int
+	err := s.WriteTx(context.Background(), func(tx *sql.Tx) error {
+		res, e := tx.Exec("DELETE FROM memories WHERE 1=1"+cond, args...)
+		if e != nil {
+			return fmt.Errorf("store: clear memories: %w", e)
+		}
+		n, e := res.RowsAffected()
+		if e != nil {
+			return e
+		}
+		deleted = int(n)
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return deleted, nil
 }
 
 // SearchMemory runs an FTS5 full-text query over memory contents, returning up
@@ -171,7 +314,24 @@ type MemoryHit struct {
 // K most relevant, because everything below K is discarded unseen and ordering
 // by date would discard the best match for being old — which is precisely the
 // failure C13 exists to correct on the write side.
+// W-D-03: this is also where a retrieval is COUNTED, and the dispatch below is
+// arranged so both the FTS and the CJK branch pass through the single exit that
+// does it. The obvious shape — an early `return s.searchMemoryCJK(...)` — was
+// the first version and it left every Chinese search uncounted, i.e. every
+// memory in this repo's own working language would have looked unused to the
+// quota and been pruned first.
 func (s *Store) SearchMemoryRanked(query string, limit int, dims MemoryFilter) ([]MemoryHit, error) {
+	hits, err := s.searchMemoryRanked(query, limit, dims)
+	if err != nil {
+		return nil, err
+	}
+	s.markMemoriesUsed(memoryIDs(hits))
+	return hits, nil
+}
+
+// searchMemoryRanked is SearchMemoryRanked without the use accounting, so the
+// two retrieval backends have one place to return through.
+func (s *Store) searchMemoryRanked(query string, limit int, dims MemoryFilter) ([]MemoryHit, error) {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -281,7 +441,18 @@ func (s *Store) RecallMemoryScoped(limit int, dims MemoryFilter) ([]Memory, erro
 		return nil, err
 	}
 	defer rows.Close()
-	return scanMemories(rows)
+	out, err := scanMemories(rows)
+	if err != nil {
+		return nil, err
+	}
+	// W-D-03: a recall is a use, exactly like a search. Counting only searches
+	// would make memory_recall's results look untouched and prune them first.
+	ids := make([]string, 0, len(out))
+	for _, m := range out {
+		ids = append(ids, m.ID)
+	}
+	s.markMemoriesUsed(ids)
+	return out, nil
 }
 
 func scanMemories(rows interface {

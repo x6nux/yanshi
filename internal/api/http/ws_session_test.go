@@ -2,6 +2,7 @@ package http
 
 import (
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -543,4 +544,54 @@ func TestChatWS_RenameSession_EmptyID(t *testing.T) {
 	require.NoError(t, c.WriteJSON(proto.NewRenameSession("", "title")))
 	f := readFrame(t, c)
 	assert.Equal(t, "error", f.Type)
+}
+
+// TestChatWS_SessionListIsBoundedAndSaysSo is the production consumer W-D-10's
+// keyset pager did not have.
+//
+// store.ListSessionsPage was exported, tested and called by nothing: gutting it
+// to a panic left `go build ./...` at exit 0. The read it replaces was
+// store.ListSessions(0) — every active session, no bound — and sessionInfos
+// then spends one SessionMessageCount query PER ROW, so opening /sessions on a
+// long-lived project was an unbounded fan-out behind an unbounded frame.
+//
+// Both halves are asserted, because the bound alone would be the worse bug: a
+// prefix presented as the whole list is how a session that is perfectly safe on
+// disk gets reported as lost.
+func TestChatWS_SessionListIsBoundedAndSaysSo(t *testing.T) {
+	st, s := newSessionTestServer(t)
+	const extra = 5
+	for i := range store.MaxMessagePageSize + extra {
+		_, err := st.CreateSession("session " + strconv.Itoa(i))
+		require.NoError(t, err)
+	}
+
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.NewSessionList()))
+	f := readFrame(t, c)
+	require.Equal(t, "sessions", f.Type)
+	require.Len(t, f.Sessions, store.MaxMessagePageSize,
+		"the reply must be one clamped page, not every row in the table")
+	require.Contains(t, f.Text, "not listed",
+		"a truncated list that does not say so reads as a lost session")
+
+	// Under the bound the reply is exactly what it always was: the whole list,
+	// and no note. A warning printed every time stops being read.
+	st2, s2 := newSessionTestServer(t)
+	only, err := st2.CreateSession("the only one")
+	require.NoError(t, err)
+	ts2 := httptest.NewServer(s2.Handler())
+	defer ts2.Close()
+	c2 := dial(t, dialWSURL(t, ts2))
+	defer c2.Close()
+	require.NoError(t, c2.WriteJSON(proto.NewSessionList()))
+	f = readFrame(t, c2)
+	require.Equal(t, "sessions", f.Type)
+	require.Len(t, f.Sessions, 1)
+	assert.Equal(t, only, f.Sessions[0].ID)
+	assert.Empty(t, f.Text, "nothing was left out, so there is nothing to say")
 }

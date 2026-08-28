@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/x6nux/yanshi/internal/cli"
+	"github.com/x6nux/yanshi/internal/config"
+	"github.com/x6nux/yanshi/internal/store"
 )
 
 // headlessConfig captures the flags shared by `exec` and `chat --no-tui`. The
@@ -118,6 +120,74 @@ func headlessInputs(cfg headlessConfig, stdin io.Reader) ([]cli.HeadlessInput, e
 	return cli.ReadHeadlessInputs(stdin, cli.HeadlessInputMode(cfg.Input))
 }
 
+// drainQueue returns the messages queued for sessionID as headless prompts,
+// marking them consumed (W-D-08).
+//
+// EVERY FAILURE IS SILENT AND YIELDS NOTHING. The queue is an addition to the
+// run, not a precondition for it: a missing config, an unreadable database or a
+// session with no queue must not stop a prompt the user typed on this command
+// line from being answered. That is the same soft-degrade rule bootstrap.Build
+// applies to VCS and plugin discovery.
+//
+// It opens its own handle rather than reaching into the backend, because the
+// backend may be a different process — which is exactly the case `yanshi
+// enqueue` exists for. store.Open keeps SelfHeal off, as every incidental
+// reader must.
+//
+// DELIVERY IS AT-MOST-ONCE: the rows are marked consumed here, before the turns
+// run, so a crashed run loses them. See store.ConsumeQueuedMessages for why
+// that direction was chosen over redelivering user input.
+//
+// THE HEADLESS RESUME IS THE WHOLE DELIVERY SURFACE, by design and not by
+// omission. W-D-08's acceptance lands in internal/store plus this command; the
+// WebSocket session-resume path was never part of it. Draining there would be a
+// NEW capability rather than a gap being left open, and a bigger one than it
+// sounds: a headless run already has a list of prompts to execute, so the queue
+// is a slice concatenation, while a reconnecting TUI is idle — the server would
+// have to start a turn nobody asked for, decide what to do when the user is
+// mid-type, and answer for a queue drained by a reconnect that then dropped. An
+// earlier version of this note called it "the same one line"; that was a cost
+// estimate nobody had checked.
+func drainQueue(configPath, sessionID string) []cli.HeadlessInput {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return nil
+	}
+	st, err := store.Open(cfg.Storage.SQLitePath)
+	if err != nil {
+		return nil
+	}
+	defer st.Close()
+	msgs, err := st.ConsumeQueuedMessages(sessionID)
+	if err != nil || len(msgs) == 0 {
+		return nil
+	}
+	out := make([]cli.HeadlessInput, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, cli.HeadlessInput{Prompt: m})
+	}
+	fmt.Fprintf(os.Stderr, "delivering %d queued message(s) to %s\n", len(msgs), sessionID)
+	return out
+}
+
+// queuedFirst puts a session's queued messages ahead of whatever this
+// invocation was given (W-D-08).
+//
+// FIRST, IN ENQUEUE ORDER. They were said earlier, and a queue that delivered
+// out of order would make "queue this, then ask about it" impossible to
+// express. The `-h` text and docs/user-guide/entrypoints.md both promise the
+// order, so it is a contract rather than an implementation detail.
+//
+// A separate function purely so that promise has somewhere to be asserted:
+// inlined, the concatenation had no observation point, and reversing it left
+// the whole suite green — TestDrainQueue_ConsumesOnResume checks the order
+// drainQueue itself returns, and TestRunHeadless_ResumeDrainsTheQueue only
+// checks that the queue was emptied. TestQueuedFirst_QueueLeadsTypedInput is
+// what goes red now.
+func queuedFirst(configPath, sessionID string, inputs []cli.HeadlessInput) []cli.HeadlessInput {
+	return append(drainQueue(configPath, sessionID), inputs...)
+}
+
 func runHeadlessCommand(args []string, command string, stdin io.Reader) int {
 	cfg, err := parseHeadlessArgs(args, command)
 	if err != nil {
@@ -130,6 +200,7 @@ func runHeadlessCommand(args []string, command string, stdin io.Reader) int {
 		return exitUsage
 	}
 	if cfg.Resume != "" {
+		inputs = queuedFirst(cfg.ConfigPath, cfg.Resume, inputs)
 		inputs[0].Resume = cfg.Resume
 	}
 

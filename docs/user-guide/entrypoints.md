@@ -136,7 +136,9 @@ Usage of goal:
   -max-iters int
     	maximum goal loop iterations (default 5)
   -max-tokens int
-    	token budget for the whole goal run (0 = unlimited)
+    	token budget for the whole goal run (0 = unlimited); when resuming, a value typed here replaces the stored one
+  -reset
+    	discard the saved resume point for -workdir and exit, so the next run starts over with a full budget
   -tier string
     	difficulty tier: "auto" (model classifies, keyword table as fallback) or t0..t4 (quick-fix, standard, designed, team, autonomous) (default "auto")
   -workdir string
@@ -173,6 +175,48 @@ Usage: yanshi pr <PR-number>  (run from the repo directory)
        yanshi pr <full-URL>   (any repo)
 ```
 <!-- END GENERATED: help:pr -->
+
+## enqueue（向会话排队消息）
+
+```sh
+./yanshi enqueue <session-id> 跑一遍 release 脚本
+./yanshi enqueue -list <session-id>
+```
+
+适用：向一个**当前没有连接**（或正在运行）的会话排一条用户消息。消息落在项目数据库里，
+下一次该会话被 **headless 运行**恢复时按入队顺序投递，投递后标记已消费（至多一次）。
+`-list` 只看不取。
+
+能取到队列的只有这两条写法（都走 `runHeadlessCommand`）：
+
+```sh
+./yanshi exec -resume <session-id> -p "继续"
+printf '继续\n' | ./yanshi chat --no-tui -resume <session-id>
+```
+
+**交互式 TUI（不带 `--no-tui` 的 `yanshi chat`）没有 `-resume` 这个 flag**，
+也不会消费队列 —— `chat` 只有在检测到 `--no-tui` 时才路由到 headless 入口。
+
+<!-- BEGIN GENERATED: help:enqueue -->
+```text
+Usage: yanshi enqueue [-config FILE] <session-id> <message...>
+       yanshi enqueue [-config FILE] -list <session-id>
+
+Queue a user message for a session, whether or not anything is connected to it.
+The message is stored in the project database and delivered, in enqueue order,
+the next time that session is resumed by a HEADLESS run:
+
+  yanshi exec -resume <session-id> -p "..."
+  yanshi chat --no-tui -resume <session-id>
+
+(the second reads its prompts from stdin, one per line). The interactive TUI —
+plain "yanshi chat" — has no such flag and does not drain the queue.
+
+  -list   show what is waiting for a session without consuming it
+
+The message may be given as several arguments; they are joined with spaces.
+```
+<!-- END GENERATED: help:enqueue -->
 
 ## auth（凭据管理）
 

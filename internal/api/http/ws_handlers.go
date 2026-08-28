@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -73,17 +74,34 @@ func (s *Server) sessionInfos(sessions []store.SessionSummary) []proto.SessionIn
 }
 
 // handleSessionList replies to a session_list frame with the stored sessions.
+//
+// ONE PAGE, THROUGH THE KEYSET READER (W-D-10). The previous read was
+// store.ListSessions(0) — every active session, with no bound of any kind — and
+// each row then costs a SessionMessageCount query in sessionInfos, so a
+// long-lived project paid an unbounded fan-out and shipped an unbounded frame
+// every time anyone opened /sessions. store.ListSessionsPage is the reader that
+// exists for this and clamps through the same clampLimit the message log uses,
+// so the bound cannot drift into a second number.
+//
+// THE TRUNCATION IS REPORTED, not silent. A prefix rendered as the whole list is
+// how "my old session disappeared" becomes a data-loss report about a store that
+// never lost anything.
 func handleSessionList(s *Server, conn *wsConn) {
 	if s.store == nil {
-		conn.write(proto.NewSessions(nil))
+		conn.write(proto.NewSessions(nil, ""))
 		return
 	}
-	sessions, err := s.store.ListSessions(0)
+	page, err := s.store.ListSessionsPage("", store.MaxMessagePageSize)
 	if err != nil {
-		conn.write(proto.NewSessions(nil))
+		conn.write(proto.NewSessions(nil, ""))
 		return
 	}
-	conn.write(proto.NewSessions(s.sessionInfos(sessions)))
+	var note string
+	if page.NextCursor != "" {
+		note = fmt.Sprintf("showing the %d most recently updated sessions; older ones are "+
+			"not listed", len(page.Sessions))
+	}
+	conn.write(proto.NewSessions(s.sessionInfos(page.Sessions), note))
 }
 
 // restoreMessages turns a persisted message log back into a ReAct history.
@@ -185,8 +203,26 @@ func handleRestoreSession(s *Server, conn *wsConn, cs *connSession, sessionID st
 		return
 	}
 
-	// Load messages.
+	// Two reads, because the two consumers want different things (INF3 /
+	// ADR-0015). The client is rebuilding a TRANSCRIPT — the user is looking for
+	// the conversation they left, and handing them a compacted window would read
+	// as "restore deleted my history". The model is being handed a CONTEXT
+	// WINDOW, and that must be the projection: Messages() returns the
+	// pre-compaction originals AND the summary that superseded them, so
+	// restoring the model's window from it undoes every compaction the session
+	// ever ran and leaves the window bigger than it was before compacting.
+	// Measured on this path: 11 messages, compacted to 4, restored as 11.
+	//
+	// The predecessor comment noted that hist and csHist were once built
+	// independently and merely happened to agree; they now differ on purpose,
+	// and each is derived from exactly one read so neither can drift.
 	msgs, err := s.store.Messages(sessionID)
+	if err != nil {
+		conn.write(proto.NewError("failed to load session"))
+		conn.write(proto.NewDone())
+		return
+	}
+	window, err := s.store.ProjectWindow(sessionID)
 	if err != nil {
 		conn.write(proto.NewError("failed to load session"))
 		conn.write(proto.NewDone())
@@ -194,18 +230,16 @@ func handleRestoreSession(s *Server, conn *wsConn, cs *connSession, sessionID st
 	}
 
 	// Build history as schema.Message slice (not pointers) for the frame.
-	// hist is copied from csHist so the two stay content-identical by
-	// construction, rather than the old code's independent value/pointer
-	// pair that merely happened to agree.
-	csHist := restoreMessages(msgs)
-	hist := make([]schema.Message, 0, len(csHist))
-	for _, m := range csHist {
+	hist := make([]schema.Message, 0, len(msgs))
+	for _, m := range restoreMessages(msgs) {
 		hist = append(hist, *m)
 	}
 
 	// Populate the connSession with stored meta.
-	cs.history = csHist
+	cs.history = restoreMessages(window)
 	cs.sessionID = sessionID
+	// The durable watermark is the whole log, not the window: commitCompaction
+	// reads cs.seq as a log coordinate.
 	cs.seq = len(msgs)
 	cs.model = ss.Model
 	cs.thinking = ss.Thinking
@@ -329,6 +363,80 @@ func handleDistillMemories(ctx context.Context, s *Server, conn *wsConn, cs *con
 	defer cancel()
 	res, _ := runDistillPass(ctx, s.store, s.distillModel, store.MemoryFilter{SessionID: cs.sessionID})
 	conn.write(proto.NewMemoriesDistilled(res.Considered, res.Merged))
+}
+
+// handleClearMemories deletes memories in one dimension (W-D-12).
+//
+// THE SCOPE IS RESOLVED HERE, FAIL-CLOSED, AND AN UNKNOWN ONE IS AN ERROR
+// RATHER THAN A FALLBACK. store.ClearMemories treats a zero filter as "delete
+// everything", so any path that turns an unrecognised word into a zero filter
+// has turned a typo into a full wipe. memoryFilterFor makes the same choice on
+// the read side for a much cheaper reason (a wrong answer); here the cost of
+// the same mistake is the whole table.
+//
+// The confirmation is the client's (see the TUI's /memory-clear). That split is
+// the one /delete already uses: the token never reaches the wire, so there is
+// no protocol state to get out of step, and the server's job is to refuse
+// anything it cannot name rather than to re-ask.
+func handleClearMemories(s *Server, conn *wsConn, cs *connSession, scope, agentID string) {
+	if s.store == nil {
+		conn.write(proto.NewError("memory is disabled"))
+		return
+	}
+	var dims store.MemoryFilter
+	switch scope {
+	case proto.MemoryClearAll:
+		// The zero filter: every memory in this project's database.
+	case proto.MemoryClearSession:
+		if cs.sessionID == "" {
+			conn.write(proto.NewError("clear_memories: this connection has no stored session"))
+			return
+		}
+		dims.SessionID = cs.sessionID
+	case proto.MemoryClearAgent:
+		if agentID == "" {
+			conn.write(proto.NewError("clear_memories: the agent scope needs an agent id"))
+			return
+		}
+		dims.AgentID = agentID
+	default:
+		conn.write(proto.NewError("clear_memories: unknown scope " + strconv.Quote(scope)))
+		return
+	}
+	n, err := s.store.ClearMemories(dims)
+	if err != nil {
+		conn.write(proto.NewError("clear_memories: " + err.Error()))
+		return
+	}
+	conn.write(proto.NewMemoriesCleared(n, clearedButRetainedNote(s.store, n)))
+}
+
+// clearedButRetainedNote tells the user what the wipe did NOT reach.
+//
+// A bare "cleared N memories" reads as erasure, and it is not one: W-D-06 gzips
+// the WHOLE memories table into every checkpoint, so anything cleared here is
+// still on disk in those blobs and comes back verbatim from a plain
+// `/checkpoint restore <id> memory yes`. Shredding the blobs instead was
+// rejected — it would delete the "undo an accidental wipe" the checkpoint
+// feature exists for, and would still not be erasure, since the text a memory
+// was distilled from stays in `messages`. See store.ClearMemories.
+//
+// So the honest move is to say so, once, at the only moment the user is looking:
+// they can then take the extra step (/checkpoint list) if erasure is what they
+// meant. Silent when nothing was deleted or no checkpoint exists — a warning
+// about a copy that is not there is noise, and noise is how a real warning stops
+// being read.
+func clearedButRetainedNote(st *store.Store, deleted int) string {
+	if st == nil || deleted == 0 {
+		return ""
+	}
+	cps, err := st.Checkpoints(1)
+	if err != nil || len(cps) == 0 {
+		return ""
+	}
+	return "note: checkpoints still hold a copy of these memories and can restore them " +
+		"(/checkpoint list). Clearing does not erase the text — the conversations they " +
+		"were derived from are also unchanged."
 }
 
 // skillInfo converts an internal skills.Skill snapshot into a proto.SkillInfo
@@ -599,15 +707,15 @@ func handleDeleteSession(s *Server, conn *wsConn, cs *connSession, sessionID str
 // (active) — only the store query differs.
 func handleArchivedSessionList(s *Server, conn *wsConn) {
 	if s.store == nil {
-		conn.write(proto.NewSessions(nil))
+		conn.write(proto.NewSessions(nil, ""))
 		return
 	}
 	sessions, err := s.store.ListArchivedSessions(0)
 	if err != nil {
-		conn.write(proto.NewSessions(nil))
+		conn.write(proto.NewSessions(nil, ""))
 		return
 	}
-	conn.write(proto.NewSessions(s.sessionInfos(sessions)))
+	conn.write(proto.NewSessions(s.sessionInfos(sessions), ""))
 }
 
 // wsConn wraps a gorilla WebSocket connection with a write mutex. gorilla/

@@ -78,3 +78,68 @@ func TestReconnect_OwnerDied_NewClientBecomesOwner(t *testing.T) {
 	// Re-resolve is idempotent when already owner+live.
 	require.NoError(t, sess.Reconnect(context.Background()))
 }
+
+// TestBootstrapOwner_ForwardsSelfHealToBootstrap is the plumbing guard between
+// cli.Options.SelfHeal and bootstrap.Build.
+//
+// The AST assertion in internal/bootstrap can see that runTUI writes
+// `opts.SelfHeal = true`, but not whether that value survives the trip through
+// NewSession and bootstrapOwner. Delete the one assignment in NewSession and
+// the AST test still passes, the TUI still compiles, and healing is silently
+// dead on the exact entry point it exists for — measured, that mutation left
+// every other package green.
+//
+// Both directions are asserted, because the default carries the safety property
+// (exec and headless share this code path and must not quarantine anything).
+func TestBootstrapOwner_ForwardsSelfHealToBootstrap(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		selfHeal bool
+		wantBoot bool
+	}{
+		{"TUI opts in and boots", true, true},
+		{"exec and headless keep the default and fail loudly", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			cfgPath := writeTestConfig(t, root)
+			dbPath := filepath.Join(root, "test.db")
+
+			// SQLITE_NOTADB: a header that is not SQLite's.
+			junk := make([]byte, 8192)
+			for i := range junk {
+				junk[i] = byte(i*31 + 7)
+			}
+			require.NoError(t, os.WriteFile(dbPath, junk, 0o600))
+
+			sess := NewSession(Options{
+				Root: root, ConfigPath: cfgPath, FakeModel: true,
+				InProcess: true, SelfHeal: tc.selfHeal,
+			})
+			err := sess.Resolve(context.Background())
+			if sess != nil {
+				t.Cleanup(func() { _ = sess.Close() })
+			}
+
+			entries, rerr := os.ReadDir(root)
+			require.NoError(t, rerr)
+			quarantined := false
+			for _, e := range entries {
+				if strings.Contains(e.Name(), ".corrupt-") {
+					quarantined = true
+				}
+			}
+
+			if tc.wantBoot {
+				require.NoError(t, err, "with SelfHeal the TUI must come up on a corrupt database")
+				assert.True(t, quarantined, "the corrupt database must have been moved aside")
+				return
+			}
+			require.Error(t, err, "without SelfHeal a corrupt database must stop the boot")
+			assert.False(t, quarantined, "a non-owning entry point must not quarantine anything")
+			after, aerr := os.ReadFile(dbPath)
+			require.NoError(t, aerr)
+			assert.Equal(t, junk, after, "the database must be left exactly as found")
+		})
+	}
+}

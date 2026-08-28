@@ -76,6 +76,13 @@ type ClientFrame struct {
 	// are unchanged.
 	Images []ImageAttach `json:"images,omitempty"` // user_message
 
+	// Dim carries the checkpoint dimension for a checkpoint frame (W-D-06):
+	// "session", "memory" or "files". A field of its own rather than a reuse of
+	// Mode, which means a PERMISSION mode everywhere else in this struct — one
+	// word standing for two unrelated vocabularies is how a handler ends up
+	// reading the wrong one.
+	Dim string `json:"dim,omitempty"` // checkpoint
+
 	// Attachments are @path file references for this turn (UX3). The client
 	// sends PATHS ONLY: the server reads the bytes, inside the work root and
 	// through the same guard profile a tool call would face.
@@ -368,10 +375,27 @@ type ServerFrame struct {
 	// Compaction fields (Task 35b). Compacted is set on a status frame after a
 	// compaction completed; TokensBefore/After carry the estimated token counts
 	// across the compaction so the client can render "compacted (X → Y tokens)".
-	Compacted    bool             `json:"compacted,omitempty"`
-	TokensBefore int              `json:"tokens_before,omitempty"`
-	TokensAfter  int              `json:"tokens_after,omitempty"`
-	Messages     []schema.Message `json:"messages,omitempty"` // history_replaced / session_restored
+	Compacted    bool `json:"compacted,omitempty"`
+	TokensBefore int  `json:"tokens_before,omitempty"`
+	TokensAfter  int  `json:"tokens_after,omitempty"`
+	// CompactionBlocked is the counterpart of Compacted: a status frame carries
+	// it, non-empty, when a compaction was REFUSED and the context is therefore
+	// larger than it should be. The string is the operator-facing reason.
+	//
+	// It exists because refusing is the safe direction only while it is VISIBLE
+	// (ADR-0015 constraint 6). Auto-compaction refuses on the same silent path
+	// an under-threshold turn takes, so a session that keeps refusing grows
+	// without bound and the first thing anyone observes is a provider length
+	// error — a failure wearing another failure's clothes.
+	//
+	// EMITTED BY THE WS PATH ONLY, and that is not an oversight. SSE holds
+	// history client-side and compacts it in place with no durable boundary and
+	// no session rows, so none of the conditions that produce a refusal can
+	// arise there; the field stays empty rather than being forgotten. Both
+	// transports share the vocabulary, so an SSE handler that later grows a
+	// durable window has the field waiting.
+	CompactionBlocked string           `json:"compaction_blocked,omitempty"`
+	Messages          []schema.Message `json:"messages,omitempty"` // history_replaced / session_restored
 	// Retry fields: carried by a "retry" frame announcing a transient-error
 	// retry (e.g. a mid-stream "unexpected EOF") so the client can render
 	// "↻ retry N/M…" in its activity line. Text carries the triggering error.
@@ -659,8 +683,15 @@ func NewHistoryReplaced(msgs []schema.Message) ServerFrame {
 }
 
 // NewSessions builds a sessions frame listing stored sessions.
-func NewSessions(sessions []SessionInfo) ServerFrame {
-	return ServerFrame{Type: "sessions", Sessions: sessions}
+//
+// note is what the server has to say about rows it did NOT send. The list is
+// one page, so on a long-lived project it is a prefix of the sessions that
+// exist, and a prefix presented as the whole list is how "my old session is
+// gone" gets reported as a data-loss bug. Empty when the page was the whole
+// list, which is the common case and leaves the frame byte-identical to what it
+// always was.
+func NewSessions(sessions []SessionInfo, note string) ServerFrame {
+	return ServerFrame{Type: "sessions", Sessions: sessions, Text: note}
 }
 
 // NewSessionRestored builds a session_restored frame carrying the restored
@@ -1047,4 +1078,110 @@ func NewDistillMemories() ClientFrame { return ClientFrame{Type: "distill_memori
 // isControlReply closes the client's reply channel on it.
 func NewMemoriesDistilled(considered, merged int) ServerFrame {
 	return ServerFrame{Type: "memories_distilled", Text: fmt.Sprintf("distilled: considered %d, merged %d", considered, merged)}
+}
+
+// --- W-D-12 memory wipe frames ---
+
+// MemoryClearScope names one dimension clear_memories may be restricted to.
+//
+// The vocabulary is memory_search's, deliberately: a user who has been told
+// their memories live in "session" / "agent" / "all" scopes must not have to
+// learn a second set of words to delete them.
+const (
+	// MemoryClearSession clears the memories of the connection's own session.
+	MemoryClearSession = "session"
+	// MemoryClearAgent clears the memories written by one named agent. The id
+	// is explicit because a chat connection has no acting agent to infer.
+	MemoryClearAgent = "agent"
+	// MemoryClearAll clears EVERY memory in the store — which is this project's
+	// database, since storage.sqlite_path is resolved relative to the working
+	// directory. This is the destructive default a confirmation gate exists for.
+	MemoryClearAll = "all"
+)
+
+// NewClearMemories builds a clear_memories request frame (W-D-12).
+//
+// scope is one of the MemoryClear* constants; agentID is meaningful only for
+// MemoryClearAgent and is ignored otherwise. Reply: memories_cleared.
+//
+// Reusing Name and ID rather than adding two fields: ClientFrame already routes
+// several frames' identifiers through ID, and a wipe is not important enough to
+// widen the wire format for.
+func NewClearMemories(scope, agentID string) ClientFrame {
+	return ClientFrame{Type: "clear_memories", Name: scope, ID: agentID}
+}
+
+// NewMemoriesCleared builds the memories_cleared reply: deleted is how many
+// rows the wipe removed. A single-frame control reply, so isControlReply closes
+// the client's reply channel on it.
+//
+// note carries whatever the server has to say about what the wipe did NOT do.
+// It exists because a bare "cleared N memories" reads as erasure, and W-D-06
+// keeps a gzipped copy of the whole memories table in every checkpoint — a fact
+// the user can only act on if they are told it. Empty when there is nothing to
+// add, which keeps the common reply exactly what it always was.
+func NewMemoriesCleared(deleted int, note string) ServerFrame {
+	text := fmt.Sprintf("cleared %d memories", deleted)
+	if note != "" {
+		text += "\n" + note
+	}
+	return ServerFrame{Type: "memories_cleared", Text: text}
+}
+
+// --- W-D-06 checkpoint frames ---
+
+// Checkpoint dimensions carried in ClientFrame.Dim (W-D-06).
+//
+// DECLARED HERE AS WELL AS IN internal/store, ON PURPOSE. This package is the
+// wire vocabulary and has no dependencies; the TUI is a thin client that must
+// not reach into the storage layer to learn three words it only ever sends as
+// strings. The two declarations are held equal by a test in internal/api/http,
+// which is a package that can see both — the same shape as the memory scope
+// words above.
+const (
+	// CheckpointDimSession is the context-window dimension.
+	CheckpointDimSession = "session"
+	// CheckpointDimMemory is the long-term memory table.
+	CheckpointDimMemory = "memory"
+	// CheckpointDimFiles is the working copy, served by internal/vcs.
+	CheckpointDimFiles = "files"
+)
+
+// CheckpointDimensions lists the dimensions in a stable order, for clients that
+// validate a user's word before sending it.
+func CheckpointDimensions() []string {
+	return []string{CheckpointDimSession, CheckpointDimMemory, CheckpointDimFiles}
+}
+
+// Checkpoint actions carried in ClientFrame.Name.
+const (
+	// CheckpointList asks for the recent checkpoints.
+	CheckpointList = "list"
+	// CheckpointCreate takes a checkpoint of all three dimensions.
+	CheckpointCreate = "create"
+	// CheckpointPlan previews restoring one dimension WITHOUT touching it.
+	CheckpointPlan = "plan"
+	// CheckpointRestore rolls one dimension back, after an automatic snapshot.
+	CheckpointRestore = "restore"
+)
+
+// NewCheckpoint builds a checkpoint request frame (W-D-06).
+//
+// action is one of the Checkpoint* constants; id names the checkpoint for plan
+// and restore; dim is the store.CheckpointDimension for those two; label is the
+// optional name for create. Reply: checkpoint_result.
+func NewCheckpoint(action, id, dim, label string) ClientFrame {
+	return ClientFrame{Type: "checkpoint", Name: action, ID: id, Dim: dim, Text: label}
+}
+
+// NewCheckpointResult builds the checkpoint_result reply.
+//
+// One reply type carrying rendered text for all four actions, rather than a
+// structured list frame plus an ack. The server is the only side that can
+// render a plan for the files dimension anyway (it holds the working copy), so
+// splitting the vocabulary would put half the formatting on each side of the
+// wire and guarantee they drift. A single-frame control reply, so
+// isControlReply closes the client's reply channel on it.
+func NewCheckpointResult(text string) ServerFrame {
+	return ServerFrame{Type: "checkpoint_result", Text: text}
 }

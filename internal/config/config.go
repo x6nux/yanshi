@@ -483,6 +483,36 @@ type StorageConfig struct {
 	BusyTimeoutMs int `yaml:"busy_timeout_ms"`
 	// WALAutoCheckpoint 是 wal_autocheckpoint 页阈值（F1）。0/省略=1000；负数=禁用被动 checkpoint（不推荐）。
 	WALAutoCheckpoint int `yaml:"wal_auto_checkpoint"`
+
+	// RetentionDays 是冷会话压缩的空闲阈值（W-D-04）：超过这么多天没有活动的
+	// 会话，其消息被整体序列化 + gzip 存进 cold_sessions，原行删除。读取侧透明
+	// 回退解压，所以对话内容一条不少。
+	//
+	// **0/省略 = 永久保留，不压缩任何东西**，与引入本字段前逐字节一致。这不是
+	// 保守的默认值而是唯一安全的默认值：压缩会把冷会话移出 FTS 索引，
+	// history_search 从此找不到它们，这个代价必须由操作员显式选择。
+	//
+	// **到期是压缩不是删除。** 本字段永远不会让任何一条消息消失；删除只有
+	// store.DeleteSession 这一条显式路径。名字里的 "retention" 沿用 spec 的
+	// 措辞，语义以这段注释为准。
+	RetentionDays int `yaml:"retention_days"`
+
+	// MemoryAutoExtract 打开 W-D-03 的后台跨会话记忆抽取：会话安静
+	// upkeep.MemoryIdle 之后，worker 读取它的窗口、向模型要一批"以后还成立的
+	// 事实"、逐条写进 memories，然后调 W-A-05 那条既有的蒸馏入口做合并。
+	//
+	// **默认 false，因为它花钱。** 每个结束的会话一次 provider 调用，用的是
+	// batch.rlm_model（没配就退回主模型）。没人升级一次程序就同意开始产生这笔
+	// 开销，所以它必须是操作员显式打开的。
+	MemoryAutoExtract bool `yaml:"memory_auto_extract"`
+
+	// MemoryQuota 限制 memories 表的行数上限；**0/省略 = 不限制**，与引入前
+	// 一致。超额时只删 use_count = 0（从未被检索命中过）的行，最老的先删；
+	// 被用过的记忆无论多老都不删 —— 这正是配额与"过期"的区别。
+	//
+	// 与 MemoryAutoExtract 相互独立：memory_write 一样往这张表里写，配额管的是
+	// 表的大小而不是谁写的。
+	MemoryQuota int `yaml:"memory_quota"`
 }
 
 // LLMConfig configures the available LLM providers.

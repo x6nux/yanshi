@@ -236,6 +236,14 @@ func TestIsControlReply_FullList(t *testing.T) {
 		"permission_rule_hit", "jobs", "job_event", "seams",
 		"seam_restored", "session_forked", "side_state",
 		"skills_list", "skill_ack", "features",
+		// The memory pair. Both were missing when W-D-12 added the second one:
+		// a reply type absent from isControlReply never closes the client's
+		// reply channel, so the slash command that sent it appears to hang
+		// while the server has already answered. THE LIST IS HAND-MAINTAINED
+		// and nothing compares it to the switch, so it goes stale silently —
+		// which is how memories_distilled sat outside it since W-A-05.
+		"memories_distilled", "memories_cleared",
+		"checkpoint_result",
 	} {
 		assert.True(t, isControlReply(kind), "kind=%q must be a control reply", kind)
 	}

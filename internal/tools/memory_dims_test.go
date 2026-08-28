@@ -237,3 +237,50 @@ func TestMemoryFilterFor(t *testing.T) {
 func countOccurrences(haystack, needle string) int {
 	return strings.Count(haystack, needle)
 }
+
+// TestMemoryWrite_RecordsProvenance is W-D-07 asserted at the memory_write call
+// site, for the reason its upkeep twin gives: the store API's own tests stay
+// green when a caller quietly drops back to the un-provenanced writer.
+//
+// The session gets a real log first. A memory whose source resolves to zero
+// messages would satisfy "an origin was recorded" while answering nothing.
+func TestMemoryWrite_RecordsProvenance(t *testing.T) {
+	s := newMemoryStore(t)
+	sid, err := s.CreateSession("live")
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		require.NoError(t, s.AppendMessage(sid, i, "user", "turn "+strings.Repeat("x", i+1)))
+	}
+	mt := NewMemoryTools(s)
+
+	_, err = callMemTool(t, dimCtx(sid, "reviewer"), mt.runWrite,
+		map[string]any{"content": "the branch is feat/x", "kind": "fact"})
+	require.NoError(t, err)
+
+	got, err := s.RecallMemory(10)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	src, err := s.MemorySource(got[0].ID)
+	require.NoError(t, err, "memory_write recorded no source log position")
+	require.Len(t, src, 3, "the recorded position must resolve to this session's log")
+	assert.Equal(t, sid, src[0].SessionID)
+}
+
+// TestMemoryWrite_NoSessionRecordsNoProvenance is the other half: the SSE path
+// and bare sub-agents have no session, and inventing one would be worse than
+// recording none. ErrNoMemorySource is the honest answer, not an empty slice
+// that reads like "the source is gone".
+func TestMemoryWrite_NoSessionRecordsNoProvenance(t *testing.T) {
+	s := newMemoryStore(t)
+	mt := NewMemoryTools(s)
+
+	_, err := callMemTool(t, dimCtx("", "reviewer"), mt.runWrite,
+		map[string]any{"content": "no session here"})
+	require.NoError(t, err)
+
+	got, err := s.RecallMemory(10)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	_, err = s.MemorySource(got[0].ID)
+	assert.ErrorIs(t, err, store.ErrNoMemorySource)
+}

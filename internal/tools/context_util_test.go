@@ -32,9 +32,10 @@ func TestMemoryTools_Tools(t *testing.T) {
 		Search: NewGuardedTool("memory_search", "x", "x", time.Second, nil, nil),
 		Recall: NewGuardedTool("memory_recall", "x", "x", time.Second, nil, nil),
 		Write:  NewGuardedTool("memory_write", "x", "x", time.Second, nil, nil),
+		Source: NewGuardedTool("memory_source", "x", "x", time.Second, nil, nil),
 	}
 	got := mt.Tools()
-	assert.Len(t, got, 3)
+	assert.Len(t, got, 4)
 }
 
 func TestPlanTools_Tools(t *testing.T) {

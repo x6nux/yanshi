@@ -201,6 +201,10 @@ func (cs *connSession) statusFrame(s *Server) proto.ServerFrame {
 	// first user_message; omitempty drops it on the wire so legacy clients and
 	// the no-store path are unchanged. Headless exec reads it to print the id.
 	st.SessionID = cs.sessionID
+	// ADR-0015 constraint 6: a refused compaction has to be visible on every
+	// status frame, not just logged once. It stays set until a compaction
+	// succeeds, because the condition persists — the window keeps growing.
+	st.CompactionBlocked = cs.compactionBlocked
 	// B2-RB1: carry both the display short hash and the FULL main_head id. The
 	// TUI caches Head and re-sends it as the next restore_turn's ConfirmedHead
 	// (D6: full id binding — short-hash collision is a real risk across long
@@ -354,6 +358,315 @@ func (cs *connSession) flushHistory(s *Server) bool {
 	return true
 }
 
+// windowBoundary splits the compacted window's row positions into ADR-0015's
+// two fields: where the contiguous kept tail starts, and the scattered
+// survivors below it.
+//
+// kept is every seq the compacted window occupies, logTop is the log's next
+// free seq after the post-compaction flush, and flushedFrom is where that flush
+// began writing. The result reproduces `kept` EXACTLY — the projection selects
+// `seq >= hidden OR seq IN pinned`, every seq in [hidden, logTop) is kept by
+// construction of the walk, and every kept seq below hidden is listed — which
+// is what ADR-0015's fifth constraint demands. No message Plan pinned is lost
+// and no evicted message is readmitted, in either direction.
+//
+// It walks DOWN FROM THE LOG TOP over real row positions rather than counting
+// backwards through the window's messages. The earlier version did the latter,
+// assuming the window's trailing messages occupy the log's trailing rows, and
+// that assumption is false: AppendMessages identifies rows by dedup key, so a
+// window containing byte-identical duplicates has its tail messages resolve to
+// EARLIER rows and the log's real tail is something else entirely. Measured on
+// a session compacted twice — the count-backwards boundary readmitted the first
+// compaction's summary, a message the second compaction had evicted.
+//
+// The clamp to flushedFrom is the fail-safe. Rows at or above it were written by
+// the flush that just ran (the summary, and C3's eviction map), so they are in
+// the window whether or not the lookup that produced `kept` found them. Without
+// it a lookup that resolved nothing would place hidden at the log top and
+// project an EMPTY window — an agent that has forgotten the conversation and
+// says nothing about it.
+func windowBoundary(kept []int, logTop, flushedFrom int) (hidden int, pinned []int) {
+	set := make(map[int]bool, len(kept))
+	for _, s := range kept {
+		set[s] = true
+	}
+	hidden = logTop
+	for hidden > 0 && set[hidden-1] {
+		hidden--
+	}
+	if hidden > flushedFrom {
+		hidden = flushedFrom
+	}
+	if hidden < 0 {
+		hidden = 0
+	}
+	for _, s := range kept {
+		if s < hidden {
+			pinned = append(pinned, s)
+		}
+	}
+	return hidden, pinned
+}
+
+// reportCompactionBlocked records a refused compaction and tells the client
+// immediately, so the oversized context is observable at the moment it is
+// decided rather than several turns later as a provider length error.
+//
+// The flag persists on the session (statusFrame re-sends it) because the
+// CONDITION persists: nothing retries a refusal, so the window keeps growing
+// until whatever caused it changes. A one-shot frame would be the same silence
+// with an extra step.
+func (cs *connSession) reportCompactionBlocked(s *Server, conn *wsConn, why string) {
+	cs.compactionBlocked = why
+	conn.write(cs.statusFrame(s))
+}
+
+// compactionNotDurable is the message the manual path shows when a compaction
+// could not be made durable. Shared by the two failure branches so a change to
+// the wording cannot describe only one of them.
+const compactionNotDurable = "compaction skipped: the conversation could not be saved, " +
+	"so nothing was dropped from the context"
+
+// compactionNotAligned is shown when the live window and the durable log stopped
+// agreeing. Distinct from compactionNotDurable because the cause and the operator's
+// next step differ: nothing failed to write, the two views diverged, and the
+// honest report is that the context is larger than it should be rather than that
+// the disk is broken.
+const compactionNotAligned = "compaction skipped: the conversation and its saved copy " +
+	"no longer line up, so nothing was dropped from the context"
+
+// commitCompaction installs the compacted window, makes it durable, and records
+// the boundary that lets a later restore rebuild it (INF3 / ADR-0015).
+//
+// The order is load-bearing in both directions. The summary is flushed BEFORE
+// the boundary is computed, because the boundary is a log coordinate: it is the
+// seq the summary block lands at, minus the rows behind the window's kept tail.
+// And the boundary is recorded BEFORE the caller reports success, because a
+// compaction with no marker is strictly worse than no compaction — the next
+// restore pulls back everything that was just evicted, i.e. exactly the bug
+// this exists to fix, except now with a summary already paid for.
+//
+// Any failure puts the previous window back rather than leaving a half-applied
+// one. The originals were flushed by the caller before compaction ran, so
+// nothing is lost either way; what the rollback avoids is a live window whose
+// durable boundary describes something else.
+func (cs *connSession) commitCompaction(s *Server, newHist []*schema.Message) (bool, string) {
+	oldHist := cs.history
+	// cs.seq is the next free row in the durable log, i.e. where the summary
+	// (and C3's eviction map) are about to land.
+	boundary := cs.seq
+	recording := s.store != nil && cs.sessionID != "" && !cs.recordingSuppressed()
+
+	// Locate the OLD window's rows BEFORE the summary is written. At this moment
+	// the projection is exactly the live window — the caller flushed it before
+	// compacting, and the window is by construction the previous boundary plus
+	// everything appended since — so row i of the window is row i of this slice,
+	// and POSITION rather than content decides which log row each message
+	// occupies. See keptWindowSeqs for why that distinction is the whole point.
+	var oldRows []store.Message
+	if recording {
+		var err error
+		oldRows, err = s.store.ProjectWindow(cs.sessionID)
+		if err != nil {
+			slog.Warn("compaction boundary not recorded; context will not be evicted",
+				"session", cs.sessionID, "error", err)
+			return false, compactionNotDurable
+		}
+		// Constraint 6: checked here, before a single message is evicted, so a
+		// refusal costs nothing that was not already spent and leaves the window
+		// untouched rather than half-applied.
+		if !alignedWithLog(oldHist, oldRows) {
+			return false, compactionNotAligned
+		}
+	}
+
+	cs.history = newHist
+	if !cs.flushHistory(s) {
+		cs.history = oldHist
+		return false, compactionNotDurable
+	}
+	if !recording {
+		// The same short circuit flushHistory applies: nothing was persisted,
+		// so there is no boundary to record and nothing to restore from.
+		return true, ""
+	}
+	kept, ok := keptWindowSeqs(oldHist, newHist, oldRows)
+	if !ok {
+		slog.Warn("compaction window stopped matching the log mid-commit; boundary not recorded",
+			"session", cs.sessionID,
+			"action", "the context stays oversized but complete")
+		cs.history = oldHist
+		return false, compactionNotAligned
+	}
+	// The rows the flush just wrote (the summary, and C3's eviction map) are in
+	// the window too. Adding them lets windowBoundary collapse the contiguous
+	// tail into the range half instead of listing every survivor as a pin.
+	for seq := boundary; seq < cs.seq; seq++ {
+		kept = append(kept, seq)
+	}
+	hidden, pinned := windowBoundary(kept, cs.seq, boundary)
+	if err := s.store.AppendContextEvent(cs.sessionID, store.ContextEventCompact, hidden, pinned); err != nil {
+		slog.Warn("compaction boundary not recorded; context will not be evicted",
+			"session", cs.sessionID, "hidden_seq", hidden, "error", err)
+		cs.history = oldHist
+		return false, compactionNotDurable
+	}
+	return true, ""
+}
+
+// alignedWithLog reports whether the live window still maps one-to-one onto the
+// rows the projection returned, which is the cross-layer invariant every
+// boundary calculation here rests on: THE PRE-FLUSH PROJECTION IS THE ACTIVE
+// WINDOW.
+//
+// That invariant is not guaranteed, and assuming it was is the mistake this
+// function exists to stop repeating. It can be broken by an ordinary
+// conversation: flushHistory de-duplicates against the WHOLE log including rows
+// already hidden behind a boundary, so a model that repeats a sentence
+// byte-identical to a hidden one has that sentence silently dropped by ON
+// CONFLICT and never written. Measured on the real WS path: 6 window rows, 5
+// projected.
+//
+// A FAILURE HERE MUST REFUSE THE COMPACTION (ADR-0015 constraint 6). The
+// caller therefore checks this BEFORE it evicts anything, so refusing costs
+// only the summary call that was already spent, and the window is left oversized
+// but complete — the same direction C1 chose for a failed flush. The previous
+// version instead carried on and wrote a boundary with no pins, whose measured
+// effect was NOT the "keeps its recent tail" this comment used to claim: with no
+// kept seqs, windowBoundary clamps to the start of the post-compaction flush and
+// the restored window is the SUMMARY ALONE. A five-message window came back as
+// one. Guessing a boundary is worse than not compacting, every time.
+//
+// Content is deliberately not compared, only role and the tool identifiers.
+// Those three are stored verbatim while content is redacted on write, so
+// comparing text would fail on every session that ever carried a secret and
+// refuse all of their compactions.
+func alignedWithLog(oldHist []*schema.Message, oldRows []store.Message) bool {
+	want := storeMessagesFor(oldHist)
+	if len(want) != len(oldRows) {
+		slog.Warn("live window does not match the durable log; refusing to compact",
+			"window_rows", len(want), "log_rows", len(oldRows),
+			"action", "the context stays oversized but complete; a message the model "+
+				"repeated verbatim from evicted history is the known cause")
+		return false
+	}
+	for i := range want {
+		if want[i].Role != oldRows[i].Role ||
+			want[i].ToolCallID != oldRows[i].ToolCallID ||
+			want[i].ToolName != oldRows[i].ToolName {
+			slog.Warn("live window does not match the durable log; refusing to compact",
+				"row", i, "action", "the context stays oversized but complete")
+			return false
+		}
+	}
+	return true
+}
+
+// keptWindowSeqs maps the compacted window back onto the durable log rows it
+// occupies, BY POSITION.
+//
+// The previous implementation asked the log "which row has this content", via
+// the dedup key. That is unsound, and it was measured to be: a dedup key's only
+// discriminator between byte-identical siblings is their ordinal within the
+// flushed batch, and compaction is precisely the operation that changes the
+// batch. Flush [X, "ok", Y, "ok"] and the two get keys ok#0 and ok#1; compact
+// down to ["ok"(the second one), Z] and the survivor is now ordinal 0, collides
+// with the FIRST "ok", and resolves to its seq. The window then projects back in
+// the wrong ORDER — and in the shape a review constructed, a tool_result landed
+// ahead of its tool_call, which providers reject outright rather than degrade.
+// Returning per-row seqs from AppendMessages would not have helped: the seq it
+// returns is the aliased one.
+//
+// Position has no such ambiguity. oldRows is the projection taken before the
+// post-compaction flush, which IS the live window row for row, so the i-th row
+// of storeMessagesFor(oldHist) lives at oldRows[i].Seq whatever its content.
+//
+// WHICH messages survived is answered by pointer identity: ctxcompact.Assemble
+// appends the very *schema.Message values it was handed. The one exception is
+// measured and handled — ctxcompact.FoldToolResults runs after Assemble and
+// REPLACES the tool results it rewrites (out[i] = folded), so a folded result
+// fails the identity test. completeToolPairs puts its row back, which is also
+// what keeps ADR-0015 constraint 5(b) true no matter how this set was derived.
+//
+// Alignment is CHECKED SEPARATELY AND FIRST, by alignedWithLog, because a
+// failure there is a refusal rather than a degradation. See its doc.
+//
+// The second return is that check made structural. Indexing oldRows by a
+// position derived from oldHist PANICS when the two disagree — measured, with a
+// misaligned window this function ran off the end of the slice and took the WS
+// connection down with it — so it reports failure rather than trusting a caller
+// to have checked. Returning "no pins" instead would be the wrong direction:
+// windowBoundary then clamps to the post-compaction flush and the restored
+// window is the summary alone.
+func keptWindowSeqs(oldHist, newHist []*schema.Message, oldRows []store.Message) ([]int, bool) {
+	survived := make(map[*schema.Message]bool, len(newHist))
+	for _, m := range newHist {
+		survived[m] = true
+	}
+	var kept []int
+	row := 0
+	for _, m := range oldHist {
+		n := len(storeMessagesFor([]*schema.Message{m}))
+		if row+n > len(oldRows) {
+			return nil, false
+		}
+		if m != nil && survived[m] {
+			for k := 0; k < n; k++ {
+				kept = append(kept, oldRows[row+k].Seq)
+			}
+		}
+		row += n
+	}
+	if row != len(oldRows) {
+		return nil, false
+	}
+	return completeToolPairs(kept, oldRows), true
+}
+
+// completeToolPairs enforces ADR-0015 constraint 5(b) on the boundary itself: a
+// tool result and its call are both in the window or the pairing is broken.
+//
+// It ADDS the missing partner rather than dropping the survivor. Dropping would
+// cost the model a tool result it is actively working with; adding costs a few
+// tokens. The case it exists for is a folded tool result, whose durable row
+// still holds the unfolded text — restoring more detail than the live window had
+// is the harmless direction.
+//
+// Rows with an empty tool_call_id are left alone: they cannot be paired up
+// unambiguously, and guessing would be how an orphan gets manufactured rather
+// than avoided.
+func completeToolPairs(kept []int, rows []store.Message) []int {
+	if len(kept) == 0 {
+		return kept
+	}
+	in := make(map[int]bool, len(kept))
+	for _, s := range kept {
+		in[s] = true
+	}
+	partners := map[string][]int{}
+	for _, r := range rows {
+		if r.ToolCallID == "" {
+			continue
+		}
+		if r.Role == store.RoleToolCall || r.Role == store.RoleToolResult {
+			partners[r.ToolCallID] = append(partners[r.ToolCallID], r.Seq)
+		}
+	}
+	for _, r := range rows {
+		if !in[r.Seq] || r.ToolCallID == "" {
+			continue
+		}
+		for _, seq := range partners[r.ToolCallID] {
+			if !in[seq] {
+				in[seq] = true
+				kept = append(kept, seq)
+			}
+		}
+	}
+	sort.Ints(kept)
+	return kept
+}
+
 // persistMessages makes the completed turn durable.
 //
 // It takes NO message arguments any more. It used to take the user text and the
@@ -386,17 +699,34 @@ func (cs *connSession) loadSession(s *Server, sessionID string) error {
 		return nil
 	}
 
-	// Load messages and reuse the same snapshot mapper that WS restore uses
-	// (applySessionRevertSnapshot in ws_seam.go), so reconnect + undo restore
-	// share one role/meta mapping (B2-RB1).
-	msgs, err := s.store.Messages(sessionID)
+	// Load the WINDOW, not the transcript (INF3 / ADR-0015). Messages() returns
+	// every row the session ever wrote, so restoring from it re-expands the
+	// originals a compaction already replaced with a summary — and the summary
+	// comes back too, leaving the window larger than it was before compacting.
+	// ProjectWindow folds the context-event log first and reads only what
+	// survives; a session that never compacted has no events and runs the exact
+	// query this line used to.
+	window, err := s.store.ProjectWindow(sessionID)
 	if err != nil {
 		return err
 	}
+	// Reuse the same snapshot mapper that WS restore uses
+	// (applySessionRevertSnapshot in ws_seam.go), so reconnect + undo restore
+	// share one role/meta mapping (B2-RB1).
 	applySessionRevertSnapshot(cs, store.SessionRevertSnapshot{
 		Meta:     *ss,
-		Messages: msgs,
+		Messages: window,
 	})
+	// applySessionRevertSnapshot derives cs.seq from the slice it is handed,
+	// which is the durable watermark only when that slice IS the whole log. The
+	// projection is a suffix, so take the watermark from the row count instead —
+	// the same value the pre-projection code produced. It matters because
+	// commitCompaction reads cs.seq as a log coordinate.
+	total, err := s.store.SessionMessageCount(sessionID)
+	if err != nil {
+		return err
+	}
+	cs.seq = total
 	// COST1: restore the in-memory ledger from the DB row so post-reconnect
 	// turns continue accumulating from the prior spend instead of resetting
 	// to zero. hasBilledUsage is seeded from the non-zero check so the
@@ -450,6 +780,9 @@ func (s *Server) compactionOptions() ctxcompact.Options {
 func maybeAutoCompact(ctx context.Context, s *Server,
 	models map[string]model.BaseChatModel, conn *wsConn, cs *connSession) {
 
+	// Re-evaluated every turn: the flag describes the CURRENT state, so a turn
+	// that compacts cleanly must clear a refusal the previous one recorded.
+	cs.compactionBlocked = ""
 	kr := keepRecentOrDefault(s.compaction.KeepRecent)
 	cw := contextWindowFor(cs.model, s.compaction)
 	sumModel := compactionModel(s.compaction, models, cs.model)
@@ -457,7 +790,12 @@ func maybeAutoCompact(ctx context.Context, s *Server,
 		return // no model available — compaction disabled
 	}
 	if !cs.flushHistory(s) {
-		return // not durable — see the durability note above
+		// Not durable — see the durability note above. Reported rather than
+		// silent for the same reason a misalignment is: the context is now
+		// oversized, and the only alternative signal is a provider length error
+		// several turns later that looks like something else entirely.
+		cs.reportCompactionBlocked(s, conn, compactionNotDurable)
+		return
 	}
 	newHist, tb, ta, did := ctxcompact.MaybeCompactWithOptions(ctx, cs.history,
 		s.compaction.Threshold, cw, kr, sumModel,
@@ -466,7 +804,10 @@ func maybeAutoCompact(ctx context.Context, s *Server,
 	if !did {
 		return
 	}
-	cs.history = newHist
+	if ok, why := cs.commitCompaction(s, newHist); !ok {
+		cs.reportCompactionBlocked(s, conn, why)
+		return // window unchanged, but no longer silently so
+	}
 	cs.tokensIn = ta // refresh the footer ctx counter (statusFrame reads cs.tokensIn)
 	st := cs.statusFrame(s)
 	st.Compacted, st.TokensBefore, st.TokensAfter = true, tb, ta
@@ -496,6 +837,11 @@ func maybeAutoCompact(ctx context.Context, s *Server,
 func compactNow(ctx context.Context, s *Server,
 	models map[string]model.BaseChatModel, conn *wsConn, cs *connSession) {
 
+	// Same rule as the auto path: the flag describes the outcome of the MOST
+	// RECENT attempt, so every attempt starts by clearing it and only a refusal
+	// sets it. Clearing on success instead would leave a stale warning on any
+	// path that returns before the success line.
+	cs.compactionBlocked = ""
 	kr := keepRecentOrDefault(s.compaction.KeepRecent)
 	sumModel := compactionModel(s.compaction, models, cs.model)
 	if sumModel == nil {
@@ -507,9 +853,8 @@ func compactNow(ctx context.Context, s *Server,
 		// out so the TUI's compact block resolves; the error frame is what tells
 		// the user their explicit request did not happen and why, which a bare
 		// "nothing changed" status would not.
-		conn.write(proto.NewError(
-			"compaction skipped: the conversation could not be saved, " +
-				"so nothing was dropped from the context"))
+		cs.compactionBlocked = compactionNotDurable
+		conn.write(proto.NewError(compactionNotDurable))
 		conn.write(cs.statusFrame(s))
 		return
 	}
@@ -539,7 +884,14 @@ func compactNow(ctx context.Context, s *Server,
 		conn.write(cs.statusFrame(s))
 		return
 	}
-	cs.history = newHist
+	if ok, why := cs.commitCompaction(s, newHist); !ok {
+		// Same reasoning as the pre-compaction flush above: an explicit request
+		// that did not happen has to say so, not resolve as "nothing changed".
+		cs.compactionBlocked = why
+		conn.write(proto.NewError(why))
+		conn.write(cs.statusFrame(s))
+		return
+	}
 	cs.tokensIn = ta // refresh the footer ctx counter (statusFrame reads cs.tokensIn)
 	st := cs.statusFrame(s)
 	st.Compacted, st.TokensBefore, st.TokensAfter = true, tb, ta

@@ -89,6 +89,8 @@ var commandTable = []command{
 	{name: "restore-turn", help: "list main seams or revert to a prior turn", run: cmdRestoreTurn},
 	{name: "memory", help: "show active memory file path", run: cmdMemory},
 	{name: "distill", help: "merge redundant memories", helpKey: "tui.command.help.distill", run: cmdDistill},
+	{name: "memory-clear", help: "delete memories: /memory-clear <session|agent <id>|all> yes", run: cmdMemoryClear},
+	{name: "checkpoint", help: "list / create / plan / restore a session+memory+file checkpoint", run: cmdCheckpoint},
 	{name: "logs", help: "tail the structured log file (or report stderr)", run: cmdLogs},
 	{name: "fork", help: "fork this session: /fork [seq] (-1=all, >=0=up to seq)", run: cmdFork},
 	{name: "side", help: "start an ephemeral side conversation (V11)", run: cmdSide},
@@ -1167,6 +1169,10 @@ func (e featuresEntry) render(_ int, _ spinner.Model) string {
 // sessionsEntry renders the stored sessions list. Filled by the server reply.
 type sessionsEntry struct {
 	sessions []proto.SessionInfo
+	// note is the server's word about rows it did not send. The list is one
+	// page, and a prefix rendered as the whole list is how a bounded reply gets
+	// reported as a lost session.
+	note string
 }
 
 func (e *sessionsEntry) render(_ int, _ spinner.Model) string {
@@ -1175,6 +1181,9 @@ func (e *sessionsEntry) render(_ int, _ spinner.Model) string {
 	if len(e.sessions) == 0 {
 		b.WriteString("    " + warnStyle.Render("(none)") + "\n\n")
 		return b.String()
+	}
+	if e.note != "" {
+		b.WriteString("    " + warnStyle.Render(e.note) + "\n")
 	}
 	for _, s := range e.sessions {
 		title := s.Title

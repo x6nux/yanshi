@@ -1,6 +1,12 @@
 package store
 
-import "database/sql"
+import (
+	"database/sql"
+	"encoding/base64"
+	"fmt"
+	"strconv"
+	"strings"
+)
 
 // SessionSummary is a lightweight session row for list views.
 type SessionSummary struct {
@@ -56,13 +62,38 @@ func scanSession(scanner interface{ Scan(dest ...any) error }, ss *SessionSummar
 }
 
 // listSessionsWhere runs the canonical session-list SELECT with an extra WHERE
-// fragment (e.g. "WHERE archived = 0") and an optional LIMIT. The column list,
-// scan order, and ORDER BY live here so ListSessions and ListArchivedSessions
-// cannot drift apart.
-func (s *Store) listSessionsWhere(where string, limit int) ([]SessionSummary, error) {
-	q := "SELECT " + sessionColumns + " FROM sessions " +
-		where + " ORDER BY updated_at DESC"
+// fragment (e.g. "WHERE archived = 0"), an optional keyset cursor, and an
+// optional LIMIT. The column list, scan order, and ORDER BY live here so
+// ListSessions, ListArchivedSessions and ListSessionsPage cannot drift apart —
+// a paged read that ordered rows differently from the unpaged one would page
+// through a sequence no caller ever sees.
+//
+// The ORDER BY carries `id DESC` as a tie-break, and that is load-bearing
+// rather than cosmetic: updated_at is stored as time.Now().Unix(), so any two
+// sessions created or touched within the same second collide, and a cursor
+// over a non-total order cannot express "strictly after this row". Drop the
+// tie-break and the ORDER BY stops agreeing with the row-value predicate
+// below, which still compares ids — measured on a five-session walk, that
+// serves one session twice and never returns two others at all.
+// TestListSessions_CursorPaginationIsStable creates its five fixtures inside
+// one second precisely so it goes red if this is dropped.
+func (s *Store) listSessionsWhere(where string, limit int, after *sessionCursor) ([]SessionSummary, error) {
+	q := "SELECT " + sessionColumns + " FROM sessions " + where
 	args := []any{}
+	if after != nil {
+		// Row-value comparison (SQLite 3.15+) states "strictly past this
+		// position in the ORDER BY" as one predicate. The joiner depends on
+		// whether `where` already opened a clause: every caller today passes a
+		// non-empty fragment, but an unconditional AND turns the first empty
+		// one into a syntax error at runtime rather than a compile error here.
+		if strings.TrimSpace(where) == "" {
+			q += " WHERE (updated_at, id) < (?, ?)"
+		} else {
+			q += " AND (updated_at, id) < (?, ?)"
+		}
+		args = append(args, after.UpdatedAt, after.ID)
+	}
+	q += " ORDER BY updated_at DESC, id DESC"
 	if limit > 0 {
 		q += " LIMIT ?"
 		args = append(args, limit)
@@ -87,14 +118,118 @@ func (s *Store) listSessionsWhere(where string, limit int) ([]SessionSummary, er
 // updated first. A limit <= 0 returns all active rows. Archived sessions are
 // invisible here — use ListArchivedSessions to enumerate them (for /unarchive).
 func (s *Store) ListSessions(limit int) ([]SessionSummary, error) {
-	return s.listSessionsWhere("WHERE archived = 0", limit)
+	return s.listSessionsWhere("WHERE archived = 0", limit, nil)
 }
 
 // ListArchivedSessions returns ARCHIVED sessions (archived = 1) ordered by most-
 // recently-updated first, so the user can discover IDs to unarchive. A limit <= 0
 // returns all archived rows.
 func (s *Store) ListArchivedSessions(limit int) ([]SessionSummary, error) {
-	return s.listSessionsWhere("WHERE archived = 1", limit)
+	return s.listSessionsWhere("WHERE archived = 1", limit, nil)
+}
+
+// SessionPage is one page of ListSessionsPage plus the token that reaches the
+// next one.
+type SessionPage struct {
+	Sessions []SessionSummary
+	// NextCursor is empty exactly when this page is the last one, so a caller
+	// loops until it comes back empty rather than until a page comes back
+	// short. It is opaque: its encoding is this package's business and callers
+	// must only ever hand it back unmodified.
+	NextCursor string
+}
+
+// sessionCursor is a decoded position in the session list: the sort key of the
+// last row already delivered. Both components are needed because updated_at
+// alone is not unique — see listSessionsWhere for why that matters.
+type sessionCursor struct {
+	UpdatedAt int64
+	ID        string
+}
+
+// encode renders the cursor as the opaque token handed to callers. The
+// separator is safe unqualified because session ids come from newID(), which
+// emits hex.
+func (c sessionCursor) encode() string {
+	return base64.RawURLEncoding.EncodeToString(
+		[]byte(strconv.FormatInt(c.UpdatedAt, 10) + "|" + c.ID))
+}
+
+// decodeSessionCursor reverses encode. A malformed token is an error rather
+// than a silent fall back to the first page: a client that corrupts its cursor
+// would otherwise restart the list without ever being told, and would read the
+// newest sessions again believing it was making progress.
+func decodeSessionCursor(tok string) (*sessionCursor, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(tok)
+	if err != nil {
+		return nil, fmt.Errorf("store: bad session cursor: %w", err)
+	}
+	ts, id, ok := strings.Cut(string(raw), "|")
+	if !ok || id == "" {
+		return nil, fmt.Errorf("store: bad session cursor: malformed payload")
+	}
+	n, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("store: bad session cursor: %w", err)
+	}
+	return &sessionCursor{UpdatedAt: n, ID: id}, nil
+}
+
+// ListSessionsPage returns one page of ACTIVE sessions in the same order as
+// ListSessions, starting just past cursor (empty cursor = the first page).
+//
+// This is keyset paging, not OFFSET paging. What that buys is narrow and worth
+// stating exactly, because the obvious summary of it is wrong. OFFSET counts
+// rows before the page, so ANY insert or reordering shifts every later page by
+// one and the reader sees rows twice; a cursor names a position in the ordering
+// instead, so mere churn elsewhere in the table cannot shift the walk.
+//
+// It does NOT make the walk exactly-once, and it cannot, because the sort key
+// here is MUTABLE. Both failure modes are reachable and both are measured:
+//
+//   - A row moved AHEAD of the cursor is dropped. Appending a message to a
+//     session the walk has not reached yet does this — five rows walk out as
+//     four, silently. Appends are the common case in this table.
+//   - A row moved BEHIND the cursor is served AGAIN. This needs updated_at to
+//     go backwards, which store.RestoreSessionAfterFailedRevert does: it
+//     rewrites session metadata from a pre-rollback snapshot, so a session the
+//     walk already passed reappears in front of it.
+//
+// So a full walk is a best-effort snapshot: neither "every session was seen"
+// nor "no session twice" survives concurrent writers. Callers needing either
+// guarantee must sort on something immutable (created_at, id).
+// TestListSessionsPage_ConcurrentUpdateCanDropARow and
+// TestListSessionsPage_RestoredSessionCanBeServedTwice pin both, so nobody
+// infers the stronger promise from the weaker one.
+//
+// limit shares clampLimit with the message log: an unspecified page becomes
+// DefaultMessagePageSize and an over-large one is capped at MaxMessagePageSize.
+// The bounds are the same numbers for the same reason, so they are not
+// duplicated under session-flavoured names.
+func (s *Store) ListSessionsPage(cursor string, limit int) (SessionPage, error) {
+	var after *sessionCursor
+	if cursor != "" {
+		c, err := decodeSessionCursor(cursor)
+		if err != nil {
+			return SessionPage{}, err
+		}
+		after = c
+	}
+	n := clampLimit(limit)
+	// Over-fetch one row: it answers "is there more" without a second query,
+	// and without the alternative of always emitting a cursor, which hands the
+	// caller one guaranteed empty page at the end of every walk.
+	rows, err := s.listSessionsWhere("WHERE archived = 0", n+1, after)
+	if err != nil {
+		return SessionPage{}, err
+	}
+	p := SessionPage{Sessions: rows}
+	if len(rows) > n {
+		p.Sessions = rows[:n]
+		last := p.Sessions[n-1]
+		p.NextCursor = sessionCursor{UpdatedAt: last.UpdatedAt, ID: last.ID}.encode()
+	}
+	return p, nil
 }
 
 // GetSession returns the session with the given id (active OR archived), or

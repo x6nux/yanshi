@@ -6,12 +6,16 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
+	"log/slog"
+	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/x6nux/yanshi/internal/secrets"
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
 )
 
 // sqlOpener is a test-visible indirection over sql.Open that allows tests
@@ -93,6 +97,28 @@ type OpenOptions struct {
 	MaxOpenConns      int // read pool size (0 = default 4; :memory: forced 1)
 	BusyTimeoutMs     int // busy_timeout in ms (0 = default 5000)
 	WALAutoCheckpoint int // wal_autocheckpoint pages (0 = default 1000; negative = disable)
+
+	// SelfHeal allows OpenWith to move an UNREADABLE database aside and start
+	// an empty one rather than refusing to open. It defaults to FALSE, and the
+	// default is the safety property: healing renames the user's data, which
+	// only the process that owns the database has any business doing.
+	//
+	// Most openers are not owners. `yanshi doctor` is a READ-ONLY diagnostic —
+	// with healing on it would quarantine the database it was asked to inspect
+	// and then report StatusOK, so a user running "check whether anything is
+	// wrong" would have their history moved away and be told everything is
+	// fine. `yanshi vcs-mcp` is worse: bootstrap spawns one per ACP agent, so
+	// several processes would race to quarantine the same file. The goal and
+	// auth subcommands are likewise incidental readers. All of these go
+	// through Open, which uses DefaultOptions, so they get the safe default
+	// without opting into anything.
+	//
+	// bootstrap.Build FORWARDS this from bootstrap.Options.SelfHeal rather than
+	// setting it — it has six callers and only two of them own the database.
+	// The authoritative list of entries allowed to turn it on, with a reason
+	// per entry, is bootstrap.selfHealAllowedSites, which an AST test keeps in
+	// sync with the code.
+	SelfHeal bool
 }
 
 // DefaultOptions is the fallback for zero OpenOptions fields.
@@ -109,6 +135,16 @@ var DefaultOptions = OpenOptions{
 // modernc creates a database file *named that literal string* in the current
 // working directory — silently, with no error to notice. storage.sqlite_path
 // has no config default, so an omitted key reaches every caller here.
+//
+// When opts.SelfHeal is set, an UNREADABLE database file self-heals instead of
+// refusing to start: the file is moved aside and an empty one takes its place.
+// yanshi ships as one local binary, so a corrupt yanshi.db otherwise means the
+// TUI never comes up and the user has no second tool to repair it with — losing
+// history is bad, losing the program that could have told you the history was
+// lost is worse. The old file is renamed, never deleted, and the backup path is
+// logged so the data is still there for anyone who wants to salvage it. See
+// isCorruptDB for why the trigger is narrow, and OpenOptions.SelfHeal for why
+// it is off unless the caller owns the database.
 func OpenWith(path string, opts OpenOptions) (*Store, error) {
 	if path == "" {
 		return nil, errors.New("store: empty database path")
@@ -125,8 +161,176 @@ func OpenWith(path string, opts OpenOptions) (*Store, error) {
 	if ckpt == 0 {
 		ckpt = DefaultOptions.WALAutoCheckpoint
 	}
-	dsn := buildDSN(path, busyMs, ckpt)
-	db, err := sqlOpener("sqlite", dsn)
+	s, err := openPrepared(path, maxOpen, busyMs, ckpt)
+	if err == nil || !opts.SelfHeal || !isCorruptDB(err) {
+		return s, err
+	}
+	return healCorrupt(path, maxOpen, busyMs, ckpt, err)
+}
+
+// healWaitTimeout bounds how long an opener waits for ANOTHER process to
+// finish healing before giving up and reporting the corruption.
+const healWaitTimeout = 5 * time.Second
+
+// healLockTTL bounds how long a heal lock is honoured. Healing is one rename
+// plus one round of CREATE TABLE — milliseconds — so a lock older than this
+// belongs to a process that died holding it. Never healing again is a worse
+// outcome than proceeding, so a lock that stale is taken over.
+const healLockTTL = time.Minute
+
+// healCorrupt moves the unreadable database at path aside and opens a fresh one
+// in its place. openErr is the corruption that triggered healing and is what
+// comes back if healing does not work out.
+//
+// This function only ACQUIRES the lock; the repair itself is healUnderLock, so
+// that every statement which touches the database sits inside the critical
+// section. A caller that loses the race waits here and then runs the same
+// repair, which by then finds a healthy database and simply adopts it.
+//
+// Healing is EXCLUSIVE ACROSS PROCESSES, and that is a data-safety property,
+// not tidiness. Several yanshi processes routinely hold one project database at
+// once: the TUI's own election in cli.bootstrapOwner Builds BEFORE it claims the
+// lockfile, so two windows starting together both build, and `yanshi serve` can
+// be running beside either. Measured without the lock: the second healer renames
+// the database the first one had just repaired, the first keeps writing to an
+// orphaned inode, and the project is left with three files and an empty store.
+// Quarantining is destructive precisely because it is a rename, so it has to
+// happen at most once — hence the lock, and hence the recheck under it.
+func healCorrupt(path string, maxOpen, busyMs, autoCkpt int, openErr error) (*Store, error) {
+	deadline := time.Now().Add(healWaitTimeout)
+	for {
+		unlock, lockErr := acquireHealLock(path)
+		if lockErr == nil {
+			healed, err := healUnderLock(path, maxOpen, busyMs, autoCkpt, openErr)
+			unlock()
+			return healed, err
+		}
+		if !errors.Is(lockErr, fs.ErrExist) {
+			// The lock could not be CREATED — a read-only directory, EROFS, a
+			// full disk. Healing needs to rename and recreate inside this same
+			// directory, so it cannot possibly succeed; waiting would only add
+			// healWaitTimeout to a startup that is going to fail anyway
+			// (measured: 5.02s of it) before reporting the same error.
+			return nil, openErr
+		}
+		if time.Now().After(deadline) {
+			// A peer has held the lock for the whole timeout. Degrade to the
+			// pre-healing behaviour — report the corruption — rather than hang.
+			return nil, openErr
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// healUnderLock performs the repair with the heal lock held. Everything that
+// TOUCHES the database lives here, and that containment is the invariant the
+// whole design rests on: openPrepared is not a passive look, because SQLite
+// creates the file when it is missing and takes an exclusive lock on the WAL.
+//
+// Two distinct races were measured before the rule was made absolute. A waiter
+// polling openPrepared during the winner's rename→create gap builds its OWN
+// database at the path the winner is about to write, and the winner's PRAGMA
+// journal_mode=WAL then fails with SQLITE_BUSY (13 runs in 60) — so the user is
+// told the database is corrupt just after it was successfully repaired (0.5%
+// with two windows). And once several waiters were released together they ran
+// migrate() concurrently on the same fresh file, where addColumnIfMissing is a
+// check-then-ALTER that is not atomic across connections: "duplicate column
+// name: agent_id", "disk I/O error", "unable to open database file", 3 failures
+// in 200. Serialising every open behind the lock removes both.
+func healUnderLock(path string, maxOpen, busyMs, autoCkpt int, openErr error) (*Store, error) {
+	// Recheck under the lock. The holder we queued behind may have finished
+	// between our failed open and our acquiring the lock, in which case the
+	// file at path is now a healthy database and renaming it away would undo
+	// their repair.
+	if healthy, err := openPrepared(path, maxOpen, busyMs, autoCkpt); err == nil {
+		return healthy, nil
+	}
+
+	// A failed quarantine is NOT fatal on its own, and the early return that
+	// used to be here was wrong: if the file has already been moved (a racing
+	// healer got there first) the rename fails with ENOENT while the reopen
+	// below SUCCEEDS, because SQLite simply creates a new database at the now
+	// empty path. Bailing out on mvErr turned that recoverable state into a
+	// refusal to start. Only the reopen decides.
+	//
+	// With the recheck above in place this is defence in depth, not a live
+	// path, and no test distinguishes it — measured, restoring the early return
+	// leaves the suite green. It stays because "the rename failed" is not
+	// evidence about whether the database can be opened, and only the thing
+	// that answers that question should be allowed to fail the boot.
+	backup, mvErr := quarantineCorrupt(path)
+	healed, healErr := openPrepared(path, maxOpen, busyMs, autoCkpt)
+	if healErr != nil {
+		// Recovery failed too, so hand back nothing: a Store that cannot be
+		// written to would push the same error out to whichever feature
+		// happens to touch storage first, far from the reason.
+		//
+		// BOTH errors go in the message. The original stays wrapped, because
+		// it is what is wrong with the database and callers test for it with
+		// isCorruptDB; the rebuild error is included as text because
+		// "unreadable" and "unreadable AND the rebuild hit a locked WAL" are
+		// very different situations for whoever is reading the log, and
+		// reporting only the first made the second indistinguishable from a
+		// database nobody had touched.
+		return nil, fmt.Errorf("store: %s was unreadable (%w) and could not be rebuilt: %v",
+			path, openErr, healErr)
+	}
+	if mvErr != nil {
+		slog.Warn("store: database was unreadable and could not be moved aside; started an empty one",
+			"path", path, "err", openErr, "move_err", mvErr)
+		return healed, nil
+	}
+	slog.Warn("store: database was unreadable; moved it aside and started an empty one",
+		"path", path, "backup", backup, "err", openErr)
+	return healed, nil
+}
+
+// acquireHealLock takes a cross-process exclusive lock on healing path, using
+// O_EXCL create as the mutex — the portable one, since this repo targets
+// Windows too.
+//
+// A nil error means the lock was won and unlock must be called. fs.ErrExist
+// means somebody else holds it and waiting is worthwhile; ANY OTHER error means
+// the lock could not be created at all and healing here is impossible, which
+// the caller must not confuse with contention. Returning a bare false for both
+// made a read-only directory wait out the full healWaitTimeout before failing.
+//
+// LIMIT: O_EXCL create is atomic on local filesystems, which is what yanshi
+// targets (one binary, one project directory). On NFSv2 it is not, and on some
+// network filesystems it is only advisory — a sqlite_path on a network share
+// can therefore still admit two healers. Nothing here detects that.
+func acquireHealLock(path string) (unlock func(), err error) {
+	lock := path + ".healing"
+	// Two attempts, not a retry loop: the second exists only to take over a
+	// lock abandoned by a dead process, and looping past that would let two
+	// processes steal from each other indefinitely.
+	for range 2 {
+		f, openErr := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if openErr == nil {
+			_ = f.Close()
+			return func() { _ = os.Remove(lock) }, nil
+		}
+		if !errors.Is(openErr, fs.ErrExist) {
+			return nil, openErr
+		}
+		fi, statErr := os.Stat(lock)
+		if statErr != nil || time.Since(fi.ModTime()) <= healLockTTL {
+			return nil, openErr
+		}
+		// Abandoned by a process that died holding it. Between this Remove and
+		// the next O_EXCL create another reclaimer can slip in; it loses the
+		// create and is told fs.ErrExist, which is the correct answer for it.
+		_ = os.Remove(lock)
+	}
+	return nil, fs.ErrExist
+}
+
+// openPrepared opens path, sizes the pool, applies the pragmas and runs the
+// migrations. It closes the handle and returns a nil Store on every failure,
+// which is what lets OpenWith rename the file afterwards: Windows refuses to
+// rename a file that is still open.
+func openPrepared(path string, maxOpen, busyMs, autoCkpt int) (*Store, error) {
+	db, err := sqlOpener("sqlite", buildDSN(path, busyMs, autoCkpt))
 	if err != nil {
 		return nil, err
 	}
@@ -148,6 +352,88 @@ func OpenWith(path string, opts OpenOptions) (*Store, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// SQLite result codes meaning "this file is not a usable database".
+const (
+	sqliteCorrupt = 11 // SQLITE_CORRUPT — disk image is malformed
+	sqliteNotADB  = 26 // SQLITE_NOTADB — header is not SQLite's
+)
+
+// isCorruptDB reports whether err says the file itself is unreadable, as
+// opposed to something about this attempt to use it having gone wrong.
+//
+// The predicate is this narrow ON PURPOSE, because the caller's response is to
+// rename the user's data away. A read-only file, a full disk, a permissions
+// problem or an outright bug in migrate() all produce errors that a rebuild
+// would appear to "fix" — by discarding a database that was fine. Widening
+// this turns every transient storage fault into data loss.
+// internal/store::TestOpenWith_DoesNotQuarantineARecoverableFailure is the one
+// test that goes red if it widens — verified by widening it and reading the
+// whole result list, not by picking a plausible name. It breaks migrate() on a
+// perfectly good database with a healing opener and requires OpenWith to leave
+// the file alone.
+//
+// This comment named TestOpenWith_MigrateFailsOnReadOnlyDB for three rounds and
+// was wrong every time: that test opens with store.Open, so healing is off and
+// the predicate is never consulted — it passes with the predicate fully open.
+// Naming the wrong guard is not a harmless slip, because it is the only thing
+// telling the next editor that widening this has a cost, and GOV9 cannot catch
+// it (the symbol it names does exist).
+//
+// Detection REACTS to the failed open rather than probing with PRAGMA
+// integrity_check. integrity_check is strictly more sensitive — measured, a
+// real database whose tail has been overwritten with garbage opens, migrates
+// and serves reads without complaint, and integrity_check would flag it — but
+// it reads every page on every startup, and throwing away a database that
+// still answers every query is a worse outcome than leaving it alone.
+func isCorruptDB(err error) bool {
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	return se.Code() == sqliteCorrupt || se.Code() == sqliteNotADB
+}
+
+// quarantineCorrupt renames the unreadable database out of the way and returns
+// the backup path.
+//
+// The WAL and SHM sidecars move with it, but do NOT read that as "the backup is
+// therefore a complete database". On every path that actually reaches here the
+// backup is the main file alone, because SQLite has already destroyed the
+// sidecars — measured across all three corruption shapes that trigger healing
+// (garbage from byte zero, a bogus header page size, a smashed schema page):
+// the open that fails reads -wal, rejects it, and deletes both before this
+// function runs. The converse closes the other half: a database with a VALID
+// un-checkpointed WAL opens successfully and recovers its 3 MB of pending
+// writes, so it never reaches healing at all. There is no reachable case in
+// which a user's newest writes survive in a sidecar to be preserved here.
+//
+// So the loop is DEAD CODE on this platform, kept deliberately and cheaply. It
+// is retained because the measurement is platform-specific — this repo is
+// developed on Windows, where deleting a file with an open handle behaves
+// differently, so a sidecar may well outlive the failed open there — and
+// because leaving a stale -wal beside the replacement database is the one
+// outcome worth four lines to rule out. It is NOT needed to protect the new
+// database: measured, a foreign -wal beside a freshly created database is
+// ignored (the salt does not match) and nothing from the old one leaks in.
+// TestQuarantineCorrupt_TakesTheSidecarsWithIt calls this function directly for
+// that reason; it is not evidence of a production path.
+//
+// The timestamp is nanosecond, not second: two heals of the same path inside
+// one second would otherwise silently overwrite the first backup — the one
+// case where this function destroys the data it exists to preserve.
+func quarantineCorrupt(path string) (string, error) {
+	backup := path + ".corrupt-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	if err := os.Rename(path, backup); err != nil {
+		return "", err
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if err := os.Rename(path+suffix, backup+suffix); err != nil {
+			_ = os.Remove(path + suffix)
+		}
+	}
+	return backup, nil
 }
 
 // buildDSN appends the _pragma query string for per-connection PRAGMAs (modernc
@@ -194,10 +480,56 @@ func (s *Store) applyConnectionPragmas() error {
 		_, err := s.DB.Exec("PRAGMA foreign_keys=ON")
 		return err
 	}
-	if _, err := s.DB.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		return fmt.Errorf("store: set WAL: %w", err)
+	// Switching journal mode needs a brief EXCLUSIVE lock, and busy_timeout does
+	// not cover it — SQLite returns SQLITE_BUSY straight away rather than
+	// waiting. Two processes opening one project at the same time therefore had
+	// a real chance of one failing with "database is locked" before it had done
+	// anything at all: measured, 8 simultaneous first opens failed on roughly
+	// every attempt. That is the ordinary case, not an exotic one, since the
+	// TUI's lockfile election is decided only after both have built their store.
+	//
+	// Retrying is the whole fix, because the contention is momentary and the
+	// winner leaves the database in the very mode the loser wanted. Once any
+	// process has set WAL the pragma stops needing the exclusive lock, so this
+	// converges immediately rather than spinning for the full budget.
+	var err error
+	for range 100 {
+		if _, err = s.DB.Exec("PRAGMA journal_mode=WAL"); err == nil {
+			return nil
+		}
+		if !isTransientOpenErr(err) {
+			return fmt.Errorf("store: set WAL: %w", err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	return nil
+	return fmt.Errorf("store: set WAL: %w", err)
+}
+
+// SQLite result codes that mean "another process got there first, try again".
+// Neither says anything about the data, which is why they are deliberately NOT
+// in isCorruptDB's set — healing on one would quarantine a database whose only
+// problem is that somebody else is using it.
+const (
+	// sqliteBusy is SQLITE_BUSY: a conflicting lock is held.
+	sqliteBusy = 5
+	// sqliteIOErrDeleteNoent is SQLITE_IOERR_DELETE_NOENT, the extended code
+	// for "tried to delete a file that is no longer there". A concurrent opener
+	// removing the same journal or WAL sidecar produces it, and it is benign.
+	sqliteIOErrDeleteNoent = 5898
+)
+
+// isTransientOpenErr reports whether err is one of the contention codes above.
+//
+// This list is narrow on purpose and is NOT a general "retry storage errors"
+// policy: it covers exactly the two codes measured coming out of concurrent
+// first opens. Widening it would start retrying real I/O failures, which is how
+// a broken disk turns into a hang instead of an error.
+func isTransientOpenErr(err error) bool {
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	return se.Code() == sqliteBusy || se.Code() == sqliteIOErrDeleteNoent
 }
 
 // WriteTx serializes WAL writes inside one process. It locks writeMu, begins a
@@ -317,6 +649,13 @@ func (s *Store) migrate() error {
 	); err != nil {
 		return err
 	}
+	// INF3: pinned_seqs arrived after context_events shipped, so CREATE TABLE IF
+	// NOT EXISTS skips it on every database that already has the table — which is
+	// every database the previous round touched. Without this line the column
+	// exists only for fresh installs, and an upgrade fails on the first read.
+	if err := s.addColumnIfMissing("context_events", "pinned_seqs", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	// C13: memory consolidation lineage. A distillation writes a merged row and
 	// marks its inputs superseded — it never deletes — so these three columns
 	// are what make the merge auditable and reversible. Pre-C13 rows default to
@@ -329,6 +668,47 @@ func (s *Store) migrate() error {
 		return err
 	}
 	if err := s.addColumnIfMissing("memories", "distilled_at", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	// W-D-03: use_count makes "unused" answerable, which is what the memory
+	// quota prunes by. Pre-W-D-03 rows default to 0 — literally true, since
+	// nothing was counting — so the first prune after an upgrade treats the
+	// whole existing table as unused and falls back to oldest-first. That is
+	// the honest reading and it is why the quota defaults to unlimited: an
+	// operator has to turn it on, and by the time they do the counter has been
+	// running.
+	//
+	// DELIBERATELY NOT IN memoryColumns OR THE Memory STRUCT. Only SQL reads it
+	// (the prune's ORDER BY) and only SQL writes it (markMemoriesUsed), so
+	// exposing it as a Go field would add a value nothing consumes and a scan
+	// position every reader has to keep in step.
+	if err := s.addColumnIfMissing("memories", "use_count", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	// W-D-07: provenance. source_session_id names the session whose log produced
+	// the row; source_seq is where in that log the derivation started.
+	//
+	// THE PAIR IS NOT REDUNDANT WITH session_id, EVEN THOUGH EVERY CURRENT
+	// WRITER SETS THEM TO THE SAME VALUE. session_id is a RETRIEVAL DIMENSION —
+	// a caller may leave it empty on purpose (WriteMemory does), and a future
+	// one may rescope a row. Provenance is a fact about how the row came to
+	// exist and must not move when a scope does. The split is also what makes
+	// the upgrade honest: pre-W-D-07 rows carry a session_id but nobody recorded
+	// their origin, and defaulting source_session_id to '' says exactly that,
+	// whereas reusing session_id would have every existing memory claim a
+	// position (seq 0) it was never derived from.
+	//
+	// '' IS THE "NO PROVENANCE" MARKER, NOT source_seq = 0. Seq 0 is a real row,
+	// so a window legitimately starts there; see MemorySource.
+	//
+	// Kept OUT of memoryColumns and the Memory struct for use_count's reason:
+	// MemorySource is the only reader and it selects the pair by name, so
+	// carrying them through every scan would add two fields nothing consumes
+	// and two scan positions three readers have to keep in step.
+	if err := s.addColumnIfMissing("memories", "source_session_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing("memories", "source_seq", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	// Every default read now carries `superseded_by = ''`, which the dimension
@@ -438,6 +818,21 @@ func (s *Store) addColumnIfMissing(table, col, decl string) error {
 		}
 	}
 	_, err = s.DB.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, col, decl))
+	if err != nil && strings.Contains(err.Error(), "duplicate column name") {
+		// The check above and this ALTER are not one atomic step, and nothing
+		// serialises two PROCESSES opening the same database: both read the
+		// column as missing, both add it, and the loser gets this error. That
+		// is not a failure — the postcondition this function promises (the
+		// column exists) is exactly what the winner just established.
+		//
+		// It is reachable without any of the self-heal machinery: two yanshi
+		// processes starting on one project at the same time is the ordinary
+		// case (the TUI's lockfile election is decided AFTER both have built).
+		// Measured before this check, a 6-way concurrent open failed roughly
+		// 2% of runs with "duplicate column name: worktree_id / session_id /
+		// use_count" — whichever migration the two happened to collide on.
+		return nil
+	}
 	return err
 }
 
@@ -501,6 +896,116 @@ CREATE TABLE IF NOT EXISTS messages (
     FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
+
+-- INF3 (ADR-0015): compaction markers. The messages table stays byte-identical
+-- and append-only; what changes is that the active window is now a PROJECTION
+-- over it rather than a raw SELECT. A 'compact' event says "the kept tail starts
+-- at hidden_seq, plus these scattered survivors below it"; an 'undo' event pops
+-- the most recent one. Nothing is ever updated or deleted here — reverting is
+-- expressed by appending.
+--
+-- pinned_seqs is not an optimisation. ctxcompact.Plan pins messages ANYWHERE in
+-- the history, so a compacted window is a set with holes and no single watermark
+-- describes it; see store.contextBoundary for the full reversal.
+--
+-- No foreign key and no DeleteSession cascade, deliberately. Session ids are
+-- random and never reused, so events left behind by a deleted session are
+-- unreachable rather than stale, and paying a few orphan rows buys the stronger
+-- property that this table has exactly one verb. store.AppendContextEvent's doc
+-- states the rule; internal/store's own test enforces it by scanning the
+-- package for UPDATE/DELETE against this table.
+CREATE TABLE IF NOT EXISTS context_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  TEXT    NOT NULL,
+    kind        TEXT    NOT NULL,
+    hidden_seq  INTEGER NOT NULL,
+    pinned_seqs TEXT    NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_context_events_session
+    ON context_events(session_id, id);
+
+-- W-D-04: cold storage. One gzip blob per session, holding every row that used
+-- to sit in the messages table. Per-session rather than per-row because a single
+-- chat message does not compress — the win comes from the shared vocabulary
+-- across a whole transcript.
+--
+-- DO NOT CONFUSE THIS WITH sessions.archived (V10). That flag hides a session
+-- from the active list and changes nothing about storage; this table IS the
+-- storage. A session can be in either state independently of the other, which is
+-- why the names here avoid the word "archived" entirely.
+--
+-- max_seq is the highest seq inside the blob. It is here rather than derived so
+-- ProjectWindow's stale-boundary backstop can keep working on a compressed
+-- session without inflating the blob to answer one integer.
+CREATE TABLE IF NOT EXISTS cold_sessions (
+    session_id TEXT PRIMARY KEY,
+    blob       BLOB    NOT NULL,
+    max_seq    INTEGER NOT NULL
+);
+
+-- W-D-06: a named moment three dimensions can be rolled back to.
+--
+-- The three columns groups are the three dimensions and they are stored very
+-- differently on purpose, because the three underlying stores have different
+-- properties:
+--
+--   session: hidden_seq + pinned_seqs, i.e. a COPY OF THE CONTEXT BOUNDARY.
+--     messages is append-only and context_events is append-only, so nothing
+--     about a session's past can be lost; a checkpoint therefore only has to
+--     remember where the window stood, and restoring is one more append
+--     (ADR-0015's "checkpoints degrade to appending one event").
+--
+--   memory: a memories BLOB, a real snapshot. Memories are UPDATEd (use_count,
+--     superseded_by) and DELETEd (the quota prune, /memory-clear), so there is
+--     no append-only history to project a past state out of. gzip JSON, the
+--     same encoder cold_sessions uses.
+--
+--   files: file_commit, just an id. internal/vcs already stores every version
+--     of every file and can preview, freeze and restore them; duplicating any
+--     of that here would be a second copy of the working tree.
+CREATE TABLE IF NOT EXISTS checkpoints (
+    id          TEXT    PRIMARY KEY,
+    label       TEXT    NOT NULL DEFAULT '',
+    session_id  TEXT    NOT NULL DEFAULT '',
+    hidden_seq  INTEGER NOT NULL DEFAULT 0,
+    pinned_seqs TEXT    NOT NULL DEFAULT '',
+    memories     BLOB    NOT NULL,
+    memory_count INTEGER NOT NULL DEFAULT 0,
+    file_commit  TEXT    NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_created
+    ON checkpoints(created_at DESC, id);
+
+-- W-D-08: user messages queued for a session that may or may not be connected.
+--
+-- NOT EXPRESSED AS A tasks ROW, and the reason is concrete rather than
+-- stylistic: task.Broker.Claim calls store.ListPending(1) and claims whatever
+-- comes back WITHOUT filtering by type, so a queued chat message parked in the
+-- tasks table would be picked up by the next cmd/agent-worker and executed as a
+-- work item. The two queues also have opposite lifecycles — a task is claimed,
+-- heartbeated, retried and can fail; a queued message is delivered once to the
+-- session that owns it and has no worker, no ownership and no retry.
+--
+-- ADR-0015 constraint 1 DOES NOT APPLY HERE. That rule is about
+-- context_events, which must stay INSERT-only because it is the compaction log.
+-- This table is a work queue: marking a row consumed is the whole point, and
+-- expressing consumption by appending would mean re-deriving delivery state on
+-- every read.
+--
+-- consumed_at rather than DELETE so "what was queued and when did it land" is
+-- still answerable after delivery; nothing here is large enough to be worth
+-- reclaiming.
+CREATE TABLE IF NOT EXISTS queued_messages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  TEXT    NOT NULL,
+    content     TEXT    NOT NULL,
+    created_at  INTEGER NOT NULL,
+    consumed_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_queued_messages_session
+    ON queued_messages(session_id, id);
 
 -- S6: permission decisions. The records auditPermission already built existed
 -- only as stderr log lines, so "who approved that rm last night" was

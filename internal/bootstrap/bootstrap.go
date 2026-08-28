@@ -50,6 +50,8 @@ import (
 	"github.com/x6nux/yanshi/internal/vcs"
 
 	agentregistry "github.com/x6nux/yanshi/internal/agent/registry"
+
+	"github.com/x6nux/yanshi/internal/agent/upkeep"
 )
 
 // visionUsageAccumulator is the auxiliary model token usage sink (Tier G).
@@ -173,6 +175,15 @@ type App struct {
 	// it early would leave every dead server permanently marked Ready.
 	mcpHealthCancel context.CancelFunc
 
+	// Upkeep is the W-D background maintenance loop (cold-session compression,
+	// cross-session memory extraction). Nil only when the store is nil.
+	//
+	// Shutdown must Wait() on it for the same reason C1Scheduler does: a sweep
+	// in flight is mid-transaction, and closing the store underneath it turns a
+	// routine compression into "database is closed" — with the rows already
+	// deleted if the timing is unlucky.
+	Upkeep *upkeep.Worker
+
 	// C1Scheduler is the automation tick loop started by BuildAutomation as a
 	// goroutine over the root context. Nil when C1 failed to build.
 	//
@@ -249,6 +260,33 @@ type Options struct {
 	// redirected to a file so structured log lines do not corrupt the TUI
 	// render. Headless modes leave this false and keep stderr.
 	TUIMode bool
+
+	// SelfHeal lets Build move an UNREADABLE database aside and start an empty
+	// one instead of failing. It defaults to false, and the default is the
+	// safety property: healing renames the user's history away, which only a
+	// process that owns the database has any business doing.
+	//
+	// Build has six callers and they are not alike. Two set this:
+	//
+	//   - cmd/yanshi runServe — the daemon; it IS the backend for the project.
+	//   - cli.bootstrapOwner, and only when the caller is the interactive TUI
+	//     — it wins the lockfile election and becomes the backend. This is the
+	//     scenario healing exists for: a corrupt yanshi.db otherwise means the
+	//     TUI never comes up and the user has no second tool to repair it.
+	//
+	// The other four must not, because they are short-lived processes attached
+	// to someone else's database, and several of them run concurrently:
+	//
+	//   - runACPServer — one per editor window.
+	//   - runPR — one-shot.
+	//   - runApp — a JSON-RPC subprocess.
+	//   - runGoal — a batch run; failing loudly is more useful than discarding
+	//     history, since a human is reading its output.
+	//
+	// cli's non-interactive entries (exec, headless) share bootstrapOwner but
+	// leave this false for the same reason: they report the error to a user who
+	// is right there and can act on it, rather than deciding to discard data.
+	SelfHeal bool
 
 	// WorkRoot overrides the directory autoVCS scans into its initial main
 	// commit. Production leaves it empty and Build uses os.Getwd().
@@ -428,6 +466,9 @@ func Build(opts Options) (*App, error) {
 		MaxOpenConns:      cfg.Storage.WALMaxOpenConns,
 		BusyTimeoutMs:     cfg.Storage.BusyTimeoutMs,
 		WALAutoCheckpoint: cfg.Storage.WALAutoCheckpoint,
+		// Forwarded, never hardcoded. Build has six callers and only two of
+		// them own the database; see Options.SelfHeal.
+		SelfHeal: opts.SelfHeal,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: open store: %w", err)
@@ -1337,6 +1378,15 @@ func Build(opts Options) (*App, error) {
 		}
 	}
 	httpCfg.DistillModel = distillModel
+	// W-D: the background upkeep sweep, over the SAME root ctx as the
+	// automation scheduler, so App.cancel stops both and App.Shutdown joins
+	// both before closing the store.
+	//
+	// Assembled HERE rather than beside the other subsystems because it shares
+	// distillModel: its memory job calls the same tools.DistillMemories entry
+	// point the WS handler does, and giving it its own model selection would be
+	// a second place for an operator's batch.rlm_model to be honoured or not.
+	upkeepWorker := BuildUpkeep(ctx, *cfg, st, distillModel)
 	// S10: inject the process-wide redactor so the SSE writeSSEFrame and
 	// the WS wsConn.write boundaries redact every outbound frame.
 	httpCfg.Redactor = redactor
@@ -1442,6 +1492,7 @@ func Build(opts Options) (*App, error) {
 		LSP:             lspMgr,
 		MCP:             mcpManager,
 		C1Scheduler:     c1Scheduler,
+		Upkeep:          upkeepWorker,
 		Approvals:       approvalMgr,
 		ShellManager:    shellManager,
 		SecureFactory:   secureFactory,
@@ -1660,6 +1711,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if a.C1Scheduler != nil {
 		a.C1Scheduler.Wait()
 	}
+	// Same reasoning, same ordering: the upkeep sweep observes a.cancel()
+	// above, and a compression in flight must finish before the store closes —
+	// it has already written the blob and is about to delete the rows.
+	a.Upkeep.Wait()
 	if err := a.Server.Shutdown(ctx); err != nil {
 		errs = append(errs, err)
 	}

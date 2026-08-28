@@ -164,7 +164,18 @@ type Orchestrator struct {
 	maxIters    int
 	compaction  CompactionConfig
 
-	// runners memoizes per-model+per-mode Runners, keyed by runnerCacheKey.
+	// runners memoizes Runners keyed by runnerCacheKey (model + mode + model id).
+	//
+	// There is deliberately NO eviction API. A FlushRunners existed and had
+	// zero production callers, because there is nothing for it to flush: the
+	// four things a runner bakes in — instruction, agentTools, maxIters,
+	// compaction — are assigned once in New() and never written again anywhere
+	// in non-test code, and the key fully determines the rest. The one value
+	// that genuinely could go stale was the per-model compaction window, and
+	// flushing was never the fix for it; putting modelID in the key is (see
+	// runnerCacheKey). An exported knob with eviction semantics only invites
+	// the next work package to reach for it — this task's own brief proposed
+	// exactly that, as the alternative to refreshing the prompt per run.
 	runners sync.Map
 
 	baseInstruction string
@@ -228,10 +239,23 @@ const (
 // text instead of duplicating the wording and risking drift.
 const DefaultInstruction = "You are yanshi's orchestrator. Use tools when helpful."
 
-// runnerCacheKey uniquely identifies a cached ADK Runner by model pointer + mode.
+// runnerCacheKey uniquely identifies a cached ADK Runner by model pointer,
+// tool mode, and registry model id.
+//
+// modelID is part of the key because runnerFor BAKES a window into the agent it
+// caches: wrapCompaction sizes every compaction gate from
+// o.compaction.windowFor(modelID). Two turns can reach the same model POINTER
+// under different ids — a request naming a model the registry does not have
+// leaves opts.Model nil (so the turn runs on o.rawModel) while ModelID keeps
+// the requested name, and a request naming nothing lands on the same rawModel
+// under the sorted-first name. Without modelID in the key, whichever of those
+// arrived first would decide the compaction window for every later one, and
+// the symptom — a threshold sized for the wrong provider — is invisible until
+// a long session either compacts far too early or never compacts at all.
 type runnerCacheKey struct {
-	model model.BaseChatModel
-	mode  runnerToolMode
+	model   model.BaseChatModel
+	mode    runnerToolMode
+	modelID string
 }
 
 // New builds an Orchestrator from Config.
@@ -447,6 +471,24 @@ func (o *Orchestrator) withTurnContext(ctx context.Context, opts TurnOpts) conte
 	// to go — an empty ModelID resolves to false, i.e. hint text, which is the
 	// fail-safe answer for the entry points that do not select a model.
 	ctx = tools.WithTurnImages(ctx, tools.NewTurnImages(o.IsMultimodal(opts.ModelID)))
+	// The volatile half of the system prompt reads the turn's model from here.
+	// Bound next to WithTurnImages because both answer questions about the SAME
+	// selection, one turn late otherwise: runnerFor's cache would hand a /model
+	// switch a runner whose instruction was rendered for the previous model. See
+	// sysprompt.go for why the prompt is refreshed per run instead of the cache
+	// being evicted.
+	//
+	// Gated on opts.Model, NOT on opts.ModelID. A non-nil Model is the only
+	// signal that the caller pinned a specific provider; ModelID is populated
+	// unconditionally (with a sorted-first fallback) and on the common path —
+	// the user never ran /model — it names something other than the failover
+	// chain the turn actually runs on. IsMultimodal above can live with that
+	// approximation because guessing wrong there costs a placeholder; the
+	// system prompt cannot, because the model believes what it is told about
+	// itself. See withTurnModelID.
+	if opts.Model != nil {
+		ctx = withTurnModelID(ctx, opts.ModelID)
+	}
 	if opts.EmitWorkFrame != nil {
 		ctx = tools.WithWorkEventCallback(ctx, func(event work.Event) {
 			opts.EmitWorkFrame(workEventFrame(event))
@@ -539,9 +581,16 @@ func (o *Orchestrator) bindSubAgentRunner(ctx context.Context) context.Context {
 // instruction, tools, and max-iterations. The model is wrapped with the same
 // compaction policy as the default.
 //
-// cache key is {model.BaseChatModel pointer, runnerToolMode} so switching
-// between plan mode and agent mode on the same model yields separate runners
-// (plan runner has a filtered tool subset).
+// The cache key is runnerCacheKey — see its doc comment for why each of the
+// three components has to be there. Switching between plan mode and agent mode
+// on the same model yields separate runners (the plan runner has a filtered
+// tool subset).
+//
+// What is cached is ONLY things that cannot vary per turn. The instruction the
+// agent is built with is the STATIC half of the system prompt; the half that
+// changes (date, pinned model) is applied per run by systemPromptRefresher, so
+// no cached runner can serve a stale prompt and the cache needs no eviction
+// path. See sysprompt.go.
 //
 // On a build error returns nil (not cached). 调用方拿到 nil 会在 .Run 处 panic，
 // 这比静默用错工具集的 runner 更早暴露问题（约束 14）。
@@ -550,7 +599,7 @@ func (o *Orchestrator) runnerFor(chatModel model.BaseChatModel, plan bool, model
 	if plan {
 		mode = runnerModePlan
 	}
-	key := runnerCacheKey{model: chatModel, mode: mode}
+	key := runnerCacheKey{model: chatModel, mode: mode, modelID: modelID}
 	if cached, ok := o.runners.Load(key); ok {
 		return cached.(*adk.Runner)
 	}
@@ -582,10 +631,20 @@ func (o *Orchestrator) runnerFor(chatModel model.BaseChatModel, plan bool, model
 }
 
 // orchestratorMiddlewares returns the ADK middleware stack every runner is
-// built with, IN ORDER. The order is load-bearing in three places:
+// built with, IN ORDER.
 //
-//  1. newLoopGuardMiddleware is FIRST, so a turn the guard is about to stop
-//     does not spend work preparing a model call that will never go out.
+// newSystemPromptRefresher leads, and its position is the one thing here that
+// is NOT load-bearing: it is the only entry implementing BeforeAgent, a hook
+// none of the others touch, so nothing downstream can observe whether it ran
+// first or last. It is written first because it is what makes the run's system
+// prompt final, and a reader looking for "where does the prompt come from"
+// should not have to reach the end of the slice to find out.
+//
+// Among the three model-call middlewares the order IS load-bearing, in three
+// places:
+//
+//  1. newLoopGuardMiddleware is FIRST of them, so a turn the guard is about to
+//     stop does not spend work preparing a model call that will never go out.
 //  2. newResultHygiene runs after the guard and BEFORE the recorder, so what
 //     the recorder captures — and therefore what JudgeCompletion and the
 //     compactor see — is the degraded history the model was actually sent,
@@ -601,6 +660,7 @@ func (o *Orchestrator) runnerFor(chatModel model.BaseChatModel, plan bool, model
 // was never added to the slice" is this repository's dominant failure shape.
 func orchestratorMiddlewares() []adk.ChatModelAgentMiddleware {
 	return []adk.ChatModelAgentMiddleware{
+		newSystemPromptRefresher(),
 		newLoopGuardMiddleware(), newResultHygiene(), newMessageRecorder(), newImageAttacher(),
 	}
 }
@@ -616,14 +676,6 @@ func filterPlanTools(all []tool.BaseTool) []tool.BaseTool {
 		}
 	}
 	return out
-}
-
-// FlushRunners clears all cached per-model runners. 下次 turn 按新 key 重建。
-func (o *Orchestrator) FlushRunners() {
-	o.runners.Range(func(key, value any) bool {
-		o.runners.Delete(key)
-		return true
-	})
 }
 
 // Query runs a single user turn and returns the final assistant text.

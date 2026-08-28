@@ -223,6 +223,13 @@ type model struct {
 	// sideDepth is the current ephemeral side-conversation depth (V11): 0 =
 	// main, 1+ = inside a side. Footer renders "in side (N)".
 	sideDepth int
+
+	// compactionBlocked is the server's reason for refusing to compact, or ""
+	// when the context is being kept in shape. Rendered as a footer pill: the
+	// context is oversized, nothing retries on its own, and the alternative to
+	// showing it is a provider length error some turns later that reads like an
+	// unrelated failure.
+	compactionBlocked string
 	// pendingPermission is the active permission prompt; while non-nil a popup
 	// renders above the input (tool/args/reason + Allow/Always allow/Deny) and
 	// Up/Down + Enter (or y/a/n) resolves it. permSel is the highlighted option.
@@ -933,7 +940,12 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 			m.pendingStatsEntry.sessions = ev.Sessions
 			m.pendingStatsEntry = nil
 		case m.lastSessionsEntry() != nil:
-			m.lastSessionsEntry().sessions = ev.Sessions
+			e := m.lastSessionsEntry()
+			e.sessions = ev.Sessions
+			// Text carries the server's note about rows the page left out.
+			// Dropping it here would put the truncation back where it started:
+			// bounded on the wire, unbounded-looking on screen.
+			e.note = ev.Text
 		}
 	case "session_restored":
 		// Reply to /restore: fill the pending restoreEntry, re-render
@@ -995,10 +1007,12 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 			text: "forked and switched to " + ev.SessionID,
 		})
 		m.sessionID = ev.SessionID
-	case "memories_distilled":
-		// A2/W-A-05: reply to /distill. Render the considered/merged summary as
-		// a one-line ack, mirroring session_forked above. Without this case the
-		// frame round-trips over the wire but is invisible in the transcript.
+	case "memories_distilled", "memories_cleared", "checkpoint_result":
+		// A2/W-A-05, W-D-12 and W-D-06: replies to /distill, /memory-clear and
+		// /checkpoint. Render the server's summary as an ack. Without this case
+		// the frame round-trips over the wire but is invisible in the transcript
+		// — and a wipe (or a restore) whose result the user cannot see is one
+		// they will run twice.
 		m.flushAssistant()
 		m.entries = append(m.entries, ackEntry{text: ev.Text})
 	case "side_state":

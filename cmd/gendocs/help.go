@@ -28,7 +28,7 @@ import (
 // display order for snapshots. This MUST stay in sync with main.go's dispatch;
 // gendocs_test.go enforces that.
 var yanshiSubcommands = []string{
-	"yanshi", "serve", "chat", "exec", "app", "goal", "vcs-mcp", "init", "daemon", "schedule", "provider", "acp", "pr", "auth", "doctor",
+	"yanshi", "serve", "chat", "exec", "app", "goal", "vcs-mcp", "init", "daemon", "schedule", "provider", "acp", "pr", "enqueue", "auth", "doctor",
 }
 
 // helpCapturer returns the captured help text (combined stdout+stderr) for one

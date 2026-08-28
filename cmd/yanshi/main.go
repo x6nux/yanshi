@@ -56,6 +56,7 @@ Usage:
   yanshi acp     [-config config.yaml] [-fake-model]
   yanshi doctor [-config FILE] [-json] [-release] [-fix] [-fix-only LIST] [-fix-dry-run]
   yanshi pr      <PR-number> | <full-URL>
+  yanshi enqueue [-config FILE] <session-id> <message...> | -list <session-id>
   yanshi auth    status|logout|device [-provider NAME] [-account NAME]
   yanshi auth    mcp-login <server> | mcp-logout <server>
 
@@ -119,6 +120,11 @@ Subcommands:
            never deletes a database.
   pr       Fetch a GitHub pull request into the session as context. Takes a
            PR number (run from the repo directory) or a full URL (any repo).
+  enqueue  Queue a user message for a session, connected or not. It is stored
+           in the project database and delivered, in enqueue order, the next
+           time that session is resumed by a headless run ("exec -resume" or
+           "chat --no-tui -resume"); the interactive TUI has no -resume flag.
+           -list shows what is waiting without consuming it.
   auth     Manage authenticated sessions: RFC 8628 device flow (status /
            logout / device) and MCP OAuth (mcp-login / mcp-logout, the
            authorization_code + PKCE flow for an enterprise MCP server; the
@@ -205,6 +211,8 @@ func dispatch(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runProvider(argv[2:], stdin, stdout, stderr)
 	case "acp":
 		return runACPServer(argv[2:], stdin, stdout)
+	case "enqueue":
+		return runEnqueue(argv[2:], stdout)
 	case "pr":
 		if len(argv) < 3 {
 			fmt.Fprintln(stderr, "Usage: yanshi pr <PR-number>")
@@ -522,6 +530,11 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) int {
 	app, err := bootstrap.Build(bootstrap.Options{
 		ConfigPath: *configPath,
 		FakeModel:  *fakeModel,
+		// The daemon IS the backend for this project — it owns the database
+		// for as long as it runs, and refusing to start leaves the user with
+		// no yanshi and no tool to repair the file. See Options.SelfHeal for
+		// why the other Build callers leave this false.
+		SelfHeal: true,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "yanshi serve: %v\n", err)
@@ -721,6 +734,12 @@ func splitNoTUI(args []string) (noTUI bool, filtered []string) {
 // package main because package cli cannot import package tui (the tui package
 // depends on cli.StreamEvent), so the cli→tui wiring must happen here.
 func runTUI(ctx context.Context, opts cli.Options) error {
+	// The interactive TUI is the one entry allowed to heal an unreadable
+	// database, and it is set HERE rather than inside cli so that exec and
+	// headless — which build the same Session type — keep the safe default.
+	// This is the scenario healing exists for: without it a corrupt yanshi.db
+	// means the TUI never starts and the user has no other tool to repair it.
+	opts.SelfHeal = true
 	sess := cli.NewSession(opts)
 	if err := sess.Resolve(ctx); err != nil {
 		return err
@@ -812,16 +831,24 @@ func runGoal(args []string) int {
 	workdir := fs.String("workdir", ".", "working directory for implementation")
 	agent := fs.String("agent", "claudecode", "external agent for implementation (real path)")
 	maxIters := fs.Int("max-iters", 5, "maximum goal loop iterations")
-	maxTokens := fs.Int("max-tokens", 0, "token budget for the whole goal run (0 = unlimited)")
+	maxTokens := fs.Int("max-tokens", 0, "token budget for the whole goal run (0 = unlimited); when resuming, a value typed here replaces the stored one")
 	goalText := fs.String("goal", "", "goal text (alternatively, pass as positional arg)")
 	tierFlag := fs.String("tier", "auto", `difficulty tier: "auto" (model classifies, keyword table as fallback) or t0..t4 (quick-fix, standard, designed, team, autonomous)`)
 	history := fs.Int("history", 0, "print the last N goal run records and exit (0 = run a goal)")
+	reset := fs.Bool("reset", false, "discard the saved resume point for -workdir and exit, so the next run starts over with a full budget")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 
 	if *history > 0 {
 		return printGoalHistory(*configPath, *history, os.Stdout)
+	}
+	// Ahead of the goal-text check: clearing a resume point is about the
+	// working directory, not about any particular goal, so requiring the
+	// operator to retype the goal text they are trying to abandon would be
+	// backwards.
+	if *reset {
+		return resetGoalRun(*configPath, *workdir, os.Stdout)
 	}
 
 	// Goal text: -goal flag takes priority, then first positional arg.
@@ -966,6 +993,15 @@ func runGoal(args []string) int {
 			Budget:      budget,
 			Sink:        loopSink,
 			Tier:        resolvedTier,
+			// W-D-16: the store doubles as the goal loop's resume point, so a
+			// crashed or Ctrl-C'd run restarts at the next iteration with the
+			// tokens it already spent still spent. Only the real path gets one
+			// — the fake path is a self-contained demo whose whole point is to
+			// run identically every time.
+			State: loopStore,
+			// Which limits the operator typed, so a resumed run can tell a
+			// deliberate new budget from a config default reasserting itself.
+			BudgetExplicit: explicitBudgetFlags(fs),
 		})
 	}
 
@@ -994,18 +1030,24 @@ func runGoal(args []string) int {
 }
 
 // absWorkdir converts a relative path to absolute.
+//
+// The result is cleaned because it is not only a path any more: the goal loop
+// keys its resume point on it. Without this, `-workdir /repo` and
+// `-workdir /repo/` are two different keys, so a trailing slash typed on the
+// second run makes the first run's progress and spent budget silently vanish —
+// a fresh start with a fresh budget and no message saying why.
 func absWorkdir(p string) (string, error) {
 	if p == "" || p == "." {
 		return os.Getwd()
 	}
 	if strings.Contains(p, ":") || strings.HasPrefix(p, "/") || strings.HasPrefix(p, "\\") {
-		return p, nil // already absolute (Windows drive letter or Unix root)
+		return filepath.Clean(p), nil // already absolute (Windows drive letter or Unix root)
 	}
 	wd, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
-	return wd + string(os.PathSeparator) + p, nil
+	return filepath.Clean(wd + string(os.PathSeparator) + p), nil
 }
 
 // resolveGoalTier maps the -tier flag to a Tier via the shared goalloop mapping.
@@ -1107,6 +1149,38 @@ func runLightweightGoal(ctx context.Context, app *bootstrap.App, tier goalloop.T
 // is the column that matters: "the run stopped" and "the run stopped because
 // it ran out of tokens" are different facts, and only the second tells you
 // whether to raise the budget.
+// resetGoalRun discards the goal loop's saved resume point for workdir, so the
+// next run of that goal starts from iteration 1 with its budget whole again.
+//
+// It opens the store directly rather than going through bootstrap.Build, the
+// same way printGoalHistory does: this touches one kv row and has no reason to
+// need a model provider or an agent CLI to be configured.
+func resetGoalRun(configPath, workdir string, out io.Writer) int {
+	wd, err := absWorkdir(workdir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "yanshi goal -reset: bad workdir: %v\n", err)
+		return exitErr
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "yanshi goal -reset: config: %v\n", err)
+		return exitErr
+	}
+	st, err := store.Open(cfg.Storage.SQLitePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "yanshi goal -reset: open store: %v\n", err)
+		return exitErr
+	}
+	defer st.Close()
+
+	if err := goalloop.ResetGoalState(st, wd); err != nil {
+		fmt.Fprintf(os.Stderr, "yanshi goal -reset: %v\n", err)
+		return exitErr
+	}
+	fmt.Fprintf(out, "goal state cleared for %s\n", wd)
+	return exitOK
+}
+
 func printGoalHistory(configPath string, limit int, out io.Writer) int {
 	cfg, err := config.Load(configPath)
 	if err != nil {

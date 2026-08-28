@@ -947,3 +947,163 @@ func TestCommandTableNamesAreUnique(t *testing.T) {
 		t.Errorf("commandTable has %d entries but %d distinct names", len(commandTable), len(seen))
 	}
 }
+
+// TestClearMemories_RequiresConfirmation is W-D-12's first clause, asserted on
+// the surface the user actually types at. Every branch that stops short of the
+// frame is checked, because "no frame was sent" is only reassuring if the
+// command could have sent one.
+func TestClearMemories_RequiresConfirmation(t *testing.T) {
+	for _, args := range [][]string{
+		nil,                     // no scope
+		{"all"},                 // scope, no confirmation
+		{"session"},             //
+		{"agent", "a1"},         // agent id, no confirmation
+		{"agent"},               // agent scope with no id
+		{"all", "no"},           // a token that is not "yes"
+		{"everything", "yes"},   // unknown scope, even confirmed
+		{"all", "yes", "extra"}, // "yes" must be the last word
+		{"agent", "a1", "yes", "x"},
+	} {
+		rs := &recordingSession{}
+		m := newModel(rs, "/proj")
+		mm, _ := cmdMemoryClear(m, args)
+		m = mm.(model)
+		assert.Emptyf(t, rs.frames, "%v must not clear anything", args)
+		_, isErr := m.entries[len(m.entries)-1].(errorEntry)
+		assert.Truef(t, isErr, "%v must explain itself", args)
+	}
+
+	for _, tc := range []struct {
+		args         []string
+		scope, agent string
+	}{
+		{[]string{"all", "yes"}, "all", ""},
+		{[]string{"session", "yes"}, "session", ""},
+		{[]string{"agent", "a1", "yes"}, "agent", "a1"},
+	} {
+		rs := &recordingSession{}
+		m := newModel(rs, "/proj")
+		mm, _ := cmdMemoryClear(m, tc.args)
+		_ = mm.(model)
+		require.Lenf(t, rs.frames, 1, "%v is confirmed and must be sent", tc.args)
+		assert.Equal(t, "clear_memories", rs.frames[0].Type)
+		assert.Equal(t, tc.scope, rs.frames[0].Name)
+		assert.Equal(t, tc.agent, rs.frames[0].ID)
+	}
+}
+
+// TestCmdCheckpoint_ArgumentGrammar covers every branch of /checkpoint,
+// including the asymmetry that makes the command safe: plan needs no
+// confirmation, restore does.
+func TestCmdCheckpoint_ArgumentGrammar(t *testing.T) {
+	send := func(args []string) []proto.ClientFrame {
+		rs := &recordingSession{}
+		m := newModel(rs, "/proj")
+		mm, _ := cmdCheckpoint(m, args)
+		_ = mm.(model)
+		return rs.frames
+	}
+
+	// No args and an explicit "list" are the same request.
+	for _, args := range [][]string{nil, {"list"}} {
+		f := send(args)
+		require.Lenf(t, f, 1, "%v lists", args)
+		assert.Equal(t, "checkpoint", f[0].Type)
+		assert.Equal(t, "list", f[0].Name)
+	}
+
+	f := send([]string{"create", "before", "the", "refactor"})
+	require.Len(t, f, 1)
+	assert.Equal(t, "create", f[0].Name)
+	assert.Equal(t, "before the refactor", f[0].Text, "the label keeps its spaces")
+
+	f = send([]string{"plan", "cp1", "memory"})
+	require.Len(t, f, 1)
+	assert.Equal(t, "plan", f[0].Name)
+	assert.Equal(t, "cp1", f[0].ID)
+	assert.Equal(t, "memory", f[0].Dim)
+
+	f = send([]string{"restore", "cp1", "files", "yes"})
+	require.Len(t, f, 1)
+	assert.Equal(t, "restore", f[0].Name)
+	assert.Equal(t, "files", f[0].Dim)
+
+	for _, args := range [][]string{
+		{"restore", "cp1", "session"},      // no confirmation
+		{"restore", "cp1", "session", "y"}, // not "yes"
+		{"restore", "cp1", "everything", "yes"},
+		{"restore", "cp1"},
+		{"plan", "cp1"},
+		{"plan", "cp1", "everything"},
+		{"plan", "cp1", "memory", "extra"},
+		{"wobble"},
+	} {
+		assert.Emptyf(t, send(args), "%v must not reach the server", args)
+	}
+}
+
+// TestCmdCheckpoint_DimensionsComeFromTheWireVocabulary: the command's accepted
+// words are read from proto.CheckpointDimensions rather than typed out again,
+// so a dimension the server knows cannot be rejected by the client.
+func TestCmdCheckpoint_DimensionsComeFromTheWireVocabulary(t *testing.T) {
+	for _, dim := range proto.CheckpointDimensions() {
+		assert.Truef(t, validCheckpointDim(dim), "dimension %q must be accepted", dim)
+	}
+	assert.False(t, validCheckpointDim("everything"))
+	assert.False(t, validCheckpointDim(""))
+}
+
+// TestNewCommandsAreReachableByTyping drives both W-D commands through
+// runCommand, which is the only path a user has.
+//
+// Measured: deleting their commandTable rows left every test in this package
+// green, because the rest of the suite calls the handlers directly. An
+// unregistered command is not a cosmetic defect — runCommand answers "unknown
+// command" and the feature is unreachable, while the handler it would have
+// called is still perfectly covered.
+func TestNewCommandsAreReachableByTyping(t *testing.T) {
+	for _, tc := range []struct{ line, frame string }{
+		{"/memory-clear all yes", "clear_memories"},
+		{"/checkpoint create probe", "checkpoint"},
+		{"/checkpoint plan cp1 memory", "checkpoint"},
+		{"/checkpoint restore cp1 memory yes", "checkpoint"},
+	} {
+		rs := &recordingSession{}
+		m := newModel(rs, "/proj")
+		mm, _ := m.runCommand(tc.line)
+		mm2 := mm.(model)
+		require.Lenf(t, rs.frames, 1, "%q reached no handler; entries=%v", tc.line, renderLast(mm2))
+		assert.Equal(t, tc.frame, rs.frames[0].Type)
+	}
+}
+
+// TestModel_Sessions_RendersTheTruncationNote closes the client half of the
+// bounded session list.
+//
+// The server sends one page and says so in the frame's text; a client that
+// dropped that text would put the truncation back where it started — bounded on
+// the wire, unbounded-looking on screen — and a prefix presented as the whole
+// list is how a session that is safe on disk gets reported as lost. Dropping
+// either the assignment in applyEvent or the line in render makes this red.
+func TestModel_Sessions_RendersTheTruncationNote(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	m.entries = append(m.entries, &sessionsEntry{})
+	m = m.applyEvent(cli.StreamEvent{
+		Kind:     "sessions",
+		Text:     "showing the 500 most recently updated sessions; older ones are not listed",
+		Sessions: []proto.SessionInfo{{ID: "abc123", Title: "my chat"}},
+	})
+	se := m.lastSessionsEntry()
+	require.NotNil(t, se)
+	assert.Contains(t, se.render(80, m.spinner), "older ones are not listed")
+
+	// And nothing extra when the page was the whole list: a warning printed
+	// every time stops being read.
+	m2 := newModel(&fakeSession{}, "/proj")
+	m2.entries = append(m2.entries, &sessionsEntry{})
+	m2 = m2.applyEvent(cli.StreamEvent{
+		Kind:     "sessions",
+		Sessions: []proto.SessionInfo{{ID: "abc123", Title: "my chat"}},
+	})
+	assert.NotContains(t, m2.lastSessionsEntry().render(80, m2.spinner), "not listed")
+}

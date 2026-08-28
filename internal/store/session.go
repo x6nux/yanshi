@@ -65,6 +65,13 @@ func (s *Store) AppendMessage(sessionID string, seq int, role, content string) e
 	id := newID()
 	now := time.Now().Unix()
 	return s.WriteTx(context.Background(), func(tx *sql.Tx) error {
+		// Same rule as AppendMessages: a compressed session gets its rows back
+		// before one is written on top of them (thawColdSessionTx). The caller
+		// picks seq here, and SessionMessageCount — where every caller gets it
+		// from — counts the archived rows too, so the two halves agree.
+		if err := thawColdSessionTx(tx, sessionID); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(
 			`INSERT INTO messages (id, session_id, seq, role, content, created_at)
 			 VALUES (?, ?, ?, ?, ?, ?)`,
@@ -151,11 +158,41 @@ func (s *Store) DeleteSession(sessionID string) error {
 	})
 }
 
-// SessionMessageCount returns the number of messages in a session.
+// SessionMessageCount returns the number of messages in a session, INCLUDING
+// the ones a compression moved into cold storage (W-D-04).
+//
+// Counting only `messages` reports 0 for every compressed session, and all
+// three callers are hurt by that in a different way: the TUI session list shows
+// every archived conversation as empty, connSession.loadSession takes it as the
+// log coordinate a later compaction boundary is computed from, and api/v1 uses
+// it as the seq to write the next turn AT — which lands the new row on top of
+// seq 0 of the archived transcript. That last one is a live resume path, not
+// the revert machinery an earlier note mistook it for.
+//
+// The cold half is answered from the stored max_seq rather than by decompressing
+// the blob, so listing sessions stays O(1) per row. max_seq+1 is the row count
+// because seq is dense: AppendMessages assigns it from MAX(seq)+1 one row at a
+// time, and the only deletes are whole sessions and suffixes
+// (TruncateSessionForRevert). It is also, exactly, the next free seq — which is
+// what two of the three callers actually want from it.
 func (s *Store) SessionMessageCount(sessionID string) (int, error) {
 	var count int
-	err := s.DB.QueryRow("SELECT COUNT(*) FROM messages WHERE session_id = ?", sessionID).Scan(&count)
-	return count, err
+	if err := s.DB.QueryRow(
+		"SELECT COUNT(*) FROM messages WHERE session_id = ?", sessionID,
+	).Scan(&count); err != nil {
+		return 0, err
+	}
+	if count > 0 {
+		return count, nil
+	}
+	cold, ok, err := s.coldMaxSeq(sessionID)
+	if err != nil {
+		return 0, err
+	}
+	if ok {
+		return cold + 1, nil
+	}
+	return 0, nil
 }
 
 // Messages returns ALL of a session's messages ordered by sequence.
@@ -165,15 +202,56 @@ func (s *Store) SessionMessageCount(sessionID string) (int, error) {
 // paging — must use MessagesPage instead, because the durable log is expected
 // to outgrow any context window that could hold it.
 func (s *Store) Messages(sessionID string) ([]Message, error) {
-	rows, err := s.DB.Query(
-		"SELECT "+messageColumns+" FROM messages WHERE session_id = ? ORDER BY seq ASC",
-		sessionID,
-	)
+	return s.messagesInWindow(sessionID, 0, nil)
+}
+
+// messagesInWindow is the shared reader behind Messages and ProjectWindow: the
+// kept tail from fromSeq, unioned with the scattered pinned rows below it.
+//
+// THE DEGENERATE CASES EMIT THE ORIGINAL STATEMENT, not an equivalent one.
+// fromSeq <= 0 appends no predicate whatsoever, so a session with no compaction
+// boundary does not merely return the same rows as Messages — it runs the
+// identical query, and pins are redundant there because the whole log is already
+// in the window. An empty pin list likewise falls back to the plain range, which
+// is also what stops the builder from emitting "seq IN ()", a SQLite syntax
+// error rather than an empty match. ADR-0015's second constraint is therefore a
+// property of the code, and there is one place to add a new message column.
+//
+// A ZERO-ROW RESULT FALLS BACK TO COLD STORAGE (W-D-04). The fallback lives
+// here, at the shared reader, rather than in each of Messages / ProjectWindow /
+// the fork and snapshot paths, so compression cannot be transparent for one
+// caller and invisible for another. filterWindow re-applies the same boundary
+// to the decompressed slice — see its doc for why skipping that would undo
+// every compaction the cold session ever ran.
+func (s *Store) messagesInWindow(sessionID string, fromSeq int, pinned []int) ([]Message, error) {
+	q := "SELECT " + messageColumns + " FROM messages WHERE session_id = ?"
+	args := []any{sessionID}
+	switch {
+	case fromSeq > 0 && len(pinned) > 0:
+		q += " AND (seq >= ? OR seq IN (" + placeholders(len(pinned)) + "))"
+		args = append(args, fromSeq)
+		for _, p := range pinned {
+			args = append(args, p)
+		}
+	case fromSeq > 0:
+		q += " AND seq >= ?"
+		args = append(args, fromSeq)
+	}
+	q += " ORDER BY seq ASC"
+	rows, err := s.DB.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	return scanMessages(rows)
+	msgs, err := scanMessages(rows)
+	if err != nil || len(msgs) > 0 {
+		return msgs, err
+	}
+	cold, ok, err := s.coldMessages(sessionID)
+	if err != nil || !ok {
+		return msgs, err
+	}
+	return filterWindow(cold, fromSeq, pinned), nil
 }
 
 func newID() string {
@@ -188,6 +266,17 @@ func newID() string {
 type SessionRevertSnapshot struct {
 	Meta     SessionSummary
 	Messages []Message
+	// HiddenSeq / PinnedSeqs capture the context-window boundary (INF3) as it
+	// stood when the snapshot was taken, so restoring the rows also restores
+	// which of them the model sees. Without them the restore is asymmetric: a
+	// truncation pops the boundary by appending undo events, and putting only
+	// the rows back leaves those undos standing — the whole transcript returns
+	// to the window and the next turn pays for a fresh summary.
+	//
+	// Zero means "no boundary", which is both the honest reading of a snapshot
+	// taken before any compaction and what a pre-INF3 JSON payload decodes to.
+	HiddenSeq  int
+	PinnedSeqs []int
 }
 
 // EncodeSessionRevertSnapshot serializes the exact durable state saved on an
@@ -258,6 +347,11 @@ func snapshotSessionTx(tx *sql.Tx, sessionID string) (SessionRevertSnapshot, err
 	if err := rows.Err(); err != nil {
 		return SessionRevertSnapshot{}, fmt.Errorf("store: iterate snapshot messages: %w", err)
 	}
+	b, err := boundaryTx(tx, sessionID)
+	if err != nil {
+		return SessionRevertSnapshot{}, err
+	}
+	snap.HiddenSeq, snap.PinnedSeqs = b.HiddenSeq, b.PinnedSeqs
 	return snap, nil
 }
 
@@ -281,6 +375,14 @@ func (s *Store) SnapshotSessionForRevert(sessionID string) (SessionRevertSnapsho
 
 // TruncateSessionForRevert atomically snapshots a session, deletes messages
 // with seq >= fromSeq, and updates turns. Any failure rolls back both changes.
+//
+// It also compensates the context-event log in the same transaction (INF3).
+// Deleting rows a compaction boundary points at leaves that boundary describing
+// a position past the end of the log, and the projection then selects ZERO rows:
+// the model comes back from the next restore with no conversation at all and no
+// error to show for it. Measured before this was wired: hidden_seq 9, two rows
+// surviving, window empty. The compensation is an append (constraint 1 forbids
+// editing the events), so the revert and the undo are one atomic act.
 func (s *Store) TruncateSessionForRevert(
 	sessionID string, fromSeq, turns int,
 ) (SessionRevertSnapshot, error) {
@@ -300,6 +402,9 @@ func (s *Store) TruncateSessionForRevert(
 			"DELETE FROM messages WHERE session_id=? AND seq>=?", sessionID, fromSeq,
 		); e != nil {
 			return fmt.Errorf("store: truncate messages: %w", e)
+		}
+		if e := undoBoundariesAtOrAfterTx(tx, sessionID, fromSeq); e != nil {
+			return e
 		}
 		res, e := tx.Exec(
 			"UPDATE sessions SET turns=?, updated_at=? WHERE id=?",
@@ -327,6 +432,12 @@ func (s *Store) TruncateSessionForRevert(
 // and message set with an exact snapshot. The handler uses it both to compensate
 // a failed VCS phase and to expand durable history when restoring a pre-revert
 // undo seam. Any failure is fatal and surfaced to the client.
+//
+// It restores the context-window boundary along with the rows (INF3). Putting
+// only the rows back is not a restore: the truncation this compensates already
+// popped the boundary by appending undo events, and those events do not go away,
+// so the window silently reverted to the full transcript — measured at 4
+// messages before a failed revert and 11 after. See store.restoreBoundaryTx.
 func (s *Store) RestoreSessionAfterFailedRevert(snap SessionRevertSnapshot) error {
 	if snap.Meta.ID == "" {
 		return fmt.Errorf("store: empty session compensation snapshot")
@@ -372,6 +483,8 @@ func (s *Store) RestoreSessionAfterFailedRevert(snap SessionRevertSnapshot) erro
 		if n != 1 {
 			return fmt.Errorf("store: restore session meta affected %d rows", n)
 		}
-		return nil
+		return restoreBoundaryTx(tx, m.ID, contextBoundary{
+			HiddenSeq: snap.HiddenSeq, PinnedSeqs: snap.PinnedSeqs,
+		})
 	})
 }

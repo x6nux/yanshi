@@ -101,6 +101,14 @@ type connSession struct {
 	// indefinitely. Not persisted: a server restart drops the stack.
 	sideStack []sideSnapshot
 
+	// compactionBlocked is the operator-facing reason the last compaction
+	// attempt was refused, or "" while the context is being kept in shape. It
+	// rides on every status frame (ADR-0015 constraint 6): refusing to compact
+	// is the safe direction ONLY while the oversized context it leaves behind is
+	// visible. Nothing retries a refusal, so the condition persists and so does
+	// the flag, until a compaction succeeds.
+	compactionBlocked string
+
 	// C4 COST1 per-session billing ledger. billing accumulates billable
 	// tokens across every provider usage (including the judge call); costUSD
 	// is the running USD total; costKnown=false means the session referenced
@@ -1297,6 +1305,15 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 					// the frame loop, so its context is the only thing left
 					// that can release the loop when the client disconnects.
 					handleDistillMemories(connCtx, s, conn, &cs)
+				case "checkpoint":
+					// W-D-06: /checkpoint. list/create/plan/restore all reply
+					// with a single checkpoint_result frame.
+					handleCheckpoint(s, conn, &cs, cf)
+				case "clear_memories":
+					// W-D-12: /memory-clear. The confirmation already happened
+					// client-side; this frame only exists once the user typed
+					// "yes", so the handler deletes and replies.
+					handleClearMemories(s, conn, &cs, cf.Name, cf.ID)
 				case "enter_side":
 					if err := cs.enterSide(); err != nil {
 						conn.write(proto.NewError("enter_side: " + err.Error()))

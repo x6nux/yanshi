@@ -525,3 +525,76 @@ func TestR6_OrchestratorConsumersAreClosed(t *testing.T) {
 		}
 	}
 }
+
+// TestADR0015_CtxcompactMustNotDependOnStore enforces ADR-0015's third
+// constraint, which had no machine guard at all until now.
+//
+// GOV1's rules do not reach it. TestR2_PortAllowlist constrains PORT packages
+// and ctxcompact is not one; TestR5_PortsMustNotDependOnServiceLayer runs in the
+// other direction. So the ADR listed "ctxcompact must not import store" as
+// inviolable and nothing checked it — the exact shape this work package kept
+// finding, a rule that exists only in prose.
+//
+// The rule matters because ctxcompact is a pure-function package. Plan,
+// EnforceToolCallPairs and Assemble operate on a slice someone else fetched;
+// the whole point of the INF3 boundary work is that only WHERE the slice comes
+// from changed. An import of store would give a package that is currently
+// testable with three literal messages a database dependency, and would put the
+// projection logic on both sides of the layer at once.
+//
+// Transitive, not just direct: reaching store through a helper package is the
+// same dependency with an extra hop, and would be the obvious way to "avoid"
+// this test.
+func TestADR0015_CtxcompactMustNotDependOnStore(t *testing.T) {
+	graph := buildImportGraph(t)
+	mp := modulePath(t)
+	ctxcompact, storePkg := ip("internal/ctxcompact"), ip("internal/store")
+
+	// BOTH ENDPOINTS MUST EXIST, or this test passes without checking anything.
+	// walk returns false immediately for a package with no entry in the graph, so
+	// a typo in either name — or a rename that moves one of these packages —
+	// turns the whole gate into a no-op that still reports PASS. Measured: with
+	// the start renamed to internal/ctxcompaction, or the target to
+	// internal/storage, the test passes in both directions.
+	//
+	// That is the very shape this test was written to stop: a rule that reads as
+	// enforced and is not. The sibling gate on this constraint's other half,
+	// TestContextEventsTableIsAppendOnly, already carries its own "did I actually
+	// scan anything" assertion for the same reason.
+	for _, pkg := range []string{ctxcompact, storePkg} {
+		if _, ok := graph[pkg]; !ok {
+			t.Fatalf("%s is not in the import graph, so this gate would pass without "+
+				"checking anything. Fix the package path rather than the assertion.",
+				short(pkg, mp))
+		}
+	}
+
+	seen := map[string]bool{}
+	var path []string
+	var walk func(pkg string) bool
+	walk = func(pkg string) bool {
+		if pkg == storePkg {
+			return true
+		}
+		if seen[pkg] {
+			return false
+		}
+		seen[pkg] = true
+		for _, dep := range graph[pkg] {
+			if !strings.HasPrefix(dep, ip("")) {
+				continue // stdlib and third-party cannot reach our store
+			}
+			if walk(dep) {
+				path = append([]string{short(dep, mp)}, path...)
+				return true
+			}
+		}
+		return false
+	}
+	if walk(ctxcompact) {
+		t.Errorf("ctxcompact depends on store via %s → %s: ADR-0015 constraint 3 "+
+			"keeps ctxcompact a pure-function package. The projection decides where "+
+			"the slice comes from; ctxcompact only transforms it.",
+			short(ctxcompact, mp), strings.Join(path, " → "))
+	}
+}

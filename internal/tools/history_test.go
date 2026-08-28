@@ -152,6 +152,104 @@ func TestHistorySearch_MalformedFTSQueryIsRecoverable(t *testing.T) {
 	assert.Contains(t, err.Error(), "FTS5 syntax")
 }
 
+// ---------------------------------------------------------------------------
+// history_search: all_sessions
+// ---------------------------------------------------------------------------
+
+// TestHistorySearch_AllSessionsFindsOtherSessions is the actual point of
+// task-2's redo: store.SearchMessages("", ...) already searched every
+// session, but the only production caller (this tool) had no way to ask for
+// that — the store-layer fix had no reachable path. This drives the fix
+// through the tool, the way the model actually calls it, and requires a real
+// hit from a session OTHER than the current one, not just a lack of error.
+func TestHistorySearch_AllSessionsFindsOtherSessions(t *testing.T) {
+	s := newHistoryStore(t)
+	mine := seedHistory(t, s) // contains no mention of the term below
+
+	elsewhere, err := s.CreateSession("last week")
+	require.NoError(t, err)
+	_, _, err = s.AppendMessages(elsewhere, []store.Message{
+		{Role: store.RoleAssistant, Content: "the fix was ONLYINANOTHERSESSION, a retry with backoff"},
+	})
+	require.NoError(t, err)
+
+	// A third session that must NOT show up, so a fixture with hits in only
+	// two sessions can't be mistaken for "every session matched".
+	unrelated, err := s.CreateSession("unrelated")
+	require.NoError(t, err)
+	_, _, err = s.AppendMessages(unrelated, []store.Message{
+		{Role: store.RoleUser, Content: "completely different conversation"},
+	})
+	require.NoError(t, err)
+
+	ht := NewHistoryTools(s)
+	out, err := runHistoryTool(t, historyCtx(t, mine), ht.runSearch,
+		map[string]any{"query": "ONLYINANOTHERSESSION", "all_sessions": true})
+	require.NoError(t, err)
+	assert.Contains(t, out, "ONLYINANOTHERSESSION", "the current session never said this")
+	assert.Contains(t, out, "[session "+elsewhere+"]",
+		"a cross-session hit must name the session it came from")
+	assert.NotContains(t, out, unrelated)
+}
+
+// TestHistorySearch_AllSessionsDefaultsToFalse pins that omitting all_sessions
+// (the zero value) leaves history_search exactly as scoped as before this
+// change: only the current session's rows are visible, and a term that exists
+// only in another session is reported as a miss, not silently dropped from a
+// wider result set. This is the regression the coordinator's fix-round exists
+// to prevent: an opt-in whose default quietly widens anyway.
+func TestHistorySearch_AllSessionsDefaultsToFalse(t *testing.T) {
+	s := newHistoryStore(t)
+	mine := seedHistory(t, s)
+
+	elsewhere, err := s.CreateSession("last week")
+	require.NoError(t, err)
+	_, _, err = s.AppendMessages(elsewhere, []store.Message{
+		{Role: store.RoleAssistant, Content: "ONLYINANOTHERSESSION was the fix"},
+	})
+	require.NoError(t, err)
+
+	ht := NewHistoryTools(s)
+	out, err := runHistoryTool(t, historyCtx(t, mine), ht.runSearch,
+		map[string]any{"query": "ONLYINANOTHERSESSION"})
+	require.NoError(t, err)
+	assert.Equal(t, "No matching messages in this conversation's history.", out,
+		"default scope must be byte-identical to pre-fix behaviour")
+	assert.NotContains(t, out, "ONLYINANOTHERSESSION")
+}
+
+// TestHistorySearch_AllSessionsWorksWithNoCurrentSession pins the choice made
+// for the case historySearchArgs.AllSessions's doc comment does not itself
+// resolve: what happens when all_sessions=true and ctx carries no current
+// session at all (no approval manager, no thread link). The chosen behaviour
+// is "search everything anyway" — cross-session search has no notion of a
+// current session to require, and forcing historySessionID to succeed first
+// would make the feature fail in precisely the case it was built for ("what
+// did we do in some earlier session", asked from a context that is not
+// itself one of them). Contrast with TestHistoryTools_RequireASession, which
+// pins the opposite (hard error) for the SCOPED, all_sessions=false path.
+func TestHistorySearch_AllSessionsWorksWithNoCurrentSession(t *testing.T) {
+	s := newHistoryStore(t)
+	_, err := s.CreateSession("old one")
+	require.NoError(t, err)
+	sid2, err := s.CreateSession("old two")
+	require.NoError(t, err)
+	_, _, err = s.AppendMessages(sid2, []store.Message{
+		{Role: store.RoleUser, Content: "a note from a prior session"},
+	})
+	require.NoError(t, err)
+
+	ht := NewHistoryTools(s)
+	out, err := runHistoryTool(t, context.Background(), ht.runSearch,
+		map[string]any{"query": "prior", "all_sessions": true})
+	require.NoError(t, err, "all_sessions search must not require a current session")
+	// The FTS5 snippet wraps the matched term in «» markers, so assert on the
+	// surrounding text rather than the literal seeded sentence.
+	assert.Contains(t, out, "a note from a")
+	assert.Contains(t, out, "session")
+	assert.Contains(t, out, "prior")
+}
+
 // TestHistoryTools_RequireASession: with no session bound there is nothing to
 // search, and saying so is the only honest answer. Silently returning "no
 // results" would read as "your history is empty".

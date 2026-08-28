@@ -165,3 +165,35 @@ func TestThinking_InterleavedPhasesFoldIntoOne(t *testing.T) {
 	require.True(t, hasAssistant, "turn must produce an assistant block")
 	require.NotNil(t, lastAssistant.thought, "assistant block must carry the folded thought")
 }
+
+// TestCompactionBlockedReachesTheFooter guards the last two hops of the
+// refusal signal (ADR-0015 constraint 6): applyEvent storing it, and
+// statusHeader rendering it.
+//
+// Both were previously unguarded — deleting either one left the whole cli
+// tree green — which put the signal one hop short of anything a human sees.
+// That is the same "written but nothing reads it" shape the feature exists to
+// prevent, so it needs its own test rather than trust.
+func TestCompactionBlockedReachesTheFooter(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	require.NotContains(t, m.statusHeader(), "ctx not compacted",
+		"a healthy session must not wear the warning")
+
+	// Hop 1: the status frame's reason is stored on the model.
+	m = m.applyEvent(cli.StreamEvent{
+		Kind:              "status",
+		CompactionBlocked: "the conversation and its saved copy no longer line up",
+	})
+	assert.Equal(t, "the conversation and its saved copy no longer line up", m.compactionBlocked)
+
+	// Hop 2: and the footer says so. The context is oversized and nothing
+	// retries on its own, so the alternative to showing it is a provider length
+	// error some turns later that reads like an unrelated failure.
+	assert.Contains(t, m.statusHeader(), "ctx not compacted")
+
+	// It clears when the server says the attempt succeeded, or the warning
+	// becomes permanent furniture nobody reads.
+	m = m.applyEvent(cli.StreamEvent{Kind: "status", Compacted: true})
+	assert.Empty(t, m.compactionBlocked)
+	assert.NotContains(t, m.statusHeader(), "ctx not compacted")
+}

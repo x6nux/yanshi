@@ -389,3 +389,43 @@ func TestRenderRecalledMemories_OldestFirst(t *testing.T) {
 		t.Errorf("no hits rendered %q; a header with no entries claims a recall that did not happen", got)
 	}
 }
+
+// TestClearMemories_AutoRecallMissesAfterClear is W-D-12's third clause and the
+// only one that can tell a real wipe from a bookkeeping one.
+//
+// It drives the AUTOMATIC retrieval path rather than counting rows, because the
+// failure it exists to catch is a memory that is gone from the table a
+// /memory-clear looked at and still arriving through the one path that fires
+// without being asked: the FTS shadow table is a separate physical table kept
+// in sync only by triggers, so "deleted" and "unfindable" are two claims, not
+// one.
+func TestClearMemories_AutoRecallMissesAfterClear(t *testing.T) {
+	s := newRecallStore(t)
+	const doomed = "always run gofmt before committing Go code"
+	const survivor = "the gofmt hook lives in .githooks/pre-commit"
+	_, err := s.WriteMemoryScoped("pref", doomed, store.MemoryFilter{SessionID: "s1"})
+	require.NoError(t, err)
+	_, err = s.WriteMemoryScoped("note", survivor, store.MemoryFilter{SessionID: "s2"})
+	require.NoError(t, err)
+
+	const ask = "can you run the gofmt thing for me"
+	before := AutoRecall(context.Background(), s, ask, store.MemoryFilter{})
+	require.Contains(t, before, doomed,
+		"positive control: the memory must be recallable before the clear")
+
+	n, err := s.ClearMemories(store.MemoryFilter{SessionID: "s1"})
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	// Scoped clear: s1 is gone, s2 still answers. Asserting only the empty case
+	// would pass just as well if the clear had wiped everything.
+	got := AutoRecall(context.Background(), s, ask, store.MemoryFilter{})
+	require.NotContains(t, got, doomed, "a cleared memory came back through auto-recall")
+	require.Contains(t, got, survivor, "clearing one session must not silence the others")
+
+	n, err = s.ClearMemories(store.MemoryFilter{})
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+	require.Empty(t, AutoRecall(context.Background(), s, ask, store.MemoryFilter{}),
+		"after clearing everything the automatic path must return nothing")
+}
