@@ -6,9 +6,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -111,7 +113,11 @@ type OpenOptions struct {
 	// through Open, which uses DefaultOptions, so they get the safe default
 	// without opting into anything.
 	//
-	// bootstrap.Build sets it true; see the call site for why that one may.
+	// bootstrap.Build FORWARDS this from bootstrap.Options.SelfHeal rather than
+	// setting it — it has six callers and only two of them own the database.
+	// The authoritative list of entries allowed to turn it on, with a reason
+	// per entry, is bootstrap.selfHealAllowedSites, which an AST test keeps in
+	// sync with the code.
 	SelfHeal bool
 }
 
@@ -174,8 +180,12 @@ const healLockTTL = time.Minute
 
 // healCorrupt moves the unreadable database at path aside and opens a fresh one
 // in its place. openErr is the corruption that triggered healing and is what
-// comes back if healing does not work out — never the error from the recovery
-// attempt, which describes the rescue rather than the injury.
+// comes back if healing does not work out.
+//
+// This function only ACQUIRES the lock; the repair itself is healUnderLock, so
+// that every statement which touches the database sits inside the critical
+// section. A caller that loses the race waits here and then runs the same
+// repair, which by then finds a healthy database and simply adopts it.
 //
 // Healing is EXCLUSIVE ACROSS PROCESSES, and that is a data-safety property,
 // not tidiness. Several yanshi processes routinely hold one project database at
@@ -187,15 +197,47 @@ const healLockTTL = time.Minute
 // Quarantining is destructive precisely because it is a rename, so it has to
 // happen at most once — hence the lock, and hence the recheck under it.
 func healCorrupt(path string, maxOpen, busyMs, autoCkpt int, openErr error) (*Store, error) {
-	unlock, won := acquireHealLock(path)
-	if !won {
-		// Another process is already healing this database. Its rename is
-		// atomic, so waiting for it and looking again is the only safe move —
-		// quarantining in parallel is exactly what destroys data.
-		return waitForOtherHealer(path, maxOpen, busyMs, autoCkpt, openErr)
+	deadline := time.Now().Add(healWaitTimeout)
+	for {
+		unlock, lockErr := acquireHealLock(path)
+		if lockErr == nil {
+			healed, err := healUnderLock(path, maxOpen, busyMs, autoCkpt, openErr)
+			unlock()
+			return healed, err
+		}
+		if !errors.Is(lockErr, fs.ErrExist) {
+			// The lock could not be CREATED — a read-only directory, EROFS, a
+			// full disk. Healing needs to rename and recreate inside this same
+			// directory, so it cannot possibly succeed; waiting would only add
+			// healWaitTimeout to a startup that is going to fail anyway
+			// (measured: 5.02s of it) before reporting the same error.
+			return nil, openErr
+		}
+		if time.Now().After(deadline) {
+			// A peer has held the lock for the whole timeout. Degrade to the
+			// pre-healing behaviour — report the corruption — rather than hang.
+			return nil, openErr
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	defer unlock()
+}
 
+// healUnderLock performs the repair with the heal lock held. Everything that
+// TOUCHES the database lives here, and that containment is the invariant the
+// whole design rests on: openPrepared is not a passive look, because SQLite
+// creates the file when it is missing and takes an exclusive lock on the WAL.
+//
+// Two distinct races were measured before the rule was made absolute. A waiter
+// polling openPrepared during the winner's rename→create gap builds its OWN
+// database at the path the winner is about to write, and the winner's PRAGMA
+// journal_mode=WAL then fails with SQLITE_BUSY (13 runs in 60) — so the user is
+// told the database is corrupt just after it was successfully repaired (0.5%
+// with two windows). And once several waiters were released together they ran
+// migrate() concurrently on the same fresh file, where addColumnIfMissing is a
+// check-then-ALTER that is not atomic across connections: "duplicate column
+// name: agent_id", "disk I/O error", "unable to open database file", 3 failures
+// in 200. Serialising every open behind the lock removes both.
+func healUnderLock(path string, maxOpen, busyMs, autoCkpt int, openErr error) (*Store, error) {
 	// Recheck under the lock. The holder we queued behind may have finished
 	// between our failed open and our acquiring the lock, in which case the
 	// file at path is now a healthy database and renaming it away would undo
@@ -219,12 +261,19 @@ func healCorrupt(path string, maxOpen, busyMs, autoCkpt int, openErr error) (*St
 	backup, mvErr := quarantineCorrupt(path)
 	healed, healErr := openPrepared(path, maxOpen, busyMs, autoCkpt)
 	if healErr != nil {
-		// Recovery failed too, so report the ORIGINAL failure and hand back
-		// nothing. Returning a Store that cannot be written to would push the
-		// same error out to whichever feature happens to touch storage first,
-		// somewhere far from the reason — refusing to start is the honest
-		// answer once self-healing has itself failed.
-		return nil, openErr
+		// Recovery failed too, so hand back nothing: a Store that cannot be
+		// written to would push the same error out to whichever feature
+		// happens to touch storage first, far from the reason.
+		//
+		// BOTH errors go in the message. The original stays wrapped, because
+		// it is what is wrong with the database and callers test for it with
+		// isCorruptDB; the rebuild error is included as text because
+		// "unreadable" and "unreadable AND the rebuild hit a locked WAL" are
+		// very different situations for whoever is reading the log, and
+		// reporting only the first made the second indistinguishable from a
+		// database nobody had touched.
+		return nil, fmt.Errorf("store: %s was unreadable (%w) and could not be rebuilt: %v",
+			path, openErr, healErr)
 	}
 	if mvErr != nil {
 		slog.Warn("store: database was unreadable and could not be moved aside; started an empty one",
@@ -237,43 +286,43 @@ func healCorrupt(path string, maxOpen, busyMs, autoCkpt int, openErr error) (*St
 }
 
 // acquireHealLock takes a cross-process exclusive lock on healing path, using
-// O_EXCL create as the mutex (the portable one; this repo targets Windows too).
-// The second return reports whether the lock was won.
-func acquireHealLock(path string) (unlock func(), won bool) {
+// O_EXCL create as the mutex — the portable one, since this repo targets
+// Windows too.
+//
+// A nil error means the lock was won and unlock must be called. fs.ErrExist
+// means somebody else holds it and waiting is worthwhile; ANY OTHER error means
+// the lock could not be created at all and healing here is impossible, which
+// the caller must not confuse with contention. Returning a bare false for both
+// made a read-only directory wait out the full healWaitTimeout before failing.
+//
+// LIMIT: O_EXCL create is atomic on local filesystems, which is what yanshi
+// targets (one binary, one project directory). On NFSv2 it is not, and on some
+// network filesystems it is only advisory — a sqlite_path on a network share
+// can therefore still admit two healers. Nothing here detects that.
+func acquireHealLock(path string) (unlock func(), err error) {
 	lock := path + ".healing"
 	// Two attempts, not a retry loop: the second exists only to take over a
 	// lock abandoned by a dead process, and looping past that would let two
 	// processes steal from each other indefinitely.
 	for range 2 {
-		f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
+		f, openErr := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if openErr == nil {
 			_ = f.Close()
-			return func() { _ = os.Remove(lock) }, true
+			return func() { _ = os.Remove(lock) }, nil
+		}
+		if !errors.Is(openErr, fs.ErrExist) {
+			return nil, openErr
 		}
 		fi, statErr := os.Stat(lock)
 		if statErr != nil || time.Since(fi.ModTime()) <= healLockTTL {
-			return nil, false
-		}
-		_ = os.Remove(lock)
-	}
-	return nil, false
-}
-
-// waitForOtherHealer polls the database while a different process heals it,
-// returning that process's rebuilt store. It gives up after healWaitTimeout and
-// reports the original corruption, so a wedged peer degrades to the pre-healing
-// behaviour (refuse to start) rather than to a hang.
-func waitForOtherHealer(path string, maxOpen, busyMs, autoCkpt int, openErr error) (*Store, error) {
-	deadline := time.Now().Add(healWaitTimeout)
-	for {
-		if healed, err := openPrepared(path, maxOpen, busyMs, autoCkpt); err == nil {
-			return healed, nil
-		}
-		if time.Now().After(deadline) {
 			return nil, openErr
 		}
-		time.Sleep(20 * time.Millisecond)
+		// Abandoned by a process that died holding it. Between this Remove and
+		// the next O_EXCL create another reclaimer can slip in; it loses the
+		// create and is told fs.ErrExist, which is the correct answer for it.
+		_ = os.Remove(lock)
 	}
+	return nil, fs.ErrExist
 }
 
 // openPrepared opens path, sizes the pool, applies the pragmas and runs the
@@ -319,9 +368,18 @@ const (
 // problem or an outright bug in migrate() all produce errors that a rebuild
 // would appear to "fix" — by discarding a database that was fine. Widening
 // this turns every transient storage fault into data loss.
-// internal/store::TestOpenWith_MigrateFailsOnReadOnlyDB is the test that goes
-// red if it widens: it breaks migrate() on a perfectly good database and
-// requires OpenWith to fail rather than quarantine it.
+// internal/store::TestOpenWith_DoesNotQuarantineARecoverableFailure is the one
+// test that goes red if it widens — verified by widening it and reading the
+// whole result list, not by picking a plausible name. It breaks migrate() on a
+// perfectly good database with a healing opener and requires OpenWith to leave
+// the file alone.
+//
+// This comment named TestOpenWith_MigrateFailsOnReadOnlyDB for three rounds and
+// was wrong every time: that test opens with store.Open, so healing is off and
+// the predicate is never consulted — it passes with the predicate fully open.
+// Naming the wrong guard is not a harmless slip, because it is the only thing
+// telling the next editor that widening this has a cost, and GOV9 cannot catch
+// it (the symbol it names does exist).
 //
 // Detection REACTS to the failed open rather than probing with PRAGMA
 // integrity_check. integrity_check is strictly more sensitive — measured, a
@@ -688,6 +746,21 @@ func (s *Store) addColumnIfMissing(table, col, decl string) error {
 		}
 	}
 	_, err = s.DB.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, col, decl))
+	if err != nil && strings.Contains(err.Error(), "duplicate column name") {
+		// The check above and this ALTER are not one atomic step, and nothing
+		// serialises two PROCESSES opening the same database: both read the
+		// column as missing, both add it, and the loser gets this error. That
+		// is not a failure — the postcondition this function promises (the
+		// column exists) is exactly what the winner just established.
+		//
+		// It is reachable without any of the self-heal machinery: two yanshi
+		// processes starting on one project at the same time is the ordinary
+		// case (the TUI's lockfile election is decided AFTER both have built).
+		// Measured before this check, a 6-way concurrent open failed roughly
+		// 2% of runs with "duplicate column name: worktree_id / session_id /
+		// use_count" — whichever migration the two happened to collide on.
+		return nil
+	}
 	return err
 }
 

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -653,18 +654,24 @@ func TestHealCorrupt_SucceedsWhenTheFileIsAlreadyGone(t *testing.T) {
 // TestAcquireHealLock_IsExclusiveAndReclaimsStaleLocks covers the mutex itself:
 // a second holder is refused, a released lock is reusable, and a lock left
 // behind by a process that died mid-heal does not disable healing forever.
+//
+// The refusal must be reported as fs.ErrExist specifically. healCorrupt keys
+// off that to decide between waiting and giving up, so a contention failure
+// that reported some other error would send the caller down the give-up path
+// and vice versa — see TestAcquireHealLock_UncreatableLockIsNotContention.
 func TestAcquireHealLock_IsExclusiveAndReclaimsStaleLocks(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "yanshi.db")
 
-	unlock, won := acquireHealLock(path)
-	require.True(t, won)
+	unlock, err := acquireHealLock(path)
+	require.NoError(t, err)
 	_, second := acquireHealLock(path)
-	assert.False(t, second, "a second holder must be refused while the first holds it")
+	require.Error(t, second, "a second holder must be refused while the first holds it")
+	assert.ErrorIs(t, second, fs.ErrExist, "contention must be reported as fs.ErrExist")
 
 	unlock()
-	unlock2, won2 := acquireHealLock(path)
-	require.True(t, won2, "the lock must be reusable once released")
+	unlock2, err2 := acquireHealLock(path)
+	require.NoError(t, err2, "the lock must be reusable once released")
 	unlock2()
 
 	// A lock abandoned by a dead process must be reclaimable, or one crash
@@ -673,9 +680,41 @@ func TestAcquireHealLock_IsExclusiveAndReclaimsStaleLocks(t *testing.T) {
 	require.NoError(t, os.WriteFile(lock, nil, 0o600))
 	stale := time.Now().Add(-2 * healLockTTL)
 	require.NoError(t, os.Chtimes(lock, stale, stale))
-	unlock3, won3 := acquireHealLock(path)
-	require.True(t, won3, "a lock older than healLockTTL must be taken over")
+	unlock3, err3 := acquireHealLock(path)
+	require.NoError(t, err3, "a lock older than healLockTTL must be taken over")
 	unlock3()
+}
+
+// TestAcquireHealLock_UncreatableLockIsNotContention separates "somebody else
+// holds the lock" from "the lock cannot be created here at all".
+//
+// Healing renames and recreates inside the database's own directory, so if that
+// directory is read-only the whole operation is impossible and waiting for a
+// peer is pure delay — measured, treating the two alike added 5.02s to a
+// startup that was going to fail with the same error anyway.
+func TestAcquireHealLock_UncreatableLockIsNotContention(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "ro")
+	require.NoError(t, os.Mkdir(sub, 0o700))
+	path := filepath.Join(sub, "yanshi.db")
+	require.NoError(t, os.WriteFile(path, []byte("corrupt"), 0o600))
+
+	require.NoError(t, os.Chmod(sub, 0o500)) // read+execute, no write
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o700) })
+
+	_, err := acquireHealLock(path)
+	if err == nil {
+		t.Skip("filesystem ignores the read-only directory bit here")
+	}
+	assert.NotErrorIs(t, err, fs.ErrExist,
+		"an uncreatable lock must not be reported as contention: %v", err)
+
+	// And the caller must give up immediately rather than wait out the timeout.
+	start := time.Now()
+	_, healErr := healCorrupt(path, 4, 5000, 1000, errors.New("original corruption"))
+	require.Error(t, healErr)
+	assert.Less(t, time.Since(start), healWaitTimeout,
+		"healing must not wait for a peer that cannot exist")
 }
 
 // TestHealCorrupt_DoesNotQuarantineADatabaseAPeerAlreadyRepaired pins the

@@ -15,7 +15,8 @@ import (
 )
 
 // selfHealAllowedSites is the complete set of places allowed to switch database
-// self-healing ON, keyed by "<path>:<enclosing func>".
+// self-healing ON, keyed by "<path>:<enclosing func>" ("<package-level>" for
+// a grant declared outside any function).
 //
 // This is an AUTHORIZATION list, not a debt table. Setting SelfHeal true grants
 // a process permission to rename the user's history out of the way, so the set
@@ -65,36 +66,51 @@ func TestSelfHealIsEnabledOnlyAtOwningEntryPoints(t *testing.T) {
 		require.NoError(t, rerr)
 		rel = filepath.ToSlash(rel)
 
+		// The whole FILE is walked, not just its function bodies. Scanning only
+		// FuncDecls left package-level declarations invisible, so hoisting a
+		// grant to `var prBuildOptions = bootstrap.Options{SelfHeal: true}`
+		// evaded this gate entirely — probed, and it handed `yanshi pr` healing
+		// rights with every package green. Grants outside any function are
+		// attributed to "<package-level>" so they still have to be listed.
+		funcs := make([]*ast.FuncDecl, 0, len(file.Decls))
 		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok {
-				continue
+			if fn, ok := decl.(*ast.FuncDecl); ok {
+				funcs = append(funcs, fn)
 			}
-			ast.Inspect(fn, func(n ast.Node) bool {
-				// BOTH spellings, because they are equally a grant and an
-				// authorization scan that saw only one would be evadable by
-				// reformatting: `Options{SelfHeal: true}` (a composite literal
-				// field) and `opts.SelfHeal = true` (an assignment, which is
-				// how runTUI does it so exec and headless keep the default).
-				switch node := n.(type) {
-				case *ast.KeyValueExpr:
-					if key, ok := node.Key.(*ast.Ident); ok && key.Name == "SelfHeal" && isTrue(node.Value) {
-						found[rel+":"+fn.Name.Name] = true
+		}
+		enclosing := func(pos token.Pos) string {
+			for _, fn := range funcs {
+				if pos >= fn.Pos() && pos <= fn.End() {
+					return fn.Name.Name
+				}
+			}
+			return "<package-level>"
+		}
+
+		ast.Inspect(file, func(n ast.Node) bool {
+			// BOTH spellings, because they are equally a grant and an
+			// authorization scan that saw only one would be evadable by
+			// reformatting: `Options{SelfHeal: true}` (a composite literal
+			// field) and `opts.SelfHeal = true` (an assignment, which is
+			// how runTUI does it so exec and headless keep the default).
+			switch node := n.(type) {
+			case *ast.KeyValueExpr:
+				if key, ok := node.Key.(*ast.Ident); ok && key.Name == "SelfHeal" && isTrue(node.Value) {
+					found[rel+":"+enclosing(node.Pos())] = true
+				}
+			case *ast.AssignStmt:
+				for i, lhs := range node.Lhs {
+					sel, ok := lhs.(*ast.SelectorExpr)
+					if !ok || sel.Sel.Name != "SelfHeal" || i >= len(node.Rhs) {
+						continue
 					}
-				case *ast.AssignStmt:
-					for i, lhs := range node.Lhs {
-						sel, ok := lhs.(*ast.SelectorExpr)
-						if !ok || sel.Sel.Name != "SelfHeal" || i >= len(node.Rhs) {
-							continue
-						}
-						if isTrue(node.Rhs[i]) {
-							found[rel+":"+fn.Name.Name] = true
-						}
+					if isTrue(node.Rhs[i]) {
+						found[rel+":"+enclosing(node.Pos())] = true
 					}
 				}
-				return true
-			})
-		}
+			}
+			return true
+		})
 		return nil
 	}))
 
