@@ -27,6 +27,11 @@
 10. **不要执行 git 提交以外的 VCS 操作**（不建分支、不推送）。每个任务结束提交，conventional commit。
 11. **文档里的 `路径::符号` 引用必须真实存在**（GOV9 扫全部活 `.md`）。写计划外的新文档时注意。
 12. **每个任务先跑 `go test ./internal/archtest`**，再跑受影响包的测试。
+13. **数据库迁移的两条路径【实测】**，别自己发明第三条：
+    - **新表** → 写进 `internal/store/store.go` 的 `schema` 常量，用 `CREATE TABLE IF NOT EXISTS`。`migrate()` 第一句就是 `s.DB.Exec(schema)`。
+    - **给已有表加列** → 在 `migrate()` 里加一行 `s.addColumnIfMissing(table, col, decl)`。**必须带 `NOT NULL DEFAULT <零值>`**，否则存量行读出来是 NULL 会炸扫描。`memories` 表当前的 `session_id` / `agent_id` 就是这么加的（`schema` 里那段 DDL 只有 4 列，别被它误导）。
+    - 加列后**同步更新对应的 `xxxColumns` 常量与所有 `scanXxx` 的扫描顺序** —— 这两处漂了会在运行时才炸。
+14. **压缩算法用标准库 `compress/gzip`【实测】**：`go.mod` 里没有 `klauspost/compress`，不要为归档新增依赖。（阶梯：标准库够用就用标准库）
 
 ## 计划的可信度分级
 
@@ -327,7 +332,14 @@ Refs: W-D-02"
 
 #### 3a. 游标分页
 
-【实测】`internal/store/session_list.go:63` 有 `q := "SELECT " + sessionColumns + " FROM sessions " + …`。先读完这个函数，看清现有的排序键与 limit/offset 形状。
+【实测】`internal/store/session_list.go` 的 `listSessionsWhere(where string, limit int)` 是所有列表路径的收口：
+
+```go
+q := "SELECT " + sessionColumns + " FROM sessions " + where + " ORDER BY updated_at DESC"
+if limit > 0 { q += " LIMIT ?" }
+```
+
+所以：**排序键是 `updated_at DESC`**，当前**连 OFFSET 都没有**（只有 LIMIT）。游标就是 `(updated_at, id)`。`ListSessions` 与 `ListArchivedSessions` 都走这个函数，它的 doc 注释明说列名/扫描顺序/ORDER BY 集中在这里是为了让两条路径不漂 —— **你的分页也要走它，不要另起一条 SELECT**。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -396,9 +408,26 @@ Refs: W-D-10, W-D-11"
 
 只有模型主动调 `memory_write` 才会产生记忆 ⇒ **自驱动 goalloop 跑完不留任何长期资产**。W-A-05 已经把蒸馏入口接上了（`DistillMemories`），但触发者仍然只有模型自己。
 
+#### 【实测，写计划后复核补入】蒸馏入口的签名与一个夹具陷阱
+
+```go
+func DistillMemories(ctx context.Context, s *store.Store, m DistillModel,
+	dims store.MemoryFilter) (DistillResult, error)
+
+type DistillModel interface {
+	Generate(ctx context.Context, msgs []*schema.Message, opts ...model.Option) (*schema.Message, error)
+}
+
+const MinDistillBatch = 6 // 候选少于 6 条时,DistillMemories 直接返回不做任何事
+```
+
+**`MinDistillBatch = 6` 是这个任务最可能踩的坑。** 一个只写了 2、3 条候选记忆的测试夹具会让 Phase2 静默空转，而测试仍然「通过」——因为它断言的是「没报错」。**Phase2 的测试夹具必须产出至少 6 条候选**，否则你验证的是短路分支不是蒸馏。
+
+`DistillMemories` 直接吃 `*store.Store`（不是接口），所以你的 worker 也可以直接持有 store，不需要为它造一层抽象。
+
 - [ ] **Step 1: 先读三处，再动手**
 
-1. `internal/tools/memory_distill.go` —— `DistillMemories` 的确切签名与它需要什么 context 值。
+1. `internal/tools/memory_distill.go` —— 上面的签名已核，读它是为了看 `DistillResult.Skipped` 与 `dims` 怎么用。
 2. `internal/store/memory.go` —— `WriteMemoryScoped` / `MemoryFilter` 的维度字段。
 3. `internal/bootstrap/bootstrap.go` 里已有的后台组件是怎么起停的（找 `go func` / `context.WithCancel` / `App.Shutdown` 的现有模式），**跟随它**，别发明第二套生命周期。
 
@@ -481,7 +510,7 @@ func TestArchive_ConcurrentReadDuringArchiveSucceeds(t *testing.T)
 
 【设计】
 
-- 压缩用 **`compress/zstd` 不在标准库** —— Go 标准库只有 gzip/flate/zlib。先 `grep -rn "klauspost/compress" go.mod` 看是否已有依赖。**已有就用 zstd，没有就用 `compress/gzip`**，不要为此新增依赖（阶梯第 5 级：已装依赖优先；第 3 级：标准库够用就用标准库）。在注释里写明选了哪个和为什么。
+- 压缩用 **`compress/gzip`**（标准库）。【实测】`go.mod` 里没有 `klauspost/compress`，zstd 不可用，且不值得为归档新增一条依赖。在注释里写明这个选择。
 - 存储形状：`messages` 表加 `archived_blob BLOB` 不合适（行级压缩省不了多少）。**按会话整体压**：新表 `archived_sessions(session_id TEXT PRIMARY KEY, blob BLOB, message_count INTEGER, archived_at INTEGER)`，归档时把该会话全部消息序列化+压缩写进去，然后删 `messages` 里的行。
 
   ⚠️ **这与 ADR-0015 约束 1 的关系必须想清楚再写**：约束 1 管的是 `context_events`，`messages` 不在其列。但 C1 的「持久化先行」精神要求归档必须是**先写 blob、验证读得回来、再删行**，且在同一个 `WriteTx` 里。把这条写进代码注释。
@@ -591,7 +620,13 @@ func TestMessageQueue_ConsumedOnSessionResume(t *testing.T)
 
 第 2 条**必须开两个 `store.Open` 指向同一路径**，不是同一个句柄用两次 —— 那测的是 map 不是数据库。
 
-- [ ] **Step 2: 实现**
+- [ ] **Step 2: 先看能不能复用，再决定建不建表**
+
+【实测】`internal/store/task.go` 已经有一套 task broker 的排队机制（`cmd/agent-worker` 消费它）。**先读它**，判断「向会话排消息」能不能表达成它的一种 task，而不是第二套队列。
+
+能复用就复用并在报告里说明；确实语义不同（task 是给 worker 执行的工作项，本任务的队列是给会话消费的用户输入）就建新表，同样在注释里写明为什么不能复用——**这句注释是给下一个人看的，它防的是第三套队列**。
+
+- [ ] **Step 3: 实现（若确认要建表）**
 
 【设计】`queued_messages(id INTEGER PK AUTOINCREMENT, session_id TEXT, content TEXT, created_at INTEGER, consumed_at INTEGER DEFAULT 0)`。入队纯 INSERT；消费时 `UPDATE … SET consumed_at=?`（这张表**不受 ADR-0015 约束 1 管辖** —— 那条只管 `context_events`；在注释里写明这个边界，免得下一个人以为违规）。
 
@@ -609,34 +644,72 @@ Refs: W-D-08"
 
 ---
 
-### Task 8: 输入历史落盘（全局）
+### Task 8: 输入历史的字节上限与多进程安全
 
 **覆盖** W-D-09（`B37`）
 
-**Files:**
-- Modify: `internal/cli/tui/`（输入框历史）
-- Create: `internal/store/input_history.go` + 测试
+> **本任务的范围被写计划后的复核推翻过一次，请读这段。**
+>
+> 计划初稿说「输入历史是纯内存，要落盘」，并让实施者把它搬进 SQLite。**那是错的。**【实测】`internal/cli/tui/history.go` 已经有完整的 JSONL 持久化：`LoadHistory` / `History.Add` / `History.Save`，`historyPath()` 返回 `os.UserConfigDir()/yanshi/history.jsonl`（**已经是全局的**，不按项目分），500 条上限、重复项移到尾部、tmp+随机后缀+原子 rename、读取时坏行跳过自愈。
+>
+> **不要把它重写进 SQLite。** 那是把一个能工作的东西返工一遍，只为满足一句写错的计划。
+>
+> 剩下的两个缺口是真的，本任务只做这两个：
 
-- [ ] **Step 1: 先读**：TUI 当前的输入历史在哪、是不是纯内存。`grep -rn "history" internal/cli/tui/*.go | grep -vi "cs.history\|chat"`。
+**Files:**
+- Modify: `internal/cli/tui/history.go`
+- Test: `internal/cli/tui/history_test.go`
+
+#### 缺口 1：上限是条数不是字节
+
+`defaultHistoryCap = 500` 是**条数**。一条 100 KB 的粘贴 prompt ×500 = 50 MB 的 history.jsonl，每次 TUI 启动全量读进内存。
+
+#### 缺口 2：多进程同时 Save 会丢历史
+
+`History.Save` 是「全量重写 + rename」。rename 是原子的，所以文件不会**损坏** —— 但两个 yanshi 进程（多窗口是本仓的常规用法，见 CLAUDE.md 的后端发现一节）同时 Save 时，后写的整份覆盖先写的，另一个窗口这一整场会话的输入历史**静默消失**。
+
+- [ ] **Step 1: 先自己确认上面两条**
+
+读 `internal/cli/tui/history.go` 全文。**如果你读到的与上面不符，以代码为准并在报告里记一条。**
 
 - [ ] **Step 2: 写失败的测试**
 
 ```go
-// append-only 且带字节上限裁剪。
-func TestInputHistory_TrimsAtByteLimit(t *testing.T)
-// 多进程并发写不损坏。
-func TestInputHistory_ConcurrentWritesDoNotCorrupt(t *testing.T)
+// TestHistory_TrimsAtByteLimit: 上限必须同时是条数和字节。单条超大 prompt
+// 会让 500 条上限失去意义 —— 每次启动都要把几十 MB 读进内存。
+func TestHistory_TrimsAtByteLimit(t *testing.T)
+
+// TestHistory_ConcurrentSavesDoNotLoseEntries: 两个进程各自 Add 后 Save,
+// 后写的不得整份覆盖先写的。多窗口是本仓的常规用法,今天第二个窗口一保存,
+// 第一个窗口这一整场的输入历史就没了。
+func TestHistory_ConcurrentSavesDoNotLoseEntries(t *testing.T)
 ```
 
-第 2 条真起 N 个 goroutine 并发 append，最后读回来断言每一条都完整且可解析（不是断言总数 —— 损坏的表现是半条记录，不是少一条）。
+第 2 条的夹具：**两个独立的 `*History` 实例指向同一路径**（这才是两个进程；同一实例并发只测到了 `h.mu`）。各自 `LoadHistory` → 各自 `Add` 不同内容 → 各自 `Save` → 第三次 `LoadHistory` 读回来，断言**两边的条目都在**。
 
-- [ ] **Step 3: 实现**
+- [ ] **Step 3: 跑，确认红**
 
-【设计】存 SQLite（不是文件）—— 单二进制已有 store 层，再引一套文件格式就是第二个真相源，和 ADR-0015 拒绝 JSONL 的理由一样。表 `input_history(id INTEGER PK AUTOINCREMENT, content TEXT, created_at INTEGER)`。字节上限：写入后若总字节超限，删最老的直到降下来（这是 LRU 裁剪，不是 append-only 违规 —— 同样在注释里划清边界）。并发安全由 `s.WriteTx` 提供。
+- [ ] **Step 4: 实现**
 
-**全局**意味着不按会话隔离 —— 用户在项目 A 敲过的命令在项目 B 也能翻到。确认这是想要的（spec 写的是「全局」），在注释里写明。
+【设计】
 
-- [ ] **Step 4: 跑绿；commit**
+- **字节上限**：加 `defaultHistoryBytes`（取一个能解释的值，比如 2 MiB，并在注释里写明理由）。裁剪在 `Add` 里，条数与字节两个上限都从最老端裁。**单条就超上限时**要有明确行为 —— 截断还是拒绝存，选一个并写进注释，别让它变成无限循环。
+- **多进程**：`Save` 改成「读回磁盘上的当前内容 → 与内存条目按时间戳归并去重 → 再写」。归并的排序键用 `historyItem.TS`，去重沿用现有的「重复项移到尾部」语义。
+  - 这仍不是完全的并发安全（两个进程在读与写之间交错仍可能丢一条），但把「丢一整场」降到「极窄窗口里丢一条」。**在注释里如实写明这个上限**，别宣称解决了它。
+  - 不要为此引入文件锁：跨平台文件锁在本仓要新写一套（`internal/lockfile` 那套是给后端选举用的，语义不同），代价远大于它买到的东西。
+
+- [ ] **Step 5: 跑绿；`go test ./internal/cli/tui`；commit**
+
+```sh
+git commit -m "fix(tui): bound input history by bytes, and stop one window from erasing another's
+
+The 500-entry cap was entry-count only, so a handful of large pasted prompts
+put tens of megabytes on the startup read path. And Save rewrote the whole
+file, so with two windows open the second save silently dropped everything
+the first had recorded. Save now merges with what is on disk before writing.
+
+Refs: W-D-09"
+```
 
 ---
 
@@ -672,6 +745,13 @@ func TestCheckpoint_DryRunProducesPlanWithoutMutating(t *testing.T)
 - 文件维度：**复用 `internal/vcs`**，不要重实现。W-A-08 刚修过 `MergeToMain` 的物化，读一眼那里的模式。
 - 暂停写者：store 已有 `writeMu`，恢复期持写锁即可 —— 不要发明第二套锁。
 
+【实测，写计划后复核补入】**本仓已有大量快照/恢复机制，本任务的主要工作是编排它们而不是造新的。** 动手前逐个看一眼：
+
+- `internal/store/session.go` —— `SessionRevertSnapshot`、`snapshotSessionTx`、`TruncateSessionForRevert`、`RestoreSessionAfterFailedRevert`。**会话维度的快照原语已经齐了。**
+- `internal/vcs/` —— `timeline.go`、`seam.go`、`preview.go`、`freeze.go`、`restore.go`、`revert.go`、`gc.go`。文件维度的快照、预览、冻结、恢复都在这里。`preview.go` 很可能就是你要的 dry-run。
+
+**如果你发现某个维度已经完整实现，就在报告里说明并只补缺的那部分。** 「检查点系统」这个名字听起来像要造一套新东西，但按上面的清单，它更可能是一层统一入口 + 缺失的记忆维度。造第二套快照是本任务最大的风险。
+
 - [ ] **Step 3: 跑绿；`go test ./internal/vcs ./internal/store`；commit**
 
 ---
@@ -684,9 +764,32 @@ func TestCheckpoint_DryRunProducesPlanWithoutMutating(t *testing.T)
 - Modify: `internal/ctxcompact/`（片段标记）
 - Modify: `internal/agent/orchestrator/`（重注入时机）
 
-#### 现状【实测】
+#### 现状【实测】—— 以及一条会被「统一」二字破坏的承重约束
 
-`internal/ctxcompact/assemble.go:59` 用 `SummarySentinel` 前缀标记摘要；`assemble.go:23` 的注释说明还有第二个 sentinel（"It has its own sentinel rather than sharing SummarySentinel because…"）。**先读那段注释**，它解释了为什么现在是两个而不是一个 —— 你的统一机制不能把那个理由抹掉。
+已经有两个 sentinel，形态是统一的（`[yanshi:<kind>]\n` 前缀 + user 角色）：
+
+```go
+const EvictionMapSentinel = "[yanshi:evicted-context-map]\n"
+// SummarySentinel 同形，在 summarize.go / assemble.go 各处使用
+```
+
+`internal/ctxcompact/assemble.go` 上那段 doc 注释明写了它们**为什么必须分得开**：
+
+> It has its own sentinel rather than sharing SummarySentinel because a consumer already depends on telling the two apart: Plan short-circuits when history ENDS in a summary, and IsSummaryMessage is what decides that. A map wearing the summary's marker would be read as a summary, and any history ending in one would stop being compactable.
+
+**所以「统一机制」不等于「统一 sentinel」。** 把两者合并成同一个标记会让 `Plan` 的短路判据失效 —— 以 map 结尾的历史会被误判为「已经压过了」，从此不再可压缩。
+
+W-D-13 要做的是把这个**已经存在的形态**提炼成可复用的三件套（`MarkFragment` / `ParseFragments` / `StripFragments` + `Kind` 字段），让现有两个 sentinel 成为它的两个 kind，**判别函数 `IsSummaryMessage` / `IsEvictionMapMessage` 的语义一字不变**。
+
+- [ ] **Step 0: 写一条守住这条约束的测试**
+
+```go
+// TestFragment_SummaryAndMapRemainDistinguishable: 统一片段机制不得让
+// Plan 的短路判据失效。以 eviction map 结尾的历史必须仍然可压缩。
+func TestFragment_SummaryAndMapRemainDistinguishable(t *testing.T)
+```
+
+断言：构造一个以 eviction map 结尾的历史，`Plan` 不短路（即仍然给出非空 `SummarizeIndices`）；再构造一个以 summary 结尾的，`Plan` 短路。**两个方向都要**，只测一边证明不了「分得开」。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -739,6 +842,11 @@ func TestSystemPrompt_ModelSwitchVisibleWithinTurn(t *testing.T)
 
 **缓存交互**：读 `runnerFor` 与 `runners sync.Map` 的现有代码，判断是「提示变了要驱逐缓存」还是「提示不进 runner 而是每 turn 传」。**后者更简单也更对** —— 若可行，选它并在注释里写明为什么没动缓存。
 
+【实测，写计划后复核补入】两处与 spec 的描述不同，以这里为准：
+
+1. **缓存键不是「model 指针」而是 `runnerCacheKey`（per-model + per-mode）** —— `internal/agent/orchestrator/orchestrator.go` 里 `runners sync.Map` 的注释自己写着 "memoizes per-model+per-mode Runners, keyed by runnerCacheKey"。CLAUDE.md 那句「以 `model.BaseChatModel` 指针为键」已经漂了。
+2. **驱逐机制已经存在**：同文件有 `FlushRunners`（`o.runners.Range` + `Delete`）。所以「驱逐缓存」这条路是现成的，不需要你新造。**先看它现有的调用方**（`grep -rn "FlushRunners(" internal --include='*.go'`）—— 如果 `/model` 切换已经在调它，那第二条验收可能已经部分成立，你要断言的是**系统提示**这一层而不是 runner 这一层。
+
 - [ ] **Step 3: 跑绿；commit**
 
 ---
@@ -768,9 +876,18 @@ func TestGoalLoop_ResumesAfterRestart(t *testing.T)
 
 【设计】`goal_state(goal_id TEXT PK, objective TEXT, iteration INTEGER, budget_json TEXT, updated_at INTEGER)`。每轮结束 UPSERT。启动时按 goal_id 查，有则续。
 
-「双预算」指 `MaxIterations` 之外还有一个（读 `types.go` 里 `Budget` 结构确认第二个是什么，可能是 token 或 wall-clock）—— 两个都要存。
+【实测，写计划后复核补入】「双预算」核实为真：
 
-`goalloop` 当前是否依赖 `internal/store`？**GOV1 会管这个方向**。若 `goalloop` 不该 import store，就把持久化做成一个接口由组合根注入 —— 读 `internal/archtest/deps_test.go` 的 `portAllowlists` 确认。
+```go
+type Budget struct {
+	MaxIterations int // maximum number of plan-implement-evaluate-judge cycles
+	MaxTokens     int // token budget across all LLM calls
+}
+```
+
+**两个都要存、都要不被重置**，`MaxTokens` 尤其容易漏 —— 迭代数肉眼可见，token 花掉多少不看数据库就不知道。测试要对**两个**字段都断言。
+
+【实测】**`internal/agent/goalloop` 当前完全不 import `internal/store`。** 所以直接加一个 store 依赖是新增一条跨层依赖，GOV1 的 `portAllowlists` 会管它。**做法：定义一个窄接口（存/取 goal 状态）放在 `goalloop` 包内，由 `bootstrap` 注入 store 的实现。** 这与本仓既有的六边形布局一致，也避开了 GOV1。动手前读 `internal/archtest/deps_test.go` 的 `portAllowlists` 确认 `goalloop` 是不是 port 包。
 
 - [ ] **Step 3: 跑绿；`go test ./internal/archtest ./internal/agent/goalloop`；commit**
 
@@ -787,4 +904,11 @@ Task 5（归档）排在 Task 4（记忆 worker）前面，因为 Task 6 的溯�
 - **spec 覆盖**：W-D-01…16 共 16 条，映射到 12 个任务 —— 01+05→T1、02→T2、10+11→T3、03→T4、04→T5、07+12→T6、08→T7、09→T8、06→T9、13+14→T10、15→T11、16→T12。无遗漏。
 - **占位符扫描**：无 TBD/TODO；每个「实现」步都给了具体的表结构或算法，没有「适当处理错误」这类空话。
 - **类型一致性**：Task 1 的 `ProjectWindow` / `HiddenSeq` / `AppendContextEvent` 在 T5（归档回退）、T6（溯源）、T9（检查点）被引用，签名一致。
-- **已知的弱点**：T4、T7、T8、T9、T11、T12 的落点只做了签名级核对，没跑过探针。这些任务的第一步都写了「先读 X」，且全局约束里的【实测】/【设计】分级要求实施者以代码为准 —— 这是本计划已知的、有意接受的精度上限。
+- **落点复核（写完计划后补跑的一轮，结果已回填进各任务）**：
+  - T8 **整条被推翻并重写** —— 输入历史早就落盘了，原计划让人把能工作的东西返工进 SQLite。真实缺口是字节上限与多进程覆盖。
+  - T11 两处事实以复核为准：缓存键是 `runnerCacheKey`（per-model+per-mode）不是 model 指针，且 `FlushRunners` 驱逐机制已存在。
+  - T12 「双预算」核实为真（`MaxIterations` + `MaxTokens`），且 `goalloop` 当前不 import `store` ⇒ 走窄接口注入。
+  - T4 补入 `MinDistillBatch = 6` 的夹具陷阱：候选不足 6 条时蒸馏静默空转。
+  - T7 补入「先看 `internal/store/task.go` 能不能复用」。
+  - T9 补入既有快照机制清单：会话维度原语已齐，`internal/vcs` 有 7 个相关文件，本任务多半是编排而非新造。
+- **剩余的精度上限**：T2/T3/T5/T6/T10 只做了签名级与现状引文核对，没跑探针。这些任务的第一步都写了「先读 X」，且【实测】/【设计】分级要求实施者以代码为准 —— 这是本计划已知的、有意接受的上限。上面那轮复核在 6 个任务里推翻了 1 个、修正了 5 个，说明这个上限是真实存在的，实施者请当真。

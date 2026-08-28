@@ -34,16 +34,21 @@ CREATE TABLE IF NOT EXISTS context_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id  TEXT    NOT NULL,
     kind        TEXT    NOT NULL,   -- 'compact' | 'undo'
-    hidden_seq  INTEGER NOT NULL,   -- compact: seq < hidden_seq 的行不再进窗口；undo: 忽略
+    hidden_seq  INTEGER NOT NULL,   -- compact: 保留尾部的起点；undo: 忽略
+    pinned_seqs TEXT    NOT NULL DEFAULT '',  -- JSON 数组：水位线以下仍然存活的 seq
     created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_context_events_session
     ON context_events(session_id, id);
 ```
 
-投影 `Store.ProjectWindow(sessionID)`：按 `id ASC` 折叠事件，`compact` 压栈、`undo` 弹栈，栈顶即当前 `hidden_seq`（空栈为 0），然后 `SELECT … WHERE session_id = ? AND seq >= ? ORDER BY seq ASC`。
+投影 `Store.ProjectWindow(sessionID)`：按 `id ASC` 折叠事件，`compact` 压栈、`undo` 弹栈，栈顶即当前边界（空栈为 `hidden_seq = 0` 且无 pin），然后 `SELECT … WHERE session_id = ? AND (seq >= ? OR seq IN (…)) ORDER BY seq ASC`。
 
-`hidden_seq` 由 WS 压缩路径在**压缩后那次 flush 之后**算出：压缩后窗口展开成的行数记为 `kept`，flush 后的下一个可用 seq 记为 `next`，则 `hidden_seq = next - kept`。这样投影结果与压缩后的活动窗口逐条一致 —— 不是近似，是同一组行。
+**为什么需要两个字段而不是一个水位线。** 初稿只有 `hidden_seq`，并声称「压缩后窗口 = 日志的一个后缀」。**那是错的，实现时被反例推翻**：`ctxcompact.Plan` 会 pin **任意位置**的 user 原文、working-set 路径与错误/diff 标记，所以压缩后的窗口是一个**带洞的集合**而不是后缀。只用水位线会同时犯两个方向的错 —— 丢掉被 pin 的开场请求（模型重连后忘记用户最初要什么），以及把水位线以上一条本该驱逐的消息重新放进来。更糟的是它可能把一对 tool_call / tool_result 从中间切开，留下一个孤儿 tool result，而 provider 会直接拒绝那种请求。
+
+`hidden_seq` 因此只表达**保留尾部的起点**，`pinned_seqs` 补上尾部之下的散落 pin。两者合起来才等于活动窗口。
+
+边界由 WS 压缩路径在**压缩后那次 flush 之后**算出。尾部起点锚定在保留尾部展开成的行数上（`log_top − rows(kept tail)`）；散落 pin 的 seq 通过 `AssignDedupKeys` + `messages` 上 `(session_id, dedup_key)` 的唯一索引反查得到 —— 复用既有去重机制，不需要改 `AppendMessages` 的签名。
 
 撤销就是再 append 一条 `undo`。日志本身一个字节都不变。
 
@@ -54,6 +59,7 @@ CREATE INDEX IF NOT EXISTS idx_context_events_session
 - 撤销压缩、检查点、分叉都退化成「在事件流上多 append 一条」，不需要各自碰存储格式。
 - **不可违反的约束 1：`context_events` 只接受 INSERT。** 该表不得出现 `UPDATE` 或 `DELETE` 语句，唯一例外是 `DeleteSession` 级联清理整个会话。撤销、修正、回滚一律靠追加新事件表达。
 - **不可违反的约束 2：迁移双向可读，旧会话逐字节等同现状。** 没有任何 `context_events` 行的会话，`ProjectWindow` 必须返回与 `Messages` 完全相同的切片。这条要有常驻回归测试，不能只是注释 —— 旧会话是绝大多数，投影一旦对它们有偏差，就是给每个存量用户换了历史。
+- **不可违反的约束 5：投影必须与活动窗口逐条相等，不得是「差不多」。** 具体到两条不可退让的性质：(a) 被 `Plan` pin 住的消息一条都不能丢 —— 它 pin 的正是判定为最不该丢的东西；(b) tool_call 与它的 tool_result 不得被边界切开，孤儿 tool result 会让 provider 直接拒绝整个请求。**这条是补写的**：初稿的单水位线设计违反了它而当时没看出来，是实现阶段用反例推翻的。任何简化边界表示的后续改动都要先对着这两条性质检查。
 - **不可违反的约束 3：`ctxcompact` 的三步不变。** `Plan` / `EnforceToolCallPairs` / `Assemble` 操作的是投影出来的切片，本决策只改「切片从哪来」。`internal/ctxcompact` 不得因此 import `internal/store`（GOV1：那会让一个纯函数包长出存储依赖）。
 - **不可违反的约束 4：`takeChunk` 的超窗上界照旧成立。** 真实上界仍是「窗口 + 历史中最大不可分割段」，随并行工具数线性增长。它是分块摘要的性质，与存储模型无关 —— 不得因本决策宣称它被解决。
 - 代价：压缩路径多一次写。它在同一个 `WriteTx` 里，与 flush 相邻，量级可忽略；但**事件写失败必须与 flush 失败同等对待** —— 拒绝压缩，而不是压缩了却不记标记（那会让下一次重连把刚驱逐的东西全拉回来，即今天的 bug）。
