@@ -239,11 +239,17 @@ func TestS10S11_OutOfScopeDeletionPrompts(t *testing.T) {
 	}
 }
 
-// TestS10S11_TopLevelChainStillReachesTheMetacharGate is the handoff check.
-// classifyDestruction deliberately returns None for a top-level chain so the
-// stronger metacharacter HardDeny fires instead. If that handoff ever breaks,
-// the command downgrades from structural to nothing — so assert the OUTCOME,
-// not the intermediate classification.
+// TestS10S11_TopLevelChainStillReachesTheMetacharGate asserts the OUTCOME for a
+// top-level chain, deliberately without naming which gate produces it.
+//
+// That indifference is the point, and INF1 (ADR-0004's supplement) is why it
+// paid off. When this was written, classifyDestruction returned None for a
+// chained command and the whole-string metacharacter HardDeny refused it;
+// INF1 removed that gate and made the deletion classifier split chains itself,
+// so today the SAME commands are refused by a different dimension. A test
+// pinned to the intermediate classification would have gone red on a change
+// that did not weaken anything. The name is kept for continuity with the audit
+// item; read "the gate", not "the metacharacter gate".
 func TestS10S11_TopLevelChainStillReachesTheMetacharGate(t *testing.T) {
 	workdir := t.TempDir()
 	for _, cmd := range []string{

@@ -87,12 +87,18 @@ func segAction(cmd string) Action {
 // milder than the strictest verdict any of its segments earns alone.
 //
 // It is the only thing standing between "the metacharacter HardDeny was
-// refined" and "the metacharacter HardDeny was removed". A fold that returned
-// the LAST segment's decision, or the first Allow it found, or that collapsed
-// the two HardDeny tiers, passes every hand-written example in this file and
-// fails here.
+// refined" and "the metacharacter HardDeny was removed". Measured against the
+// mutations it is meant to catch: replacing the fold with "keep the last
+// segment's decision" fails here, and so does "keep the first Allow".
 //
-// Severity, not equality, is the assertion: a chain may legitimately be
+// What it does NOT catch is a collapse of the two HardDeny ranks inside
+// severity(), because both sides of the comparison route through that same
+// function — the property is stated in severity's own terms, so it cannot
+// notice severity lying. TestChainedDenialTakesTheStrictestTier's second case
+// and TestMoreSevereIsATotalOrderOverTheFourTiers cover that direction by
+// comparing Decisions instead. Both were measured against the mutation.
+//
+// Severity, not equality, is the assertion here: a chain may legitimately be
 // STRICTER than any single segment (the destructive gate can grade the pair
 // differently), and pinning equality would forbid future tightening.
 func TestSegmentedShellIsNeverMorePermissiveThanItsSegments(t *testing.T) {
@@ -207,6 +213,37 @@ func TestChainedDenialTakesTheStrictestTier(t *testing.T) {
 	if chain.Overridable {
 		t.Errorf("Check(chain).Overridable = true; the catastrophic segment makes this structural, "+
 			"and YOLO must not be able to override it (reason: %s)", chain.Reason)
+	}
+
+	// The case above is decided by checkDestructive, which short-circuits before
+	// checkShell runs — so it does NOT exercise the fold's tier handling at all.
+	// Measured: collapsing severity()'s two HardDeny ranks into one leaves it
+	// green. This second case puts both tiers inside the SHELL dimension, with
+	// the overridable one FIRST so a tie would keep the wrong answer.
+	rules := PermissionProfile{
+		Tools: ToolsPerm{Allow: []string{"*"}},
+		FS:    FSPerm{Read: []string{"**"}, Write: []string{"**"}},
+		Shell: ShellPerm{Rules: []execpolicy.Rule{
+			{ID: "no-real-e2e", Program: "go", Prefix: []string{"test"}, Decision: "deny", DenyFlags: []string{"-tags=e2e_real"}},
+			{ID: "go-test", Program: "go", Prefix: []string{"test"}, Decision: "allow"},
+			{ID: "ls-ok", Program: "ls", Decision: "allow"},
+		}},
+	}
+	first := g.Check(rules, segAction("go test -tags=e2e_real"))
+	if first.Verdict != HardDeny || !first.Overridable {
+		t.Fatalf("precondition: the deny-flag rule should be an OVERRIDABLE HardDeny, got %+v", first)
+	}
+	second := g.Check(rules, segAction("ls *.go"))
+	if second.Verdict != HardDeny || second.Overridable {
+		t.Fatalf("precondition: a strict-lexer parse error should be STRUCTURAL, got %+v", second)
+	}
+	mixed := g.Check(rules, segAction("go test -tags=e2e_real && ls *.go"))
+	if mixed.Verdict != HardDeny {
+		t.Fatalf("Check(mixed).Verdict = %v, want HardDeny", mixed.Verdict)
+	}
+	if mixed.Overridable {
+		t.Errorf("Check(mixed).Overridable = true (reason %q); a structural segment must outrank an "+
+			"overridable one, or YOLO gains a key to a command the floor refuses", mixed.Reason)
 	}
 }
 
@@ -448,16 +485,20 @@ func TestMoreSevereIsATotalOrderOverTheFourTiers(t *testing.T) {
 		overridableDeny("od"),
 		hardDeny("sd"),
 	}
+	// Compared by REASON, not by severity(). Asserting severity(got) ==
+	// severity(want) is a tautology: both sides route through the function
+	// under test, so collapsing the two HardDeny ranks into one passes it.
+	// Measured — that exact mutation left this test green until the comparison
+	// was changed to the identity of the Decision that came back.
 	for i, a := range tiers {
 		for j, b := range tiers {
 			got := moreSevere(a, b)
-			wantIdx := i
+			want := tiers[i]
 			if j > i {
-				wantIdx = j
+				want = tiers[j]
 			}
-			if severity(got) != severity(tiers[wantIdx]) {
-				t.Errorf("moreSevere(%d,%d) severity = %d, want %d",
-					i, j, severity(got), severity(tiers[wantIdx]))
+			if got.Reason != want.Reason || got.Verdict != want.Verdict || got.Overridable != want.Overridable {
+				t.Errorf("moreSevere(tier %d, tier %d) = %+v, want %+v", i, j, got, want)
 			}
 		}
 	}
