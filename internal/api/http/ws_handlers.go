@@ -185,8 +185,26 @@ func handleRestoreSession(s *Server, conn *wsConn, cs *connSession, sessionID st
 		return
 	}
 
-	// Load messages.
+	// Two reads, because the two consumers want different things (INF3 /
+	// ADR-0015). The client is rebuilding a TRANSCRIPT — the user is looking for
+	// the conversation they left, and handing them a compacted window would read
+	// as "restore deleted my history". The model is being handed a CONTEXT
+	// WINDOW, and that must be the projection: Messages() returns the
+	// pre-compaction originals AND the summary that superseded them, so
+	// restoring the model's window from it undoes every compaction the session
+	// ever ran and leaves the window bigger than it was before compacting.
+	// Measured on this path: 11 messages, compacted to 4, restored as 11.
+	//
+	// The predecessor comment noted that hist and csHist were once built
+	// independently and merely happened to agree; they now differ on purpose,
+	// and each is derived from exactly one read so neither can drift.
 	msgs, err := s.store.Messages(sessionID)
+	if err != nil {
+		conn.write(proto.NewError("failed to load session"))
+		conn.write(proto.NewDone())
+		return
+	}
+	window, err := s.store.ProjectWindow(sessionID)
 	if err != nil {
 		conn.write(proto.NewError("failed to load session"))
 		conn.write(proto.NewDone())
@@ -194,18 +212,16 @@ func handleRestoreSession(s *Server, conn *wsConn, cs *connSession, sessionID st
 	}
 
 	// Build history as schema.Message slice (not pointers) for the frame.
-	// hist is copied from csHist so the two stay content-identical by
-	// construction, rather than the old code's independent value/pointer
-	// pair that merely happened to agree.
-	csHist := restoreMessages(msgs)
-	hist := make([]schema.Message, 0, len(csHist))
-	for _, m := range csHist {
+	hist := make([]schema.Message, 0, len(msgs))
+	for _, m := range restoreMessages(msgs) {
 		hist = append(hist, *m)
 	}
 
 	// Populate the connSession with stored meta.
-	cs.history = csHist
+	cs.history = restoreMessages(window)
 	cs.sessionID = sessionID
+	// The durable watermark is the whole log, not the window: commitCompaction
+	// reads cs.seq as a log coordinate.
 	cs.seq = len(msgs)
 	cs.model = ss.Model
 	cs.thinking = ss.Thinking

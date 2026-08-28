@@ -354,6 +354,89 @@ func (cs *connSession) flushHistory(s *Server) bool {
 	return true
 }
 
+// keptTailRows counts the durable log rows behind the trailing run of messages
+// that compaction kept verbatim.
+//
+// ctxcompact.Assemble builds the new window out of the very *schema.Message
+// values it was handed, appending only the freshly minted eviction map and
+// summary at the tail, so pointer identity is an exact test for "this message
+// survived". Walking backwards from the end of the old window stops at the
+// first evicted message, and that stopping point is what makes the answer
+// usable as a boundary: the durable log is ordered by seq and a projection can
+// only express a contiguous suffix of it.
+//
+// Messages pinned ABOVE the stopping point are not expressible that way.
+// ctxcompact.Plan pins every user-original message wherever it sits, so the
+// pinned set is generally NOT a suffix — a window of "first user request +
+// recent tail + summary" has a hole in the middle that no single watermark can
+// describe. Those messages stay in the log and stay searchable; what the
+// boundary guarantees is the property the bug violated, namely that a restored
+// window never contains anything compaction evicted and never grows.
+//
+// An Assemble that copied its inputs instead of reusing them would make this
+// return 0, degrading the restored window to "summary only" — smaller than
+// intended, never larger, never internally inconsistent.
+func keptTailRows(oldHist, newHist []*schema.Message) int {
+	kept := make(map[*schema.Message]bool, len(newHist))
+	for _, m := range newHist {
+		kept[m] = true
+	}
+	first := len(oldHist)
+	for first > 0 && oldHist[first-1] != nil && kept[oldHist[first-1]] {
+		first--
+	}
+	return len(storeMessagesFor(oldHist[first:]))
+}
+
+// compactionNotDurable is the message the manual path shows when a compaction
+// could not be made durable. Shared by the two failure branches so a change to
+// the wording cannot describe only one of them.
+const compactionNotDurable = "compaction skipped: the conversation could not be saved, " +
+	"so nothing was dropped from the context"
+
+// commitCompaction installs the compacted window, makes it durable, and records
+// the boundary that lets a later restore rebuild it (INF3 / ADR-0015).
+//
+// The order is load-bearing in both directions. The summary is flushed BEFORE
+// the boundary is computed, because the boundary is a log coordinate: it is the
+// seq the summary block lands at, minus the rows behind the window's kept tail.
+// And the boundary is recorded BEFORE the caller reports success, because a
+// compaction with no marker is strictly worse than no compaction — the next
+// restore pulls back everything that was just evicted, i.e. exactly the bug
+// this exists to fix, except now with a summary already paid for.
+//
+// Any failure puts the previous window back rather than leaving a half-applied
+// one. The originals were flushed by the caller before compaction ran, so
+// nothing is lost either way; what the rollback avoids is a live window whose
+// durable boundary describes something else.
+func (cs *connSession) commitCompaction(s *Server, newHist []*schema.Message) bool {
+	oldHist := cs.history
+	// cs.seq is the next free row in the durable log, i.e. where the summary
+	// (and C3's eviction map) are about to land.
+	boundary := cs.seq
+	cs.history = newHist
+	if !cs.flushHistory(s) {
+		cs.history = oldHist
+		return false
+	}
+	if s.store == nil || cs.sessionID == "" || cs.recordingSuppressed() {
+		// The same short circuit flushHistory applies: nothing was persisted,
+		// so there is no boundary to record and nothing to restore from.
+		return true
+	}
+	hidden := boundary - keptTailRows(oldHist, newHist)
+	if hidden < 0 {
+		hidden = 0
+	}
+	if err := s.store.AppendContextEvent(cs.sessionID, store.ContextEventCompact, hidden); err != nil {
+		slog.Warn("compaction boundary not recorded; context will not be evicted",
+			"session", cs.sessionID, "hidden_seq", hidden, "error", err)
+		cs.history = oldHist
+		return false
+	}
+	return true
+}
+
 // persistMessages makes the completed turn durable.
 //
 // It takes NO message arguments any more. It used to take the user text and the
@@ -386,17 +469,34 @@ func (cs *connSession) loadSession(s *Server, sessionID string) error {
 		return nil
 	}
 
-	// Load messages and reuse the same snapshot mapper that WS restore uses
-	// (applySessionRevertSnapshot in ws_seam.go), so reconnect + undo restore
-	// share one role/meta mapping (B2-RB1).
-	msgs, err := s.store.Messages(sessionID)
+	// Load the WINDOW, not the transcript (INF3 / ADR-0015). Messages() returns
+	// every row the session ever wrote, so restoring from it re-expands the
+	// originals a compaction already replaced with a summary — and the summary
+	// comes back too, leaving the window larger than it was before compacting.
+	// ProjectWindow folds the context-event log first and reads only what
+	// survives; a session that never compacted has no events and runs the exact
+	// query this line used to.
+	window, err := s.store.ProjectWindow(sessionID)
 	if err != nil {
 		return err
 	}
+	// Reuse the same snapshot mapper that WS restore uses
+	// (applySessionRevertSnapshot in ws_seam.go), so reconnect + undo restore
+	// share one role/meta mapping (B2-RB1).
 	applySessionRevertSnapshot(cs, store.SessionRevertSnapshot{
 		Meta:     *ss,
-		Messages: msgs,
+		Messages: window,
 	})
+	// applySessionRevertSnapshot derives cs.seq from the slice it is handed,
+	// which is the durable watermark only when that slice IS the whole log. The
+	// projection is a suffix, so take the watermark from the row count instead —
+	// the same value the pre-projection code produced. It matters because
+	// commitCompaction reads cs.seq as a log coordinate.
+	total, err := s.store.SessionMessageCount(sessionID)
+	if err != nil {
+		return err
+	}
+	cs.seq = total
 	// COST1: restore the in-memory ledger from the DB row so post-reconnect
 	// turns continue accumulating from the prior spend instead of resetting
 	// to zero. hasBilledUsage is seeded from the non-zero check so the
@@ -466,7 +566,9 @@ func maybeAutoCompact(ctx context.Context, s *Server,
 	if !did {
 		return
 	}
-	cs.history = newHist
+	if !cs.commitCompaction(s, newHist) {
+		return // window unchanged — same silent no-op as an under-threshold turn
+	}
 	cs.tokensIn = ta // refresh the footer ctx counter (statusFrame reads cs.tokensIn)
 	st := cs.statusFrame(s)
 	st.Compacted, st.TokensBefore, st.TokensAfter = true, tb, ta
@@ -507,9 +609,7 @@ func compactNow(ctx context.Context, s *Server,
 		// out so the TUI's compact block resolves; the error frame is what tells
 		// the user their explicit request did not happen and why, which a bare
 		// "nothing changed" status would not.
-		conn.write(proto.NewError(
-			"compaction skipped: the conversation could not be saved, " +
-				"so nothing was dropped from the context"))
+		conn.write(proto.NewError(compactionNotDurable))
 		conn.write(cs.statusFrame(s))
 		return
 	}
@@ -539,7 +639,13 @@ func compactNow(ctx context.Context, s *Server,
 		conn.write(cs.statusFrame(s))
 		return
 	}
-	cs.history = newHist
+	if !cs.commitCompaction(s, newHist) {
+		// Same reasoning as the pre-compaction flush above: an explicit request
+		// that did not happen has to say so, not resolve as "nothing changed".
+		conn.write(proto.NewError(compactionNotDurable))
+		conn.write(cs.statusFrame(s))
+		return
+	}
 	cs.tokensIn = ta // refresh the footer ctx counter (statusFrame reads cs.tokensIn)
 	st := cs.statusFrame(s)
 	st.Compacted, st.TokensBefore, st.TokensAfter = true, tb, ta

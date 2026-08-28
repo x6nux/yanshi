@@ -330,10 +330,15 @@ func TestMaybeAutoCompact_EvictsWhenPersistSucceeds(t *testing.T) {
 	assert.Less(t, len(cs.history), before, "compaction must actually fire on this fixture")
 
 	// And what was evicted is durable — including the tool rows, which is the
-	// whole reason the ordering matters.
+	// whole reason the ordering matters. The extra row over `before` is the
+	// summary: since INF3 the compacted window is flushed as part of committing
+	// the compaction, not left in memory until turn end, because the boundary
+	// event is a coordinate into the log and the row it points past has to be
+	// there before anything is hidden behind it.
 	got, err := st.Messages(sid)
 	require.NoError(t, err)
-	assert.Len(t, got, before)
+	assert.Len(t, got, before+1)
+	assert.Contains(t, got[len(got)-1].Content, "SUMMARY")
 	var sawCall, sawResult bool
 	for _, m := range got {
 		switch m.Role {
@@ -410,7 +415,9 @@ func TestCompactNow_EvictsWhenPersistSucceeds(t *testing.T) {
 	assert.Less(t, len(cs.history), before)
 	got, err := st.Messages(sid)
 	require.NoError(t, err)
-	assert.Len(t, got, before)
+	// before originals + the summary; see the note in the auto-compaction twin.
+	assert.Len(t, got, before+1)
+	assert.Contains(t, got[len(got)-1].Content, "SUMMARY")
 }
 
 // TestCompaction_EvictedContentIsRecoverableBySearch closes the C1/C2 loop from
@@ -459,4 +466,139 @@ func TestCompaction_EvictedContentIsRecoverableBySearch(t *testing.T) {
 		}
 	}
 	assert.True(t, sawResult, "the evicted tool result itself must be recoverable")
+}
+
+// ---------------------------------------------------------------------------
+// INF3 (ADR-0015): the active window survives a reconnect as a PROJECTION
+// ---------------------------------------------------------------------------
+
+// msgSig renders the fields that decide whether two windows are the same
+// conversation, so a comparison fails on content rather than on a pointer.
+func msgSig(m *schema.Message) string {
+	if m == nil {
+		return "<nil>"
+	}
+	sig := string(m.Role) + "|" + m.ToolCallID + "|" + m.ToolName + "|" + m.Content
+	for _, tc := range m.ToolCalls {
+		sig += "|call:" + tc.ID + ":" + tc.Function.Name + ":" + tc.Function.Arguments
+	}
+	return sig
+}
+
+func msgSigs(msgs []*schema.Message) []string {
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, msgSig(m))
+	}
+	return out
+}
+
+// compactedFixture drives one real compaction on the persisted path and returns
+// the store, the session id and the compacted window. The shape is the same one
+// TestMaybeAutoCompact_EvictsWhenPersistSucceeds uses, which is the shape
+// measured to actually evict: one user message, a run of plain assistant prose,
+// and a closing tool call/result pair.
+func compactedFixture(t *testing.T) (*store.Store, string, []*schema.Message, *Server) {
+	t.Helper()
+	st := persistStore(t)
+	sid, err := st.CreateSession("s")
+	require.NoError(t, err)
+	fm := einollm.NewFakeModel([]string{"SUMMARY"}, nil)
+	srv := &Server{
+		store:      st,
+		compaction: CompactionConfig{Model: "fm", Threshold: 0.05, ContextWindow: 4000, KeepRecent: 1},
+	}
+	cs := &connSession{perm: &permModeState{}, sessionID: sid}
+	cs.history = append(evictableHistory(8),
+		&schema.Message{Role: schema.Assistant,
+			ToolCalls: []schema.ToolCall{toolCall("c1", "shell_run", `{"cmd":"go build ./..."}`)}},
+		&schema.Message{Role: schema.Tool, ToolCallID: "c1", ToolName: "shell_run",
+			Content: "build finished in 3s"})
+
+	wc, client, cleanup := newWSPair(t)
+	t.Cleanup(cleanup)
+	_ = client
+	maybeAutoCompact(context.Background(), srv,
+		map[string]model.BaseChatModel{"fm": fm}, wc, cs)
+	require.Less(t, len(cs.history), 11, "compaction must actually fire on this fixture")
+
+	cs.persistMessages(srv) // turn end flushes the COMPACTED window
+	return st, sid, cs.history, srv
+}
+
+// TestReconnectPreservesCompaction: after compaction, restoring the session must
+// hand the model the compacted window back, not every original.
+//
+// C1 made sure the originals get written down; nobody read them through a
+// projection, so the restore paths ran a flat Messages() and got the
+// pre-compaction originals AND the summary that replaced them. Measured on this
+// fixture before the fix: 11 messages in, 4 after compaction, 11 restored — the
+// window came back LARGER than it went in, the summary was paid for and thrown
+// away, and the next turn compacted the same history again.
+//
+// What the assertions pin, and why they are not "restored == compacted": the
+// boundary is one integer, so the projection can only express a CONTIGUOUS
+// suffix of the log, while ctxcompact.Plan pins every user-original message
+// wherever it sits. On this fixture the compacted window is
+// [user request, tool call, tool result, summary] and the user request is at
+// seq 0 with eight evicted messages after it — a hole no watermark can
+// describe. So the guarantee is one-directional and that is what is checked:
+// the restored window is a suffix of the compacted one, never larger, and
+// contains nothing compaction evicted. The last property is the one that fails
+// loudly on the old code, where all eight evicted messages came back.
+func TestReconnectPreservesCompaction(t *testing.T) {
+	_, sid, compacted, srv := compactedFixture(t)
+
+	fresh := &connSession{perm: &permModeState{}}
+	require.NoError(t, fresh.loadSession(srv, sid))
+
+	assertRestoredWindow(t, fresh.history, compacted)
+}
+
+// TestRestoreSessionPreservesCompaction covers the same property on the handler
+// the TUI and `yanshi exec --resume` actually reach. loadSession above is the
+// fork path; restore_session is where a user meets this bug.
+func TestRestoreSessionPreservesCompaction(t *testing.T) {
+	st, sid, compacted, srv := compactedFixture(t)
+
+	wc, client, cleanup := newWSPair(t)
+	defer cleanup()
+	_ = client
+	fresh := &connSession{perm: &permModeState{}}
+	handleRestoreSession(srv, wc, fresh, sid)
+
+	assertRestoredWindow(t, fresh.history, compacted)
+
+	// The durable watermark stays a LOG coordinate even though the window is a
+	// suffix — commitCompaction subtracts from it to place the next boundary.
+	all, err := st.Messages(sid)
+	require.NoError(t, err)
+	assert.Equal(t, len(all), fresh.seq)
+	assert.Greater(t, len(all), len(fresh.history),
+		"the originals must still be in the log, just out of the window")
+}
+
+// assertRestoredWindow holds both restore paths to the same contract.
+func assertRestoredWindow(t *testing.T, restored, compacted []*schema.Message) {
+	t.Helper()
+	require.NotEmpty(t, restored)
+	require.LessOrEqual(t, len(restored), len(compacted),
+		"restored %d messages from a compacted window of %d: the projection is "+
+			"missing or too wide, so a restore undoes compaction and the summary "+
+			"is paid for again next turn", len(restored), len(compacted))
+
+	// Nothing compaction evicted may reappear. On the unprojected code every one
+	// of the eight evicted progress reports came back.
+	for _, m := range restored {
+		assert.NotContains(t, m.Content, "an ordinary progress report",
+			"an evicted message came back into the window")
+	}
+
+	// And what did come back is exactly the tail of the compacted window —
+	// same messages, same order, not merely the same count.
+	want := msgSigs(compacted)[len(compacted)-len(restored):]
+	assert.Equal(t, want, msgSigs(restored))
+
+	require.Contains(t, restored[len(restored)-1].Content, "SUMMARY",
+		"the summary must survive the projection")
 }

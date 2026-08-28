@@ -502,6 +502,28 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
 
+-- INF3 (ADR-0015): compaction markers. The messages table stays byte-identical
+-- and append-only; what changes is that the active window is now a PROJECTION
+-- over it rather than a raw SELECT. A 'compact' event says "seq < hidden_seq no
+-- longer enters the window"; an 'undo' event pops the most recent one. Nothing
+-- is ever updated or deleted here — reverting is expressed by appending.
+--
+-- No foreign key and no DeleteSession cascade, deliberately. Session ids are
+-- random and never reused, so events left behind by a deleted session are
+-- unreachable rather than stale, and paying a few orphan rows buys the stronger
+-- property that this table has exactly one verb. store.AppendContextEvent's doc
+-- states the rule; internal/store's own test enforces it by scanning the
+-- package for UPDATE/DELETE against this table.
+CREATE TABLE IF NOT EXISTS context_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  TEXT    NOT NULL,
+    kind        TEXT    NOT NULL,
+    hidden_seq  INTEGER NOT NULL,
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_context_events_session
+    ON context_events(session_id, id);
+
 -- S6: permission decisions. The records auditPermission already built existed
 -- only as stderr log lines, so "who approved that rm last night" was
 -- unanswerable the moment the terminal scrolled. cmd_digest is a REDACTED

@@ -165,10 +165,26 @@ func (s *Store) SessionMessageCount(sessionID string) (int, error) {
 // paging — must use MessagesPage instead, because the durable log is expected
 // to outgrow any context window that could hold it.
 func (s *Store) Messages(sessionID string) ([]Message, error) {
-	rows, err := s.DB.Query(
-		"SELECT "+messageColumns+" FROM messages WHERE session_id = ? ORDER BY seq ASC",
-		sessionID,
-	)
+	return s.messagesFromSeq(sessionID, 0)
+}
+
+// messagesFromSeq is the shared range reader behind Messages and ProjectWindow.
+//
+// fromSeq <= 0 emits the unbounded statement with no seq predicate at all, so a
+// projection over a session that has no compaction boundary does not merely
+// return the same rows as Messages — it runs the identical query. ADR-0015's
+// second constraint ("old sessions project byte-identically") is therefore a
+// property of the code rather than something a test has to keep re-checking,
+// and there is only one place a new message column has to be added.
+func (s *Store) messagesFromSeq(sessionID string, fromSeq int) ([]Message, error) {
+	q := "SELECT " + messageColumns + " FROM messages WHERE session_id = ?"
+	args := []any{sessionID}
+	if fromSeq > 0 {
+		q += " AND seq >= ?"
+		args = append(args, fromSeq)
+	}
+	q += " ORDER BY seq ASC"
+	rows, err := s.DB.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
