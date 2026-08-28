@@ -28,7 +28,10 @@ import (
 // # Refused forms (each becomes a structural HardDeny at the guard layer)
 //
 //   - command substitution `$(…)` and backticks — the text that actually runs
-//     is not in this string at all;
+//     is not in this string at all. Refused inside DOUBLE quotes as well, where
+//     a shell performs the substitution just the same; only single quotes make
+//     it data (see scanQuoted, and the six spellings it lists that were
+//     measured reaching Allow while this list already claimed otherwise);
 //   - process substitution `<(…)` / `>(…)` — same, plus it is not a redirect
 //     target;
 //   - subshell grouping `(` / `)` — an unquoted paren makes the first word of
@@ -192,6 +195,25 @@ func (s *listScanner) startToken() {
 // bytes to the in-flight word. Inside double quotes `\x` yields `x`, matching
 // Lex; inside single quotes nothing is escaped. Control operators inside quotes
 // are data, which is the whole reason quotes have to be tracked here at all.
+//
+// COMMAND SUBSTITUTION IS NOT DATA INSIDE DOUBLE QUOTES, and treating it as
+// such was this reader's largest hole. A POSIX shell performs `$(…)` and a
+// backtick run inside `"…"` exactly as it does outside; only SINGLE quotes
+// suppress them. This loop copied both through byte for byte, so run()'s two
+// refusals never saw the construct they exist for, and three documents — this
+// function's own header among them — asserted a defence that was absent for
+// every quoted spelling. Measured, all reaching Allow while /bin/sh ran
+// `rm -rf /` or planted a key:
+//
+//	rm -rf "$(echo /)"            eval "$(echo rm) -rf /"
+//	rm -rf "`echo /`"             eval "`echo rm` -rf /"
+//	sh -c "$(echo rm) -rf /"      echo k > "$(echo ~/.ssh/authorized_keys)"
+//
+// The single-quoted spelling stays admissible, because there the text really is
+// data: refusing `echo '$(1+1)'` would cost a legitimate command and buy
+// nothing. An ESCAPED `\$(` or “\` “ inside double quotes is data too, and it
+// never reaches these tests — the backslash branch below has already consumed
+// both bytes by then.
 func (s *listScanner) scanQuoted(quote byte) error {
 	s.startToken()
 	s.inWord = true
@@ -201,6 +223,14 @@ func (s *listScanner) scanQuoted(quote byte) error {
 		if c == quote {
 			s.i++
 			return nil
+		}
+		if quote == '"' {
+			if c == '`' {
+				return fmt.Errorf("execpolicy: backtick command substitution rejected")
+			}
+			if c == '$' && s.i+1 < len(s.raw) && s.raw[s.i+1] == '(' {
+				return fmt.Errorf("execpolicy: command substitution $(…) rejected")
+			}
 		}
 		if c == '\\' && quote == '"' {
 			if s.i+1 >= len(s.raw) {

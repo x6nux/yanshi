@@ -79,6 +79,8 @@ shell 维度先拆段（见下一节），再对**每一段**过下面两层，�
 
 **拆不出段的形态仍然一律拒绝，且是结构性 HardDeny**（`yolo` / `auto` 都越不过）：命令替换 `$(…)` 与反引号、进程替换 `<(…)` / `>(…)`、子 shell 括号 `( )`、here-document `<<`、后台执行的单个 `&`、裸换行与回车、未闭合的引号、结尾的反斜杠。这些形态里「真正要跑的文本」不在被判定的这个字符串里，所以判它等于判了别的东西。
 
+- **命令替换在双引号里也拒，只有单引号里才是数据。** `"$(…)"` 和 `` "`…`" `` 在 POSIX shell 里照样执行替换，所以 `rm -rf "$(echo /)"` 与不带引号的写法是同一件事，判决也是同一档。曾经不是：`rm -rf "$(echo /)"`、`eval "$(echo rm) -rf /"`、`echo k > "$(echo ~/.ssh/authorized_keys)"` 等六种拼法实测走到 Allow，而 `/bin/sh` 真的删了根、真的写了 `authorized_keys`。`echo '$(1+1)'` 这种单引号写法照常可用。
+
 **`shell_run` 带 `env: "powershell"` 时换一个读法。** PowerShell 的转义符是反引号、路径分隔符是反斜杠，POSIX shell 恰好反过来，所以用 POSIX 的读法去读一条 PowerShell 命令会把路径里的分隔符全吃掉 —— `Remove-Item -Recurse C:\temp` 的目标会变成 `C:temp`。它同样是「对词的内容宽容、对结构严格」：`$(…)`、`@(…)`、`${…}`、括号分组、脚本块 `{ }`、here-string、调用运算符与后台的 `&`、`#` 注释、`<`（PowerShell 本身就不支持）、裸换行、未闭合引号与结尾反引号一律拒绝，且同样是结构性 HardDeny。`cmd` **不走**这个读法（它的转义符是第三种，`^`），仍按 POSIX 读。
 
 理由、代价与不变量见 [../adr/0004-guard-stateless-and-shell-metachar-hardblock.md](../adr/0004-guard-stateless-and-shell-metachar-hardblock.md) 的补充后果一节。
