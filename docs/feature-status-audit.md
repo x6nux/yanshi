@@ -523,6 +523,14 @@ t.chatModelOptions = opts   // 第二次调用覆盖第一次
 - **实测缺口**：规划：guard 加 plan 门禁 + plan 工具 + /plan 命令 + 计划状态走 activity/sentinel 帧。实际：guard/工具/TUI 命令三块都真实落地且测试全绿，但 **plan 模式没有真正接进服务端 turn 路径**。三处断链：(1) internal/api/http/ws.go:644 构造 TurnOpts 时从不设置 PlanMode 字段，所以 orchestrator.withTurnContext 拿到的永远是 PlanMode=false → tools.WithPlanMode(ctx,false)，Authorize 的 plan firewall 与 filterPlanTools 在生产中恒不触发；plan 模式实际只靠 ws_perm.go 的 callback 层拦截（即只有走到 callback 的调用被拦，profile 静态放行的编辑类工具不经 callback，会漏过）。(2) FlushRunners 定义了但无人调用，plan→execute 切换时 runner 缓存不 flush（计划 Task 11 明确要求模式边界显式 flush）。(3) plan_update/checklist_update 帧从 proto 到 wsbackend.go:358-360 的 StreamEvent 映射都在，但 TUI 侧无 update c…
 - **证据**：/Users/ll/code/yanshi/internal/guard/mode.go:30 — ModePlan PermissionMode = "plan" 已定义 ； /Users/ll/code/yanshi/internal/guard/mode.go:44-45 — allModes 含 ModePlan；cycleOrder 不含（Shift+Tab 不进 plan，符合约束 §7） ； /Users/ll/code/yanshi/internal/guard/mode.go:59-77 — planAllowedTools 白名单 22 项 + PlanToolAllowe…
 
+> **墓碑（2026-08-28）：上面这条「三处断链」已全部过时，别拿它当待办读。**
+>
+> - **第 (1) 条（`TurnOpts` 从不设 `PlanMode`）已修**：`internal/api/http/ws.go` 现在按 `turnMode == guard.ModePlan` 显式设置该字段，`withTurnContext` 拿到的不再恒为 false，plan firewall 与工具过滤在生产路径上真的会触发。
+> - **第 (2) 条（`FlushRunners` 无人调用）在 W1 就被证伪，函数已于 W-D 删除**：runner 缓存键含 mode，plan 与 agent 本就分桶，从来不需要在模式边界 flush。删除的理由写在 `internal/agent/orchestrator/orchestrator.go` 里那段「There is deliberately NO eviction API」的注释上 —— 一个带驱逐语义的导出旋钮会邀请后来者为错误的理由去够它。缓存里唯一真会陈旧的东西是 per-model 压缩窗口，正确修法是把 modelID 放进缓存键，W-D 一并做了。
+> - **第 (3) 条（TUI 侧无 update 消费者）归 W8**，不在本条目名下。
+>
+> 本文件是有日期的审计档案，正文按当时的实测保留原样；此墓碑记录后续变化，供把它当待办读的人对照。
+
 #### `A3` C13 — `/mcp` 实化管理界面
 
 - **优先级** P1 ｜ **路线图原状态** 占位（路线图原文：`/mcp` 占位返回空 server list，无状态/启停/错误详情） ｜ **接进运行时** 是 ｜ **有针对性测试** 是
