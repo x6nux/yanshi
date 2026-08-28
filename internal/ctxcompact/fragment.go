@@ -30,15 +30,24 @@ import (
 // name. TestFragment_SummaryAndMapRemainDistinguishable asserts both
 // directions of that.
 //
-// # Why the historical constants are still literals
+// # The historical constants are derived, not respelled
 //
-// SummarySentinel (sentinel.go) keeps its own literal spelling rather than
-// being redefined in terms of KindSummary. Its semantics are consumed outside
-// this package — internal/cli/tui reads it to keep the summary out of the chat
-// transcript — and the point of this change is that nothing about those
-// semantics moves. The two spellings are pinned equal by
-// TestContextFragment_SummarySentinelUsesTheSameMechanism, which is the same
-// enforcement style the rest of the repo uses for facts a compiler cannot hold.
+// SummarySentinel (sentinel.go) and EvictionMapSentinel (assemble.go) are const
+// expressions over their kinds, so a kind and its marker cannot drift. Both
+// values are byte-identical to the literals they replaced, which matters
+// because internal/cli/tui reads SummarySentinel by name to keep the summary
+// out of the chat transcript. Nothing about the two predicates' semantics
+// moves; TestContextFragment_SummarySentinelUsesTheSameMechanism asserts the
+// marker equality and the predicate behaviour in both directions.
+//
+// # What is NOT here
+//
+// There is no exported locator. One shipped in c34ed67 (ParseFragments, plus a
+// Fragment.Index field) and was deleted in the following round: review hollowed
+// it out and the entire binary still compiled, because StripFragments walks
+// parseFragment itself. An exported API whose only callers are its own tests is
+// the defect this repo names as its most common, so the rule here is that the
+// locator gets exported in the same commit as the caller that needs it.
 
 // FragmentKind names one kind of compaction fragment. Its value IS the text
 // inside the marker's brackets, so a kind and its marker cannot drift.
@@ -70,17 +79,20 @@ func fragmentMarker(kind FragmentKind) string {
 	return fragmentOpen + string(kind) + fragmentClose
 }
 
-// Fragment is one compaction fragment located inside a history: what it is,
-// what it says, and where it sits.
+// fragment is one compaction fragment: what it is and what it says.
 //
-// Index makes the value LOCATABLE — the property that lets a caller act on a
-// fragment (strip it, replace it, count duplicates) rather than merely observe
-// that one exists. It is an index into the slice the Fragment was parsed from
-// and is meaningless against any other slice.
-type Fragment struct {
-	Kind  FragmentKind
-	Body  string
-	Index int
+// It is UNEXPORTED, and an exported version with an Index field was deleted
+// rather than kept. The exported form shipped in c34ed67 claiming "locatable"
+// as an API property, and review found it had zero production consumers —
+// StripFragments walks parseFragment directly, so hollowing out the exported
+// locator left the whole binary compiling and reddened only its own tests. The
+// standard defence ("someone may want to locate fragments one day") is exactly
+// the argument that produces the written-but-unread defects this repo keeps
+// finding. When a caller outside this package needs to locate one, export it
+// then, with that caller in the same commit.
+type fragment struct {
+	Kind FragmentKind
+	Body string
 }
 
 // MarkFragment builds the message carrying body as a fragment of kind.
@@ -101,37 +113,22 @@ func MarkFragment(kind FragmentKind, body string) *schema.Message {
 // The marker must be a PREFIX, not a substring: a user message quoting the
 // marker while discussing compaction is conversation, and treating it as a
 // fragment would let StripFragments delete it.
-func parseFragment(m *schema.Message) (Fragment, bool) {
+func parseFragment(m *schema.Message) (fragment, bool) {
 	if m == nil || m.Role != schema.User {
-		return Fragment{}, false
+		return fragment{}, false
 	}
 	for _, kind := range fragmentKinds {
 		if marker := fragmentMarker(kind); strings.HasPrefix(m.Content, marker) {
-			return Fragment{Kind: kind, Body: strings.TrimPrefix(m.Content, marker)}, true
+			return fragment{Kind: kind, Body: strings.TrimPrefix(m.Content, marker)}, true
 		}
 	}
-	return Fragment{}, false
+	return fragment{}, false
 }
 
 // hasFragmentKind reports whether m is a fragment of exactly kind. nil-safe.
 func hasFragmentKind(m *schema.Message, kind FragmentKind) bool {
 	f, ok := parseFragment(m)
 	return ok && f.Kind == kind
-}
-
-// ParseFragments returns every compaction fragment in msgs, in order, each
-// carrying its index in msgs. Messages that are not fragments are skipped;
-// nil entries are skipped rather than treated as errors, matching the
-// nil-tolerance the rest of this package's message walks already have.
-func ParseFragments(msgs []*schema.Message) []Fragment {
-	var out []Fragment
-	for i, m := range msgs {
-		if f, ok := parseFragment(m); ok {
-			f.Index = i
-			out = append(out, f)
-		}
-	}
-	return out
 }
 
 // StripFragments returns msgs without the fragments whose kind appears in

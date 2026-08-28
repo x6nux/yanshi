@@ -1,6 +1,8 @@
 package ctxcompact
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
@@ -116,4 +118,94 @@ func TestReinject_PreTurnCarriesNoInitialContextAndInventsNone(t *testing.T) {
 	// prepends on the next turn.
 	assert.Equal(t, schema.User, out[len(out)-1].Role)
 	assert.True(t, IsSummaryMessage(out[len(out)-1]))
+}
+
+// TestReinject_RepeatedCompactionDoesNotAccumulate is the multi-round guard.
+//
+// Every defect this file and fragment_test.go fix is an ACCUMULATION defect,
+// and a single-round test cannot see one: round 1 of the broken code produced a
+// history that looked fine. The measured shape before the fix was linear growth
+// — 1 eviction map after one round, 5 after five, 513 runes of map text growing
+// to 3035 — because each round pinned the previous round's fragment and
+// appended a fresh one.
+//
+// So the property is BOUNDEDNESS across rounds, asserted at a round count where
+// an accumulating implementation cannot still be hiding: at most one fragment
+// per kind, and exactly one system message, no matter how many times the same
+// window is compacted.
+func TestReinject_RepeatedCompactionDoesNotAccumulate(t *testing.T) {
+	instruction := "You are yanshi."
+	hist := append([]*schema.Message{{Role: schema.System, Content: instruction}}, chatter(30)...)
+
+	const rounds = 5
+	for round := 1; round <= rounds; round++ {
+		plan := Plan(hist, PlanOpts{KeepRecent: 2})
+		require.NotEmpty(t, plan.SummarizeIndices,
+			"round %d: the window must still be compactable — an accumulating "+
+				"implementation eventually pins everything", round)
+
+		hist = AssembleWithMap(hist, plan, fmt.Sprintf("summary after round %d", round),
+			fmt.Sprintf("spans covered through round %d", round))
+
+		frags := map[FragmentKind]int{}
+		systems := 0
+		for _, m := range hist {
+			if f, ok := parseFragment(m); ok {
+				frags[f.Kind]++
+			}
+			if m.Role == schema.System {
+				systems++
+			}
+		}
+		assert.Equal(t, 1, frags[KindSummary], "round %d: exactly one summary", round)
+		assert.Equal(t, 1, frags[KindEvictionMap], "round %d: exactly one eviction map", round)
+		assert.Equal(t, 1, systems, "round %d: exactly one system message", round)
+
+		// The freshest fragments win: round N's text, not round 1's.
+		assert.Equal(t, fmt.Sprintf("summary after round %d", round),
+			hist[len(hist)-1].Content[len(SummarySentinel):])
+
+		// And the initial context is still the original, still first.
+		assert.Equal(t, schema.System, hist[0].Role, "round %d", round)
+		assert.Equal(t, instruction, hist[0].Content, "round %d: verbatim", round)
+
+		// Feed a couple more turns in, as a live session would.
+		hist = append(hist, chatter(4)...)
+	}
+}
+
+// TestReinject_SystemPromptDominatedHistoryStillCompacts covers the cost the
+// initial-context pin introduces, which the fix's own report flagged and no
+// test measured.
+//
+// Pinning the system message spends tokens compaction used to reclaim. Those
+// tokens were an illusion — adk re-prepends the instruction on the very next
+// call, so the old behaviour corrupted one call without durably saving anything
+// — but the change does move which histories shrink. The pathological case is a
+// history whose system prompt dominates it, and yanshi's really can: the static
+// half carries the operator instruction, the skill meta-prompt, the memory
+// block and a probed environment listing.
+//
+// The assertion is that such a history still COMPACTS (the conversation half is
+// still summarized and the result is still smaller), not that it shrinks by any
+// particular ratio — the ratio is a property of the fixture, not of the code.
+func TestReinject_SystemPromptDominatedHistoryStillCompacts(t *testing.T) {
+	huge := strings.Repeat("operator instruction, skills, memory, environment. ", 400)
+	hist := append([]*schema.Message{{Role: schema.System, Content: huge}}, chatter(30)...)
+
+	before := EstimateTokens(hist)
+	plan := Plan(hist, PlanOpts{KeepRecent: 2})
+	require.NotEmpty(t, plan.SummarizeIndices, "the conversation half is still summarizable")
+
+	out := Assemble(hist, plan, "short summary")
+	after := EstimateTokens(out)
+
+	assert.Less(t, after, before,
+		"a system-prompt-heavy history still shrinks; the instruction is a floor, not a blocker")
+	assert.Equal(t, schema.System, out[0].Role)
+	assert.Equal(t, huge, out[0].Content, "and the floor is the instruction itself, kept verbatim")
+
+	// The floor is real and worth naming: what survives is at least the prompt.
+	assert.GreaterOrEqual(t, after, EstimateTokens([]*schema.Message{hist[0]}),
+		"the pinned instruction sets the lower bound on what compaction can reach")
 }

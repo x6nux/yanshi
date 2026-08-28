@@ -94,11 +94,20 @@ func Plan(msgs []*schema.Message, opts PlanOpts) *PlanResult {
 // pinInitialContext reports whether m is the agent instruction — yanshi's
 // INITIAL CONTEXT (W-D-14).
 //
-// Only the mid-turn path ever sees one. einollm.CompactingModel wraps the model
-// itself, so the slice it compacts is adk's model input, and
+// The mid-turn path sees one on EVERY call. einollm.CompactingModel wraps the
+// model itself, so the slice it compacts is adk's model input, and
 // defaultGenModelInput prepends the instruction as a schema.System message
-// ahead of the history. The pre-turn path compacts cs.history, which is only
-// ever appended with user/assistant/tool messages.
+// ahead of the history.
+//
+// The pre-turn path usually does not, but "never" would be wrong and the rule
+// here is deliberately about the ROLE rather than about which path is calling.
+// The WS handler's cs.history is only ever appended with user/assistant/tool
+// messages, so that caller supplies none. SSE is different: chat.go takes
+// `history := req.Messages` straight off the wire with no role validation, so a
+// client can put a System message into the history it asks to have compacted.
+// A path-keyed rule would drop that one; a role-keyed rule preserves it, which
+// is the right answer for a message the caller asked to be treated as
+// instructions either way.
 //
 // # It used to be dropped, and that was measured
 //
@@ -143,12 +152,47 @@ func pinInitialContext(m *schema.Message) bool {
 // replacement — the mid-turn path records no evictions, so it renders no map —
 // and Assemble strips only the kinds it is actually replacing. Summarizing a
 // directory of citable addresses into prose would lose the addresses.
+//
+// # It does nothing unless there is real content to fold the summary into
+//
+// Run has a FREE exit for an empty summarize set: nothing to fold, no model
+// call. Unpinning unconditionally MANUFACTURES work for that branch — when a
+// stale summary is the only thing left unpinned, Run pays for a summary call
+// whose entire input is a previous summary, gets nothing smaller back, and the
+// caller discards it on TokensAfter >= TokensBefore. Measured: calls 0→1,
+// tokens 1647→1717, result thrown away.
+//
+// Mid-turn that is not a one-off, because CompactingModel.maybeCompact arms its
+// cooldown only on success: a discarded compaction leaves the gate open and the
+// next ReAct iteration repeats it, once per iteration for the rest of the turn.
+//
+// So the guard is not an optimisation. It is also the same judgement bug⑦'s
+// short-circuit makes — re-summarizing a summary with no new content added is
+// pointless — reached by a different route.
 func unpinStaleSummaries(msgs []*schema.Message, pinned map[int]bool) {
+	if !hasUnpinnedContent(msgs, pinned) {
+		return
+	}
 	for i, m := range msgs {
 		if pinned[i] && IsSummaryMessage(m) {
 			delete(pinned, i)
 		}
 	}
+}
+
+// hasUnpinnedContent reports whether the summarize set already holds a message
+// that is CONVERSATION rather than a compaction artefact — the only thing a
+// fresh summary can actually be built out of.
+func hasUnpinnedContent(msgs []*schema.Message, pinned map[int]bool) bool {
+	for i, m := range msgs {
+		if pinned[i] || m == nil {
+			continue
+		}
+		if _, isFragment := parseFragment(m); !isFragment {
+			return true
+		}
+	}
+	return false
 }
 
 // isUserOriginal reports whether m is a genuine user message (not a tool

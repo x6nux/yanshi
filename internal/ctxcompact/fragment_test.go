@@ -1,6 +1,7 @@
 package ctxcompact
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -8,6 +9,20 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// fragmentsIn is the test-local locator. It used to be an exported
+// ParseFragments; review showed the whole binary compiled with that function
+// hollowed out, so it was deleted and its one real user — these tests — keeps a
+// three-line version here instead of the package keeping public API for it.
+func fragmentsIn(msgs []*schema.Message) []fragment {
+	var out []fragment
+	for _, m := range msgs {
+		if f, ok := parseFragment(m); ok {
+			out = append(out, f)
+		}
+	}
+	return out
+}
 
 // chatter builds n filler assistant messages — history long enough that Plan
 // has something to summarize once the tail pin is satisfied.
@@ -80,18 +95,18 @@ func TestContextFragment_IsLocatableStrippableDedupable(t *testing.T) {
 		MarkFragment(KindSummary, "we discussed X"),
 	}
 
-	// LOCATABLE: kind, body and position all come back.
-	frags := ParseFragments(msgs)
+	// LOCATABLE: kind and body come back, in history order.
+	frags := fragmentsIn(msgs)
 	require.Len(t, frags, 2)
-	assert.Equal(t, Fragment{Kind: KindEvictionMap, Body: "spans 1-10", Index: 1}, frags[0])
-	assert.Equal(t, Fragment{Kind: KindSummary, Body: "we discussed X", Index: 3}, frags[1])
+	assert.Equal(t, fragment{Kind: KindEvictionMap, Body: "spans 1-10"}, frags[0])
+	assert.Equal(t, fragment{Kind: KindSummary, Body: "we discussed X"}, frags[1])
 
 	// STRIPPABLE: by kind, leaving conversation and other kinds untouched.
 	stripped := StripFragments(msgs, KindSummary)
 	require.Len(t, stripped, 3)
 	assert.Equal(t, "real user text", stripped[0].Content)
 	assert.True(t, IsEvictionMapMessage(stripped[1]), "the other kind survives")
-	assert.Empty(t, ParseFragments(StripFragments(msgs, KindSummary, KindEvictionMap)),
+	assert.Empty(t, fragmentsIn(StripFragments(msgs, KindSummary, KindEvictionMap)),
 		"stripping every kind leaves no fragment")
 
 	// Stripping nothing is not stripping everything — a variadic call with an
@@ -106,22 +121,22 @@ func TestContextFragment_IsLocatableStrippableDedupable(t *testing.T) {
 		{Role: schema.Assistant, Content: "reply"},
 		MarkFragment(KindSummary, "stale"),
 	}
-	assert.Len(t, ParseFragments(dupes), 2, "both duplicates are located")
-	assert.Empty(t, ParseFragments(StripFragments(dupes, KindSummary)))
+	assert.Len(t, fragmentsIn(dupes), 2, "both duplicates are located")
+	assert.Empty(t, fragmentsIn(StripFragments(dupes, KindSummary)))
 
 	// A plain user message that merely QUOTES a marker mid-body is not a
 	// fragment: the marker is a prefix, not a substring.
-	assert.Empty(t, ParseFragments([]*schema.Message{
+	assert.Empty(t, fragmentsIn([]*schema.Message{
 		{Role: schema.User, Content: "the summary marker is " + SummarySentinel},
 	}))
 	// Nor is a fragment-shaped message in the wrong role — the role is half of
 	// the form every predicate checks.
-	assert.Empty(t, ParseFragments([]*schema.Message{
+	assert.Empty(t, fragmentsIn([]*schema.Message{
 		{Role: schema.Assistant, Content: SummarySentinel + "body"},
 	}))
-	assert.Empty(t, ParseFragments([]*schema.Message{nil}))
+	assert.Empty(t, fragmentsIn([]*schema.Message{nil}))
 	// An unknown kind wearing the bracket form is not one of ours.
-	assert.Empty(t, ParseFragments([]*schema.Message{
+	assert.Empty(t, fragmentsIn([]*schema.Message{
 		{Role: schema.User, Content: "[yanshi:not-a-kind]\nbody"},
 	}))
 }
@@ -151,7 +166,7 @@ func TestContextFragment_AssembleKeepsOneFragmentPerKind(t *testing.T) {
 	plan := &PlanResult{PinnedIndices: []int{0, 1, 2}, SummarizeIndices: nil}
 
 	out := AssembleWithMap(msgs, plan, "fresh summary", "fresh map")
-	frags := ParseFragments(out)
+	frags := fragmentsIn(out)
 	require.Len(t, frags, 2, "one per kind, not four")
 	assert.Equal(t, KindEvictionMap, frags[0].Kind)
 	assert.Equal(t, "fresh map", frags[0].Body)
@@ -183,10 +198,11 @@ func TestContextFragment_AssembleKeepsAMapItIsNotReplacing(t *testing.T) {
 	plan := &PlanResult{PinnedIndices: []int{0, 1}}
 
 	out := AssembleWithMap(msgs, plan, "fresh summary", "")
-	frags := ParseFragments(out)
+	frags := fragmentsIn(out)
 	require.Len(t, frags, 2)
-	assert.Equal(t, Fragment{Kind: KindEvictionMap, Body: "spans 1-40", Index: 0}, frags[0],
+	assert.Equal(t, fragment{Kind: KindEvictionMap, Body: "spans 1-40"}, frags[0],
 		"the map survives a compaction that produced no replacement")
+	assert.Same(t, msgs[0], out[0], "and survives in place, same pointer")
 	assert.Equal(t, KindSummary, frags[1].Kind)
 }
 
@@ -233,4 +249,50 @@ func TestContextFragment_StaleSummaryIsNeverPinned(t *testing.T) {
 		&schema.Message{Role: schema.Assistant, Content: "after"})
 	got = Plan(withMap, PlanOpts{KeepRecent: 1})
 	assert.Contains(t, got.PinnedIndices, len(withMap)-2, "the map stays pinned")
+}
+
+// TestContextFragment_StaleSummaryAloneIsNotWorthAModelCall guards the branch
+// unpinStaleSummaries nearly destroyed.
+//
+// Run has a FREE exit: an empty summarize set means there is nothing to fold,
+// so it folds tool results and returns without calling a model at all. Unpinning
+// stale summaries can manufacture work for that branch — if a summary is the
+// ONLY thing left unpinned, Run pays for a summary call whose entire input is a
+// previous summary, produces nothing smaller, and the caller discards it on
+// TokensAfter >= TokensBefore.
+//
+// Mid-turn that is not a one-off. CompactingModel.maybeCompact arms its cooldown
+// only on success, so a discarded compaction leaves the gate wide open and the
+// next ReAct iteration repeats it — one wasted summary call PER ITERATION for
+// the rest of the turn.
+//
+// The assertions are the call count and the token delta, not "no error": the
+// broken version returned no error, which is exactly why it was invisible.
+func TestContextFragment_StaleSummaryAloneIsNotWorthAModelCall(t *testing.T) {
+	// Every message is user-original (isUserOriginal pins them all), so once the
+	// stale summary is unpinned it is the only member of the summarize set.
+	msgs := make([]*schema.Message, 0, 12)
+	for i := 0; i < 10; i++ {
+		msgs = append(msgs, &schema.Message{Role: schema.User, Content: fmt.Sprintf("user says %d", i)})
+	}
+	msgs = append(msgs,
+		MarkFragment(KindSummary, "an earlier summary of an earlier conversation"),
+		&schema.Message{Role: schema.User, Content: "and one more"},
+	)
+
+	plan := Plan(msgs, PlanOpts{KeepRecent: 2})
+	assert.Empty(t, plan.SummarizeIndices,
+		"a lone stale summary is not content to fold — leave Run its free exit")
+
+	rec := &recordingSummarizer{Return: "fresh summary"}
+	res, err := Run(context.Background(), msgs, PlanOpts{KeepRecent: 2},
+		RunOpts{ModelWindow: 8000}, rec, nil)
+	require.NoError(t, err)
+	assert.Empty(t, rec.GenerateCalls, "no summary model call was paid for")
+	assert.Empty(t, rec.StreamCalls)
+	assert.LessOrEqual(t, res.TokensAfter, res.TokensBefore,
+		"and the history did not GROW — the discarded path spent tokens to get bigger")
+
+	// The stale summary is still there: nothing was dropped in exchange.
+	assert.Len(t, fragmentsIn(res.Messages), 1)
 }

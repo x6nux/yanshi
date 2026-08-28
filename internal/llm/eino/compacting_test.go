@@ -507,8 +507,16 @@ func TestCompactingModel_FirstCompactNoCooldown(t *testing.T) {
 // covers the error half by starving ctxcompact.Run of window. Nothing covered
 // the size half: measured W4 review round 2, deleting it left the whole
 // package green. A summary that came back larger than the history it replaced
-// would then be forwarded to the model AND would arm the cooldown, so the next
-// turn declines to compact the now-bigger context.
+// would then be forwarded to the model as if it were a compaction.
+//
+// ⚠️ THIS TEST USED TO ALSO ASSERT `didCompact == false` HERE, and that half was
+// INVERTED deliberately — see TestCompactingModel_AFailedCompactionArmsTheCooldown
+// for the argument. Its stated reason ("the next turn skips a compaction it
+// needs") turned out to be answered by HardForceFraction, which is checked
+// before the cooldown gate, while the cost it ignored — one paid summary call
+// per ReAct iteration for the rest of the turn — was unbounded. What survives
+// here is the part this test is actually about: the REJECTION. Whether the
+// cooldown arms is a separate question and now has its own test.
 func TestCompactingModel_MaybeCompact_RejectsAGrowingSummary(t *testing.T) {
 	inner := &recordingModel{
 		summary:  strings.Repeat("x", 40000), // dwarfs the history below
@@ -527,10 +535,6 @@ func TestCompactingModel_MaybeCompact_RejectsAGrowingSummary(t *testing.T) {
 
 	assert.False(t, did, "a summary bigger than the history is not a compaction")
 	assert.Equal(t, msgs, got, "the original history must be forwarded unchanged")
-	cm.cmMu.Lock()
-	defer cm.cmMu.Unlock()
-	assert.False(t, cm.didCompact,
-		"a rejected compaction must not arm the cooldown, or the next turn skips a compaction it needs")
 }
 
 // TestCompactingModel_KeepRecentBridgesMessagesToPairs pins the /2 that
@@ -943,4 +947,63 @@ func TestCompactingModel_UnderThresholdWithACompressibleHistory(t *testing.T) {
 	inner.mu.Lock()
 	defer inner.mu.Unlock()
 	assert.Zero(t, inner.calls, "no summariser call may be spent below the threshold")
+}
+
+// TestCompactingModel_AFailedCompactionArmsTheCooldown is the retry-storm
+// guard, and it is the reason the sibling assertion in
+// TestCompactingModel_MaybeCompact_RejectsAGrowingSummary was inverted rather
+// than kept.
+//
+// maybeCompact used to arm the cooldown ONLY on success. That is defensible in
+// isolation — a rejected compaction is one the context still needs — but this
+// is the MID-TURN path, and the ADK ReAct loop calls Generate on every
+// iteration with the full history. An unarmed gate therefore means the same
+// doomed compaction is attempted once per iteration, and each attempt is a paid
+// summary model call against a history that has not changed. Nothing about the
+// second attempt can succeed where the first failed.
+//
+// The old rationale ("the next turn skips a compaction it needs") is answered
+// by HardForceFraction, which is checked BEFORE the cooldown gate: once the
+// history reaches the hard-force fraction the cooldown is overridden and
+// compaction retries regardless. So arming on failure does not disable
+// compaction, it rate-limits the retry to once per CooldownTokens of growth —
+// bounded above by hard-force, which TestCompactingModel_HardForceBeatsCooldown
+// already pins.
+//
+// THE ASSERTION IS THE CALL COUNT. The broken version returned no error, logged
+// nothing, and produced a correct final answer; the only observable was how
+// many times the provider was billed.
+func TestCompactingModel_AFailedCompactionArmsTheCooldown(t *testing.T) {
+	inner := &recordingModel{
+		summary:  strings.Repeat("x", 40000), // rejected: bigger than the history
+		reply:    "ok",
+		streamOK: true,
+	}
+	cm := &CompactingModel{
+		Inner:          inner,
+		Threshold:      0.5,
+		ContextWindow:  1000,
+		KeepRecent:     2,
+		CooldownTokens: 100,
+		// HardForceFraction stays 0 so the cooldown is the only gate under test;
+		// its override is covered by TestCompactingModel_HardForceBeatsCooldown.
+	}
+	msgs := []*schema.Message{bigMessage(300), bigMessage(300), bigMessage(300)}
+
+	_, did := cm.maybeCompact(context.Background(), msgs)
+	require.False(t, did, "a summary bigger than the history is not a compaction")
+	inner.mu.Lock()
+	afterFirst := inner.calls
+	inner.mu.Unlock()
+	require.Equal(t, 1, afterFirst, "the first attempt costs exactly one summary call")
+
+	// Same history, next ReAct iteration. Nothing has changed, so nothing can
+	// succeed — and nothing may be billed.
+	_, did2 := cm.maybeCompact(context.Background(), msgs)
+	assert.False(t, did2)
+	inner.mu.Lock()
+	afterSecond := inner.calls
+	inner.mu.Unlock()
+	assert.Equal(t, 1, afterSecond,
+		"the failed attempt must not be repeated on every iteration of the turn")
 }
