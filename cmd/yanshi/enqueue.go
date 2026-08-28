@@ -16,8 +16,14 @@ const enqueueUsage = `Usage: yanshi enqueue [-config FILE] <session-id> <message
        yanshi enqueue [-config FILE] -list <session-id>
 
 Queue a user message for a session, whether or not anything is connected to it.
-The message is stored in the project database and delivered the next time that
-session is resumed (yanshi exec/chat -resume <session-id>).
+The message is stored in the project database and delivered, in enqueue order,
+the next time that session is resumed by a HEADLESS run:
+
+  yanshi exec -resume <session-id> -p "..."
+  yanshi chat --no-tui -resume <session-id>
+
+(the second reads its prompts from stdin, one per line). The interactive TUI —
+plain "yanshi chat" — has no such flag and does not drain the queue.
 
   -list   show what is waiting for a session without consuming it
 

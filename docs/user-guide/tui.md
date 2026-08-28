@@ -148,8 +148,9 @@ Subcommands:
            PR number (run from the repo directory) or a full URL (any repo).
   enqueue  Queue a user message for a session, connected or not. It is stored
            in the project database and delivered, in enqueue order, the next
-           time that session is resumed (exec/chat -resume). -list shows what
-           is waiting without consuming it.
+           time that session is resumed by a headless run ("exec -resume" or
+           "chat --no-tui -resume"); the interactive TUI has no -resume flag.
+           -list shows what is waiting without consuming it.
   auth     Manage authenticated sessions: RFC 8628 device flow (status /
            logout / device) and MCP OAuth (mcp-login / mcp-logout, the
            authorization_code + PKCE flow for an enterprise MCP server; the

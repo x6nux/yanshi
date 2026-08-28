@@ -138,11 +138,16 @@ func headlessInputs(cfg headlessConfig, stdin io.Reader) ([]cli.HeadlessInput, e
 // run, so a crashed run loses them. See store.ConsumeQueuedMessages for why
 // that direction was chosen over redelivering user input.
 //
-// TODO-FREE NOTE ON SCOPE, not a placeholder: the WebSocket session-resume path
-// (internal/api/http/ws_compaction.go's loadSession) is the other place this
-// belongs, so a TUI reconnect drains the queue too. It is untouched here only
-// because that package is owned by another change in flight; the call is the
-// same one line.
+// THE HEADLESS RESUME IS THE WHOLE DELIVERY SURFACE, by design and not by
+// omission. W-D-08's acceptance lands in internal/store plus this command; the
+// WebSocket session-resume path was never part of it. Draining there would be a
+// NEW capability rather than a gap being left open, and a bigger one than it
+// sounds: a headless run already has a list of prompts to execute, so the queue
+// is a slice concatenation, while a reconnecting TUI is idle — the server would
+// have to start a turn nobody asked for, decide what to do when the user is
+// mid-type, and answer for a queue drained by a reconnect that then dropped. An
+// earlier version of this note called it "the same one line"; that was a cost
+// estimate nobody had checked.
 func drainQueue(configPath, sessionID string) []cli.HeadlessInput {
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -165,6 +170,24 @@ func drainQueue(configPath, sessionID string) []cli.HeadlessInput {
 	return out
 }
 
+// queuedFirst puts a session's queued messages ahead of whatever this
+// invocation was given (W-D-08).
+//
+// FIRST, IN ENQUEUE ORDER. They were said earlier, and a queue that delivered
+// out of order would make "queue this, then ask about it" impossible to
+// express. The `-h` text and docs/user-guide/entrypoints.md both promise the
+// order, so it is a contract rather than an implementation detail.
+//
+// A separate function purely so that promise has somewhere to be asserted:
+// inlined, the concatenation had no observation point, and reversing it left
+// the whole suite green — TestDrainQueue_ConsumesOnResume checks the order
+// drainQueue itself returns, and TestRunHeadless_ResumeDrainsTheQueue only
+// checks that the queue was emptied. TestQueuedFirst_QueueLeadsTypedInput is
+// what goes red now.
+func queuedFirst(configPath, sessionID string, inputs []cli.HeadlessInput) []cli.HeadlessInput {
+	return append(drainQueue(configPath, sessionID), inputs...)
+}
+
 func runHeadlessCommand(args []string, command string, stdin io.Reader) int {
 	cfg, err := parseHeadlessArgs(args, command)
 	if err != nil {
@@ -177,11 +200,7 @@ func runHeadlessCommand(args []string, command string, stdin io.Reader) int {
 		return exitUsage
 	}
 	if cfg.Resume != "" {
-		// W-D-08: resuming a session is where its queued messages land. They go
-		// FIRST, in enqueue order, ahead of whatever this invocation was given —
-		// they were said earlier, and a queue that delivered out of order would
-		// make "queue this, then ask about it" impossible to express.
-		inputs = append(drainQueue(cfg.ConfigPath, cfg.Resume), inputs...)
+		inputs = queuedFirst(cfg.ConfigPath, cfg.Resume, inputs)
 		inputs[0].Resume = cfg.Resume
 	}
 

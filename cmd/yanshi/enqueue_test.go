@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/x6nux/yanshi/internal/cli"
 	"github.com/x6nux/yanshi/internal/config"
 	"github.com/x6nux/yanshi/internal/store"
 )
@@ -186,4 +187,74 @@ func TestRunHeadless_NoResumeLeavesTheQueueAlone(t *testing.T) {
 	pending, err := s.PendingQueuedMessages(sid)
 	require.NoError(t, err)
 	require.Len(t, pending, 1)
+}
+
+// TestQueuedFirst_QueueLeadsTypedInput pins the DELIVERY ORDER that both the
+// `-h` text and docs/user-guide/entrypoints.md promise.
+//
+// It is the assertion the concatenation had nowhere to live before: reversing
+// it to append the queue AFTER the typed prompt left every existing test green,
+// because TestDrainQueue_ConsumesOnResume only checks the order drainQueue
+// itself returns and TestRunHeadless_ResumeDrainsTheQueue only checks that the
+// queue was emptied.
+func TestQueuedFirst_QueueLeadsTypedInput(t *testing.T) {
+	configPath, sid := queueFixture(t)
+	s := openFixtureStore(t, configPath)
+	for _, m := range []string{"queued one", "queued two"} {
+		_, err := s.EnqueueMessage(sid, m)
+		require.NoError(t, err)
+	}
+
+	got := queuedFirst(configPath, sid, []cli.HeadlessInput{{Prompt: "typed on the command line"}})
+	require.Len(t, got, 3)
+	require.Equal(t, []string{"queued one", "queued two", "typed on the command line"},
+		[]string{got[0].Prompt, got[1].Prompt, got[2].Prompt},
+		"the queue leads, in enqueue order, ahead of this invocation's own input")
+
+	// A session with nothing queued must leave the caller's input exactly as it
+	// was — otherwise a nil-vs-empty slip would show up as a dropped prompt.
+	own := []cli.HeadlessInput{{Prompt: "only this"}}
+	require.Equal(t, own, queuedFirst(configPath, sid, own))
+}
+
+// TestEnqueueUsage_AdvertisesOnlyResumePathsThatParse closes the phantom the
+// usage text carried for three releases: it told the user to run
+// `yanshi chat -resume <id>`, and plain `chat` has no such flag — it routes to
+// the headless entry point only when it sees --no-tui, and its own flag set
+// defines config/fake-model/server/token/inprocess and nothing else.
+//
+// Every `-resume` invocation the text advertises is parsed here through the
+// exact path that word reaches, so an advertisement and a flag set cannot drift
+// apart again. The interactive form is asserted to be REJECTED, which is the
+// half a reader of the usage text cannot check.
+func TestEnqueueUsage_AdvertisesOnlyResumePathsThatParse(t *testing.T) {
+	var advertised int
+	for _, line := range strings.Split(enqueueUsage, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "yanshi ") || !strings.Contains(line, "-resume") {
+			continue
+		}
+		advertised++
+		fields := strings.Fields(strings.ReplaceAll(line, `"..."`, "hi"))
+		command, args := fields[1], fields[2:]
+		noTUI, filtered := splitNoTUI(args)
+		require.Truef(t, command == "exec" || noTUI,
+			"%q advertises -resume on the interactive TUI, which has no such flag", line)
+		cfg, err := parseHeadlessArgs(filtered, command)
+		require.NoErrorf(t, err, "advertised invocation does not parse: %q", line)
+		require.NotEmptyf(t, cfg.Resume, "advertised invocation does not set Resume: %q", line)
+	}
+	require.Equal(t, 2, advertised, "both real resume paths must stay advertised")
+
+	// The negative half: the interactive TUI rejects -resume before it starts.
+	// It is what makes the "no -resume flag" sentence in the usage text a
+	// checked claim rather than a description of another file.
+	stderr := os.Stderr
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	require.NoError(t, err)
+	os.Stderr = devNull
+	code := chatTUI([]string{"-resume", "whatever"})
+	os.Stderr = stderr
+	require.NoError(t, devNull.Close())
+	require.Equal(t, exitUsage, code, "plain `yanshi chat` must reject -resume")
 }
