@@ -6,15 +6,23 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
-	"time"
 )
 
 // buildEnvInfo returns a multi-line string describing the runtime environment
 // (OS, shell, language runtimes). Appended to the system instruction so the
 // model knows what tools are available for shell_run calls.
+//
+// Everything here is STATIC for the life of the process, which is what makes it
+// safe to render exactly once in New(): the OS does not change, and a toolchain
+// installed mid-session is a trade this deliberately loses in exchange for not
+// spawning a dozen probe subprocesses in front of every model call.
+//
+// The date used to be the first line and no longer is — it belongs to the
+// volatile half (see sysprompt.go). Left here it froze at process start, so a
+// server still up the next morning kept telling the model the wrong day with
+// nothing in the transcript to reveal it.
 func buildEnvInfo() string {
 	var b strings.Builder
-	b.WriteString("Date: " + time.Now().Format("2006-01-02") + "\n")
 	b.WriteString(fmt.Sprintf("OS: %s %s (%s)\n", runtime.GOOS, runtime.GOARCH, hostOS()))
 	b.WriteString(fmt.Sprintf("Shell: %s\n", detectShell()))
 	b.WriteString(shellOptions())

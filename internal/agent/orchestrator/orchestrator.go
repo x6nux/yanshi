@@ -447,6 +447,13 @@ func (o *Orchestrator) withTurnContext(ctx context.Context, opts TurnOpts) conte
 	// to go — an empty ModelID resolves to false, i.e. hint text, which is the
 	// fail-safe answer for the entry points that do not select a model.
 	ctx = tools.WithTurnImages(ctx, tools.NewTurnImages(o.IsMultimodal(opts.ModelID)))
+	// The volatile half of the system prompt reads the turn's model from here.
+	// Bound next to WithTurnImages because both answer questions about the SAME
+	// selection, one turn late otherwise: runnerFor's cache would hand a /model
+	// switch a runner whose instruction was rendered for the previous model. See
+	// sysprompt.go for why the prompt is refreshed per run instead of the cache
+	// being evicted.
+	ctx = withTurnModelID(ctx, opts.ModelID)
 	if opts.EmitWorkFrame != nil {
 		ctx = tools.WithWorkEventCallback(ctx, func(event work.Event) {
 			opts.EmitWorkFrame(workEventFrame(event))
@@ -582,10 +589,20 @@ func (o *Orchestrator) runnerFor(chatModel model.BaseChatModel, plan bool, model
 }
 
 // orchestratorMiddlewares returns the ADK middleware stack every runner is
-// built with, IN ORDER. The order is load-bearing in three places:
+// built with, IN ORDER.
 //
-//  1. newLoopGuardMiddleware is FIRST, so a turn the guard is about to stop
-//     does not spend work preparing a model call that will never go out.
+// newSystemPromptRefresher leads, and its position is the one thing here that
+// is NOT load-bearing: it is the only entry implementing BeforeAgent, a hook
+// none of the others touch, so nothing downstream can observe whether it ran
+// first or last. It is written first because it is what makes the run's system
+// prompt final, and a reader looking for "where does the prompt come from"
+// should not have to reach the end of the slice to find out.
+//
+// Among the three model-call middlewares the order IS load-bearing, in three
+// places:
+//
+//  1. newLoopGuardMiddleware is FIRST of them, so a turn the guard is about to
+//     stop does not spend work preparing a model call that will never go out.
 //  2. newResultHygiene runs after the guard and BEFORE the recorder, so what
 //     the recorder captures — and therefore what JudgeCompletion and the
 //     compactor see — is the degraded history the model was actually sent,
@@ -601,6 +618,7 @@ func (o *Orchestrator) runnerFor(chatModel model.BaseChatModel, plan bool, model
 // was never added to the slice" is this repository's dominant failure shape.
 func orchestratorMiddlewares() []adk.ChatModelAgentMiddleware {
 	return []adk.ChatModelAgentMiddleware{
+		newSystemPromptRefresher(),
 		newLoopGuardMiddleware(), newResultHygiene(), newMessageRecorder(), newImageAttacher(),
 	}
 }
