@@ -550,6 +550,25 @@ func TestADR0015_CtxcompactMustNotDependOnStore(t *testing.T) {
 	mp := modulePath(t)
 	ctxcompact, storePkg := ip("internal/ctxcompact"), ip("internal/store")
 
+	// BOTH ENDPOINTS MUST EXIST, or this test passes without checking anything.
+	// walk returns false immediately for a package with no entry in the graph, so
+	// a typo in either name — or a rename that moves one of these packages —
+	// turns the whole gate into a no-op that still reports PASS. Measured: with
+	// the start renamed to internal/ctxcompaction, or the target to
+	// internal/storage, the test passes in both directions.
+	//
+	// That is the very shape this test was written to stop: a rule that reads as
+	// enforced and is not. The sibling gate on this constraint's other half,
+	// TestContextEventsTableIsAppendOnly, already carries its own "did I actually
+	// scan anything" assertion for the same reason.
+	for _, pkg := range []string{ctxcompact, storePkg} {
+		if _, ok := graph[pkg]; !ok {
+			t.Fatalf("%s is not in the import graph, so this gate would pass without "+
+				"checking anything. Fix the package path rather than the assertion.",
+				short(pkg, mp))
+		}
+	}
+
 	seen := map[string]bool{}
 	var path []string
 	var walk func(pkg string) bool
