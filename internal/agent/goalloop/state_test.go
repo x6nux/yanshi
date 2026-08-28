@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -156,23 +157,41 @@ func TestGoalLoop_ResumesAfterRestart(t *testing.T) {
 		assert.Equal(t, budget.MaxTokens, persisted.Budget.MaxTokens)
 		assert.Equal(t, decision1.Usage.Total(), persisted.Usage.Total())
 
-		// --- restart ---
+		// --- restart, with the roomy budget a config default would supply ---
+		// This is the realistic shape of the bug: nobody re-types the tight
+		// budget after a crash, so a resumed run that honoured the caller's
+		// budget would hand itself a brand new one.
 		sink2 := &UsageSink{}
 		loop2 := New(Config{
 			Planner:     &chargingPlanner{sink: sink2, perCall: Usage{TotalTokens: perIteration}},
 			Implementer: &FakeImplementer{Result: "done"},
 			Evaluators:  []Evaluator{&CounterEvaluator{passAt: 100}},
 			Judge:       AggregateJudge{},
-			Budget:      budget,
+			Budget:      Budget{MaxIterations: 99, MaxTokens: 99999},
 			Sink:        sink2,
 			State:       st2,
 		})
-		decision2, err := loop2.Run(context.Background(), goal, nil)
+		var ranAt int
+		var announced bool
+		record := firstIteration(&ranAt)
+		decision2, err := loop2.Run(context.Background(), goal, func(e Event) {
+			record(e)
+			if e.Phase == "State" && strings.Contains(e.Detail, "overrides") {
+				announced = true
+			}
+		})
 		require.NoError(t, err)
+		assert.True(t, announced, "a budget override must be reported, not applied in silence")
 
 		assert.Equal(t, StopReasonTokenBudget, decision2.StopReason,
 			"the spent tokens must still be spent after a restart")
-		assert.Equal(t, decision1.Usage.Total(), sink2.Snapshot().Total(),
+		// Comparing token totals is NOT enough here, and the probe proved it:
+		// an unseeded sink spends the same total again from zero and lands on
+		// the same number. What separates the two is that a resumed run must
+		// buy nothing at all — no phase runs, and the iteration count does not
+		// move — because the budget was already gone before it started.
+		assert.Zero(t, ranAt, "an exhausted token budget must buy zero further phases")
+		assert.Equal(t, loop1.Iterations(), loop2.Iterations(),
 			"an exhausted token budget must buy zero further iterations")
 	})
 
