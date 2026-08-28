@@ -144,11 +144,30 @@ func mergeHistoryItems(a, b []historyItem) []historyItem {
 			byText[it.Text] = it
 		}
 	}
+	// 顺序必须是确定的,而这需要两处一起保证,少任何一处结果都随机:
+	//
+	//  1. 候选按 a 再 b 的**出现顺序**收集,不是遍历 byText —— Go 的 map 迭代
+	//     顺序是随机的,从它建切片等于先把顺序打散再排序。
+	//  2. 排序用 SliceStable —— TS 相等的条目(同一瞬间写入,或都还没有时间戳)
+	//     必须保留上面那个顺序,`sort.Slice` 对它们的相对位置不作保证。
+	//
+	// 实测:两条零值 TS 的条目在 `-count=8` 下会翻转,而 `go test ./...` 只跑
+	// 一遍,看不见。归并是 Save 用来避免多窗口互相覆盖的那一步,顺序不定
+	// 意味着同一份历史每次保存都可能换个排列写回磁盘。
 	out := make([]historyItem, 0, len(byText))
-	for _, it := range byText {
-		out = append(out, it)
+	emitted := make(map[string]bool, len(byText))
+	take := func(items []historyItem) {
+		for _, it := range items {
+			if emitted[it.Text] {
+				continue
+			}
+			emitted[it.Text] = true
+			out = append(out, byText[it.Text])
+		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].TS.Before(out[j].TS) })
+	take(a)
+	take(b)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].TS.Before(out[j].TS) })
 	return out
 }
 
