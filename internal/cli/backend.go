@@ -52,6 +52,11 @@ type StreamEvent struct {
 	Compacted    bool
 	TokensBefore int
 	TokensAfter  int
+	// CompactionBlocked is non-empty when the server REFUSED a compaction and
+	// the context is therefore oversized. Dropping it here would put the signal
+	// back where it started: the server would report the condition on every
+	// status frame and nothing downstream would ever see it.
+	CompactionBlocked string
 
 	RetryAttempt int
 	RetryMax     int

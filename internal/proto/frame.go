@@ -368,9 +368,26 @@ type ServerFrame struct {
 	// Compaction fields (Task 35b). Compacted is set on a status frame after a
 	// compaction completed; TokensBefore/After carry the estimated token counts
 	// across the compaction so the client can render "compacted (X → Y tokens)".
-	Compacted    bool             `json:"compacted,omitempty"`
-	TokensBefore int              `json:"tokens_before,omitempty"`
-	TokensAfter  int              `json:"tokens_after,omitempty"`
+	Compacted    bool `json:"compacted,omitempty"`
+	TokensBefore int  `json:"tokens_before,omitempty"`
+	TokensAfter  int  `json:"tokens_after,omitempty"`
+	// CompactionBlocked is the counterpart of Compacted: a status frame carries
+	// it, non-empty, when a compaction was REFUSED and the context is therefore
+	// larger than it should be. The string is the operator-facing reason.
+	//
+	// It exists because refusing is the safe direction only while it is VISIBLE
+	// (ADR-0015 constraint 6). Auto-compaction refuses on the same silent path
+	// an under-threshold turn takes, so a session that keeps refusing grows
+	// without bound and the first thing anyone observes is a provider length
+	// error — a failure wearing another failure's clothes.
+	//
+	// EMITTED BY THE WS PATH ONLY, and that is not an oversight. SSE holds
+	// history client-side and compacts it in place with no durable boundary and
+	// no session rows, so none of the conditions that produce a refusal can
+	// arise there; the field stays empty rather than being forgotten. Both
+	// transports share the vocabulary, so an SSE handler that later grows a
+	// durable window has the field waiting.
+	CompactionBlocked string `json:"compaction_blocked,omitempty"`
 	Messages     []schema.Message `json:"messages,omitempty"` // history_replaced / session_restored
 	// Retry fields: carried by a "retry" frame announcing a transient-error
 	// retry (e.g. a mid-stream "unexpected EOF") so the client can render

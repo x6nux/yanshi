@@ -101,6 +101,14 @@ type connSession struct {
 	// indefinitely. Not persisted: a server restart drops the stack.
 	sideStack []sideSnapshot
 
+	// compactionBlocked is the operator-facing reason the last compaction
+	// attempt was refused, or "" while the context is being kept in shape. It
+	// rides on every status frame (ADR-0015 constraint 6): refusing to compact
+	// is the safe direction ONLY while the oversized context it leaves behind is
+	// visible. Nothing retries a refusal, so the condition persists and so does
+	// the flag, until a compaction succeeds.
+	compactionBlocked string
+
 	// C4 COST1 per-session billing ledger. billing accumulates billable
 	// tokens across every provider usage (including the judge call); costUSD
 	// is the running USD total; costKnown=false means the session referenced
@@ -142,6 +150,11 @@ type sideSnapshot struct {
 // coincident signal (enterSide clears it), but checking sideStack explicitly
 // is defense-in-depth — review #2 mandates both.
 func (cs *connSession) recordingSuppressed() bool { return len(cs.sideStack) > 0 }
+
+// compactionBlocked is the operator-facing reason the last compaction attempt
+// was refused, or "" when the context is being kept in shape. It rides on every
+// status frame (ADR-0015 constraint 6): refusing to compact is only the safe
+// direction while the resulting oversized context is visible.
 
 // enterSide pushes a snapshot of the current state and clears sessionID (so
 // ensureSession cannot create a session for side turns). Returns an error if

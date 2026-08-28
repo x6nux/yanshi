@@ -223,6 +223,13 @@ type model struct {
 	// sideDepth is the current ephemeral side-conversation depth (V11): 0 =
 	// main, 1+ = inside a side. Footer renders "in side (N)".
 	sideDepth int
+
+	// compactionBlocked is the server's reason for refusing to compact, or ""
+	// when the context is being kept in shape. Rendered as a footer pill: the
+	// context is oversized, nothing retries on its own, and the alternative to
+	// showing it is a provider length error some turns later that reads like an
+	// unrelated failure.
+	compactionBlocked string
 	// pendingPermission is the active permission prompt; while non-nil a popup
 	// renders above the input (tool/args/reason + Allow/Always allow/Deny) and
 	// Up/Down + Enter (or y/a/n) resolves it. permSel is the highlighted option.

@@ -86,6 +86,11 @@ func (m *model) applyStatus(ev cli.StreamEvent) {
 	if ev.Compacted {
 		m.activity = "Thinking…"
 	}
+	// A refused compaction is the one status the user has to see: the context
+	// is now larger than it should be and nothing will retry on its own, so the
+	// alternative to saying so is a provider length error some turns later that
+	// reads like an unrelated failure.
+	m.compactionBlocked = ev.CompactionBlocked
 }
 
 // lastSessionsEntry returns the most recent *sessionsEntry, or nil if none.

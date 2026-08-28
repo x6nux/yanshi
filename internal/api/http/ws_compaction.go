@@ -201,6 +201,10 @@ func (cs *connSession) statusFrame(s *Server) proto.ServerFrame {
 	// first user_message; omitempty drops it on the wire so legacy clients and
 	// the no-store path are unchanged. Headless exec reads it to print the id.
 	st.SessionID = cs.sessionID
+	// ADR-0015 constraint 6: a refused compaction has to be visible on every
+	// status frame, not just logged once. It stays set until a compaction
+	// succeeds, because the condition persists — the window keeps growing.
+	st.CompactionBlocked = cs.compactionBlocked
 	// B2-RB1: carry both the display short hash and the FULL main_head id. The
 	// TUI caches Head and re-sends it as the next restore_turn's ConfirmedHead
 	// (D6: full id binding — short-hash collision is a real risk across long
@@ -402,6 +406,19 @@ func windowBoundary(kept []int, logTop, flushedFrom int) (hidden int, pinned []i
 		}
 	}
 	return hidden, pinned
+}
+
+// reportCompactionBlocked records a refused compaction and tells the client
+// immediately, so the oversized context is observable at the moment it is
+// decided rather than several turns later as a provider length error.
+//
+// The flag persists on the session (statusFrame re-sends it) because the
+// CONDITION persists: nothing retries a refusal, so the window keeps growing
+// until whatever caused it changes. A one-shot frame would be the same silence
+// with an extra step.
+func (cs *connSession) reportCompactionBlocked(s *Server, conn *wsConn, why string) {
+	cs.compactionBlocked = why
+	conn.write(cs.statusFrame(s))
 }
 
 // compactionNotDurable is the message the manual path shows when a compaction
@@ -763,6 +780,9 @@ func (s *Server) compactionOptions() ctxcompact.Options {
 func maybeAutoCompact(ctx context.Context, s *Server,
 	models map[string]model.BaseChatModel, conn *wsConn, cs *connSession) {
 
+	// Re-evaluated every turn: the flag describes the CURRENT state, so a turn
+	// that compacts cleanly must clear a refusal the previous one recorded.
+	cs.compactionBlocked = ""
 	kr := keepRecentOrDefault(s.compaction.KeepRecent)
 	cw := contextWindowFor(cs.model, s.compaction)
 	sumModel := compactionModel(s.compaction, models, cs.model)
@@ -770,7 +790,12 @@ func maybeAutoCompact(ctx context.Context, s *Server,
 		return // no model available — compaction disabled
 	}
 	if !cs.flushHistory(s) {
-		return // not durable — see the durability note above
+		// Not durable — see the durability note above. Reported rather than
+		// silent for the same reason a misalignment is: the context is now
+		// oversized, and the only alternative signal is a provider length error
+		// several turns later that looks like something else entirely.
+		cs.reportCompactionBlocked(s, conn, compactionNotDurable)
+		return
 	}
 	newHist, tb, ta, did := ctxcompact.MaybeCompactWithOptions(ctx, cs.history,
 		s.compaction.Threshold, cw, kr, sumModel,
@@ -779,10 +804,12 @@ func maybeAutoCompact(ctx context.Context, s *Server,
 	if !did {
 		return
 	}
-	if ok, _ := cs.commitCompaction(s, newHist); !ok {
-		return // window unchanged — same silent no-op as an under-threshold turn
+	if ok, why := cs.commitCompaction(s, newHist); !ok {
+		cs.reportCompactionBlocked(s, conn, why)
+		return // window unchanged, but no longer silently so
 	}
-	cs.tokensIn = ta // refresh the footer ctx counter (statusFrame reads cs.tokensIn)
+	cs.compactionBlocked = "" // a successful compaction clears the warning
+	cs.tokensIn = ta          // refresh the footer ctx counter (statusFrame reads cs.tokensIn)
 	st := cs.statusFrame(s)
 	st.Compacted, st.TokensBefore, st.TokensAfter = true, tb, ta
 	conn.write(st)
@@ -822,6 +849,7 @@ func compactNow(ctx context.Context, s *Server,
 		// out so the TUI's compact block resolves; the error frame is what tells
 		// the user their explicit request did not happen and why, which a bare
 		// "nothing changed" status would not.
+		cs.compactionBlocked = compactionNotDurable
 		conn.write(proto.NewError(compactionNotDurable))
 		conn.write(cs.statusFrame(s))
 		return
@@ -855,11 +883,13 @@ func compactNow(ctx context.Context, s *Server,
 	if ok, why := cs.commitCompaction(s, newHist); !ok {
 		// Same reasoning as the pre-compaction flush above: an explicit request
 		// that did not happen has to say so, not resolve as "nothing changed".
+		cs.compactionBlocked = why
 		conn.write(proto.NewError(why))
 		conn.write(cs.statusFrame(s))
 		return
 	}
-	cs.tokensIn = ta // refresh the footer ctx counter (statusFrame reads cs.tokensIn)
+	cs.compactionBlocked = "" // a successful compaction clears the warning
+	cs.tokensIn = ta          // refresh the footer ctx counter (statusFrame reads cs.tokensIn)
 	st := cs.statusFrame(s)
 	st.Compacted, st.TokensBefore, st.TokensAfter = true, tb, ta
 	conn.write(st)

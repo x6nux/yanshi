@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
+	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/secrets"
 	"github.com/x6nux/yanshi/internal/store"
 )
@@ -1171,4 +1172,159 @@ func TestKeptWindowSeqsRefusesMisalignment(t *testing.T) {
 		store.Message{Seq: 2, Role: store.RoleUser, Content: "extra"}))
 	assert.False(t, ok, "an unexplained trailing row must be refused")
 	assert.Nil(t, kept)
+}
+
+// ---------------------------------------------------------------------------
+// INF3 round 4: the refusal is visible, and a revert truncates at a ROW seq
+// ---------------------------------------------------------------------------
+
+// TestRefusedCompactionIsVisibleOnStatus is the other half of ADR-0015
+// constraint 6. "Prefer an oversized context over lost content" is only the safe
+// choice while the oversized context can be SEEN: auto-compaction refuses on the
+// same silent path an under-threshold turn takes, so a session stuck refusing
+// grows without bound and the first thing anyone observes is a provider length
+// error, which reads like an unrelated failure.
+func TestRefusedCompactionIsVisibleOnStatus(t *testing.T) {
+	st, sid, _, srv := compactedFixture(t)
+	hidden, err := st.HiddenSeq(sid)
+	require.NoError(t, err)
+	rows, err := st.Messages(sid)
+	require.NoError(t, err)
+	var evicted string
+	for _, r := range rows {
+		if r.Seq < hidden && r.Role == store.RoleAssistant && r.Content != "" {
+			evicted = r.Content
+			break
+		}
+	}
+	require.NotEmpty(t, evicted)
+
+	cs := &connSession{perm: &permModeState{}}
+	require.NoError(t, cs.loadSession(srv, sid))
+	cs.history = append(cs.history, labelledHistory("second", 8)...)
+	cs.history = append(cs.history, schema.AssistantMessage(evicted, nil))
+	cs.persistMessages(srv)
+
+	wc, client, cleanup := newWSPair(t)
+	defer cleanup()
+	fm := einollm.NewFakeModel([]string{"SECOND SUMMARY"}, nil)
+	maybeAutoCompact(context.Background(), srv,
+		map[string]model.BaseChatModel{"fm": fm}, wc, cs)
+
+	require.NotEmpty(t, cs.compactionBlocked,
+		"a refused compaction must record why")
+
+	// The client is told at the moment it is decided, not several turns later.
+	// The refusal happens after the summary has already streamed, so the
+	// compact_chunk deltas come first.
+	var f proto.ServerFrame
+	for i := 0; i < 50; i++ {
+		require.NoError(t, client.ReadJSON(&f))
+		if f.Type == "status" {
+			break
+		}
+	}
+	require.Equal(t, "status", f.Type, "a refusal must still produce a status frame")
+	assert.NotEmpty(t, f.CompactionBlocked,
+		"the status frame must carry the refusal, or the oversized context is "+
+			"invisible and 'prefer oversized' stops being safe")
+	assert.False(t, f.Compacted, "a refusal must not also claim it compacted")
+
+	// And it PERSISTS: nothing retries a refusal, so every later status frame
+	// has to keep saying so.
+	later := cs.statusFrame(srv)
+	assert.Equal(t, f.CompactionBlocked, later.CompactionBlocked)
+
+	// A compaction that succeeds clears it. Same session, aligned window.
+	st2, sid2, _, srv2 := compactedFixture(t)
+	_ = st2
+	ok := &connSession{perm: &permModeState{}}
+	require.NoError(t, ok.loadSession(srv2, sid2))
+	ok.compactionBlocked = "stale"
+	ok.history = append(ok.history, labelledHistory("third", 8)...)
+	ok.persistMessages(srv2)
+	wc2, client2, cleanup2 := newWSPair(t)
+	defer cleanup2()
+	_ = client2
+	maybeAutoCompact(context.Background(), srv2,
+		map[string]model.BaseChatModel{"fm": einollm.NewFakeModel([]string{"OK"}, nil)}, wc2, ok)
+	assert.Empty(t, ok.compactionBlocked,
+		"a successful compaction must clear the warning, or it becomes noise "+
+			"nobody reads")
+}
+
+// TestTruncationSeqCountsRowsNotMessages pins the message-count / row-count
+// distinction that a seam's HistoryLen silently crossed.
+//
+// THE FIXTURE IS THE TEST. An assistant carrying tool calls expands to several
+// durable rows, so a window of N messages is more than N rows — and a fixture
+// without tool calls makes the two numbers equal and proves nothing. Passing the
+// message count as a row seq truncated at the wrong place, and since round 2 the
+// same number also decides which compaction boundaries get compensated, so it
+// popped the wrong boundaries too.
+func TestTruncationSeqCountsRowsNotMessages(t *testing.T) {
+	st := persistStore(t)
+	sid, err := st.CreateSession("s")
+	require.NoError(t, err)
+	srv := &Server{store: st}
+	cs := &connSession{perm: &permModeState{}, sessionID: sid}
+	cs.history = []*schema.Message{
+		schema.UserMessage("go"), // row 0
+		{Role: schema.Assistant, Content: "checking", // rows 1 and 2
+			ToolCalls: []schema.ToolCall{toolCall("c1", "shell_run", `{"cmd":"ls"}`)}},
+		{Role: schema.Tool, ToolCallID: "c1", ToolName: "shell_run", Content: "a.go"}, // row 3
+		schema.AssistantMessage("done", nil),                                          // row 4
+	}
+	cs.persistMessages(srv)
+
+	rows, err := st.Messages(sid)
+	require.NoError(t, err)
+	require.Len(t, rows, 5, "4 messages expand to 5 rows — that gap is the bug")
+
+	// Keeping the first 2 messages keeps 3 rows, so truncation starts at seq 3.
+	// The old code passed 2, deleting a row it had to keep.
+	got, err := truncationSeq(srv, cs, 2)
+	require.NoError(t, err)
+	assert.Equal(t, 3, got,
+		"the boundary is a ROW seq; 2 is the message count and would delete the "+
+			"tool result belonging to a message the revert keeps")
+
+	assertSeq := func(msgs, wantSeq int) {
+		t.Helper()
+		n, err := truncationSeq(srv, cs, msgs)
+		require.NoError(t, err)
+		assert.Equal(t, wantSeq, n)
+	}
+	assertSeq(0, 0) // keep nothing
+	assertSeq(1, 1) // keep the user message
+	assertSeq(3, 4) // keep through the tool result
+	assertSeq(4, 5) // keep everything: delete from past the end
+
+	// End to end: the revert keeps exactly the rows the message boundary named.
+	_, err = st.TruncateSessionForRevert(sid, 3, 1)
+	require.NoError(t, err)
+	rows, err = st.Messages(sid)
+	require.NoError(t, err)
+	require.Len(t, rows, 3)
+	assert.Equal(t, store.RoleToolCall, rows[2].Role,
+		"the kept assistant message's tool call must survive with it")
+}
+
+// TestTruncationSeqRefusesAMisalignedWindow: this one deletes rows, so a window
+// that no longer matches the log must refuse rather than guess a position.
+func TestTruncationSeqRefusesAMisalignedWindow(t *testing.T) {
+	st := persistStore(t)
+	sid, err := st.CreateSession("s")
+	require.NoError(t, err)
+	srv := &Server{store: st}
+	cs := &connSession{perm: &permModeState{}, sessionID: sid}
+	cs.history = []*schema.Message{schema.UserMessage("go")}
+	cs.persistMessages(srv)
+
+	// A message the log never received — the A-1 shape.
+	cs.history = append(cs.history, schema.AssistantMessage("never written", nil))
+
+	_, err = truncationSeq(srv, cs, 1)
+	require.Error(t, err, "a guessed truncation point deletes the wrong rows irreversibly")
+	assert.Contains(t, err.Error(), "no longer line up")
 }

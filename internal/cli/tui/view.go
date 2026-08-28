@@ -802,6 +802,16 @@ func (m model) statusHeader() string {
 		})
 	}
 
+	// 14. A refused compaction (ADR-0015 constraint 6). Warn-coloured, and it
+	// stays until a compaction succeeds, because so does the condition.
+	if m.compactionBlocked != "" {
+		c = tc("perm_yolo")
+		segs = append(segs, segmentDef{
+			text: " ctx not compacted ",
+			fg:   c.fg, bg: c.bg, bold: c.bold,
+		})
+	}
+
 	return renderFooter(segs, m.width)
 }
 

@@ -9,6 +9,7 @@
 package http
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 
@@ -40,6 +41,46 @@ func applySessionRevertSnapshot(cs *connSession, snap store.SessionRevertSnapsho
 	cs.cachedTokens = snap.Meta.CachedTokens
 	cs.reasoningTokens = snap.Meta.ReasoningTokens
 	cs.turns = snap.Meta.Turns
+}
+
+// truncationSeq converts a seam's history length — a MESSAGE count — into the
+// durable log SEQ at which truncation must begin.
+//
+// The two are not the same number and the difference is not cosmetic. An
+// assistant message carrying tool calls expands to several rows
+// (storeMessagesFor), so a window of N messages is N or more rows; passing the
+// message count straight to TruncateSessionForRevert deletes from the wrong
+// place, keeping rows it should drop or dropping rows it should keep. Since the
+// truncation also decides which compaction boundaries get compensated, the same
+// wrong number then pops the wrong boundaries — a fixture without tool calls
+// makes the two counts coincide and shows none of this.
+//
+// The seq comes from the projection, which is the live window row for row, so
+// keeping the first keptRows rows means deleting from the seq of the next one.
+// Keeping the whole window deletes nothing above it, hence maxSeq+1.
+//
+// A window that no longer matches the log REFUSES rather than guessing. Every
+// other consumer of that invariant refuses too (ADR-0015 constraint 6), and
+// here the stakes are higher: this one deletes rows, and a guessed boundary
+// deletes the wrong ones irreversibly.
+func truncationSeq(s *Server, cs *connSession, truncLen int) (int, error) {
+	rows, err := s.store.ProjectWindow(cs.sessionID)
+	if err != nil {
+		return 0, fmt.Errorf("could not read the saved conversation: %w", err)
+	}
+	if !alignedWithLog(cs.history, rows) {
+		return 0, errors.New(
+			"the conversation and its saved copy no longer line up, so the " +
+				"revert point cannot be located; nothing was changed")
+	}
+	keptRows := len(storeMessagesFor(cs.history[:truncLen]))
+	if keptRows < len(rows) {
+		return rows[keptRows].Seq, nil
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	return rows[len(rows)-1].Seq + 1, nil
 }
 
 // handleListSeams replies with the recent seams for the session (filtered by
@@ -176,9 +217,15 @@ func handleRestoreTurn(s *Server, conn *wsConn, cs *connSession, seamID, confirm
 			conn.write(proto.NewDone())
 			return
 		}
+		fromSeq, seqErr := truncationSeq(s, cs, truncLen)
+		if seqErr != nil {
+			conn.write(proto.NewError("restore_turn: " + seqErr.Error()))
+			conn.write(proto.NewDone())
+			return
+		}
 		var err error
 		durableBefore, err = s.store.TruncateSessionForRevert(
-			cs.sessionID, truncLen, truncTurns)
+			cs.sessionID, fromSeq, truncTurns)
 		if err != nil {
 			conn.write(proto.NewError(
 				"restore_turn: FATAL: durable history truncation failed: " + err.Error()))
