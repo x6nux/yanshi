@@ -50,8 +50,18 @@ func TestDelegatedTurnsGoThroughTheManager(t *testing.T) {
 		t.Error("the managed route no longer passes ParentID: delegated agents " +
 			"become top-level and the thread tree flattens")
 	}
-	if !strings.Contains(body, "Runner:       factory(allowed, instructionOverride),") {
+	// W-A-08: the spec's Runner is built from factory(allowed,
+	// instructionOverride) via an intermediate variable now (so it can be
+	// type-asserted and have its workRoot/vcsScope mutated for isolation
+	// before use — see acquireSubAgentWorkspace), not inlined directly into
+	// the struct literal. Both halves must still hold: the variable must come
+	// from calling the bound factory with the right args, and that same
+	// variable — not some other value — must be what the spec passes on.
+	if !strings.Contains(body, "runner := factory(allowed, instructionOverride)") {
 		t.Error("the managed route no longer builds its Runner from the bound factory")
+	}
+	if !strings.Contains(body, "Runner:       runner,") {
+		t.Error("the managed route no longer passes the factory-built runner into the spec")
 	}
 	// Instruction carries the caller's system-prompt override. Drop it and the
 	// sub-agent silently runs on the default instruction instead: the analysis

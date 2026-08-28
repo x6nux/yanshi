@@ -519,6 +519,24 @@ type LLMConfig struct {
 	// fail a startup — it only logs — so the flag exists to silence a probe
 	// that would time out on every boot of an air-gapped deployment.
 	Preflight *bool `yaml:"preflight"`
+
+	// StreamFirstChunkTimeout (W-A-06) bounds how long the streaming path
+	// waits for the FIRST chunk of a response. 0 (the default) disables it —
+	// no non-zero default, mirroring loopguard's "zero means off" principle,
+	// so an unconfigured deployment behaves exactly as it did before this
+	// field existed. See einollm.watchdogReader.
+	StreamFirstChunkTimeout time.Duration `yaml:"stream_first_chunk_timeout"`
+
+	// StreamIdleTimeout (W-A-06) bounds the gap between content-bearing
+	// chunks once streaming has started. It is independent of
+	// StreamFirstChunkTimeout because the two measure different things: a
+	// gateway that accepts a connection and then sends nothing hangs inside
+	// schema.StreamReader.Recv forever — a stall loopguard's DeadlineGate
+	// cannot catch, since it only checks between ReAct iterations, and a
+	// stuck Recv never reaches the next one. 0 (the default) disables it,
+	// reproducing pre-W-A-06 behaviour byte-for-byte. See
+	// einollm.watchdogReader.
+	StreamIdleTimeout time.Duration `yaml:"stream_idle_timeout"`
 }
 
 // RateLimitConfig bounds how fast yanshi issues model calls. It appears both

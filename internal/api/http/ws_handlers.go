@@ -14,8 +14,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/gorilla/websocket"
@@ -26,6 +28,7 @@ import (
 	"github.com/x6nux/yanshi/internal/secrets"
 	"github.com/x6nux/yanshi/internal/skills"
 	"github.com/x6nux/yanshi/internal/store"
+	"github.com/x6nux/yanshi/internal/tools"
 )
 
 // sessionInfos projects stored session rows into the wire shape.
@@ -83,6 +86,89 @@ func handleSessionList(s *Server, conn *wsConn) {
 	conn.write(proto.NewSessions(s.sessionInfos(sessions)))
 }
 
+// restoreMessages turns a persisted message log back into a ReAct history.
+//
+// This function exists to fix the bug it describes: the restore loop used to
+// map only Role + Content, and it split role into just user/assistant, so
+// the ToolCallID / ToolName / ToolArgs that store.Message already carries
+// were dropped on every restore, and a store.RoleToolResult row was restored
+// as if the operator had typed it. After a resume the model could not see
+// the tools it had called, and read its own past tool output as user input.
+//
+// The role vocabulary here is store.RoleUser / store.RoleAssistant /
+// store.RoleToolCall / store.RoleToolResult (internal/store/message_log.go),
+// not the raw strings "user"/"assistant"/"tool" — an earlier version of this
+// function matched "tool" and put ToolCallID on an "assistant" row, neither
+// of which any production writer ever produces (storeMessagesFor, the only
+// writer of tool rows, always uses the RoleToolCall/RoleToolResult
+// constants), so that version was a no-op against real data despite passing
+// tests built on an invented fixture.
+//
+// Pairing is load-bearing: a RoleToolCall row's ToolCallID and its matching
+// RoleToolResult row's ToolCallID must both survive restore. Restoring only
+// one side of the pair creates an orphan that the next compaction's
+// ctxcompact.EnforceToolCallPairs fixpoint deletes — a failure with no
+// error and no log, only a history that silently got shorter after resume.
+//
+// Regrouping is also load-bearing for parallel tool calls. storeMessagesFor
+// writes ONE RoleToolCall row per call (see its doc comment): a live
+// assistant message with N parallel ToolCalls becomes an optional prose row
+// followed by N consecutive RoleToolCall rows, nothing interleaved. A naive
+// restore that turns each row back into its own one-call assistant message
+// would hand the provider N separate assistant messages before any tool
+// result appears, which is not the shape providers accept (a turn's
+// tool_calls must live on a single assistant message, immediately followed
+// by their results). This function instead merges a run of RoleToolCall
+// rows into the single preceding assistant message when there is one, and
+// into one fresh assistant message otherwise — reconstructing the original
+// one-message-many-calls shape rather than fragmenting it.
+func restoreMessages(msgs []store.Message) []*schema.Message {
+	out := make([]*schema.Message, 0, len(msgs))
+	for _, m := range msgs {
+		switch m.Role {
+		case store.RoleToolResult:
+			out = append(out, &schema.Message{
+				Role:       schema.Tool,
+				Content:    m.Content,
+				ToolCallID: m.ToolCallID,
+				ToolName:   m.ToolName,
+			})
+		case store.RoleToolCall:
+			tc := schema.ToolCall{
+				ID: m.ToolCallID,
+				Function: schema.FunctionCall{
+					Name:      m.ToolName,
+					Arguments: m.ToolArgs,
+				},
+			}
+			if n := len(out); n > 0 && out[n-1].Role == schema.Assistant {
+				out[n-1].ToolCalls = append(out[n-1].ToolCalls, tc)
+				continue
+			}
+			out = append(out, &schema.Message{Role: schema.Assistant, ToolCalls: []schema.ToolCall{tc}})
+		default:
+			out = append(out, &schema.Message{Role: restoreRole(m.Role), Content: m.Content})
+		}
+	}
+	return out
+}
+
+// restoreRole maps a persisted store.Role* value to schema.RoleType for the
+// roles that carry no tool metadata (restoreMessages handles
+// store.RoleToolCall / store.RoleToolResult itself, since those also decide
+// message grouping, not just a role tag).
+//
+// An unrecognized value falls to User, the fail-safe side: treating an
+// unrecognized row as user input is safer than treating it as assistant
+// (the model would believe it said that itself) or as tool (it would become
+// a pairing orphan).
+func restoreRole(role string) schema.RoleType {
+	if role == store.RoleAssistant {
+		return schema.Assistant
+	}
+	return schema.User
+}
+
 // handleRestoreSession replies to a restore_session frame by loading the
 // session from the store and populating the connSession.
 func handleRestoreSession(s *Server, conn *wsConn, cs *connSession, sessionID string) {
@@ -108,16 +194,13 @@ func handleRestoreSession(s *Server, conn *wsConn, cs *connSession, sessionID st
 	}
 
 	// Build history as schema.Message slice (not pointers) for the frame.
-	hist := make([]schema.Message, 0, len(msgs))
-	csHist := make([]*schema.Message, 0, len(msgs))
-	for _, m := range msgs {
-		role := schema.User
-		if m.Role == "assistant" {
-			role = schema.Assistant
-		}
-		msg := schema.Message{Role: role, Content: m.Content}
-		hist = append(hist, msg)
-		csHist = append(csHist, &msg)
+	// hist is copied from csHist so the two stay content-identical by
+	// construction, rather than the old code's independent value/pointer
+	// pair that merely happened to agree.
+	csHist := restoreMessages(msgs)
+	hist := make([]schema.Message, 0, len(csHist))
+	for _, m := range csHist {
+		hist = append(hist, *m)
 	}
 
 	// Populate the connSession with stored meta.
@@ -179,6 +262,73 @@ func handleForkSession(s *Server, conn *wsConn, cs *connSession, seq int) {
 		return
 	}
 	conn.write(proto.NewSessionForked(forkID))
+}
+
+// runDistillPass runs one memory-consolidation pass over dims and reports the
+// outcome by logging, never by returning the underlying error (A2/W-A-05).
+//
+// It backs BOTH call sites: the synchronous distill_memories handler below
+// (which also wants the DistillResult, to build the reply frame) and the
+// automatic post-turn pass (ws.go's runUserTurn), which fires this in a
+// goroutine and discards the return values entirely. The two correctness
+// requirements this file exists to satisfy — "distillation failure must not
+// affect the turn" for the background path, and "don't scare the user with
+// an error for a background-safe, always-retryable operation" for the
+// interactive path — collapse into the same rule if the error never leaves
+// this function: nothing downstream has to remember to swallow it.
+// tools.DistillMemories is itself failure-safe by construction (see its doc
+// comment: every failure path leaves the original memories untouched), so
+// logging and returning a zero result on error loses nothing a retry
+// wouldn't recover.
+func runDistillPass(ctx context.Context, st *store.Store, m tools.DistillModel, dims store.MemoryFilter) (tools.DistillResult, error) {
+	res, err := tools.DistillMemories(ctx, st, m, dims)
+	if err != nil {
+		slog.Warn("memory distillation failed", "session", dims.SessionID, "error", err)
+		return tools.DistillResult{}, nil
+	}
+	return res, nil
+}
+
+// distillTimeout bounds one consolidation pass.
+//
+// It is a var, not a const, only so the wedge regression test can shorten it;
+// nothing in production assigns to it.
+//
+// A distillation pass is one provider call over a bounded candidate set, so
+// minutes is already generous. The bound is not about latency, it is about
+// what an UNbounded call does at each of the two call sites: the interactive
+// one runs synchronously inside the WS frame loop, so a provider that accepts
+// the connection and then says nothing stops every other control frame on that
+// connection — /model, /compact, cancel, permission replies; the post-turn one
+// runs detached under context.WithoutCancel, so it leaks one goroutine and one
+// in-flight request per turn instead. ResilientChatModel's stall watchdog does
+// NOT cover this: W-A-06 wraps Stream, and distillation calls Generate.
+var distillTimeout = 3 * time.Minute
+
+// handleDistillMemories replies to a distill_memories frame by running one
+// consolidation pass over the connSession's stored memories (A2/W-A-05).
+// This is the interactive half of the entry point /distill triggers; see
+// runUserTurn in ws.go for the automatic post-turn half. Both wire up the
+// same previously-uncalled tools.DistillMemories + store.ApplyDistillation
+// chain documented in docs/feature-status.yaml under A2/W-A-05.
+//
+// ctx MUST be the connection context. This handler runs inline on the frame
+// loop, so its context is the only thing that can release the loop when the
+// client goes away: the loop's own `case <-connCtx.Done()` is unreachable
+// while it is blocked in here. The first version passed context.Background(),
+// which cannot be cancelled by anything — closing the client left the whole
+// control channel wedged behind a stalled provider for the life of the
+// process. That is the W-A-06 defect class, reintroduced by W-A-05 one commit
+// later and one scope wider.
+func handleDistillMemories(ctx context.Context, s *Server, conn *wsConn, cs *connSession) {
+	if s.store == nil || s.distillModel == nil {
+		conn.write(proto.NewError("memory distillation is disabled"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, distillTimeout)
+	defer cancel()
+	res, _ := runDistillPass(ctx, s.store, s.distillModel, store.MemoryFilter{SessionID: cs.sessionID})
+	conn.write(proto.NewMemoriesDistilled(res.Considered, res.Merged))
 }
 
 // skillInfo converts an internal skills.Skill snapshot into a proto.SkillInfo

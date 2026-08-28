@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/x6nux/yanshi/internal/guard"
+	"github.com/x6nux/yanshi/internal/tools"
 )
 
 // w3ConfigFile writes a minimal config that also names a real user skills
@@ -100,4 +101,19 @@ func TestW3ToolsAreRegisteredAndAuthorized(t *testing.T) {
 	require.NotNil(t, app.Background,
 		"App.Background is nil: the background_* tools read the manager from the turn "+
 			"context, so without it on orchestrator.Config every offload query fails")
+}
+
+// ledger: A2/W-A-02#4 真实装配出的 App 其 orchestrator 已绑定 Redactor
+func TestW3RedactorReachesToolResults(t *testing.T) {
+	app, err := Build(Options{ConfigPath: w3ConfigFile(t), FakeModel: true})
+	require.NoError(t, err)
+	defer app.Shutdown(context.Background())
+
+	require.NotNil(t, app.Redactor,
+		"the process-wide redactor must exist for W-A-02 to have anything to bind")
+
+	ctx := app.Orch.BindExecutionContextForTest(context.Background(), "")
+	_, ok := tools.RedactorFromContext(ctx)
+	require.True(t, ok,
+		"bindExecutionContext did not bind the redactor: every tool result still reaches the provider unredacted")
 }

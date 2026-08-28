@@ -100,3 +100,6 @@ data: {"type":"permissions"}
 event: permission_request
 data: {"type":"permission_request","tool_name":"t","tool_args":"{}","id":"id","reason":"r"}
 
+event: memories_distilled
+data: {"type":"memories_distilled","text":"distilled: considered 7, merged 2"}
+

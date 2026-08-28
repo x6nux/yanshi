@@ -183,6 +183,17 @@ foreground:
 	// output, and reinjecting it verbatim would spend the window the offload
 	// just saved. runCtx (not turnCtx) because it still carries the work root
 	// and is not cancelled.
-	handle.Finish(spillIfTooLong(runCtx, g.name, result.String()), toolErr)
+	//
+	// W-A-02 fix round 1: the redaction must run here too, and BEFORE
+	// spillIfTooLong for the same reason InvokableRun orders them — spilling
+	// an unredacted result writes the secret to disk where artifact_read
+	// fetches it straight back. This path does not go through InvokableRun:
+	// a backgrounded run's completion notice is injected directly into
+	// state.Messages by hygiene.go, so InvokableRun's redaction never sees
+	// it. runCtx carries the redactor because context.WithoutCancel (used to
+	// build it, above) preserves Values from the turn ctx that
+	// bindExecutionContext bound WithRedactor onto — the same mechanism the
+	// comment above already relies on for the work root and profile.
+	handle.Finish(spillIfTooLong(runCtx, g.name, g.redactResult(runCtx, result.String())), toolErr)
 	p.end(toolErr)
 }

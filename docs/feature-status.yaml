@@ -1619,4 +1619,128 @@
     "3": "internal/archtest::TestRetiredToolSymbolsDoNotReturn; internal/tools::TestModelSeesOnlyResultAndTUISeesEveryField"
     "4": "internal/tools::TestSubAgentProgressArrivesAsStatusNotResult"
     "5": "internal/cli/tui::TestToolBlockRendersFromAFixedTemplate; internal/cli/tui::TestToolBlockTemplateVariesOnlyByName"
+- id: "A2/W-A-01"
+  package: "W-A"
+  verdict: done
+  title: "多模态内容计入 token 估算"
+  # 审计（docs/superpowers/notes/2026-08-27-capability-audit.md P0-1）只点了
+  # UserInputMultiContent。实测 schema.Message 上三个多模态字段全部不被
+  # estimateMessageTokens 读到，因此本条覆盖三个 —— 只修一个会让同一缺陷换个
+  # 字段复发。子句 2 钉住「按 part 计价不按载荷长度」，那是 len(data)/4 这个
+  # 错误实现唯一会被抓住的地方。
+  acceptance: "带图片的消息其 token 估算随图片数量单调增长；估算不随 base64 载荷字节数线性增长；Message 上三个多模态字段都被计入；低 detail 档位的估算低于高 detail 档位"
+  evidence:
+    "1": "internal/ctxcompact::TestEstimateTokensGrowsWithImageCount"
+    "2": "internal/ctxcompact::TestEstimateTokensImageCostIsIndependentOfPayloadSize"
+    "3": "internal/ctxcompact::TestEstimateTokensCountsAllThreeMultimodalFields"
+    "4": "internal/ctxcompact::TestEstimateTokensLowDetailCostsLessThanHigh"
+- id: "A2/W-A-02"
+  package: "W-A"
+  verdict: done
+  title: "工具输出脱敏后再进模型"
+  # 收口在 GuardedTool.InvokableRun 而不是每个工具里：ToolChunk 的字段单一归属
+  # 决定了 Result 只在那里汇合。子句 2 钉住「未绑定时逐字节不变」，那是这类
+  # 全量收口最容易造成的回归方向。子句 3 是刻意的不对称：Text 走 TUI，脱敏它
+  # 只会把操作员自己的 key 对他自己藏起来。子句 4 对真实装配断言，补 GOV6
+  # 够不到的那半（GOV6 证明注入器有调用点，证明不了 App 真的走到）。子句 5 是
+  # spec 原文里有、第一轮却从台账掉了的那句，跨任务评审才看得见：收口在
+  # InvokableRun 意味着 fs_read 也被脱敏，而 secrets.Redact 还跑基于形状的
+  # RedactPatterns，于是 agent 读到的任何文件里的 PEM / JWT / sk- token 都在
+  # 模型看见之前被换成同一个字面量 "[REDACTED]" —— 「比较 .env 和 config.yaml
+  # 里的 key」会让模型确信两者相同。判据是工具意图而不是内容匹配（spec §1.2
+  # INF8 的建议），豁免落在工具值上而不是名字表上，当前只有 fs_read 一个。
+  acceptance: "工具结果在返回给编排器之前经过 Redactor；未绑定 Redactor 时工具结果逐字节不变；TUI 路径的 Text 字段不受脱敏影响；真实装配出的 App 其 orchestrator 已绑定 Redactor；显式读取凭据文件的 fs 工具不因本改动失效"
+  evidence:
+    "1": "internal/tools::TestInvokableRunRedactsRegisteredSecrets"
+    "2": "internal/tools::TestInvokableRunWithoutRedactorIsByteIdentical"
+    "3": "internal/tools::TestStreamTextFieldIsNotRedacted"
+    "4": "internal/bootstrap::TestW3RedactorReachesToolResults"
+    "5": "internal/tools::TestExplicitCredentialFileReadIsNotRedacted"
+- id: "A2/W-A-03"
+  package: "W-A"
+  verdict: done
+  title: "CJK 检索（history_search / SearchMemory / memory_autorecall）"
+  # 审计 P0-3 与 P0-11 同根同落点，此处合并为一条。选 LIKE 回退而不是换
+  # tokenizer 的理由写在 searchMessagesCJK 的 doc 注释里。子句 3 是这次改动
+  # 的护栏而不是特性：全量收口最容易的失败方向是「修好中文顺手改坏英文」，
+  # 那条测试同时断言命中集合与 porter 词干仍在。
+  acceptance: "中文词查询在 history_search 上返回非零命中；SearchMemory 与 memory_autorecall 走同一检索路径因而同时生效；英文查询的命中集合与本改动前逐条一致；CJK 回退路径有结果数上限"
+  evidence:
+    "1": "internal/store::TestSearchMessagesFindsChineseWords"
+    "2": "internal/store::TestSearchMemoryFindsChineseWords; internal/tools::TestAutoRecall_FindsChineseMemory"
+    "3": "internal/store::TestSearchMessagesEnglishPathIsUnchanged"
+    "4": "internal/store::TestSearchMessagesCJKFallbackIsBounded"
+- id: "A2/W-A-04"
+  package: "W-A"
+  verdict: done
+  title: "会话恢复保真度（工具轮不再丢失）"
+  # 子句 3 是审计没点到的那半：只恢复一半配对不会立刻出错，而是让下一次压缩的
+  # EnforceToolCallPairs fixpoint 把孤儿删掉，表现为「恢复后第一次压缩历史突然
+  # 变短」。子句 4 是护栏：纯文本会话的恢复结果必须逐字节不变。
+  acceptance: "恢复后的历史包含 tool 角色的消息；每条 tool 消息的 ToolCallID 能在同一历史中找到对应的 assistant ToolCalls；恢复后的消息序列通过 EnforceToolCallPairs 不产生删除；非工具消息的恢复结果与本改动前逐字节一致"
+  evidence:
+    "1": "internal/api/http::TestRestoreMessagesKeepsToolRole; internal/api/http::TestApplySessionRevertSnapshotKeepsToolTurn"
+    "2": "internal/api/http::TestRestoreMessagesPairsToolCallsWithResults; internal/api/http::TestRestoreMessagesRegroupsParallelToolCalls; internal/api/http::TestApplySessionRevertSnapshotKeepsToolTurn"
+    "3": "internal/api/http::TestRestoreMessagesSurvivesPairEnforcement"
+    "4": "internal/api/http::TestRestoreMessagesPlainTurnIsUnchanged"
+- id: "A2/W-A-05"
+  package: "W-A"
+  verdict: done
+  title: "记忆蒸馏链路接线（/distill + 可选 post-turn pass）"
+  # 审计原文：tools.DistillMemories + store.ApplyDistillation 写完即无调用者，
+  # 是「写了但零读者」模式第九次复现。最小入口是 /distill 斜杠命令（同步）加一个
+  # 默认关闭的 post-turn 自动通道（memory_distill_after_turn），无调度器。子句 2
+  # 的证据测试必须真的拨号 WS 连接、走服务端 handleDistillMemories，不能只调
+  # proto 构造函数——那种写法即使 dispatch case 整个漏掉也会通过，是本计划已经
+  # 踩过两次的「evidence 测试没有证明子句」同款缺陷的第三种形状。子句 3 的证据
+  # 测试同理：必须用一个真的返回 error 的 DistillModel 走完整 WS turn，而不是
+  # 传 nil store/model 触发 DistillMemories 自己文档化的 NO-OP 分支——那不是
+  # failure，是 ordinary state。
+  acceptance: "/distill 命令在 commandTable 中注册并能触发一次蒸馏；蒸馏请求帧被服务端处理并回复结果帧；蒸馏失败不影响所在 turn 的正常结束"
+  evidence:
+    "1": "internal/cli/tui::TestDistillSlashCommandIsRegistered"
+    "2": "internal/api/http::TestDistillFrameRoundTrips"
+    "3": "internal/api/http::TestDistillFailureDoesNotAbortTurn"
+
+- id: "A2/W-A-06"
+  package: "W-A"
+  verdict: done
+  title: "流式空闲超时看门狗"
+  # consumeStream 的循环只在每轮开头查一次 ctx.Err()，随后整轮阻塞在
+  # sr.Recv() 上，Recv 本身不带超时——网关接受连接后一言不发会把这个流永远
+  # 挂住。loopguard 的 DeadlineGate 救不了：它只在 ReAct 迭代边界检查，卡在
+  # Recv 里的流永远走不到下一个边界，无人值守的 goal loop 会把整轮预算耗在
+  # 一条僵死流上。watchdogReader（internal/llm/eino/streamwatchdog.go）包一层
+  # streamRecver，first/idle 两个独立预算：first 卡「上游有没有开始回」，idle
+  # 卡「上游还在不在动」，必须分开量因为二者衡量的是不同的事——一次长推理轮次
+  # 里 chunk 间隔本来就可能很大。空控制块（仅 Role 或全空 delta）判定复用
+  # consumeStream 已有的 isBlank，不新写一份可能与之分叉的副本。两个超时值
+  # 各自默认 0 = 关闭，不设非零默认值，与本字段引入前逐字节一致，同 loopguard
+  # 「零值即关闭」的原则。ErrStreamIdle 包成 *RetryableModelError 而非裸
+  # sentinel，使 IsRetryableModelErr 由构造保证为真；isRetryableStreamErr
+  # 里另加一条 errors.Is 恒等短路，且 ErrStreamIdle 的文案刻意不含
+  # "timeout"/"eof" 等关键字表里的词——否则这条短路会被关键字兜底悄悄掩盖，
+  # 测不出它到底有没有在起作用（探针把两者错开后才能证明二者互相独立）。
+  acceptance: "首块超时后流被终止并返回可重试错误；仅发送空控制块的流在稳态超时后被终止；有实际内容持续到达的长流不被误杀；两个超时值均可配置且零值表示关闭"
+  evidence:
+    "1": "internal/llm/eino::TestWatchdogFirstChunkTimeout"
+    "2": "internal/llm/eino::TestWatchdogEmptyControlChunksDoNotRenewTheDeadline"
+    "3": "internal/llm/eino::TestWatchdogLongStreamWithContentIsNotKilled"
+    "4": "internal/llm/eino::TestWatchdogZeroTimeoutsDisableIt"
+
+- id: "A2/W-A-08"
+  package: "W-A"
+  verdict: done
+  title: "并发子代理的 worktree 隔离"
+  # 审计列为 A 档（缺失特性），本 spec 判为 W-A（已交付功能坏了）：agent_dag
+  # 与 agent_batch 明确支持并发派发，并发下互相覆盖对方的编辑是数据损坏。
+  # 子句 2 是护栏——单发 agent_spawn 每次开 worktree 会把 ~/.yanshi/worktrees/
+  # 填满，那是把一个损坏换成另一个。子句 4 钉住失败路径：失败的子代理必须
+  # 被放弃而不是合并，否则半成品编辑落到 main，比不隔离更糟。
+  acceptance: "并发子代理各自在独立 worktree 中编辑且互不覆盖；未请求隔离的子代理行为与本改动前一致；子代理结束后其 worktree 被合并回主干或显式丢弃；子代理失败时其 worktree 被标记为放弃而不是合并"
+  evidence:
+    "1": "internal/agent/orchestrator::TestConcurrentIsolatedSubAgentsDoNotShareAWorkRoot"
+    "2": "internal/agent/orchestrator::TestNonIsolatedSubAgentKeepsTheSharedWorkRoot"
+    "3": "internal/agent/orchestrator::TestIsolatedSubAgentWorktreeIsSettledOnExit"
+    "4": "internal/agent/orchestrator::TestFailedIsolatedSubAgentWorktreeIsAbandoned"
 

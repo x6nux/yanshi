@@ -109,8 +109,20 @@ func runAgentBatch(ctx context.Context, set *BatchTools, args string) <-chan Too
 			out <- ToolChunk{Result: "B1 registry manager is not configured"}
 			return
 		}
+		// batch.Runner fans rows out through set.Manager.Spawn, which derives
+		// each row's execution context from the Manager's own root context
+		// rather than from the ctx passed to Spawn — so a marker set on the
+		// ctx here, before runner.Run, would never reach the row's actual
+		// runSubAgentTurn call. Wrapping spawn instead applies the marker to
+		// whatever (already-detached) ctx rowRunner.Run is invoked with,
+		// which is what survives that boundary. Without this, concurrent
+		// rows share the same work root and silently clobber each other's
+		// edits.
+		isolatedSpawn := func(ic context.Context, prompt string, allowedTools []string, instructionOverride string) (string, error) {
+			return spawn(WithSubAgentIsolation(ic), prompt, allowedTools, instructionOverride)
+		}
 		runner := batch.Runner{
-			Spawn:         batch.SpawnFunc(spawn),
+			Spawn:         batch.SpawnFunc(isolatedSpawn),
 			Manager:       set.Manager,
 			WaitTimeout:   5 * time.Minute,
 			CappedBackoff: 100 * time.Millisecond,

@@ -16,6 +16,7 @@ import (
 	"github.com/x6nux/yanshi/internal/shell"
 	"github.com/x6nux/yanshi/internal/skills"
 	"github.com/x6nux/yanshi/internal/store"
+	"github.com/x6nux/yanshi/internal/tools"
 	"github.com/x6nux/yanshi/internal/vcs"
 )
 
@@ -100,6 +101,15 @@ type Config struct {
 	// WS-only: the SSE path installs no permission callback and already fails
 	// closed without waiting, so there is nothing there for a deadline to bound.
 	PermissionTimeout PermissionTimeoutPolicy
+	// DistillModel drives the memory-consolidation pass (A2/W-A-05): the
+	// distill_memories control frame and, when the memory_distill_after_turn
+	// feature flag is on, an automatic post-turn pass. bootstrap prefers the
+	// cheap batch.rlm_model provider when one is configured, falling back to
+	// the main chat model — a consolidation pass summarizes existing memory
+	// rows, not the kind of reasoning that needs the expensive model. nil
+	// disables /distill (the WS handler answers with an error frame) and
+	// silently skips the post-turn pass.
+	DistillModel tools.DistillModel
 }
 
 // CompactionConfig is the http-layer mirror of config.CompactionConfig. It is
@@ -176,6 +186,9 @@ type Server struct {
 	// (S5). Stored resolved so every connection reads the same numbers the
 	// countdown on the wire advertises.
 	permTimeout PermissionTimeoutPolicy
+	// distillModel backs the distill_memories control frame and the post-turn
+	// pass (A2/W-A-05). nil disables both (see Config.DistillModel).
+	distillModel tools.DistillModel
 }
 
 // New creates a Server with the given configuration.
@@ -202,6 +215,7 @@ func New(cfg Config) *Server {
 		featuresReg:    cfg.FeaturesReg,
 		redactor:       cfg.Redactor,
 		permTimeout:    cfg.PermissionTimeout.resolve(),
+		distillModel:   cfg.DistillModel,
 	}
 }
 

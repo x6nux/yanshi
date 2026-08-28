@@ -161,6 +161,8 @@ C15 TUI 偏好：`keymap`（默认 default）、`theme`（默认 default）、`v
 | llm.rate_limit.burst | int | |
 | llm.sanitize_tool_schemas | string | |
 | llm.preflight | *bool | |
+| llm.stream_first_chunk_timeout | duration | |
+| llm.stream_idle_timeout | duration | |
 
 ### agents
 

@@ -156,6 +156,50 @@ type GuardedTool struct {
 	params           *schema.ParamsOneOf
 	stream           StreamFunc
 	approvalRequired bool
+	// verbatimResult marks a tool whose Result IS the content of a path the
+	// user named, so redacting it would destroy the tool rather than protect
+	// anything. See withVerbatimResult.
+	verbatimResult bool
+}
+
+// withVerbatimResult marks this tool as exempt from the W-A-02 outbound
+// redaction and returns it, so a registration can read
+// NewGuardedTool(...).withVerbatimResult().
+//
+// The judgement is TOOL INTENT, not content matching, which is what the spec
+// (§1.2 INF8) proposed and what W-A-02's acceptance requires when it says
+// "显式读取凭据文件的 fs 工具不因本改动失效". Exactly one tool qualifies:
+// fs_read, whose entire output is the bytes of a path the caller asked for by
+// name. Redacting it breaks the tool in a way that is worse than not having
+// it — secrets.Redact is shape-based, so every PEM block, JWT and sk-/ghp_/
+// AKIA token in ANY file the agent reads becomes the literal "[REDACTED]",
+// and since every distinct secret collapses to that same literal, "compare the
+// key in .env with the one in config.yaml" makes a model confidently report
+// that two different keys match.
+//
+// It is a marker on the tool VALUE, not a name in a table, on purpose: a
+// name-keyed exemption list can name a tool that does not exist (this repo has
+// three governance gates for exactly that failure) and can silently start
+// applying to a different tool that later takes the name.
+//
+// What it must NOT be put on: anything whose result is a PROGRAM's output.
+// shell_run's stdout, artifact_read's spilled tool output, fs_search's
+// regexp sweep over a tree — those carry credentials the user never asked to
+// see, including process-resolved provider API keys, and they stay redacted.
+func (g *GuardedTool) withVerbatimResult() *GuardedTool {
+	g.verbatimResult = true
+	return g
+}
+
+// redactResult applies the outbound redaction to one tool result, honouring
+// the verbatim exemption. Every path that hands a Result to the model goes
+// through here (InvokableRun's two returns and the offload path's Finish), so
+// the exemption cannot apply on one of them and not the others.
+func (g *GuardedTool) redactResult(ctx context.Context, s string) string {
+	if g.verbatimResult {
+		return s
+	}
+	return redactForModel(ctx, s)
 }
 
 // NoTimeout marks a tool whose execution is bounded by the turn context
@@ -330,6 +374,11 @@ func (g *GuardedTool) Stream(ctx context.Context, argsJSON string) <-chan ToolCh
 // 错误处理语义保留：权限/操作错误作为工具的 *结果内容*（非 Go error）回喂模型，让
 // 模型改路径重试（capped by MaxIterations）；返回 Go error 会中断整个 turn。连续失败
 // 熔断仍由 errcnt 触发。
+//
+// W-A-02：返回前一律过 g.redactResult。这是工具输出通往 provider 的唯一出口，
+// 在这里收口而不是在每个工具里，是因为 Result 只在这里汇合 —— 见 redactctx.go。
+// 两个返回点都要过：错误分支的 result 同样会被回喂给模型。带 verbatimResult
+// 标记的工具（只有 fs_read）在 redactResult 里被放行，理由见 withVerbatimResult。
 func (g *GuardedTool) InvokableRun(ctx context.Context, argsJSON string, _ ...tool.Option) (string, error) {
 	ch := g.Stream(ctx, argsJSON)
 	var result strings.Builder
@@ -356,12 +405,12 @@ func (g *GuardedTool) InvokableRun(ctx context.Context, argsJSON string, _ ...to
 				}
 			}
 		}
-		return result.String(), nil
+		return g.redactResult(ctx, result.String()), nil
 	}
 	if c := getErrCounter(ctx); c != nil {
 		*c = 0
 	}
-	return spillIfTooLong(ctx, g.name, result.String()), nil
+	return spillIfTooLong(ctx, g.name, g.redactResult(ctx, result.String())), nil
 }
 
 // denyReason extracts the human-readable reason from a DenyErr; other errors

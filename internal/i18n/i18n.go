@@ -47,6 +47,7 @@ var requiredCatalogKeys = []string{
 	"tui.command.help.unarchive",
 	"tui.command.help.archived",
 	"tui.command.help.delete",
+	"tui.command.help.distill",
 	"tui.command.help.theme",
 	"tui.command.preference.persist_failed",
 	"tui.status.model",

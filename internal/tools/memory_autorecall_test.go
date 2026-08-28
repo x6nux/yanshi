@@ -43,6 +43,25 @@ func TestAutoRecall_FiresOnARelevantMemory(t *testing.T) {
 	}
 }
 
+// TestAutoRecall_FindsChineseMemory goes through AutoRecall itself, not
+// SearchMemoryRanked directly, because that is the gap the CJK fix had to
+// close: ftsQuery renders the term as `"张伟"` (FTS5 phrase syntax), and
+// hasCJK routes that string into the LIKE fallback. Before parseFTSTerms
+// existed, the fallback searched for the literal string `"张伟"` — quote
+// characters included — which no real memory content contains, so this path
+// stayed dead in Chinese even after the fallback was added.
+//
+// ledger: A2/W-A-03#2 SearchMemory 与 memory_autorecall 走同一检索路径因而同时生效
+func TestAutoRecall_FindsChineseMemory(t *testing.T) {
+	s := newRecallStore(t)
+	_, err := s.WriteMemory("note", "项目的截止日期是周二，负责人是张伟")
+	require.NoError(t, err)
+
+	got := AutoRecall(context.Background(), s, "张伟", store.MemoryFilter{})
+	require.NotEmpty(t, got, "a Chinese memory containing the query term was not recalled")
+	require.Contains(t, got, "张伟")
+}
+
 // TestAutoRecall_StaysSilentBelowTheThreshold is the half that makes the
 // feature tolerable. Injecting a few weak matches on every turn costs tokens
 // forever and trains the model to skim past the block — which also disarms the

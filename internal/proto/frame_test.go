@@ -452,6 +452,7 @@ func goldenFrames() []ServerFrame {
 		NewPermissionRuleHit("r1", "shell_run", "scope", "hit"),
 		NewPermissions(nil),
 		NewPermissionRequest("id", "t", "{}", "r", false, false),
+		NewMemoriesDistilled(7, 2),
 	}
 }
 

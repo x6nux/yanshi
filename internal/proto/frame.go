@@ -7,6 +7,7 @@ package proto
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -1025,4 +1026,25 @@ func NewDisableSkill(name string) ClientFrame {
 // as an error entry).
 func NewSkillAck(action string, skill *SkillInfo, errText string) ServerFrame {
 	return ServerFrame{Type: "skill_ack", Action: action, Skill: skill, Text: errText}
+}
+
+// --- A2/W-A-05 memory distillation frames ---
+//
+// distill_memories / memories_distilled wire the tools.DistillMemories +
+// store.ApplyDistillation chain (internal/tools/memory_distill.go,
+// internal/store/memory_distill.go) up to a client-triggerable action. Both
+// functions have shipped complete since their own work packages but had zero
+// production callers until this one — see docs/feature-status.yaml A2/W-A-05.
+
+// NewDistillMemories builds a distill_memories request frame: the client asks
+// the server to run one memory-consolidation pass over the active session's
+// stored memories. Reply: memories_distilled.
+func NewDistillMemories() ClientFrame { return ClientFrame{Type: "distill_memories"} }
+
+// NewMemoriesDistilled builds the memories_distilled reply: considered is the
+// number of memory rows the pass examined, merged the number folded into
+// consolidated entries. Emitted as a single-frame control reply, so
+// isControlReply closes the client's reply channel on it.
+func NewMemoriesDistilled(considered, merged int) ServerFrame {
+	return ServerFrame{Type: "memories_distilled", Text: fmt.Sprintf("distilled: considered %d, merged %d", considered, merged)}
 }

@@ -82,6 +82,7 @@ func DefaultSpecs() []Spec {
 		{Key: "observe.slog_trace_id", Stage: Stable, Default: true, Owner: "C4/OBS1"},
 		{Key: "observe.otel_export", Stage: Experimental, Default: false, Owner: "C4/OBS2"},
 		{Key: "observe.cost_in_status", Stage: Beta, Default: true, Owner: "C4/COST1"},
+		{Key: "memory_distill_after_turn", Stage: Experimental, Default: false, Owner: "A2/W-A-05"},
 	}
 }
 

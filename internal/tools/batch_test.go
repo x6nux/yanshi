@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -128,6 +129,49 @@ func TestAgentBatchDeniedWithoutProfile(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	assert.Contains(t, result, "permission denied")
+}
+
+// TestAgentBatchDispatchAppliesSubAgentIsolation is behavioural coverage for
+// batch.go's isolatedSpawn wrapper (the WithSubAgentIsolation call site at
+// batch.go:122). GOV6 only requires that SOME production caller of
+// WithSubAgentIsolation exists; agent_dag.go's call site alone would satisfy
+// it, so GOV6 stays green even if this exact wrapper is deleted. This test
+// drives a real registry.Manager through the actual agent_batch tool
+// (set.AgentBatch.InvokableRun -> runAgentBatch -> batch.Runner.Run ->
+// Manager.Spawn -> rowRunner.Run -> isolatedSpawn) and asserts the marker is
+// visible on the ctx the row spawn function actually receives — not a
+// hand-built ctx that bypasses the dispatch path.
+//
+// ledger: none — new coverage, not tied to an existing acceptance clause.
+func TestAgentBatchDispatchAppliesSubAgentIsolation(t *testing.T) {
+	set, _ := newBatchTools(t)
+
+	var mu sync.Mutex
+	var isolated []bool
+	spawn := func(ctx context.Context, _ string, _ []string, _ string) (string, error) {
+		mu.Lock()
+		isolated = append(isolated, tools.SubAgentIsolationRequested(ctx))
+		mu.Unlock()
+		return "ok", nil
+	}
+	ctx := withApprovingUser(tools.WithSubAgentRunner(
+		tools.WithProfile(context.Background(), allowAllForBatch()),
+		spawn,
+	))
+	payload := map[string]any{
+		"prompt": "DO",
+		"rows":   []map[string]string{{"q": "a"}, {"q": "b"}},
+	}
+	result, err := set.AgentBatch.InvokableRun(ctx, wrapInput(t, payload))
+	require.NoError(t, err)
+	assert.Contains(t, result, `"success":2`)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, isolated, 2, "expected both rows to reach the spawn function")
+	for i, v := range isolated {
+		assert.True(t, v, "row %d: isolation marker did not reach the row's spawn ctx", i)
+	}
 }
 
 func allowAllForBatch() guard.PermissionProfile {

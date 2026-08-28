@@ -296,7 +296,7 @@ func TestHasDotDot(t *testing.T) {
 
 func TestAbsEdgePath(t *testing.T) {
 	ft := NewFSTools(t.TempDir())
-	_, err := ft.abs("../escape")
+	_, err := ft.abs(context.Background(), "../escape")
 	if err == nil {
 		t.Fatal("expected error for path escaping root")
 	}

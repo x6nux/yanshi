@@ -29,11 +29,42 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ledgerSize is the fixed number of entries in the S0 ledger: the audit's 64
-// items minus A1/S08, which moved to the S1 sub-project (spec §4.1). A
-// changed count means someone added or dropped scope without updating the
-// spec.
-const ledgerSize = 63
+// ledgerSize is the fixed number of entries in the ledger: the original S0
+// audit's 64 items minus A1/S08, which moved to the S1 sub-project (spec
+// §4.1), plus entries added by later, separately-scoped work packages. A
+// changed count means someone added or dropped scope without updating this
+// constant and saying why here.
+//
+// 2026-08-27: +1 for A2/W-A-01, package "W-A" — a P0 fix from the
+// codex/QwenPaw capability audit (docs/superpowers/notes/2026-08-27-capability-audit.md
+// P0-1), not part of the original S0 scope. This is new scope, deliberately
+// added, not a silent drift.
+//
+// 2026-08-27: +1 for A2/W-A-02, same package and audit, P0-2 (tool output
+// reached the model provider unredacted).
+//
+// 2026-08-27: +1 for A2/W-A-03, same package and audit, P0-3 merged with
+// P0-11 (CJK queries returned zero hits in history_search / SearchMemory /
+// memory_autorecall — the FTS5 tokenizer does not segment Chinese).
+//
+// 2026-08-28: +1 for A2/W-A-04, same package and audit, F9 (the WS restore
+// loop mapped only Role + Content and split role into just user/assistant,
+// dropping every stored ToolCallID/ToolName/ToolArgs and misclassifying
+// tool messages as user).
+//
+// 2026-08-28: +1 for A2/W-A-05, same package and audit — the "written but
+// zero readers" pattern recurring a ninth time: tools.DistillMemories +
+// store.ApplyDistillation shipped complete with no caller. Wires /distill
+// (interactive) plus an optional post-turn pass behind
+// memory_distill_after_turn (default off).
+//
+// 2026-08-28: +1 for A2/W-A-08, same package — agent_dag/agent_batch's
+// concurrently-dispatched sub-agents shared one work root and silently
+// overwrote each other's edits (data loss, not a missing feature). W-A-07
+// (sandbox path expansion, audit F4) was reviewed and rejected — no
+// corresponding code path exists — so W-A's item count goes 06 -> 08, not
+// 06 -> 07; this is the deliberate ID gap, not a skipped entry.
+const ledgerSize = 70
 
 type ledgerEntry struct {
 	ID         string `yaml:"id"`
@@ -57,7 +88,8 @@ var (
 	validPackages    = map[string]bool{
 		"W1": true, "W2": true, "W3": true, "W4": true, "W5": true,
 		"W6": true, "W7": true, "W8": true, "W9": true, "W10": true,
-		"-": true, // O12, closed by removal
+		"W-A": true, // immediate fixes from the 2026-08-27 capability audit, outside the W1-W10 sequence
+		"-":   true, // O12, closed by removal
 	}
 )
 

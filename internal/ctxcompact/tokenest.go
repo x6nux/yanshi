@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/cloudwego/eino/schema"
 )
 
 // TokenCountMode names how EstimateTokens arrived at a number. It is exported
@@ -112,6 +114,47 @@ const perMessageOverhead = 8
 // perToolCallOverhead approximates the structural framing of one tool call on
 // top of its name, arguments and id text.
 const perToolCallOverhead = 16
+
+// imageTokensLow / imageTokensHigh are the fixed per-image costs charged for
+// the two detail tiers.
+//
+// The cost is per-TILE in provider accounting, not per byte: a 1 MiB base64
+// payload and a 4 KiB one of the same pixel dimensions bill identically. That
+// is why this must NOT be len(data)/4 — the two differ by three orders of
+// magnitude, and the absence of any multimodal branch here is what let a pasted
+// screenshot count as 8 tokens (the per-message envelope alone) and hold the
+// compaction gate shut until the provider answered 400.
+//
+// ponytail: fixed constants, not a tile computation. Pricing a `high` image
+// exactly needs its pixel dimensions, which means decoding the payload on every
+// gate check. imageTokensHigh is instead the cost of a 1024x1024 image
+// (85 base + 6 tiles x 170), the largest a provider bills before downscaling,
+// so the estimate overcounts small images rather than undercounting large ones
+// — the same bias estimateTextTokens documents. Decode for real dimensions if
+// image-heavy sessions ever compact too eagerly.
+const (
+	imageTokensLow  = 85
+	imageTokensHigh = 1105
+)
+
+// opaquePartTokens is the floor charged for an audio / video / file part.
+//
+// yanshi only writes image parts today (see orchestrator.appendImageParts), so
+// this branch is unreachable in production. It exists anyway because zero is
+// the value that caused this whole defect: a new modality wired later would
+// silently weigh nothing, and nothing in the type system would say so.
+const opaquePartTokens = 1105
+
+// imageTokens prices one image at its declared detail tier.
+//
+// An empty or "auto" Detail resolves to the high tier: the provider decides,
+// and overcounting compacts a little early while undercounting hits a 400.
+func imageTokens(d schema.ImageURLDetail) int {
+	if d == schema.ImageURLDetailLow {
+		return imageTokensLow
+	}
+	return imageTokensHigh
+}
 
 // estimateTextTokens returns an upper-biased token estimate for s.
 //

@@ -21,6 +21,7 @@
   "tui.command.help.contrast": "开关高对比主题：/contrast on|off",
   "tui.command.help.cost": "显示本会话 token 用量",
   "tui.command.help.delete": "删除会话：/delete <id> yes",
+  "tui.command.help.distill": "合并冗余记忆",
   "tui.command.help.help": "列出命令",
   "tui.command.help.keymap": "查看/重置键位，或打印键位诊断",
   "tui.command.help.locale": "查看/切换界面语言：/locale auto|en|zh-Hans",

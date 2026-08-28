@@ -175,6 +175,9 @@ func (s *Store) SearchMemoryRanked(query string, limit int, dims MemoryFilter) (
 	if limit <= 0 {
 		limit = 10
 	}
+	if hasCJK(query) {
+		return s.searchMemoryCJK(query, limit, dims)
+	}
 	cond, args := dims.where("m.")
 	q := `SELECT ` + prefixed(memoryColumns, "m.") + `, bm25(memories_fts)
 	      FROM memories_fts f JOIN memories m ON m.rowid = f.rowid
@@ -193,6 +196,62 @@ func (s *Store) SearchMemoryRanked(query string, limit int, dims MemoryFilter) (
 		var from string
 		if err := rows.Scan(&h.ID, &h.Kind, &h.Content, &h.SessionID, &h.AgentID,
 			&h.CreatedAt, &from, &h.SupersededBy, &h.DistilledAt, &h.Score); err != nil {
+			return nil, err
+		}
+		h.DistilledFrom = splitIDs(from)
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// searchMemoryCJK is the CJK fallback path for SearchMemoryRanked, same cause
+// and same fix as searchMessagesCJK — memories_fts does not even carry a
+// tokenize= clause, so it falls back to the default unicode61 and equally
+// fails to segment Chinese words.
+//
+// Score is always 0: bm25 does not exist on this path, and MemoryHit.Score's
+// doc comment already states it exists only to ORDER and is not a usable
+// absolute threshold. Fabricating a score would let a caller further up the
+// stack mistake it for a real relevance judgement. Ordering falls back to
+// created_at DESC instead.
+//
+// query is FTS5 MATCH syntax, not a literal LIKE pattern. This matters
+// concretely: memory_autorecall's ftsQuery renders queries as `"term1" OR
+// "term2"`, and that string reaching hasCJK routes it straight into this
+// function. Matching it as one literal substring (the original version of
+// this fallback did) requires a row to contain the quote characters and the
+// word OR, which no real memory ever does — memory_autorecall was silently
+// dead in Chinese even after this fallback existed. parseFTSTerms recovers
+// the OR'd terms and likeAnyTermClause matches a row if any of them is
+// present, which is the LIKE-side equivalent of MATCH's OR.
+func (s *Store) searchMemoryCJK(query string, limit int, dims MemoryFilter) ([]MemoryHit, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > maxCJKFallbackRows {
+		limit = maxCJKFallbackRows
+	}
+	terms := parseFTSTerms(query)
+	clause, likeArgs := likeAnyTermClause([]string{"m.content"}, terms)
+	cond, condArgs := dims.where("m.")
+	q := `SELECT ` + prefixed(memoryColumns, "m.") + `
+	      FROM memories m
+	      WHERE (` + clause + `)` + cond + `
+	      ORDER BY m.created_at DESC LIMIT ?`
+	all := append([]any{}, likeArgs...)
+	all = append(all, condArgs...)
+	all = append(all, limit)
+	rows, err := s.DB.Query(q, all...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MemoryHit
+	for rows.Next() {
+		var h MemoryHit
+		var from string
+		if err := rows.Scan(&h.ID, &h.Kind, &h.Content, &h.SessionID, &h.AgentID,
+			&h.CreatedAt, &from, &h.SupersededBy, &h.DistilledAt); err != nil {
 			return nil, err
 		}
 		h.DistilledFrom = splitIDs(from)

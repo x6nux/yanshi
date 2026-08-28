@@ -21,6 +21,7 @@
   "tui.command.help.contrast": "toggle the high-contrast theme: /contrast on|off",
   "tui.command.help.cost": "token usage this session",
   "tui.command.help.delete": "delete a session: /delete <id> yes",
+  "tui.command.help.distill": "merge redundant memories",
   "tui.command.help.help": "list commands",
   "tui.command.help.keymap": "show / reset keymap, or print binding diagnostics",
   "tui.command.help.locale": "show / switch UI language: /locale auto|en|zh-Hans",

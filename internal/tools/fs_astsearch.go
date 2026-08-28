@@ -215,17 +215,18 @@ func (f *FSTools) runAstSearch(ctx context.Context, argsJSON string) (string, er
 	if _, err := f.checkFS(ctx, "read", "ast_search", argsJSON, root); err != nil {
 		return "", err
 	}
-	absRoot, err := f.abs(root)
+	absRoot, err := f.abs(ctx, root)
 	if err != nil {
 		return "", err
 	}
 
 	maxMatches := clampMaxMatches(a.MaxMatches)
+	workRoot := f.rootFor(ctx)
 
 	res, err := secureCommandRunner(ctx, secproc.SecureProcessSpec{
 		Tool:    "ast_search",
 		Program: bin,
-		Dir:     f.root,
+		Dir:     workRoot,
 		Args: []string{
 			"run",
 			"--pattern", a.Pattern,
@@ -242,7 +243,7 @@ func (f *FSTools) runAstSearch(ctx context.Context, argsJSON string) (string, er
 		return errorResult("ast_search: ast-grep exited " +
 			fmt.Sprint(res.ExitCode) + ": " + commandFailureTail(res)), nil
 	}
-	return renderAstMatches(res.Stdout, f.root, maxMatches)
+	return renderAstMatches(res.Stdout, workRoot, maxMatches)
 }
 
 // astGrepExitNoMatch is the exit code ast-grep uses for "the pattern matched

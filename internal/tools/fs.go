@@ -51,7 +51,7 @@ func NewFSTools(root string) *FSTools {
 			"end":    {Type: schema.Integer, Desc: "1-based ending line, inclusive"},
 		}),
 		SyncStream(f.runRead),
-	)
+	).withVerbatimResult()
 	f.Write = NewGuardedTool(
 		"fs_write", "Write", "Create or overwrite a file with the given content.",
 		30*time.Second,
@@ -127,6 +127,27 @@ func (f *FSTools) Tools() []*GuardedTool {
 	return ts
 }
 
+// rootFor resolves the work root a call should resolve paths against: the
+// ctx-bound WorkRoot when one is set, else the static root FSTools was
+// constructed with. Every top-level turn binds WithWorkRoot(ctx, o.workRoot)
+// in bindExecutionContext, and bootstrap constructs FSTools from that exact
+// same workRoot value, so for the common case this is a no-op (ctx and f.root
+// agree). The two diverge only for an isolated sub-agent turn, whose nested
+// Orchestrator is built with Config.WorkRoot pointing at its own VCS
+// worktree directory (see acquireSubAgentWorkspace) — FSTools itself is never
+// reconstructed per sub-agent (bootstrap builds it once, and runSubAgentTurn
+// reuses the same *GuardedTool instances via selectSubAgentTools), so without
+// this ctx check every sub-agent, isolated or not, would resolve paths
+// against the single process-wide static root and silently write over each
+// other's edits regardless of how correctly the VCS worktree lifecycle
+// around it is wired.
+func (f *FSTools) rootFor(ctx context.Context) string {
+	if r := WorkRootFromContext(ctx); r != "" {
+		return r
+	}
+	return f.root
+}
+
 // abs resolves a model-supplied path relative to the work root, enforcing the
 // path jail: no traversal may escape the root. Paths that stay under the root
 // (including harmless "sub/../sub" forms that clean back inside) are returned
@@ -137,12 +158,14 @@ func (f *FSTools) Tools() []*GuardedTool {
 // the root are rejected. This is the single choke point for model input — every
 // fs tool routes its user-supplied paths through here (via absPaths/checkFS), so
 // the jail is enforced uniformly. Internally-derived absolute paths (e.g. from
-// WalkDir) must NOT go through here; see checkFSSilent.
-func (f *FSTools) abs(p string) (string, error) {
+// WalkDir) must NOT go through here; see checkFSSilent. The root itself is
+// resolved via rootFor(ctx), not the static f.root field — see its doc comment.
+func (f *FSTools) abs(ctx context.Context, p string) (string, error) {
 	if p == "" {
 		return "", fmt.Errorf("fs: empty path")
 	}
-	cleanRoot := filepath.Clean(f.root)
+	root := f.rootFor(ctx)
+	cleanRoot := filepath.Clean(root)
 	// Allow absolute paths that anchor at the project root — strip the root
 	// prefix and treat the result as relative from here. Absolute paths OUTSIDE
 	// the root are rejected; any ".." escaping the root is still caught below.
@@ -161,7 +184,7 @@ func (f *FSTools) abs(p string) (string, error) {
 		}
 		p = rel
 	}
-	resolved := filepath.Clean(filepath.Join(f.root, p))
+	resolved := filepath.Clean(filepath.Join(root, p))
 	// Defense-in-depth: Join+Clean already collapses "..", so verify the result
 	// still lives under the root. This is the authoritative check — it admits
 	// "sub/../sub/x" (stays inside) and rejects "../foo" and "../../etc/passwd".
@@ -212,7 +235,7 @@ func withinRoot(resolved, root string) bool {
 // and the decision honored. argsJSON is the tool call's raw args blob, carried
 // in the PermissionRequest for display.
 func (f *FSTools) checkFS(ctx context.Context, op, tool, argsJSON string, rawPaths ...string) ([]string, error) {
-	absPaths, err := f.absPaths(rawPaths)
+	absPaths, err := f.absPaths(ctx, rawPaths)
 	if err != nil {
 		return nil, err
 	}
@@ -251,10 +274,10 @@ func (f *FSTools) checkFSSilent(ctx context.Context, op, tool string, rawPaths .
 }
 
 // absPaths resolves each raw path relative to the work root and cleans it.
-func (f *FSTools) absPaths(rawPaths []string) ([]string, error) {
+func (f *FSTools) absPaths(ctx context.Context, rawPaths []string) ([]string, error) {
 	absPaths := make([]string, 0, len(rawPaths))
 	for _, rp := range rawPaths {
-		ap, err := f.abs(rp)
+		ap, err := f.abs(ctx, rp)
 		if err != nil {
 			return nil, err
 		}
@@ -379,7 +402,7 @@ func (f *FSTools) runRead(ctx context.Context, argsJSON string) (string, error) 
 	// (the hint must not push a sub-threshold window over the limit). Because
 	// this returns a short errorResult, the uniform spillIfTooLong in
 	// GuardedTool never fires for fs_read.
-	final := f.withInstructions(absPath, result)
+	final := f.withInstructions(ctx, absPath, result)
 	if len(final) > SpillThreshold {
 		return errorResult(fmt.Sprintf(
 			"fs_read: result %s (%d lines %d–%d of %d, file %s) exceeds %s limit; narrow offset/end, or summarize(path)",
@@ -397,8 +420,8 @@ func (f *FSTools) runRead(ctx context.Context, argsJSON string) (string, error) 
 // avoids duplication. Returns result unchanged when no nested instruction file
 // exists (the common case), keeping fs_read output byte-identical to pre-A11 for
 // directories without AGENTS.md.
-func (f *FSTools) withInstructions(absPath, result string) string {
-	hint := instruct.NestedInstructions(f.root, filepath.Dir(absPath))
+func (f *FSTools) withInstructions(ctx context.Context, absPath, result string) string {
+	hint := instruct.NestedInstructions(f.rootFor(ctx), filepath.Dir(absPath))
 	if hint == "" {
 		return result
 	}
@@ -570,7 +593,7 @@ func (f *FSTools) runGlob(ctx context.Context, argsJSON string) (string, error) 
 	if _, err := f.checkFS(ctx, "read", "fs_glob", argsJSON, root); err != nil {
 		return "", err
 	}
-	absRoot, err := f.abs(root)
+	absRoot, err := f.abs(ctx, root)
 	if err != nil {
 		return "", err
 	}
@@ -626,7 +649,7 @@ func (f *FSTools) runSearch(ctx context.Context, argsJSON string) (string, error
 	if _, err := f.checkFS(ctx, "read", "fs_search", argsJSON, root); err != nil {
 		return "", err
 	}
-	absRoot, err := f.abs(root)
+	absRoot, err := f.abs(ctx, root)
 	if err != nil {
 		return "", err
 	}

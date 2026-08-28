@@ -79,6 +79,15 @@ llm:
   # 只有一个用途：让离线/气隙部署不必在每次启动时等那几个必然超时的探测。
   # preflight: false
 
+  # W-A-06 流式空闲超时看门狗：first 卡的是「上游有没有开始回」（网关接受连接后
+  # 一言不发会一直卡在 Recv 里，DeadlineGate 只在 ReAct 迭代边界检查，救不了
+  # 这种情况）；idle 卡的是「上游还在不在动」，必须给得比 first 松——长推理轮次
+  # 里 chunk 间隔本来就可能很大。两者各自默认 0 = 关闭，不设非零默认值，行为
+  # 与本字段引入前逐字节一致（同 loopguard「零值即关闭」的原则）。只有内容块能
+  # 续命，纯控制/心跳块不会。
+  # stream_first_chunk_timeout: 30s
+  # stream_idle_timeout: 2m
+
 agents:
   - name: "orchestrator"
     type: "local"
@@ -360,6 +369,12 @@ observability:
 #   observe.cost_in_status  beta, 默认 true
 #     status 帧、会话列表(/stats 渲染它)与 session_restored 上的 USD 成本字段。
 #     关掉只影响**显示**:入库的账本照记,开回来能看到完整历史。
+#
+#   memory_distill_after_turn  experimental, 默认 false(A2/W-A-05)
+#     每个 turn 结束后在后台自动跑一次记忆蒸馏(合并冗余的历史记忆行)。默认关闭:
+#     交互式的 /distill 斜杠命令是主入口,这个开关只是把同一条通道接成自动的。
+#     蒸馏用的模型优先取 batch.rlm_model 配置的便宜 provider,未配置则退回主
+#     聊天模型;蒸馏失败只记日志,不影响所在 turn 的正常结束。
 #
 # 运行时还能用 TUI 的 /features 临时切换(不落盘)。
 features:

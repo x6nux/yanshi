@@ -88,6 +88,7 @@ var commandTable = []command{
 	{name: "plan-off", help: "exit plan mode, restore previous permission mode", run: cmdPlanOff},
 	{name: "restore-turn", help: "list main seams or revert to a prior turn", run: cmdRestoreTurn},
 	{name: "memory", help: "show active memory file path", run: cmdMemory},
+	{name: "distill", help: "merge redundant memories", helpKey: "tui.command.help.distill", run: cmdDistill},
 	{name: "logs", help: "tail the structured log file (or report stderr)", run: cmdLogs},
 	{name: "fork", help: "fork this session: /fork [seq] (-1=all, >=0=up to seq)", run: cmdFork},
 	{name: "side", help: "start an ephemeral side conversation (V11)", run: cmdSide},
@@ -112,6 +113,21 @@ func lookupCommand(name string) (command, bool) {
 		}
 	}
 	return command{}, false
+}
+
+// hasCommand 报告 name 是否是已注册的斜杠命令（不含前导斜杠）。
+//
+// 它委托给 lookupCommand 而不是自己再扫一遍 commandTable：两份线性扫描是
+// 「重复逻辑必须抽成公共函数」的原样反例，而这个函数当初正是作为「写了但零
+// 读者」那类缺陷的修复的一部分被加进来的。
+//
+// 未导出。第一版导出它，doc 注释说是为了让别的包能对「文档里宣传的命令真的
+// 存在吗」做机器判据 —— 但那样的调用方一个都没有，唯一的调用者是本包自己的
+// 测试。为一个不存在的消费者导出符号，就是这个包刚修完的那个形状。真出现跨
+// 包判据时再导出，那时它有调用点。
+func hasCommand(name string) bool {
+	_, ok := lookupCommand(name)
+	return ok
 }
 
 // parseCommand splits "/name arg1 arg2" into ("name", ["arg1","arg2"]). A bare
