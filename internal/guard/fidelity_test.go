@@ -46,10 +46,21 @@ import (
 // Wrapper payloads. `bash -c "…"` is one quoted word to the outer shell, so
 // measuring what the payload does would mean putting a real interpreter on the
 // shim PATH — at which point the shim is no longer a recorder and rule 1 is
-// gone. Those shapes are pinned deterministically instead, without a
-// subprocess, by TestClassifyDestruction_ObfuscatedAndWrapped, whose table
-// covers ANSI-C encoding, nested wrappers, chains and subshell grouping inside
-// a payload.
+// gone. Prefix runners (`sudo`, `nohup`, `timeout`) are out of reach for the
+// same reason: emulating them means putting an exec'ing program on the shim
+// PATH. Both families are pinned deterministically instead, without a
+// subprocess, by TestClassifyDestruction_ObfuscatedAndWrapped and
+// TestPrefixRunnersArePenetratedToADepth.
+//
+// # Where this defence does not exist at all
+//
+// The whole file is skipped on windows: the reference reading comes from
+// /bin/sh, and there is no /bin/sh to ask. CI runs the test matrix on
+// [ubuntu, windows, macos], so the WINDOWS LEG HAS NO FIDELITY PROPERTY — it
+// runs the deterministic tables only. That is inherent rather than an
+// oversight (a windows reference reading would have to come from cmd.exe and
+// would be measuring a different language), but it means a bug that only the
+// differential property can see ships green on one third of the matrix.
 
 // destructiveShims are the programs the corpus invokes. Each is replaced by a
 // recorder that deletes nothing and appends its argv to the witness file.
@@ -137,35 +148,89 @@ func dirEntries(t *testing.T, dir string) map[string]bool {
 	return m
 }
 
-// fidelityCorpus varies WHERE the redirection sits and HOW it is spelled, since
-// that is the axis on which guard's reader and the shell's reader diverged.
+// fidelityRow is one corpus command plus the one fact about it that guard does
+// NOT compute: the floor its verdict may not sink below.
+//
+// # Why the floor is written down instead of derived
+//
+// The program direction used to assert only `written >= reference`, where BOTH
+// sides came from ClassifyDestruction. A grader that returns DestructionNone
+// for everything satisfies `0 >= 0` for every row, so gutting classifyLexed
+// left this test green while 70 others in the package went red. An ordering
+// between two readings of the same broken grader is not a property about the
+// shell.
+//
+// floor closes that. It is an ABSOLUTE expectation, and the shell is what keeps
+// it honest in both directions:
+//
+//   - floor > DestructionNone asserts the row must grade at least that severe,
+//     AND that /bin/sh really invoked one of the recorders. A row that claims
+//     to be destructive but runs nothing is a mislabelled row, not a pass.
+//   - floor == DestructionNone asserts the opposite witness: the shell must
+//     have run NO recorder. That is what stops a benign row from being quietly
+//     wrong about itself.
+type fidelityRow struct {
+	cmd   string
+	floor Destruction
+}
+
+// fidelityCorpus varies the two things guard's reader and the shell's reader
+// have been measured to disagree about: WHERE a redirection sits and how it is
+// spelled, and HOW THE PROGRAM WORD IS SPELLED. The second axis was absent
+// until the re-review added eight rows to the first one's corpus and watched
+// seven of them fail — the test's name claims "a shell command" while its
+// corpus only ever said "a redirection".
+//
 // Every entry is a command whose meaning to /bin/sh is measured, not assumed.
-var fidelityCorpus = []string{
-	"rm -rf /",
-	">out1 rm -rf /",
-	"rm >out2 -rf /",
-	"rm -rf / >out3",
-	"2>out4 rm -rf /",
-	">&out5 rm -rf /",
-	"rm -rf / >& out6",
-	"</dev/null rm -rf /",
-	"rm -rf / 2>&1",
-	"dd >out7 if=/dev/zero of=/dev/disk0",
-	"shred >out8 -u /etc/shadow",
-	"echo hi >& out9",
-	"echo hi > out10",
-	"echo hi >> out11",
-	"echo hi &> out12",
-	"echo hi 2>& out13",
-	"echo hi 2>&1",
-	"echo hi",
+var fidelityCorpus = []fidelityRow{
+	// Axis 1 — where the redirection sits and how it is spelled.
+	{"rm -rf /", DestructionCatastrophic},
+	{">out1 rm -rf /", DestructionCatastrophic},
+	{"rm >out2 -rf /", DestructionCatastrophic},
+	{"rm -rf / >out3", DestructionCatastrophic},
+	{"2>out4 rm -rf /", DestructionCatastrophic},
+	{">&out5 rm -rf /", DestructionCatastrophic},
+	{"rm -rf / >& out6", DestructionCatastrophic},
+	{"</dev/null rm -rf /", DestructionCatastrophic},
+	{"rm -rf / 2>&1", DestructionCatastrophic},
+	{"dd >out7 if=/dev/zero of=/dev/disk0", DestructionCatastrophic},
+	{"shred >out8 -u /etc/shadow", DestructionOutOfScope},
+	{"echo hi >& out9", DestructionNone},
+	{"echo hi > out10", DestructionNone},
+	{"echo hi >> out11", DestructionNone},
+	{"echo hi &> out12", DestructionNone},
+	{"echo hi 2>& out13", DestructionNone},
+	{"echo hi 2>&1", DestructionNone},
+	{"echo hi", DestructionNone},
+
+	// Axis 2a — quoting and escaping inside the program word. /bin/sh strips
+	// all of it before deciding which program to run.
+	{`\rm -rf /`, DestructionCatastrophic},
+	{`"rm" -rf /`, DestructionCatastrophic},
+	{`'rm' -rf /`, DestructionCatastrophic},
+	{`r''m -rf /`, DestructionCatastrophic},
+	{`$'\x72\x6d' -rf /`, DestructionCatastrophic},
+
+	// Axis 2e — substitution and grouping. The word after the opener is a
+	// program, so the opener has to be a boundary.
+	{"$(rm -rf /)", DestructionCatastrophic},
+	{"`rm -rf /`", DestructionCatastrophic},
+	{"(rm -rf /)", DestructionCatastrophic},
+	{"case x in x) rm -rf /;; esac", DestructionCatastrophic},
 }
 
 // TestGuardReadsAShellCommandTheWayTheShellDoes is the fidelity property.
 //
-// For every corpus command it asserts two things against a reference reading
-// produced by /bin/sh itself:
+// For every corpus command it asserts four things, three of them against a
+// reference reading produced by /bin/sh itself:
 //
+//   - FLOOR: a row declared destructive must grade at least as severe as its
+//     declared floor. This is the one assertion whose expected value is
+//     written down rather than computed, and it is the reason the test cannot
+//     pass with a grader that returns DestructionNone for everything.
+//   - WITNESS: the shell's own behaviour has to agree with that declaration —
+//     a destructive row must have invoked a recorder, a benign row must not.
+//     Without this the floor would only be a table of the author's beliefs.
 //   - PROGRAMS: whatever the shell actually executed is re-presented to
 //     ClassifyDestruction in its plain, unadorned spelling. The command AS
 //     WRITTEN must not grade milder than that. This is what catches a splitter
@@ -184,14 +249,34 @@ func TestGuardReadsAShellCommandTheWayTheShellDoes(t *testing.T) {
 	work, run := newShellHarness(t)
 	shimsAreLive(t, run)
 
-	totalRan, totalCreated := 0, 0
-	for _, cmd := range fidelityCorpus {
+	totalRan, totalCreated, totalFloored := 0, 0, 0
+	for _, row := range fidelityCorpus {
+		cmd := row.cmd
 		got := run(cmd)
 		totalRan += len(got.ran)
 		totalCreated += len(got.created)
-		t.Logf("%-38q ran=%q created=%v", cmd, got.ran, got.created)
+		t.Logf("%-42q ran=%q created=%v", cmd, got.ran, got.created)
 
 		written := ClassifyDestruction(cmd, work)
+
+		// FLOOR + WITNESS. The two halves are asserted together because either
+		// one alone is satisfiable by a degenerate implementation: the floor by
+		// a corpus that lies about itself, the witness by a grader that grades
+		// nothing.
+		if row.floor > DestructionNone {
+			totalFloored++
+			if len(got.ran) == 0 {
+				t.Errorf("corpus row %q declares floor %v but /bin/sh invoked no recorder at all; "+
+					"the row is mislabelled and proves nothing", cmd, row.floor)
+			}
+			if written < row.floor {
+				t.Errorf("ClassifyDestruction(%q) = %v, want at least %v — /bin/sh ran %q for it",
+					cmd, written, row.floor, got.ran)
+			}
+		} else if len(got.ran) != 0 {
+			t.Errorf("corpus row %q is declared benign but /bin/sh executed %q", cmd, got.ran)
+		}
+
 		for _, actual := range got.ran {
 			reference := ClassifyDestruction(actual, work)
 			if written < reference {
@@ -219,11 +304,12 @@ func TestGuardReadsAShellCommandTheWayTheShellDoes(t *testing.T) {
 		}
 	}
 	// Self-proof (review-checklist.md C-bis): a harness whose shell never ran
-	// anything, or whose redirections never landed, would satisfy every
-	// assertion above by asserting about the empty set.
-	if totalRan == 0 || totalCreated == 0 {
-		t.Fatalf("the reference shell produced nothing to compare against (ran=%d created=%d); "+
-			"the corpus is not exercising the harness", totalRan, totalCreated)
+	// anything, whose redirections never landed, or whose corpus declared
+	// nothing destructive would satisfy every assertion above by asserting
+	// about the empty set.
+	if totalRan == 0 || totalCreated == 0 || totalFloored == 0 {
+		t.Fatalf("the reference shell produced nothing to compare against (ran=%d created=%d floored=%d); "+
+			"the corpus is not exercising the harness", totalRan, totalCreated, totalFloored)
 	}
 }
 
