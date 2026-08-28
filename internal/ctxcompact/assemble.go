@@ -1,8 +1,6 @@
 package ctxcompact
 
 import (
-	"strings"
-
 	"github.com/cloudwego/eino/schema"
 )
 
@@ -25,12 +23,17 @@ func Assemble(msgs []*schema.Message, plan *PlanResult, summary string) []*schem
 // history ENDS in a summary, and IsSummaryMessage is what decides that. A map
 // wearing the summary's marker would be read as a summary, and any history
 // ending in one would stop being compactable.
-const EvictionMapSentinel = "[yanshi:evicted-context-map]\n"
+//
+// It is DERIVED from KindEvictionMap rather than spelled out, so the constant
+// and the kind cannot drift apart; the value is byte-identical to the literal
+// it replaced. See fragment.go for why the two kinds share one form and never
+// one name.
+const EvictionMapSentinel = fragmentOpen + string(KindEvictionMap) + fragmentClose
 
 // IsEvictionMapMessage reports whether m is a compaction-produced eviction map
 // (a user message prefixed with EvictionMapSentinel). nil-safe.
 func IsEvictionMapMessage(m *schema.Message) bool {
-	return m != nil && m.Role == schema.User && strings.HasPrefix(m.Content, EvictionMapSentinel)
+	return hasFragmentKind(m, KindEvictionMap)
 }
 
 // AssembleWithMap is Assemble plus C3's eviction map.
@@ -46,6 +49,26 @@ func IsEvictionMapMessage(m *schema.Message) bool {
 // An empty mapText adds no message at all. A map that exists but lists nothing
 // would be a header announcing an index with no entries — a claim that context
 // was evicted, made about a conversation where none was.
+//
+// # A kind appears at most once, and the freshest one wins
+//
+// The pinned prefix can already contain fragments from an EARLIER compaction,
+// and both ways it happens were measured on the shipped code rather than
+// supposed. A stale eviction map is pinned because isUserOriginal reads it as
+// user intent (user role, no ToolCallID); a stale summary is pinned once two
+// more turns push it inside the tail window. Appending the fresh ones on top
+// left the model two directories of evicted spans, or two messages each
+// claiming to be the summary of the conversation.
+//
+// So the kinds being appended are stripped from the prefix first —— AND ONLY
+// THOSE. A blanket purge would be worse than the duplication it fixes: the
+// mid-turn path runs with no EvictionMap (its messages have no persisted seq
+// numbers to cite), produces an empty mapText, and would then delete the
+// structured directory a pre-turn compaction built with nothing to put in its
+// place. Replacing a fragment is safe because the replacement supersedes it —
+// the map is a cumulative re-render, and the summary is built from a set that
+// includes whatever the stale one covered (Plan unpins stale summaries for
+// exactly that reason). Deleting one with no replacement is just loss.
 func AssembleWithMap(msgs []*schema.Message, plan *PlanResult, summary, mapText string) []*schema.Message {
 	out := make([]*schema.Message, 0, len(plan.PinnedIndices)+2)
 	for _, i := range plan.PinnedIndices {
@@ -53,9 +76,15 @@ func AssembleWithMap(msgs []*schema.Message, plan *PlanResult, summary, mapText 
 			out = append(out, msgs[i])
 		}
 	}
+
+	fresh := make([]*schema.Message, 0, 2)
+	replaced := make([]FragmentKind, 0, 2)
 	if mapText != "" {
-		out = append(out, &schema.Message{Role: schema.User, Content: EvictionMapSentinel + mapText})
+		fresh = append(fresh, MarkFragment(KindEvictionMap, mapText))
+		replaced = append(replaced, KindEvictionMap)
 	}
-	out = append(out, &schema.Message{Role: schema.User, Content: SummarySentinel + summary})
-	return out
+	fresh = append(fresh, MarkFragment(KindSummary, summary))
+	replaced = append(replaced, KindSummary)
+
+	return append(StripFragments(out, replaced...), fresh...)
 }

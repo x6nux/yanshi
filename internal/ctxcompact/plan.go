@@ -9,13 +9,15 @@ import (
 // It is a PURE function (no IO) so both compaction paths share it.
 //
 // Pin policy (any one fires):
+//  0. every Role==System message — the INITIAL CONTEXT (see pinInitialContext)
 //  1. tail KeepRecent*2 messages (current immediate context; may include tool msgs)
 //  2. every Role==User non-tool-result message (user intent never lost — codex style)
 //  3. messages mentioning a working-set path (live file context)
 //  4. messages carrying an error marker
 //  5. messages carrying a diff/patch marker
 //
-// After heuristic pinning, EnforceToolCallPairs fixes up the set so tool_call
+// Then two corrections, in order. unpinStaleSummaries removes any summary the
+// rules above caught, and EnforceToolCallPairs fixes up the set so tool_call
 // and tool_result stay paired (bug②). If history already ends in a summary,
 // returns an empty summarize set (bug⑦ — no summary-of-summary).
 func Plan(msgs []*schema.Message, opts PlanOpts) *PlanResult {
@@ -55,9 +57,13 @@ func Plan(msgs []*schema.Message, opts PlanOpts) *PlanResult {
 		wsSet[p] = true
 	}
 
-	// 2-5. heuristic pin
+	// 0 and 2-5. heuristic pin
 	for i, m := range msgs {
 		if pinned[i] {
+			continue
+		}
+		if pinInitialContext(m) { // 0. the agent instruction
+			pinned[i] = true
 			continue
 		}
 		if isUserOriginal(m) { // 2. user intent
@@ -68,6 +74,8 @@ func Plan(msgs []*schema.Message, opts PlanOpts) *PlanResult {
 			pinned[i] = true
 		}
 	}
+
+	unpinStaleSummaries(msgs, pinned)
 
 	// fixpoint: keep tool pairs intact, drop orphans
 	EnforceToolCallPairs(msgs, pinned)
@@ -81,6 +89,66 @@ func Plan(msgs []*schema.Message, opts PlanOpts) *PlanResult {
 		}
 	}
 	return res
+}
+
+// pinInitialContext reports whether m is the agent instruction — yanshi's
+// INITIAL CONTEXT (W-D-14).
+//
+// Only the mid-turn path ever sees one. einollm.CompactingModel wraps the model
+// itself, so the slice it compacts is adk's model input, and
+// defaultGenModelInput prepends the instruction as a schema.System message
+// ahead of the history. The pre-turn path compacts cs.history, which is only
+// ever appended with user/assistant/tool messages.
+//
+// # It used to be dropped, and that was measured
+//
+// None of rules 1-5 describes a system message: it is not in the tail of a long
+// history, isUserOriginal rejects the role, and shouldPin only catches it when
+// the prompt happens to contain a word from the error-marker list. So a
+// mid-turn compaction assembled a history with NO system message and handed it
+// to the provider — operator instruction, tool guidance, skill meta-prompt and
+// environment block all gone for the remainder of the turn, with nothing in the
+// transcript to say so. Worse, the loss flattered the caller's only sanity
+// check: deleting the instruction makes TokensAfter smaller, which is exactly
+// what a successful compaction looks like.
+//
+// # Keeping it, rather than re-injecting a copy
+//
+// codex re-inserts its initial context before the last user message, because
+// there it is a user-role rollout item that compaction genuinely removes. Here
+// the instruction is already in the slice and pinning leaves it at index 0,
+// which is both the position providers expect and the byte-stable prefix their
+// caches key on. Re-inserting would also need a source for the text, and this
+// package has none other than the copy it was about to throw away.
+func pinInitialContext(m *schema.Message) bool {
+	return m != nil && m.Role == schema.System
+}
+
+// unpinStaleSummaries removes from pinned every summary left over from an
+// EARLIER compaction, so it reaches the summarizer instead.
+//
+// isUserOriginal already declines to read a summary as user intent, but that is
+// one of three routes into the pinned set. The tail rule pins by position, and
+// catches a summary as soon as two more turns have pushed it inside the window;
+// shouldPin catches one whose text carries an error or diff marker, which a
+// summary of a debugging session carries as a matter of course.
+//
+// It matters because AssembleWithMap REPLACES the summary kind: a stale summary
+// that is pinned is one the assembled history drops without the summarizer
+// having read it, so its content is lost rather than compressed. Unpinned, it
+// lands in the summarize set and the fresh summary is built from a superset of
+// what it covered.
+//
+// The eviction map is deliberately NOT unpinned. It has no guaranteed
+// replacement — the mid-turn path records no evictions, so it renders no map —
+// and Assemble strips only the kinds it is actually replacing. Summarizing a
+// directory of citable addresses into prose would lose the addresses.
+func unpinStaleSummaries(msgs []*schema.Message, pinned map[int]bool) {
+	for i, m := range msgs {
+		if pinned[i] && IsSummaryMessage(m) {
+			delete(pinned, i)
+		}
+	}
 }
 
 // isUserOriginal reports whether m is a genuine user message (not a tool
