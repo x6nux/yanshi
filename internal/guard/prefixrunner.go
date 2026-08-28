@@ -268,6 +268,30 @@ func stripCommandPrefix(program string, args []string) (string, []string, bool) 
 	return normalizeProgramWord(args[i]), args[i+1:], true
 }
 
+// hasNestedCommand reports whether program+args still hide another command
+// behind them — a shell wrapper's -c payload, an su -c payload, an eval argv,
+// or a command prefix runner's trailing argv.
+//
+// It is the predicate classifyLexed consults when its unwrap budget is spent.
+// The four cases are exactly the four unwrappings classifyLexed performs while
+// it still has budget, and they must stay exactly those four: a case listed
+// here but not performed there would refuse a command nothing was going to
+// unwrap anyway, and a case performed there but missing here is a hole at
+// depth zero, which is the only depth an attacker gets to choose.
+func hasNestedCommand(program string, args []string) bool {
+	if _, ok := unwrapShellCommand(program, args); ok {
+		return true
+	}
+	if _, ok := unwrapSuCommand(program, args); ok {
+		return true
+	}
+	if program == "eval" && len(args) > 0 {
+		return true
+	}
+	_, _, isPrefix := stripCommandPrefix(program, args)
+	return isPrefix
+}
+
 // unwrapSuCommand extracts the payload of `su -c "…"` / `su - root -c "…"`.
 //
 // It is separate from unwrapShellCommand because su's argument order is

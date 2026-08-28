@@ -92,8 +92,14 @@ func unwrapShellCommand(program string, args []string) (string, bool) {
 	return "", false
 }
 
-// maxUnwrapDepth bounds shell-wrapper recursion. Three levels covers every
-// wrapper nesting seen in practice (`sh -c "bash -c '…'"` is already contrived)
-// while keeping the authorization path's work bounded regardless of what the
-// model emits.
-const maxUnwrapDepth = 3
+// maxUnwrapDepth bounds the nesting classifyLexed will walk through: shell
+// wrappers, su/eval payloads and command prefix runners all draw on the same
+// budget, because they are all "the real command is one level further in".
+//
+// Eight is the figure the capability audit reports codex using, and it is
+// generous on purpose. The budget is not a safety limit — running out of it is
+// a structural refusal (DestructionUnreadable), not a pass — it is a bound on
+// the work an attacker-controlled string can make the authorization path do.
+// Setting it low would only turn ordinary nesting into refusals:
+// `sudo nohup timeout 5 nice -n 19 rm -rf /` already spends four.
+const maxUnwrapDepth = 8

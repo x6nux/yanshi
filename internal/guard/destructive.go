@@ -26,6 +26,20 @@ const (
 	// home, drive, wildcard root, the workdir itself, an ancestor of it, or a
 	// bare "rm -rf". Structurally blocked in ALL modes — the immovable floor.
 	DestructionCatastrophic
+	// DestructionUnreadable: the command nests shell wrappers, su/eval payloads
+	// or command prefix runners deeper than maxUnwrapDepth, so the program that
+	// would actually run was never reached. Structurally blocked in ALL modes,
+	// for the opposite reason to Catastrophic: not "we know this is a disaster"
+	// but "we ran out of budget before we could know".
+	//
+	// It ranks ABOVE Catastrophic so the same `d > worst` fold that combines
+	// every other verdict keeps it, and so no partial verdict computed on the
+	// way down can mask it. Exhausting the budget must never be the quiet
+	// answer — the audit that suggested a depth limit did not say what to do at
+	// the bottom of it, and "grade whatever we could see" is the answer that
+	// makes the limit itself the bypass: eight `nohup`s in front of `rm -rf /`
+	// would grade None.
+	DestructionUnreadable
 )
 
 // deletionPrograms are the canonical (lowercased, base-named) programs that
@@ -300,6 +314,17 @@ func classifyLexed(program string, args []string, workdir string, depth int) Des
 				return worst
 			}
 		}
+	} else if hasNestedCommand(program, args) {
+		// FAIL-CLOSED AT THE BOTTOM OF THE BUDGET. The recursion above stopped,
+		// and this command still hides another one behind it, so nothing below
+		// has been read. Returning the verdict computed so far would make the
+		// depth limit into the bypass it exists to bound: `nohup nohup nohup
+		// nohup nohup nohup nohup nohup nohup rm -rf /` would grade None
+		// because `nohup` is in no deletion table.
+		//
+		// The limit is deliberately generous (maxUnwrapDepth) so that reaching
+		// it means the command is contrived, not merely wrapped.
+		return DestructionUnreadable
 	}
 	// Storage destruction (dd onto a device, mkfs, wipefs, ...) is graded
 	// BEFORE the deletionPrograms filter, because none of those programs is a

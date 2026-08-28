@@ -34,12 +34,12 @@ type FSWant struct {
 // its own.
 //
 // HardDeny splits further by the Decision.Overridable flag:
-//   - Overridable=false (structural): catastrophic mass deletion, unreadable
-//     shell structure, execpolicy parse-error, unknown shell policy, unknown
-//     execpolicy verdict. Never overridable — not by the callback, not by
-//     YOLO/auto. This is the immovable floor, and it is exactly the set
-//     produced by hardDeny() plus the two inline HardDenies in
-//     checkShellPolicy.
+//   - Overridable=false (structural): catastrophic mass deletion, command
+//     nesting deeper than the guard will unwrap, unreadable shell structure,
+//     execpolicy parse-error, unknown shell policy, unknown execpolicy verdict.
+//     Never overridable — not by the callback, not by YOLO/auto. This is the
+//     immovable floor, and it is exactly the set produced by hardDeny() plus
+//     the two inline HardDenies in checkShellPolicy.
 //     Catastrophic deletion belongs here and is the one an operator is most
 //     likely to reason about: `rm -rf /` under yolo is refused by THIS flag,
 //     not by any profile.
@@ -108,8 +108,14 @@ func hardDeny(reason string) Decision {
 //
 // The structural floor — the denials YOLO cannot buy its way past — is exactly
 // the set that reaches hardDeny() or an inline Decision without Overridable:
-// catastrophic mass deletion, unreadable shell structure, execpolicy
-// parse-error, and unknown shell policy / unknown execpolicy verdict.
+// catastrophic mass deletion, command nesting deeper than the guard will
+// unwrap (DestructionUnreadable, W-B-03), unreadable shell structure,
+// execpolicy parse-error, and unknown shell policy / unknown execpolicy
+// verdict. The first two both come out of checkDestructive and they are NOT
+// the same denial: one says "this is a disaster", the other says "we ran out
+// of budget before we could tell", and they carry different reasons because a
+// refusal that misdescribes what it refused sends the reader looking for the
+// wrong command.
 // Everything a profile can merely have an opinion about is overridable, and
 // that includes two denials this comment used to misfile as structural: a
 // denylist pattern match and an empty MCP allowlist. Both are profile policy,
@@ -271,6 +277,14 @@ func (g *Guard) checkDestructive(a Action) Decision {
 		// was told their rm had been blocked. A denial that misdescribes what
 		// it refused sends the reader looking for the wrong command.
 		return hardDeny("catastrophic destruction blocked (mass deletion of a root/home/workdir, or destruction of a raw storage device)")
+	case DestructionUnreadable:
+		// A DIFFERENT refusal with a DIFFERENT reason, and it has to say so.
+		// Reusing the catastrophic text would tell an operator their `rm` was
+		// blocked for a command that may contain no deletion at all — the same
+		// mistake the parenthetical above was written to fix. What happened is
+		// that the command nests wrappers deeper than the unwrap budget, so the
+		// program that would run was never reached.
+		return hardDeny("shell command nests command wrappers deeper than the guard will unwrap; the program that would actually run cannot be identified")
 	case DestructionOutOfScope:
 		return prompt("deletion outside the working directory")
 	default:

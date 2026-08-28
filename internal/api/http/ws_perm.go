@@ -239,7 +239,12 @@ func resolvePermissionMode(ctx context.Context, cs *connSession,
 	// and default/allow-edits/plan surface it as a normal interactive prompt.
 	if req.Shell != "" {
 		switch guard.ClassifyDestruction(req.Shell, req.Workdir) {
-		case guard.DestructionCatastrophic:
+		case guard.DestructionCatastrophic, guard.DestructionUnreadable:
+			// Unreadable joins Catastrophic here rather than falling through to
+			// the mode switch: both are structural refusals in guard.Check, and
+			// a fail-safe that silently declined to cover one of them would let
+			// yolo auto-resolve a command whose real program the guard was
+			// never able to identify.
 			return tools.PermissionDeny, true
 		case guard.DestructionOutOfScope:
 			if mode == guard.ModeYOLO {
