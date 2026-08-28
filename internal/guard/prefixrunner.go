@@ -168,6 +168,19 @@ var prefixRunners = map[string]prefixRunnerSpec{
 	"start": {},
 	"runas": {},
 
+	// The multi-call binary. `busybox` was already in shellWrappers, which only
+	// covers its `busybox sh -c "…"` spelling; the APPLET spelling —
+	// `busybox rm -rf /`, which is what the binary is for — matched nothing and
+	// graded DestructionNone while /bin/sh ran the applet.
+	"busybox": {},
+	"toybox":  {},
+
+	// `coproc CMD` runs CMD in a background subshell. It is bash-only, so a
+	// /bin/sh reference reading never executes it and the differential property
+	// cannot see it; the shape is `time`'s exactly, and a shell_run with
+	// `env: "bash"` reaches it.
+	"coproc": {},
+
 	// SHELL RESERVED WORDS AND THE GROUP OPENER. These are not programs at
 	// all, but the position they occupy is the one lexShellLite reports as the
 	// program word, and the word after them IS a command. splitControlSegments
@@ -399,6 +412,88 @@ func stripCommandPrefix(program string, args []string) (string, []string, bool) 
 	return normalizeProgramWord(args[i]), args[i+1:], true
 }
 
+// commandPrefixStrippers is the list of ways one command carries another AS
+// TOKENS rather than as a string, the same way nestedCommandUnwrappers is the
+// list for strings. Both are walked by classifyLexed and by hasNestedCommand,
+// and sharing the list is what keeps those two in step.
+var commandPrefixStrippers = []func(program string, args []string) (string, []string, bool){
+	stripCommandPrefix,
+	stripFindExec,
+}
+
+// findExecActions are find's predicates that run a command on each match.
+var findExecActions = map[string]bool{
+	"-exec": true, "-execdir": true, "-ok": true, "-okdir": true,
+}
+
+// stripFindExec extracts the command `find … -exec CMD … ;` runs on every match.
+//
+// find was HALF covered: findDeleteOnCatastrophicTarget reads `-delete`, and
+// nothing read `-exec`, whose operand words up to the `;` or `+` terminator are
+// a whole command. Measured: `find . -exec rm -rf {} +` graded DestructionNone
+// and reached Allow while /bin/sh ran `rm -rf` on every match.
+//
+// `{}` IS SUBSTITUTED WITH FIND'S SEARCH ROOTS rather than left as a literal,
+// and that is the difference between a useful verdict and a useless one. Left
+// alone, `rm -rf {}` has one operand that resolves to a relative path inside the
+// work directory and grades None — the command that deletes the entire project
+// would have been the one that looked safest. With the substitution,
+// `find . -exec rm -rf {} +` grades as `rm -rf .` (catastrophic, and it is:
+// that command removes the project) while `find ./tmp -exec rm -rf {} +` grades
+// as the out-of-workdir or in-workdir deletion it actually is.
+//
+// A find with no path operand searches `.` on GNU find and is an error on BSD
+// find, so `.` is the fail-safe reading of the missing case.
+func stripFindExec(program string, args []string) (string, []string, bool) {
+	if program != "find" {
+		return "", nil, false
+	}
+	for i, a := range args {
+		if !findExecActions[a] || i+1 >= len(args) {
+			continue
+		}
+		inner := args[i+1:]
+		for j, w := range inner {
+			// lexShellLite keeps a backslash literal, so the shell's `\;`
+			// terminator arrives here still wearing it.
+			if w == ";" || w == `\;` || w == "+" {
+				inner = inner[:j]
+				break
+			}
+		}
+		if len(inner) == 0 {
+			return "", nil, false
+		}
+		roots := findSearchRoots(args)
+		var expanded []string
+		for _, w := range inner[1:] {
+			if w == "{}" {
+				expanded = append(expanded, roots...)
+				continue
+			}
+			expanded = append(expanded, w)
+		}
+		return normalizeProgramWord(inner[0]), expanded, true
+	}
+	return "", nil, false
+}
+
+// findSearchRoots returns the path operands that precede find's first predicate,
+// defaulting to "." the way GNU find does.
+func findSearchRoots(args []string) []string {
+	var roots []string
+	for _, a := range args {
+		if a == "" || a[0] == '-' || a == "!" || a == "(" {
+			break
+		}
+		roots = append(roots, a)
+	}
+	if len(roots) == 0 {
+		return []string{"."}
+	}
+	return roots
+}
+
 // hasNestedCommand reports whether program+args still hide another command
 // behind them — a shell wrapper's -c payload, an su -c payload, an eval argv, a
 // firstOperandCommands operand, or a command prefix runner's trailing argv.
@@ -416,8 +511,12 @@ func hasNestedCommand(program string, args []string) bool {
 			return true
 		}
 	}
-	_, _, isPrefix := stripCommandPrefix(program, args)
-	return isPrefix
+	for _, strip := range commandPrefixStrippers {
+		if _, _, ok := strip(program, args); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // unwrapSuCommand extracts the payload of `su -c "…"` / `su - root -c "…"`.

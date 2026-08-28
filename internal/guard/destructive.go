@@ -293,7 +293,11 @@ func classifyLexed(program string, args []string, workdir string, depth int) Des
 		// stripped command is classified and the MORE SEVERE verdict wins, so
 		// stripping can only reveal danger, never launder it. See
 		// prefixrunner.go.
-		if inner, innerArgs, isPrefix := stripCommandPrefix(program, args); isPrefix {
+		for _, strip := range commandPrefixStrippers {
+			inner, innerArgs, isPrefix := strip(program, args)
+			if !isPrefix {
+				continue
+			}
 			if d := classifyLexed(inner, innerArgs, workdir, depth-1); d > worst {
 				worst = d
 			}
