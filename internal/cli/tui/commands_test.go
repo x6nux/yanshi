@@ -947,3 +947,47 @@ func TestCommandTableNamesAreUnique(t *testing.T) {
 		t.Errorf("commandTable has %d entries but %d distinct names", len(commandTable), len(seen))
 	}
 }
+
+// TestClearMemories_RequiresConfirmation is W-D-12's first clause, asserted on
+// the surface the user actually types at. Every branch that stops short of the
+// frame is checked, because "no frame was sent" is only reassuring if the
+// command could have sent one.
+func TestClearMemories_RequiresConfirmation(t *testing.T) {
+	for _, args := range [][]string{
+		nil,                     // no scope
+		{"all"},                 // scope, no confirmation
+		{"session"},             //
+		{"agent", "a1"},         // agent id, no confirmation
+		{"agent"},               // agent scope with no id
+		{"all", "no"},           // a token that is not "yes"
+		{"everything", "yes"},   // unknown scope, even confirmed
+		{"all", "yes", "extra"}, // "yes" must be the last word
+		{"agent", "a1", "yes", "x"},
+	} {
+		rs := &recordingSession{}
+		m := newModel(rs, "/proj")
+		mm, _ := cmdMemoryClear(m, args)
+		m = mm.(model)
+		assert.Emptyf(t, rs.frames, "%v must not clear anything", args)
+		_, isErr := m.entries[len(m.entries)-1].(errorEntry)
+		assert.Truef(t, isErr, "%v must explain itself", args)
+	}
+
+	for _, tc := range []struct {
+		args         []string
+		scope, agent string
+	}{
+		{[]string{"all", "yes"}, "all", ""},
+		{[]string{"session", "yes"}, "session", ""},
+		{[]string{"agent", "a1", "yes"}, "agent", "a1"},
+	} {
+		rs := &recordingSession{}
+		m := newModel(rs, "/proj")
+		mm, _ := cmdMemoryClear(m, tc.args)
+		_ = mm.(model)
+		require.Lenf(t, rs.frames, 1, "%v is confirmed and must be sent", tc.args)
+		assert.Equal(t, "clear_memories", rs.frames[0].Type)
+		assert.Equal(t, tc.scope, rs.frames[0].Name)
+		assert.Equal(t, tc.agent, rs.frames[0].ID)
+	}
+}

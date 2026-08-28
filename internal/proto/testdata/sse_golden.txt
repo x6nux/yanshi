@@ -103,3 +103,6 @@ data: {"type":"permission_request","tool_name":"t","tool_args":"{}","id":"id","r
 event: memories_distilled
 data: {"type":"memories_distilled","text":"distilled: considered 7, merged 2"}
 
+event: memories_cleared
+data: {"type":"memories_cleared","text":"cleared 3 memories"}
+

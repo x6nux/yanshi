@@ -89,6 +89,7 @@ var commandTable = []command{
 	{name: "restore-turn", help: "list main seams or revert to a prior turn", run: cmdRestoreTurn},
 	{name: "memory", help: "show active memory file path", run: cmdMemory},
 	{name: "distill", help: "merge redundant memories", helpKey: "tui.command.help.distill", run: cmdDistill},
+	{name: "memory-clear", help: "delete memories: /memory-clear <session|agent <id>|all> yes", run: cmdMemoryClear},
 	{name: "logs", help: "tail the structured log file (or report stderr)", run: cmdLogs},
 	{name: "fork", help: "fork this session: /fork [seq] (-1=all, >=0=up to seq)", run: cmdFork},
 	{name: "side", help: "start an ephemeral side conversation (V11)", run: cmdSide},

@@ -199,7 +199,10 @@ func (m *MemoryTools) runWrite(ctx context.Context, argsJSON string) (string, er
 	// C14: tag the row with whatever dimensions this call actually has. Writing
 	// is where the dimensions must be captured — a memory whose origin was not
 	// recorded can never be filtered later, however good the query side gets.
-	id, err := m.store.WriteMemoryScoped(kind, a.Content, memoryDims(ctx))
+	// W-D-07 rides on the same call: provenance is captured at write time for
+	// the same reason the dimensions are — the log position that produced a
+	// memory is knowable now and unrecoverable later.
+	id, err := m.store.WriteMemoryFromSession(kind, a.Content, memoryDims(ctx))
 	if err != nil {
 		return "", err
 	}

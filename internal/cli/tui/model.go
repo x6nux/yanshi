@@ -1002,10 +1002,11 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 			text: "forked and switched to " + ev.SessionID,
 		})
 		m.sessionID = ev.SessionID
-	case "memories_distilled":
-		// A2/W-A-05: reply to /distill. Render the considered/merged summary as
-		// a one-line ack, mirroring session_forked above. Without this case the
-		// frame round-trips over the wire but is invisible in the transcript.
+	case "memories_distilled", "memories_cleared":
+		// A2/W-A-05 and W-D-12: replies to /distill and /memory-clear. Render
+		// the server's one-line summary as an ack. Without this case the frame
+		// round-trips over the wire but is invisible in the transcript — and a
+		// wipe the user cannot see the result of is one they will run twice.
 		m.flushAssistant()
 		m.entries = append(m.entries, ackEntry{text: ev.Text})
 	case "side_state":

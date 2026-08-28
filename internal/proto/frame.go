@@ -1065,3 +1065,41 @@ func NewDistillMemories() ClientFrame { return ClientFrame{Type: "distill_memori
 func NewMemoriesDistilled(considered, merged int) ServerFrame {
 	return ServerFrame{Type: "memories_distilled", Text: fmt.Sprintf("distilled: considered %d, merged %d", considered, merged)}
 }
+
+// --- W-D-12 memory wipe frames ---
+
+// MemoryClearScope names one dimension clear_memories may be restricted to.
+//
+// The vocabulary is memory_search's, deliberately: a user who has been told
+// their memories live in "session" / "agent" / "all" scopes must not have to
+// learn a second set of words to delete them.
+const (
+	// MemoryClearSession clears the memories of the connection's own session.
+	MemoryClearSession = "session"
+	// MemoryClearAgent clears the memories written by one named agent. The id
+	// is explicit because a chat connection has no acting agent to infer.
+	MemoryClearAgent = "agent"
+	// MemoryClearAll clears EVERY memory in the store — which is this project's
+	// database, since storage.sqlite_path is resolved relative to the working
+	// directory. This is the destructive default a confirmation gate exists for.
+	MemoryClearAll = "all"
+)
+
+// NewClearMemories builds a clear_memories request frame (W-D-12).
+//
+// scope is one of the MemoryClear* constants; agentID is meaningful only for
+// MemoryClearAgent and is ignored otherwise. Reply: memories_cleared.
+//
+// Reusing Name and ID rather than adding two fields: ClientFrame already routes
+// several frames' identifiers through ID, and a wipe is not important enough to
+// widen the wire format for.
+func NewClearMemories(scope, agentID string) ClientFrame {
+	return ClientFrame{Type: "clear_memories", Name: scope, ID: agentID}
+}
+
+// NewMemoriesCleared builds the memories_cleared reply: deleted is how many
+// rows the wipe removed. A single-frame control reply, so isControlReply closes
+// the client's reply channel on it.
+func NewMemoriesCleared(deleted int) ServerFrame {
+	return ServerFrame{Type: "memories_cleared", Text: fmt.Sprintf("cleared %d memories", deleted)}
+}

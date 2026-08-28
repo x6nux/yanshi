@@ -685,6 +685,32 @@ func (s *Store) migrate() error {
 	if err := s.addColumnIfMissing("memories", "use_count", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	// W-D-07: provenance. source_session_id names the session whose log produced
+	// the row; source_seq is where in that log the derivation started.
+	//
+	// THE PAIR IS NOT REDUNDANT WITH session_id, EVEN THOUGH EVERY CURRENT
+	// WRITER SETS THEM TO THE SAME VALUE. session_id is a RETRIEVAL DIMENSION —
+	// a caller may leave it empty on purpose (WriteMemory does), and a future
+	// one may rescope a row. Provenance is a fact about how the row came to
+	// exist and must not move when a scope does. The split is also what makes
+	// the upgrade honest: pre-W-D-07 rows carry a session_id but nobody recorded
+	// their origin, and defaulting source_session_id to '' says exactly that,
+	// whereas reusing session_id would have every existing memory claim a
+	// position (seq 0) it was never derived from.
+	//
+	// '' IS THE "NO PROVENANCE" MARKER, NOT source_seq = 0. Seq 0 is a real row,
+	// so a window legitimately starts there; see MemorySource.
+	//
+	// Kept OUT of memoryColumns and the Memory struct for use_count's reason:
+	// MemorySource is the only reader and it selects the pair by name, so
+	// carrying them through every scan would add two fields nothing consumes
+	// and two scan positions three readers have to keep in step.
+	if err := s.addColumnIfMissing("memories", "source_session_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addColumnIfMissing("memories", "source_seq", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	// Every default read now carries `superseded_by = ''`, which the dimension
 	// index above does not cover.
 	if _, err := s.DB.Exec(

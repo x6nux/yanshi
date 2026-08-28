@@ -2,6 +2,7 @@ package tui
 
 import (
 	"strconv"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -44,6 +45,51 @@ func cmdFork(m model, args []string) (tea.Model, tea.Cmd) {
 // mirroring cmdMemory/cmdFork's no-argument-picks-current-scope shape.
 func cmdDistill(m model, _ []string) (tea.Model, tea.Cmd) {
 	return m.sendControlFrame(proto.NewDistillMemories())
+}
+
+// cmdMemoryClear implements /memory-clear (W-D-12):
+//
+//	/memory-clear                        — usage
+//	/memory-clear <scope> [agent-id]     — confirmation prompt, NOTHING sent
+//	/memory-clear <scope> [agent-id] yes — clear_memories frame
+//
+// A SLASH COMMAND RATHER THAN A TOOL, deliberately. Wiping long-term memory is
+// a user's decision about their own data; a model that can reach it can also be
+// talked into reaching it, and the blast radius of the "all" scope is every
+// memory the project ever accumulated.
+//
+// The confirmation is cmdDelete's, verbatim in shape: a trailing "yes" token,
+// no frame, no model state, no new protocol. That was the existing pattern for
+// an irreversible action and inventing a second one would leave two confirmation
+// mechanisms to keep correct.
+func cmdMemoryClear(m model, args []string) (tea.Model, tea.Cmd) {
+	usage := "usage: /memory-clear <session|agent <id>|all> yes"
+	reject := func(text string) (tea.Model, tea.Cmd) {
+		m.entries = append(m.entries, errorEntry{text: text})
+		m.refresh()
+		m.viewport.GotoBottom()
+		return m, nil
+	}
+	if len(args) == 0 {
+		return reject(usage)
+	}
+	scope, agentID := args[0], ""
+	rest := args[1:]
+	switch scope {
+	case proto.MemoryClearSession, proto.MemoryClearAll:
+	case proto.MemoryClearAgent:
+		if len(rest) == 0 {
+			return reject(usage)
+		}
+		agentID, rest = rest[0], rest[1:]
+	default:
+		return reject(usage)
+	}
+	if len(rest) != 1 || rest[0] != "yes" {
+		return reject("⚠ clearing memories is irreversible. To confirm, run: /memory-clear " +
+			strings.TrimSpace(scope+" "+agentID) + " yes")
+	}
+	return m.sendControlFrame(proto.NewClearMemories(scope, agentID))
 }
 
 // cmdSide enters an ephemeral side conversation. The server pushes the current

@@ -453,6 +453,7 @@ func goldenFrames() []ServerFrame {
 		NewPermissions(nil),
 		NewPermissionRequest("id", "t", "{}", "r", false, false),
 		NewMemoriesDistilled(7, 2),
+		NewMemoriesCleared(3),
 	}
 }
 

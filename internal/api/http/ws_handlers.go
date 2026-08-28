@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -345,6 +346,52 @@ func handleDistillMemories(ctx context.Context, s *Server, conn *wsConn, cs *con
 	defer cancel()
 	res, _ := runDistillPass(ctx, s.store, s.distillModel, store.MemoryFilter{SessionID: cs.sessionID})
 	conn.write(proto.NewMemoriesDistilled(res.Considered, res.Merged))
+}
+
+// handleClearMemories deletes memories in one dimension (W-D-12).
+//
+// THE SCOPE IS RESOLVED HERE, FAIL-CLOSED, AND AN UNKNOWN ONE IS AN ERROR
+// RATHER THAN A FALLBACK. store.ClearMemories treats a zero filter as "delete
+// everything", so any path that turns an unrecognised word into a zero filter
+// has turned a typo into a full wipe. memoryFilterFor makes the same choice on
+// the read side for a much cheaper reason (a wrong answer); here the cost of
+// the same mistake is the whole table.
+//
+// The confirmation is the client's (see the TUI's /memory-clear). That split is
+// the one /delete already uses: the token never reaches the wire, so there is
+// no protocol state to get out of step, and the server's job is to refuse
+// anything it cannot name rather than to re-ask.
+func handleClearMemories(s *Server, conn *wsConn, cs *connSession, scope, agentID string) {
+	if s.store == nil {
+		conn.write(proto.NewError("memory is disabled"))
+		return
+	}
+	var dims store.MemoryFilter
+	switch scope {
+	case proto.MemoryClearAll:
+		// The zero filter: every memory in this project's database.
+	case proto.MemoryClearSession:
+		if cs.sessionID == "" {
+			conn.write(proto.NewError("clear_memories: this connection has no stored session"))
+			return
+		}
+		dims.SessionID = cs.sessionID
+	case proto.MemoryClearAgent:
+		if agentID == "" {
+			conn.write(proto.NewError("clear_memories: the agent scope needs an agent id"))
+			return
+		}
+		dims.AgentID = agentID
+	default:
+		conn.write(proto.NewError("clear_memories: unknown scope " + strconv.Quote(scope)))
+		return
+	}
+	n, err := s.store.ClearMemories(dims)
+	if err != nil {
+		conn.write(proto.NewError("clear_memories: " + err.Error()))
+		return
+	}
+	conn.write(proto.NewMemoriesCleared(n))
 }
 
 // skillInfo converts an internal skills.Skill snapshot into a proto.SkillInfo

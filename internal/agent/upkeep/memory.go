@@ -186,7 +186,11 @@ func (w *Worker) extractOne(ctx context.Context, sessionID string) {
 	}
 	dims := store.MemoryFilter{SessionID: sessionID}
 	for _, n := range notes {
-		if _, err := w.db.WriteMemoryScoped(memoryKind, n, dims); err != nil {
+		// W-D-07: WriteMemoryFromSession, not WriteMemoryScoped — this worker is
+		// the writer whose output is least traceable by hand. Nobody watched it
+		// run, so "which conversation produced this note" is unanswerable without
+		// the recorded position.
+		if _, err := w.db.WriteMemoryFromSession(memoryKind, n, dims); err != nil {
 			slog.Warn("upkeep: writing extracted memory failed", "session", sessionID, "error", err)
 			return
 		}
