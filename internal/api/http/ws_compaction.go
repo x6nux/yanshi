@@ -473,7 +473,14 @@ func (cs *connSession) commitCompaction(s *Server, newHist []*schema.Message) (b
 		// so there is no boundary to record and nothing to restore from.
 		return true, ""
 	}
-	kept := keptWindowSeqs(oldHist, newHist, oldRows)
+	kept, ok := keptWindowSeqs(oldHist, newHist, oldRows)
+	if !ok {
+		slog.Warn("compaction window stopped matching the log mid-commit; boundary not recorded",
+			"session", cs.sessionID,
+			"action", "the context stays oversized but complete")
+		cs.history = oldHist
+		return false, compactionNotAligned
+	}
 	// The rows the flush just wrote (the summary, and C3's eviction map) are in
 	// the window too. Adding them lets windowBoundary collapse the contiguous
 	// tail into the range half instead of listing every survivor as a pin.
@@ -566,7 +573,15 @@ func alignedWithLog(oldHist []*schema.Message, oldRows []store.Message) bool {
 //
 // Alignment is CHECKED SEPARATELY AND FIRST, by alignedWithLog, because a
 // failure there is a refusal rather than a degradation. See its doc.
-func keptWindowSeqs(oldHist, newHist []*schema.Message, oldRows []store.Message) []int {
+//
+// The second return is that check made structural. Indexing oldRows by a
+// position derived from oldHist PANICS when the two disagree — measured, with a
+// misaligned window this function ran off the end of the slice and took the WS
+// connection down with it — so it reports failure rather than trusting a caller
+// to have checked. Returning "no pins" instead would be the wrong direction:
+// windowBoundary then clamps to the post-compaction flush and the restored
+// window is the summary alone.
+func keptWindowSeqs(oldHist, newHist []*schema.Message, oldRows []store.Message) ([]int, bool) {
 	survived := make(map[*schema.Message]bool, len(newHist))
 	for _, m := range newHist {
 		survived[m] = true
@@ -575,6 +590,9 @@ func keptWindowSeqs(oldHist, newHist []*schema.Message, oldRows []store.Message)
 	row := 0
 	for _, m := range oldHist {
 		n := len(storeMessagesFor([]*schema.Message{m}))
+		if row+n > len(oldRows) {
+			return nil, false
+		}
 		if m != nil && survived[m] {
 			for k := 0; k < n; k++ {
 				kept = append(kept, oldRows[row+k].Seq)
@@ -582,7 +600,10 @@ func keptWindowSeqs(oldHist, newHist []*schema.Message, oldRows []store.Message)
 		}
 		row += n
 	}
-	return completeToolPairs(kept, oldRows)
+	if row != len(oldRows) {
+		return nil, false
+	}
+	return completeToolPairs(kept, oldRows), true
 }
 
 // completeToolPairs enforces ADR-0015 constraint 5(b) on the boundary itself: a

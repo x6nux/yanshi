@@ -1035,9 +1035,15 @@ func TestCompactionRefusedWhenWindowAndLogDisagree(t *testing.T) {
 	}
 	require.NotEmpty(t, evicted, "the fixture must have evicted some assistant prose")
 
-	// The model says the same thing again, word for word.
+	// Enough new history that a second compaction WOULD fire — the control
+	// below proves it does — and then the model says the same thing again, word
+	// for word. Without the size, this test passes for the wrong reason: an
+	// under-threshold window leaves history and events untouched whether or not
+	// anything refuses, which is exactly how the first version of this test
+	// stayed green under a probe that deleted the check it was meant to pin.
 	cs := &connSession{perm: &permModeState{}}
 	require.NoError(t, cs.loadSession(srv, sid))
+	cs.history = append(cs.history, labelledHistory("second", 8)...)
 	cs.history = append(cs.history, schema.AssistantMessage(evicted, nil))
 	cs.persistMessages(srv)
 
@@ -1072,4 +1078,97 @@ func TestCompactionRefusedWhenWindowAndLogDisagree(t *testing.T) {
 		"refusing leaves the context oversized but complete; it must never "+
 			"shrink to the summary alone")
 	assertToolPairsIntact(t, again.history)
+
+	// POSITIVE CONTROL. The same session, the same amount of new history, but
+	// nothing repeated verbatim — so the window and the log still agree and the
+	// compaction must go through. Without this, "history unchanged" above is
+	// equally satisfied by a fixture too small to compact at all.
+	ctl, ctlSid, _, ctlSrv := compactedFixture(t)
+	ctlCS := &connSession{perm: &permModeState{}}
+	require.NoError(t, ctlCS.loadSession(ctlSrv, ctlSid))
+	ctlCS.history = append(ctlCS.history, labelledHistory("second", 8)...)
+	ctlCS.history = append(ctlCS.history, schema.AssistantMessage(
+		"a line nothing else said "+strings.Repeat("and more detail ", 8), nil))
+	ctlCS.persistMessages(ctlSrv)
+	ctlBefore := len(ctlCS.history)
+
+	wc2, client2, cleanup2 := newWSPair(t)
+	defer cleanup2()
+	_ = client2
+	maybeAutoCompact(context.Background(), ctlSrv,
+		map[string]model.BaseChatModel{"fm": einollm.NewFakeModel([]string{"CTL"}, nil)}, wc2, ctlCS)
+
+	require.Less(t, len(ctlCS.history), ctlBefore,
+		"the control must actually compact, or the refusal above proves nothing")
+	ctlEvents, err := ctl.ContextEvents(ctlSid)
+	require.NoError(t, err)
+	assert.Len(t, ctlEvents, 2, "the control's second boundary must be recorded")
+}
+
+// TestAlignedWithLog and TestKeptWindowSeqsRefusesMisalignment cover the two
+// guards individually.
+//
+// They exist because the integration test above cannot distinguish them: each
+// guard alone is sufficient, so a probe that deletes either one leaves the other
+// catching the same case and the package stays green. That is the right
+// behaviour and the wrong coverage, so each gets a direct test.
+func TestAlignedWithLog(t *testing.T) {
+	hist := []*schema.Message{
+		schema.UserMessage("go"),
+		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{toolCall("c1", "shell_run", "{}")}},
+		{Role: schema.Tool, ToolCallID: "c1", ToolName: "shell_run", Content: "done"},
+	}
+	rows := storeMessagesFor(hist)
+	log := make([]store.Message, len(rows))
+	for i, r := range rows {
+		log[i] = store.Message{Seq: i, Role: r.Role, ToolCallID: r.ToolCallID, ToolName: r.ToolName,
+			Content: r.Content, ToolArgs: r.ToolArgs}
+	}
+	assert.True(t, alignedWithLog(hist, log))
+
+	// Content may legitimately differ: the store redacts on write, and refusing
+	// on that would refuse every compaction of every session holding a secret.
+	masked := append([]store.Message(nil), log...)
+	masked[0].Content = "[redacted]"
+	assert.True(t, alignedWithLog(hist, masked), "redacted content is not a misalignment")
+
+	// A row the log never received — the measured shape, where the model repeats
+	// a line byte-identical to an evicted one and dedup swallows it.
+	assert.False(t, alignedWithLog(hist, log[:len(log)-1]), "a missing row is a misalignment")
+
+	// Structure differing at the same length.
+	shuffled := append([]store.Message(nil), log...)
+	shuffled[1].Role = store.RoleUser
+	assert.False(t, alignedWithLog(hist, shuffled), "a role mismatch is a misalignment")
+}
+
+func TestKeptWindowSeqsRefusesMisalignment(t *testing.T) {
+	hist := []*schema.Message{
+		schema.UserMessage("go"),
+		schema.AssistantMessage("working", nil),
+	}
+	rows := storeMessagesFor(hist)
+	log := make([]store.Message, len(rows))
+	for i, r := range rows {
+		log[i] = store.Message{Seq: i, Role: r.Role, Content: r.Content}
+	}
+
+	kept, ok := keptWindowSeqs(hist, hist, log)
+	require.True(t, ok)
+	assert.Equal(t, []int{0, 1}, kept)
+
+	// Short log: indexing by a window-derived position would run off the end and
+	// panic, taking the WS connection with it. It must report failure instead —
+	// and NOT report success with no pins, which would send windowBoundary to
+	// the post-compaction flush and restore the summary alone.
+	kept, ok = keptWindowSeqs(hist, hist, log[:1])
+	assert.False(t, ok, "a short log must be refused, not indexed into")
+	assert.Nil(t, kept)
+
+	// Long log: the window does not account for every row, so positions past the
+	// window are unexplained and the mapping is not trustworthy either.
+	kept, ok = keptWindowSeqs(hist, hist, append(append([]store.Message(nil), log...),
+		store.Message{Seq: 2, Role: store.RoleUser, Content: "extra"}))
+	assert.False(t, ok, "an unexplained trailing row must be refused")
+	assert.Nil(t, kept)
 }
