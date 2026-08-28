@@ -66,7 +66,7 @@ CREATE INDEX IF NOT EXISTS idx_context_events_session
 - **不可违反的约束 5：投影必须与活动窗口在「行」这一层逐条相等，不得是「差不多」。** 具体到两条不可退让的性质：(a) 被 `Plan` pin 住的消息一条都不能丢 —— 它 pin 的正是判定为最不该丢的东西；(b) tool_call 与它的 tool_result 不得被边界切开，孤儿 tool result 会让 provider 直接拒绝整个请求。**这条是补写的**：初稿的单水位线设计违反了它而当时没看出来，是实现阶段用反例推翻的。任何简化边界表示的后续改动都要先对着这两条性质检查。
 
   **「行」这个限定词是必要的，不是措辞含糊。** 日志存的是行不是消息，而两者不是一一对应：`storeMessagesFor` 把「一条带 ToolCalls 的 assistant」拆成散文行 + 每个 tool call 一行，`restoreMessages` 则把相邻的重新合起来。于是往返之后**内容、顺序、配对三样都原样保留，唯独分组会变** —— 窗口里作为两条消息存在的东西可能回来时是一条。这不是本决策引入的，`restoreMessages` 早于它存在；provider 对两种分组都接受，所以它无害。约束在**行**这一层是精确可断言的，在消息层只是「基本成立」，因此断言写在行层。若日后有人需要分组也保真，那要在日志里加一个「本行与上一行同属一条消息」的标记，是另一条 ADR。
-- **不可违反的约束 3：`ctxcompact` 的三步不变。** `Plan` / `EnforceToolCallPairs` / `Assemble` 操作的是投影出来的切片，本决策只改「切片从哪来」。`internal/ctxcompact` 不得因此 import `internal/store`（GOV1：那会让一个纯函数包长出存储依赖）。
+- **不可违反的约束 3：`ctxcompact` 的三步不变。** `Plan` / `EnforceToolCallPairs` / `Assemble` 操作的是投影出来的切片，本决策只改「切片从哪来」。`internal/ctxcompact` 不得因此 import `internal/store` —— 那会让一个纯函数包长出存储依赖。**这条由 `internal/archtest::TestADR0015_CtxcompactMustNotDependOnStore` 强制，直接依赖与传递依赖都算。** 此处原先写的是「GOV1 会红」，那是错的：GOV1 的 `TestR2_PortAllowlist` 只约束 port 包，而 `ctxcompact` 不在其中，`TestR5_PortsMustNotDependOnServiceLayer` 管的又是反方向 —— 所以这条「不可违反」的约束在被写下之后一直没有任何机器守护。它正是本工作包反复抓到的那个形态：只存在于散文里的规则。
 - **不可违反的约束 4：`takeChunk` 的超窗上界照旧成立。** 真实上界仍是「窗口 + 历史中最大不可分割段」，随并行工具数线性增长。它是分块摘要的性质，与存储模型无关 —— 不得因本决策宣称它被解决。
 - **不可违反的约束 6：对齐失败时拒绝压缩，绝不写一个猜出来的边界。** 整套边界计算建立在一条跨层不变量上 —— **flush 前的投影就是活动窗口**。这条不变量**实测可以被普通对话违反**（`flushHistory` 对整条日志去重，包括已隐藏的行，所以模型压缩后重复一句与隐藏行逐字节相同的话，那句就永远写不进日志），因此「它不会被违反」不能作为设计前提。
 

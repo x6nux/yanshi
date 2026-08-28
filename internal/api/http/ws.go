@@ -151,11 +151,6 @@ type sideSnapshot struct {
 // is defense-in-depth — review #2 mandates both.
 func (cs *connSession) recordingSuppressed() bool { return len(cs.sideStack) > 0 }
 
-// compactionBlocked is the operator-facing reason the last compaction attempt
-// was refused, or "" when the context is being kept in shape. It rides on every
-// status frame (ADR-0015 constraint 6): refusing to compact is only the safe
-// direction while the resulting oversized context is visible.
-
 // enterSide pushes a snapshot of the current state and clears sessionID (so
 // ensureSession cannot create a session for side turns). Returns an error if
 // the nesting depth exceeds maxSideDepth.

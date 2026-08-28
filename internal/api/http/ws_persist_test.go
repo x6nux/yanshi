@@ -6,9 +6,11 @@ package http
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
@@ -19,6 +21,7 @@ import (
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/secrets"
 	"github.com/x6nux/yanshi/internal/store"
+	"github.com/x6nux/yanshi/internal/vcs"
 )
 
 func persistStore(t *testing.T) *store.Store {
@@ -1218,6 +1221,10 @@ func TestRefusedCompactionIsVisibleOnStatus(t *testing.T) {
 	// The refusal happens after the summary has already streamed, so the
 	// compact_chunk deltas come first.
 	var f proto.ServerFrame
+	// D-1: a deadline, so a MISSING frame fails the test instead of hanging it.
+	// Without one the refusal-not-reported probe blocks forever in ReadJSON and
+	// the run reports a timeout on the whole package, which names no assertion.
+	require.NoError(t, client.SetReadDeadline(time.Now().Add(10*time.Second)))
 	for i := 0; i < 50; i++ {
 		require.NoError(t, client.ReadJSON(&f))
 		if f.Type == "status" {
@@ -1344,4 +1351,150 @@ func TestTruncationSeqRefusesAMisalignedWindow(t *testing.T) {
 	_, err = truncationSeq(srv, cs, 1)
 	require.Error(t, err, "a guessed truncation point deletes the wrong rows irreversibly")
 	assert.Contains(t, err.Error(), "no longer line up")
+}
+
+// TestKeptWindowSeqsCompletesToolPairs guards the PRODUCTION call site of
+// completeToolPairs (ADR-0015 constraint 5(b)).
+//
+// The helper had its own unit test, but deleting its single call inside
+// keptWindowSeqs left the whole repository green — so the pairing repair was
+// only ever exercised through a function nothing in production had to call.
+//
+// The situation it exists for is reachable: ctxcompact.FoldToolResults runs
+// after Assemble and REPLACES the tool results it rewrites, so a folded result
+// fails the pointer-identity test that decides what survived while its call
+// still passes. That leaves a pinned tool_call with no result, and providers
+// reject the whole request rather than the one message. This drives that shape
+// straight in — newHist keeps the assistant's call but not the tool message.
+func TestKeptWindowSeqsCompletesToolPairs(t *testing.T) {
+	call := &schema.Message{Role: schema.Assistant,
+		ToolCalls: []schema.ToolCall{toolCall("c1", "shell_run", `{"cmd":"ls"}`)}}
+	result := &schema.Message{Role: schema.Tool, ToolCallID: "c1",
+		ToolName: "shell_run", Content: "a.go"}
+	oldHist := []*schema.Message{schema.UserMessage("go"), call, result}
+
+	rows := storeMessagesFor(oldHist)
+	log := make([]store.Message, len(rows))
+	for i, r := range rows {
+		log[i] = store.Message{Seq: i, Role: r.Role, ToolCallID: r.ToolCallID,
+			ToolName: r.ToolName, ToolArgs: r.ToolArgs, Content: r.Content}
+	}
+
+	// The fold replaced the result, so only the call survives identity.
+	kept, ok := keptWindowSeqs(oldHist, []*schema.Message{call}, log)
+	require.True(t, ok)
+	assert.Equal(t, []int{1, 2}, kept,
+		"a surviving tool_call must drag its result into the boundary; pinning "+
+			"seq 1 alone restores an orphan call and the provider rejects the turn")
+}
+
+// TestRefusedCompactionWritesNoSummaryRow guards the ORDER of the alignment
+// check, which is the half of constraint 6 with the worst failure mode.
+//
+// The verdict is the same either way — a later structural check also refuses —
+// so a test that only asserts "refused" cannot see this. What differs is that
+// checking after the flush has ALREADY WRITTEN THE SUMMARY to the log. That row
+// is not in the window and never can be, so alignedWithLog fails from then on
+// and this session can never compact again. One trigger, permanent lock.
+func TestRefusedCompactionWritesNoSummaryRow(t *testing.T) {
+	st, sid, _, srv := compactedFixture(t)
+	hidden, err := st.HiddenSeq(sid)
+	require.NoError(t, err)
+	rows, err := st.Messages(sid)
+	require.NoError(t, err)
+	var evicted string
+	for _, r := range rows {
+		if r.Seq < hidden && r.Role == store.RoleAssistant && r.Content != "" {
+			evicted = r.Content
+			break
+		}
+	}
+	require.NotEmpty(t, evicted)
+
+	cs := &connSession{perm: &permModeState{}}
+	require.NoError(t, cs.loadSession(srv, sid))
+	cs.history = append(cs.history, labelledHistory("second", 8)...)
+	cs.history = append(cs.history, schema.AssistantMessage(evicted, nil))
+	cs.persistMessages(srv)
+
+	before, err := st.Messages(sid)
+	require.NoError(t, err)
+
+	wc, client, cleanup := newWSPair(t)
+	defer cleanup()
+	_ = client
+	maybeAutoCompact(context.Background(), srv,
+		map[string]model.BaseChatModel{"fm": einollm.NewFakeModel([]string{"SUMMARY2"}, nil)}, wc, cs)
+
+	after, err := st.Messages(sid)
+	require.NoError(t, err)
+	require.Len(t, after, len(before),
+		"a refused compaction must not leave its summary in the log: that row "+
+			"can never enter the window, so the alignment check fails forever "+
+			"and this session is locked out of compaction permanently")
+	for _, r := range after {
+		assert.NotContains(t, r.Content, "SUMMARY2")
+	}
+}
+
+// TestRestoreTurnTruncatesAtARowSeq guards the WIRING of truncationSeq into
+// handleRestoreTurn.
+//
+// The conversion and its refusal are unit-tested, but restoring the handler's
+// argument to truncLen — the whole bug this round fixed — left the repository
+// green, because nothing drove the handler far enough to perform a truncation.
+//
+// THE FIXTURE IS THE TEST, again: the window's second message carries a tool
+// call, so 3 messages expand to 4 rows. Reverting to a 2-message boundary must
+// keep 3 rows. Passing the message count keeps 2 and destroys the tool call
+// belonging to a message the revert is keeping — and since the round-2 change,
+// the same number also decides which compaction boundaries get compensated.
+func TestRestoreTurnTruncatesAtARowSeq(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "repo")
+	require.NoError(t, os.MkdirAll(root, 0o755))
+	st, err := store.Open(filepath.Join(base, "state.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+
+	v := vcs.New(st, filepath.Join(base, "worktrees"))
+	repoID, err := v.InitRepo(root)
+	require.NoError(t, err)
+	f := filepath.Join(root, "a.txt")
+	require.NoError(t, os.WriteFile(f, []byte("v0"), 0o644))
+	require.NoError(t, v.RecordEditMain(repoID, "test", f, []byte("v0")))
+	_, err = v.CommitMain(repoID, "test", "seed")
+	require.NoError(t, err)
+
+	sid, err := st.CreateSession("s")
+	require.NoError(t, err)
+	srv := &Server{store: st, vcs: v, repoID: repoID}
+	cs := &connSession{perm: &permModeState{}, sessionID: sid, turns: 2}
+	cs.history = []*schema.Message{
+		schema.UserMessage("go"), // row 0
+		{Role: schema.Assistant, Content: "checking", // rows 1 and 2
+			ToolCalls: []schema.ToolCall{toolCall("c1", "shell_run", `{"cmd":"ls"}`)}},
+		{Role: schema.Tool, ToolCallID: "c1", ToolName: "shell_run", Content: "a.go"}, // row 3
+	}
+	cs.persistMessages(srv)
+	rows, err := st.Messages(sid)
+	require.NoError(t, err)
+	require.Len(t, rows, 4, "3 messages expand to 4 rows — that gap is the bug")
+
+	// A seam whose HistoryLen is 2 MESSAGES.
+	seamID, err := v.SealMainTurnSeam(repoID, sid, 1, 2, vcs.SeamPreTurn, "turn 1")
+	require.NoError(t, err)
+
+	wc, client, cleanup := newWSPair(t)
+	defer cleanup()
+	_ = client
+	handleRestoreTurn(srv, wc, cs, seamID, srv.fullHead())
+
+	got, err := st.Messages(sid)
+	require.NoError(t, err)
+	require.Len(t, got, 3,
+		"a 2-MESSAGE boundary is 3 rows; keeping 2 would delete the tool call "+
+			"belonging to the assistant message the revert keeps")
+	assert.Equal(t, store.RoleToolCall, got[2].Role)
+	assert.Equal(t, 3, cs.seq, "cs.seq is a log coordinate, not a message count")
 }

@@ -233,7 +233,11 @@ func handleRestoreTurn(s *Server, conn *wsConn, cs *connSession, seamID, confirm
 			return
 		}
 		cs.history = slices.Clone(cs.history[:truncLen])
-		cs.seq = truncLen
+		// The ROW seq, not the message count. truncLen slices the message
+		// slice above; cs.seq is a durable-log coordinate that commitCompaction
+		// subtracts from, and the two differ by however many rows a message
+		// expands to. Same confusion as the truncation boundary itself.
+		cs.seq = fromSeq
 		cs.turns = truncTurns
 	}
 
