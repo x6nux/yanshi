@@ -245,6 +245,17 @@ func TestAMisreadRunnerDoesNotStandTheBackstopDown(t *testing.T) {
 	if got := ClassifyDestruction(`taskset 0x1 ls`, segTestWorkdir); got != DestructionNone {
 		t.Errorf("ClassifyDestruction(taskset 0x1 ls) = %v, want None", got)
 	}
+	// THE READING, not just the verdict. Measured: reverting the table fix on
+	// its own changes no verdict in this package, because the trailing-argv
+	// scan reaches the same answer by a different route. That is defence in
+	// depth working, and it is also why the table fix needs its own assertion —
+	// a misreading nothing tests is a misreading the next reader inherits.
+	prog, rest, ok := stripCommandPrefix("taskset", []string{"-c", "0", "rm", "-rf", "/"})
+	if !ok || prog != "rm" || len(rest) != 2 {
+		t.Errorf("stripCommandPrefix(taskset, [-c 0 rm -rf /]) = (%q, %q, %v), want the command "+
+			"word `rm` with two operands — the `-c LIST` spelling has no bare mask to consume",
+			prog, rest, ok)
+	}
 }
 
 // TestOpaqueRanksBetweenOutOfScopeAndCatastrophic pins the one thing the fold
