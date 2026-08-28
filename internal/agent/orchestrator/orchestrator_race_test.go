@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"strconv"
 	"sync"
 	"testing"
 
@@ -67,7 +68,16 @@ func TestRunners_DifferentModelKeys(t *testing.T) {
 	wg.Wait()
 }
 
-func TestRunners_FlushDuringAccess(t *testing.T) {
+// TestRunners_NewKeysDuringAccess drives concurrent Stores into the runners map
+// while other goroutines Load hot keys.
+//
+// It used to call FlushRunners as its writer. That method is gone (it had zero
+// production callers and nothing to evict — see the runners field), so the
+// writer is now the thing that really does insert new entries at runtime: a
+// stream of previously unseen model ids, each of which is its own
+// runnerCacheKey. Same contention shape, and unlike the flush loop it is a
+// sequence production can actually produce.
+func TestRunners_NewKeysDuringAccess(t *testing.T) {
 	fm := einollm.NewFakeModelWithMessages(nil, nil)
 	o, err := New(Config{
 		Model:   fm,
@@ -90,7 +100,7 @@ func TestRunners_FlushDuringAccess(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for j := 0; j < 10; j++ {
-			o.FlushRunners()
+			_ = o.runnerFor(fm, false, "model-"+strconv.Itoa(j))
 		}
 	}()
 	wg.Wait()
