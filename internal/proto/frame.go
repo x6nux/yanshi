@@ -683,8 +683,15 @@ func NewHistoryReplaced(msgs []schema.Message) ServerFrame {
 }
 
 // NewSessions builds a sessions frame listing stored sessions.
-func NewSessions(sessions []SessionInfo) ServerFrame {
-	return ServerFrame{Type: "sessions", Sessions: sessions}
+//
+// note is what the server has to say about rows it did NOT send. The list is
+// one page, so on a long-lived project it is a prefix of the sessions that
+// exist, and a prefix presented as the whole list is how "my old session is
+// gone" gets reported as a data-loss bug. Empty when the page was the whole
+// list, which is the common case and leaves the frame byte-identical to what it
+// always was.
+func NewSessions(sessions []SessionInfo, note string) ServerFrame {
+	return ServerFrame{Type: "sessions", Sessions: sessions, Text: note}
 }
 
 // NewSessionRestored builds a session_restored frame carrying the restored

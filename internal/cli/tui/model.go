@@ -940,7 +940,12 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 			m.pendingStatsEntry.sessions = ev.Sessions
 			m.pendingStatsEntry = nil
 		case m.lastSessionsEntry() != nil:
-			m.lastSessionsEntry().sessions = ev.Sessions
+			e := m.lastSessionsEntry()
+			e.sessions = ev.Sessions
+			// Text carries the server's note about rows the page left out.
+			// Dropping it here would put the truncation back where it started:
+			// bounded on the wire, unbounded-looking on screen.
+			e.note = ev.Text
 		}
 	case "session_restored":
 		// Reply to /restore: fill the pending restoreEntry, re-render

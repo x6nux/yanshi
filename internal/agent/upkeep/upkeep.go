@@ -32,7 +32,7 @@ import (
 // Config is the worker's tuning. The zero value runs a worker that does
 // nothing, which is what an operator who configured none of this gets.
 type Config struct {
-	// Interval is how often the sweep runs. Zero selects DefaultInterval.
+	// Interval is how often the sweep runs. Zero selects defaultInterval.
 	Interval time.Duration
 
 	// RetentionDays is the idle threshold, in days, after which a session's
@@ -55,18 +55,23 @@ type Config struct {
 
 	// SweepLimit caps how many sessions one tick may touch, so a first sweep
 	// over a year-old database does not hold the write lock for minutes. Zero
-	// selects DefaultSweepLimit.
+	// selects defaultSweepLimit.
 	SweepLimit int
 }
 
-// DefaultInterval is the sweep period when Config.Interval is zero. Sessions
+// defaultInterval is the sweep period when Config.Interval is zero. Sessions
 // are compressed after days of idleness, so there is nothing to gain from
 // looking more often than this, and a shorter period only costs write-lock
 // contention with live conversations.
-const DefaultInterval = 10 * time.Minute
+//
+// Unexported: New applies it, nothing outside this package ever read it, and an
+// exported constant with no reader is a promise to keep a number stable for
+// nobody.
+const defaultInterval = 10 * time.Minute
 
-// DefaultSweepLimit bounds one tick's work when Config.SweepLimit is zero.
-const DefaultSweepLimit = 50
+// defaultSweepLimit bounds one tick's work when Config.SweepLimit is zero.
+// Unexported for the same reason as defaultInterval.
+const defaultSweepLimit = 50
 
 // Worker is the maintenance loop. Construct with New, run with Start, join with
 // Wait.
@@ -87,10 +92,10 @@ func New(db *store.Store, cfg Config) *Worker {
 		return nil
 	}
 	if cfg.Interval <= 0 {
-		cfg.Interval = DefaultInterval
+		cfg.Interval = defaultInterval
 	}
 	if cfg.SweepLimit <= 0 {
-		cfg.SweepLimit = DefaultSweepLimit
+		cfg.SweepLimit = defaultSweepLimit
 	}
 	return &Worker{db: db, cfg: cfg, done: make(chan struct{}), now: time.Now}
 }

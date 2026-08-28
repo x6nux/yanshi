@@ -74,17 +74,34 @@ func (s *Server) sessionInfos(sessions []store.SessionSummary) []proto.SessionIn
 }
 
 // handleSessionList replies to a session_list frame with the stored sessions.
+//
+// ONE PAGE, THROUGH THE KEYSET READER (W-D-10). The previous read was
+// store.ListSessions(0) — every active session, with no bound of any kind — and
+// each row then costs a SessionMessageCount query in sessionInfos, so a
+// long-lived project paid an unbounded fan-out and shipped an unbounded frame
+// every time anyone opened /sessions. store.ListSessionsPage is the reader that
+// exists for this and clamps through the same clampLimit the message log uses,
+// so the bound cannot drift into a second number.
+//
+// THE TRUNCATION IS REPORTED, not silent. A prefix rendered as the whole list is
+// how "my old session disappeared" becomes a data-loss report about a store that
+// never lost anything.
 func handleSessionList(s *Server, conn *wsConn) {
 	if s.store == nil {
-		conn.write(proto.NewSessions(nil))
+		conn.write(proto.NewSessions(nil, ""))
 		return
 	}
-	sessions, err := s.store.ListSessions(0)
+	page, err := s.store.ListSessionsPage("", store.MaxMessagePageSize)
 	if err != nil {
-		conn.write(proto.NewSessions(nil))
+		conn.write(proto.NewSessions(nil, ""))
 		return
 	}
-	conn.write(proto.NewSessions(s.sessionInfos(sessions)))
+	var note string
+	if page.NextCursor != "" {
+		note = fmt.Sprintf("showing the %d most recently updated sessions; older ones are "+
+			"not listed", len(page.Sessions))
+	}
+	conn.write(proto.NewSessions(s.sessionInfos(page.Sessions), note))
 }
 
 // restoreMessages turns a persisted message log back into a ReAct history.
@@ -690,15 +707,15 @@ func handleDeleteSession(s *Server, conn *wsConn, cs *connSession, sessionID str
 // (active) — only the store query differs.
 func handleArchivedSessionList(s *Server, conn *wsConn) {
 	if s.store == nil {
-		conn.write(proto.NewSessions(nil))
+		conn.write(proto.NewSessions(nil, ""))
 		return
 	}
 	sessions, err := s.store.ListArchivedSessions(0)
 	if err != nil {
-		conn.write(proto.NewSessions(nil))
+		conn.write(proto.NewSessions(nil, ""))
 		return
 	}
-	conn.write(proto.NewSessions(s.sessionInfos(sessions)))
+	conn.write(proto.NewSessions(s.sessionInfos(sessions), ""))
 }
 
 // wsConn wraps a gorilla WebSocket connection with a write mutex. gorilla/

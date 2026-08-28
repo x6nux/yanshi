@@ -11,6 +11,27 @@ storage:
   wal_max_open_conns: 4       # F1: read pool size (1=legacy serial, 4+ for concurrent reads)
   busy_timeout_ms: 5000       # F1: cross-process lock retry window (ms)
   wal_auto_checkpoint: 1000   # F1: WAL auto-checkpoint page threshold
+  # 下面三个开关默认全部关闭（0 / false），行为与引入它们之前逐字节一致。
+  # 它们各自有代价，所以必须由操作员显式打开。
+  #
+  # retention_days: W-D-04 冷会话压缩。超过这么多天没有活动的会话，整份对话被
+  #   压成一个 gzip blob，行数从 N 降到 1。**到期是压缩不是删除** —— 没有任何
+  #   一条消息会消失，恢复/投影/溯源都照常读得到它。代价是压缩会把这些行移出
+  #   FTS 索引，history_search 从此找不到它们；再次向该会话写入会自动解冻并
+  #   重新入索引。0 = 永久保留，不压缩任何东西。
+  # retention_days: 90
+  #
+  # memory_auto_extract: W-D-03 跨会话记忆抽取。会话安静一段时间后，后台
+  #   worker 读它的窗口、向模型要一批"以后还成立的事实"、写进 memories，再走
+  #   既有的蒸馏入口合并。**它花钱** —— 每个结束的会话一次 provider 调用
+  #   （用 batch.rlm_model，没配就退回主模型），所以默认 false。
+  # memory_auto_extract: false
+  #
+  # memory_quota: memories 表的行数上限。超额时只删 use_count = 0（从未被检索
+  #   命中过）的行，最老的先删；用过的记忆无论多老都不删 —— 这就是配额与
+  #   "过期"的区别。与 memory_auto_extract 相互独立：memory_write 一样往这张表
+  #   里写。0 = 不限制。
+  # memory_quota: 2000
 token: "change-me"
 llm:
   providers:

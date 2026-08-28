@@ -1169,6 +1169,10 @@ func (e featuresEntry) render(_ int, _ spinner.Model) string {
 // sessionsEntry renders the stored sessions list. Filled by the server reply.
 type sessionsEntry struct {
 	sessions []proto.SessionInfo
+	// note is the server's word about rows it did not send. The list is one
+	// page, and a prefix rendered as the whole list is how a bounded reply gets
+	// reported as a lost session.
+	note string
 }
 
 func (e *sessionsEntry) render(_ int, _ spinner.Model) string {
@@ -1177,6 +1181,9 @@ func (e *sessionsEntry) render(_ int, _ spinner.Model) string {
 	if len(e.sessions) == 0 {
 		b.WriteString("    " + warnStyle.Render("(none)") + "\n\n")
 		return b.String()
+	}
+	if e.note != "" {
+		b.WriteString("    " + warnStyle.Render(e.note) + "\n")
 	}
 	for _, s := range e.sessions {
 		title := s.Title

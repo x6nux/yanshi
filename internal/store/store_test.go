@@ -693,19 +693,21 @@ func TestAcquireHealLock_IsExclusiveAndReclaimsStaleLocks(t *testing.T) {
 // peer is pure delay — measured, treating the two alike added 5.02s to a
 // startup that was going to fail with the same error anyway.
 func TestAcquireHealLock_UncreatableLockIsNotContention(t *testing.T) {
+	// The uncreatable directory is a REGULAR FILE, not a chmod 0o500 one.
+	//
+	// The earlier version made the parent read-only and skipped when the lock
+	// was created anyway. That skip is silent, and it fires on exactly the
+	// machine that most needs the guard: CI containers run as root, and the
+	// write bit does not apply to root, so this test quietly stopped running
+	// wherever it mattered while reporting PASS locally. Opening anything under
+	// a path whose parent is a file is ENOTDIR for every uid there is.
 	dir := t.TempDir()
-	sub := filepath.Join(dir, "ro")
-	require.NoError(t, os.Mkdir(sub, 0o700))
-	path := filepath.Join(sub, "yanshi.db")
-	require.NoError(t, os.WriteFile(path, []byte("corrupt"), 0o600))
-
-	require.NoError(t, os.Chmod(sub, 0o500)) // read+execute, no write
-	t.Cleanup(func() { _ = os.Chmod(sub, 0o700) })
+	notADir := filepath.Join(dir, "ro")
+	require.NoError(t, os.WriteFile(notADir, []byte("this is a file"), 0o600))
+	path := filepath.Join(notADir, "yanshi.db")
 
 	_, err := acquireHealLock(path)
-	if err == nil {
-		t.Skip("filesystem ignores the read-only directory bit here")
-	}
+	require.Error(t, err, "creating a lock under a non-directory must fail for every uid")
 	assert.NotErrorIs(t, err, fs.ErrExist,
 		"an uncreatable lock must not be reported as contention: %v", err)
 

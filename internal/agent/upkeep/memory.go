@@ -86,6 +86,11 @@ const memoryKind = "session"
 // which is not "too few notes" but "notes about the conversation instead of
 // about the world". "The user asked me to fix the build" is true, worthless,
 // and exactly what an unprompted summariser produces.
+//
+// Exported because it is a PROMPT: moving behaviour into a string moves it out
+// of the compiler's view, so deleting half of these rules changes what the
+// worker records and compiles fine. Naming it lets a test assert the rules are
+// still there, which is the same reason guard.AutoApprovalPrompt is exported.
 const ExtractPrompt = `Below is a finished work session. Extract the DURABLE facts worth remembering for future, unrelated sessions.
 
 Record only things that will still be true tomorrow:

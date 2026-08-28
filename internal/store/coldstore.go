@@ -49,6 +49,11 @@ const coldBlobLimit = 256 << 20
 // many rows it packed. A session that is already compressed, or that has no
 // rows, is a no-op reporting 0.
 //
+// Exported although CompressColdSessions is its only caller in this package:
+// compressing ONE named session is the operation every test of this file and of
+// internal/tools drives, and routing them through the sweep instead would make
+// each of them set up an idle-timestamp fixture to reach the code under test.
+//
 // IT DOES NOT TOUCH context_events, AND THAT IS THE POINT. The event log is the
 // other half of the projection: delete it and the compaction markers go with
 // it, so the next reconnect rebuilds the window from the full transcript and
