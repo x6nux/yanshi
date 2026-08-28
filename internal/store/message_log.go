@@ -290,13 +290,16 @@ type MessageSearchHit struct {
 // SearchMessages runs an FTS5 query over the durable log.
 //
 // sessionID scopes the search to one conversation. An EMPTY sessionID means
-// "every conversation on the box" rather than an error — this is what makes
+// "every conversation in this store" rather than an error — this is what makes
 // "how did we fix that bug last week" answerable at all, since the caller
 // asking that question does not know, and should not have to know, which past
-// session the fix lives in. Scoping is still available (and is what
-// history_search uses, per historySessionID's doc comment) for the
-// authorisation-sensitive case: a model must not be able to read a session it
-// was never attached to just by guessing its id.
+// session the fix lives in.
+//
+// Scoping remains the DEFAULT for the model-facing path: history_search sends
+// an empty id only when its caller sets all_sessions, and it never accepts a
+// session id as an argument. The distinction that matters is targeting, not
+// breadth — a model must not be able to read one specific session it was never
+// attached to by guessing its id, and a global switch cannot express that.
 //
 // The search does NOT skip messages a compaction has since hidden from any
 // live context window (see ProjectWindow). That is deliberate, not an

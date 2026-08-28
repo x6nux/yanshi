@@ -118,9 +118,14 @@ type historySearchArgs struct {
 	// historySessionID takes none — the choice is "just mine" or
 	// "everything", never "that one over there". A hit's originating session
 	// is still surfaced (formatHistoryHits tags it when AllSessions is set),
-	// so the widening is visible in the output, not silent, but it does mean
-	// prose from OTHER projects sharing this store file can surface in a
-	// search a model runs on this one.
+	// so the widening is visible in the output, not silent.
+	//
+	// What it widens to is one store file, not one machine. storage.sqlite_path
+	// defaults to the RELATIVE "yanshi.db", so the ordinary deployment is one
+	// database per project and this reaches the project's own past sessions.
+	// It crosses a project boundary only where an operator has pointed several
+	// projects at one absolute path — a deliberate configuration, but one whose
+	// consequence lands here.
 	AllSessions bool `json:"all_sessions"`
 }
 
