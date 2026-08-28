@@ -283,13 +283,22 @@ func TestGoalLoop_ResumesAfterRestart(t *testing.T) {
 			decision1, saved1 := seedTokenExhaustedRun(t, dbPath, goal, budget, perIteration)
 			lowered := Budget{MaxIterations: maxIters, MaxTokens: decision1.Usage.Total() - 1}
 
-			loop2 := budgetLoop(lowered, BudgetSet{MaxTokens: true}, &UsageSink{}, openStore(t, dbPath), perIteration)
+			st2 := openStore(t, dbPath)
+			loop2 := budgetLoop(lowered, BudgetSet{MaxTokens: true}, &UsageSink{}, st2, perIteration)
 			var ranAt int
 			decision2, err := loop2.Run(context.Background(), goal, firstIteration(&ranAt))
 			require.NoError(t, err)
 			assert.Equal(t, StopReasonTokenBudget, decision2.StopReason)
 			assert.Zero(t, ranAt, "no phase may run once the new ceiling is already breached")
 			assert.Equal(t, saved1.Iterations, loop2.Iterations())
+
+			// A run that stops before doing anything still takes the final
+			// flush on the way out, and that flush writes the position back.
+			// If it wrote a position this run never established, stopping
+			// early would quietly destroy the progress it had just loaded —
+			// and the next restart would replay the whole goal.
+			assert.Equal(t, saved1.Iterations, readGoalState(t, st2, goal).Iterations,
+				"stopping immediately must not overwrite the resume point with zero")
 		})
 
 		t.Run("iterations", func(t *testing.T) {
