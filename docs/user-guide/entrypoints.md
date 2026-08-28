@@ -176,6 +176,32 @@ Usage: yanshi pr <PR-number>  (run from the repo directory)
 ```
 <!-- END GENERATED: help:pr -->
 
+## enqueue（向会话排队消息）
+
+```sh
+./yanshi enqueue <session-id> 跑一遍 release 脚本
+./yanshi enqueue -list <session-id>
+```
+
+适用：向一个**当前没有连接**（或正在运行）的会话排一条用户消息。消息落在项目数据库里，
+下一次 `yanshi exec -resume <session-id>` / `yanshi chat -resume <session-id>` 时
+按入队顺序投递，投递后标记已消费（至多一次）。`-list` 只看不取。
+
+<!-- BEGIN GENERATED: help:enqueue -->
+```text
+Usage: yanshi enqueue [-config FILE] <session-id> <message...>
+       yanshi enqueue [-config FILE] -list <session-id>
+
+Queue a user message for a session, whether or not anything is connected to it.
+The message is stored in the project database and delivered the next time that
+session is resumed (yanshi exec/chat -resume <session-id>).
+
+  -list   show what is waiting for a session without consuming it
+
+The message may be given as several arguments; they are joined with spaces.
+```
+<!-- END GENERATED: help:enqueue -->
+
 ## auth（凭据管理）
 
 ```sh

@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/x6nux/yanshi/internal/cli"
+	"github.com/x6nux/yanshi/internal/config"
+	"github.com/x6nux/yanshi/internal/store"
 )
 
 // headlessConfig captures the flags shared by `exec` and `chat --no-tui`. The
@@ -118,6 +120,51 @@ func headlessInputs(cfg headlessConfig, stdin io.Reader) ([]cli.HeadlessInput, e
 	return cli.ReadHeadlessInputs(stdin, cli.HeadlessInputMode(cfg.Input))
 }
 
+// drainQueue returns the messages queued for sessionID as headless prompts,
+// marking them consumed (W-D-08).
+//
+// EVERY FAILURE IS SILENT AND YIELDS NOTHING. The queue is an addition to the
+// run, not a precondition for it: a missing config, an unreadable database or a
+// session with no queue must not stop a prompt the user typed on this command
+// line from being answered. That is the same soft-degrade rule bootstrap.Build
+// applies to VCS and plugin discovery.
+//
+// It opens its own handle rather than reaching into the backend, because the
+// backend may be a different process — which is exactly the case `yanshi
+// enqueue` exists for. store.Open keeps SelfHeal off, as every incidental
+// reader must.
+//
+// DELIVERY IS AT-MOST-ONCE: the rows are marked consumed here, before the turns
+// run, so a crashed run loses them. See store.ConsumeQueuedMessages for why
+// that direction was chosen over redelivering user input.
+//
+// TODO-FREE NOTE ON SCOPE, not a placeholder: the WebSocket session-resume path
+// (internal/api/http/ws_compaction.go's loadSession) is the other place this
+// belongs, so a TUI reconnect drains the queue too. It is untouched here only
+// because that package is owned by another change in flight; the call is the
+// same one line.
+func drainQueue(configPath, sessionID string) []cli.HeadlessInput {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return nil
+	}
+	st, err := store.Open(cfg.Storage.SQLitePath)
+	if err != nil {
+		return nil
+	}
+	defer st.Close()
+	msgs, err := st.ConsumeQueuedMessages(sessionID)
+	if err != nil || len(msgs) == 0 {
+		return nil
+	}
+	out := make([]cli.HeadlessInput, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, cli.HeadlessInput{Prompt: m})
+	}
+	fmt.Fprintf(os.Stderr, "delivering %d queued message(s) to %s\n", len(msgs), sessionID)
+	return out
+}
+
 func runHeadlessCommand(args []string, command string, stdin io.Reader) int {
 	cfg, err := parseHeadlessArgs(args, command)
 	if err != nil {
@@ -130,6 +177,11 @@ func runHeadlessCommand(args []string, command string, stdin io.Reader) int {
 		return exitUsage
 	}
 	if cfg.Resume != "" {
+		// W-D-08: resuming a session is where its queued messages land. They go
+		// FIRST, in enqueue order, ahead of whatever this invocation was given —
+		// they were said earlier, and a queue that delivered out of order would
+		// make "queue this, then ask about it" impossible to express.
+		inputs = append(drainQueue(cfg.ConfigPath, cfg.Resume), inputs...)
 		inputs[0].Resume = cfg.Resume
 	}
 

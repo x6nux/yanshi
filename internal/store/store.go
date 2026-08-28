@@ -799,6 +799,35 @@ CREATE TABLE IF NOT EXISTS cold_sessions (
     max_seq    INTEGER NOT NULL
 );
 
+-- W-D-08: user messages queued for a session that may or may not be connected.
+--
+-- NOT EXPRESSED AS A tasks ROW, and the reason is concrete rather than
+-- stylistic: task.Broker.Claim calls store.ListPending(1) and claims whatever
+-- comes back WITHOUT filtering by type, so a queued chat message parked in the
+-- tasks table would be picked up by the next cmd/agent-worker and executed as a
+-- work item. The two queues also have opposite lifecycles — a task is claimed,
+-- heartbeated, retried and can fail; a queued message is delivered once to the
+-- session that owns it and has no worker, no ownership and no retry.
+--
+-- ADR-0015 constraint 1 DOES NOT APPLY HERE. That rule is about
+-- context_events, which must stay INSERT-only because it is the compaction log.
+-- This table is a work queue: marking a row consumed is the whole point, and
+-- expressing consumption by appending would mean re-deriving delivery state on
+-- every read.
+--
+-- consumed_at rather than DELETE so "what was queued and when did it land" is
+-- still answerable after delivery; nothing here is large enough to be worth
+-- reclaiming.
+CREATE TABLE IF NOT EXISTS queued_messages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  TEXT    NOT NULL,
+    content     TEXT    NOT NULL,
+    created_at  INTEGER NOT NULL,
+    consumed_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_queued_messages_session
+    ON queued_messages(session_id, id);
+
 -- S6: permission decisions. The records auditPermission already built existed
 -- only as stderr log lines, so "who approved that rm last night" was
 -- unanswerable the moment the terminal scrolled. cmd_digest is a REDACTED
