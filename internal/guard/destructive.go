@@ -45,8 +45,10 @@ var deletionPrograms = map[string]bool{
 // It deliberately does NOT reuse execpolicy.Parse: the execpolicy lexer rejects
 // glob/expansion/trailing-backslash tokens (*, $HOME, C:\) — exactly the
 // catastrophic forms we must catch. Instead it uses a permissive tokenizer
-// (lexShellLite). Commands containing a control operator (&&, ;, |, >, $(, …)
-// are SPLIT and every segment graded, the most severe verdict winning.
+// (lexShellLite). Commands containing a control operator (&&, ;, |, $(, …) are
+// SPLIT and every segment graded, the most severe verdict winning. A REDIRECTION
+// is not a boundary — it and its target word are removed from the segment they
+// sit in, wherever in the command they were written (see skipRedirect).
 //
 // That split used to happen only inside a wrapper payload: at the top level a
 // chained command returned DestructionNone so checkShell's whole-string
@@ -219,16 +221,6 @@ func classifyLexed(program string, args []string, workdir string, depth int) Des
 	return worst
 }
 
-// splitControlSegments breaks a command on its control operators, redirections
-// and command-substitution delimiters so each executable piece can be
-// classified on its own. It is quote-aware: an operator character inside quotes
-// is data, not a separator.
-//
-// It is used ONLY for wrapper payloads (see classifyDestruction's topLevel
-// parameter). Splitting is deliberately generous - a fragment that is not a
-// command simply fails to match a deletion program and contributes
-// DestructionNone - because an extra fragment costs nothing while a missed
-// segment is a laundered `rm -rf /`.
 // splitIntoStrictlySmallerSegments is splitControlSegments plus the termination
 // proof its recursive caller needs.
 //
@@ -253,6 +245,30 @@ func splitIntoStrictlySmallerSegments(cmd string) ([]string, bool) {
 	return segs, true
 }
 
+// splitControlSegments breaks a command on its control operators and
+// command-substitution delimiters so each executable piece can be classified on
+// its own. It is quote-aware: an operator character inside quotes is data, not a
+// separator.
+//
+// Splitting is deliberately generous — a fragment that is not a command simply
+// fails to match a deletion program and contributes DestructionNone — because an
+// extra fragment costs nothing while a missed segment is a laundered
+// `rm -rf /`. That generosity used to be contained: the splitter ran ONLY on
+// wrapper payloads, and anything at the top level carrying a control operator
+// was refused wholesale by checkShell. INF1 removed that outer refusal and the
+// splitter is now the top-level reader too, so a shape it reads differently
+// from /bin/sh is no longer a harmless extra fragment.
+//
+// A REDIRECTION IS NOT A COMMAND BOUNDARY. `>` and `<` used to be in the
+// separator set above, which is true of no shell: `>/dev/null rm -rf /` is one
+// command (POSIX allows a redirection anywhere in a simple command, including
+// before the command word), and splitting there produced the single fragment
+// `/dev/null rm -rf /`, whose program word normalizes to `null`. Measured: that
+// graded DestructionNone and the argv reached a real process under a
+// `patterns: ["*"]` profile. skipRedirect consumes the operator together with
+// its target word instead, so the command word keeps its position and the
+// target — which is a FILE, never a program — is left to checkRedirectTargets
+// and the FS dimension, where INF1 put it.
 func splitControlSegments(cmd string) []string {
 	var segs []string
 	var cur strings.Builder
@@ -276,8 +292,16 @@ func splitControlSegments(cmd string) []string {
 		case '\'', '"':
 			quote = c
 			cur.WriteByte(c)
-		case ';', '|', '&', '\n', '\r', '>', '<', '`', ')':
+		case ';', '|', '&', '\n', '\r', '`', ')':
 			flush()
+		case '>', '<':
+			// A standalone all-digit token in front of the operator is the file
+			// descriptor and belongs to the redirection, not to the command:
+			// `2>/dev/null rm -rf /` runs rm, not a program called "2".
+			trimmed := trimTrailingFD(cur.String())
+			cur.Reset()
+			cur.WriteString(trimmed)
+			i = skipRedirect(cmd, i) - 1 // -1: the loop's own i++ steps past it
 		case '$':
 			if i+1 < len(cmd) && cmd[i+1] == '(' {
 				flush()
@@ -293,18 +317,130 @@ func splitControlSegments(cmd string) []string {
 	return segs
 }
 
-// hasControlOperator reports whether cmd contains a shell control operator or
-// redirection that checkShell rejects structurally (its metacharacter HardDeny
-// set). When true, ClassifyDestruction defers so that dimension fires instead of
-// being short-circuited. Quote-unaware, matching checkShell's own behavior.
+// skipRedirect consumes the redirection beginning at cmd[i] — the operator and,
+// unless the operator folds a descriptor into itself, the target word that
+// follows it — and returns the index of the first byte after it. It always
+// advances by at least one byte, which is what keeps splitControlSegments'
+// loop monotone.
 //
-// The quote-unawareness is what keeps the ANSI-C decoder from ever WIDENING
-// what runs. checkShell tests the raw string with the same literal set, so any
-// command whose raw text contains a metacharacter is structurally denied
-// regardless of what the decoder would have made of it. A `&&` written as
-// $'\x26\x26' therefore never reaches an allow: the decoded form is not
-// consulted here, and the raw form still carries "$'" through to a lexer that
-// treats it as one token.
+// The target word is DROPPED rather than kept or emitted as its own fragment.
+// It names a file, so classifying it as a command was never right: `echo > rm
+// -rf /` writes a file called `rm` and runs `echo -rf /`, and reading the tail
+// as a deletion was a false positive the old boundary-based split produced by
+// accident. Where the target does need judging — is this path writable, is it
+// in the credential denylist — is checkRedirectTargets, which gets it from
+// execpolicy.ParseCommandList with its quoting intact.
+//
+// A process substitution `>(…)` has no target word; it is left for the caller's
+// `(`/`)` handling, which is where it was already going.
+func skipRedirect(cmd string, i int) int {
+	c := cmd[i]
+	i++
+	if i < len(cmd) && cmd[i] == c { // `>>` append, `<<` here-document
+		i++
+	}
+	if i < len(cmd) && cmd[i] == '(' {
+		return i
+	}
+	if i < len(cmd) && cmd[i] == '&' {
+		i++
+		digits := i
+		for digits < len(cmd) && cmd[digits] >= '0' && cmd[digits] <= '9' {
+			digits++
+		}
+		// `2>&1` duplicates a descriptor and `>&-` closes one; neither names a
+		// file. Every other spelling of `>&word` writes to a file called word —
+		// see execpolicy.scanRedirect, which measured bash, sh and zsh.
+		if digits > i && isRedirectWordBoundary(byteAtOrZero(cmd, digits)) {
+			return digits
+		}
+		if byteAtOrZero(cmd, i) == '-' {
+			return i + 1
+		}
+	}
+	for i < len(cmd) && (cmd[i] == ' ' || cmd[i] == '\t') {
+		i++
+	}
+	quote := byte(0)
+	for i < len(cmd) {
+		ch := cmd[i]
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
+			i++
+			continue
+		}
+		switch {
+		case ch == '\'' || ch == '"':
+			quote = ch
+		case isRedirectWordBoundary(ch):
+			return i
+		}
+		i++
+	}
+	return i
+}
+
+// trimTrailingFD removes a trailing file-descriptor token from the segment text
+// accumulated so far. The digits must form a whole word (`ls 2>x` yields "ls "),
+// not the tail of one: in `x2>f y` the shell runs `x2 y`, so "x2" stays.
+func trimTrailingFD(s string) string {
+	j := len(s)
+	for j > 0 && s[j-1] >= '0' && s[j-1] <= '9' {
+		j--
+	}
+	if j == len(s) {
+		return s
+	}
+	if j == 0 || s[j-1] == ' ' || s[j-1] == '\t' {
+		return s[:j]
+	}
+	return s
+}
+
+// isRedirectWordBoundary reports whether b ends a redirection target word. Zero
+// stands for end-of-string.
+func isRedirectWordBoundary(b byte) bool {
+	switch b {
+	case 0, ' ', '\t', '\n', '\r', ';', '|', '&', '<', '>', '`', '(', ')':
+		return true
+	}
+	return false
+}
+
+func byteAtOrZero(s string, i int) byte {
+	if i >= len(s) {
+		return 0
+	}
+	return s[i]
+}
+
+// hasControlOperator reports whether cmd carries anything that makes it more
+// than one plain command word plus operands: a control operator, a redirection,
+// or a command substitution. When true, classifyDestruction splits the command
+// and grades every piece, so this is the gate in front of that split rather
+// than a handoff to another dimension.
+//
+// It said the opposite until INF1: checkShell used to reject this whole
+// character set structurally, so ClassifyDestruction deferred to it and
+// returned DestructionNone. checkShell now reads chains instead of refusing
+// them (ADR-0004's supplement), which is exactly why the deferral became a hole
+// and the split took its place.
+//
+// It stays quote-unaware, and that is what keeps the ANSI-C decoder from ever
+// WIDENING what runs. Being over-eager here is free — splitControlSegments is
+// quote-aware and simply hands back the original string when the operator turns
+// out to be data, which splitIntoStrictlySmallerSegments reports as "no
+// boundary" so the command is graded as written. The direction that would cost
+// something is missing an operator, and a bare Contains scan cannot.
+//
+// A `&&` written as $'\x26\x26' carries no literal operator, so this returns
+// false for it and the split does not fire. That form is caught one level down
+// instead, by classifyDestruction's top-level decodeANSIC branch, which expands
+// it and re-classifies the decoded chain — `internal/guard`'s
+// TestClassifyDestruction_ObfuscatedAndWrapped is what fails if that branch
+// goes away.
 func hasControlOperator(cmd string) bool {
 	for _, m := range []string{"&&", "&", "||", ";", "|", "`", "$(", "\n", "\r", ">", "<"} {
 		if strings.Contains(cmd, m) {

@@ -292,8 +292,9 @@ func TestUnparseableShellStaysStructuralHardDeny(t *testing.T) {
 // metacharacter HardDeny would refuse it instead. Once checkShell judges
 // chains, that handoff has no receiver: `ls && rm -rf /` presents the deletion
 // gate with a chain it declines to grade and the shell dimension with two
-// individually-plausible commands. Deleting classifyEverySegment turns every
-// case below into an Allow or a Prompt.
+// individually-plausible commands. Deleting the split in classifyDestruction —
+// the splitIntoStrictlySmallerSegments branch — turns every case below into an
+// Allow or a Prompt.
 func TestDestructiveGateSeesEverySegmentOfAChain(t *testing.T) {
 	g := New()
 	// Maximally permissive: only the structural floor can refuse anything here.
@@ -334,6 +335,80 @@ func TestDestructiveGateSeesEverySegmentOfAChain(t *testing.T) {
 	inScope := filepath.ToSlash(segTestWorkdir) + "/build"
 	if d := g.Check(prof, segAction("ls && rm -rf "+inScope)); d.Verdict != Allow {
 		t.Errorf("Check(in-workdir chain).Verdict = %v (%s), want Allow", d.Verdict, d.Reason)
+	}
+}
+
+// TestRedirectIsNotACommandBoundaryForTheDeletionGate pins the shape that
+// walked past this gate while every other test here was green.
+//
+// A redirection may appear ANYWHERE in a POSIX simple command, including before
+// the command word. The splitter used to treat `>` and `<` as separators, so
+// `>/dev/null rm -rf /` became the single fragment `/dev/null rm -rf /` — whose
+// program word normalizes to `null`, which is not a deletion program. Measured
+// with a canary `rm` on PATH: the argv reached a real process, exit 0, no
+// prompt. Every case below graded DestructionNone before skipRedirect existed.
+//
+// The trailing spelling is included so a "fix" that swaps which end is blind
+// fails here rather than in production, and the last two entries pin the two
+// operators that legitimately name no file (`2>&1`, `>&-`) so the target-word
+// skip cannot start eating the command that follows them.
+func TestRedirectIsNotACommandBoundaryForTheDeletionGate(t *testing.T) {
+	catastrophic := []string{
+		">/dev/null rm -rf /",
+		"</dev/null rm -rf /",
+		"rm >/dev/null -rf /",
+		"rm -rf / >/dev/null",
+		"2>/dev/null rm -rf /",
+		">>log rm -rf /",
+		">'/dev/null' rm -rf /",
+		"&>/dev/null rm -rf /",
+		"sudo >/dev/null rm -rf /",
+		"dd >/dev/null if=/dev/zero of=/dev/disk0",
+		"ls && >/dev/null rm -rf /",
+		"ls | >/dev/null rm -rf /",
+		`bash -c ">/dev/null rm -rf /"`,
+		"rm -rf / 2>&1",
+		"rm -rf / >&-",
+	}
+	for _, cmd := range catastrophic {
+		if got := ClassifyDestruction(cmd, segTestWorkdir); got != DestructionCatastrophic {
+			t.Errorf("ClassifyDestruction(%q) = %v, want Catastrophic — the redirection is not a "+
+				"command boundary and must not displace the command word", cmd, got)
+		}
+	}
+	// The other direction: the deletion program named as a redirect TARGET is a
+	// file, not a command. Reading it as one is the false positive the old
+	// boundary split produced, and re-introducing the boundary would make these
+	// Catastrophic again.
+	for _, cmd := range []string{
+		"echo hi > rm",
+		"echo hi > rm -rf /tmp/x",
+	} {
+		if got := ClassifyDestruction(cmd, segTestWorkdir); got == DestructionCatastrophic {
+			t.Errorf("ClassifyDestruction(%q) = Catastrophic; the word after `>` is a filename, "+
+				"and the FS dimension is what judges it", cmd)
+		}
+	}
+	// And the guard's own verdict, under a profile whose only possible refusal
+	// is the structural floor: a Check-level assertion, not just a classifier
+	// one, because the classifier is only half the path to a spawned process.
+	g := New()
+	prof := PermissionProfile{
+		Tools: ToolsPerm{Allow: []string{"*"}},
+		FS:    FSPerm{Read: []string{"**"}, Write: []string{"**"}},
+		Shell: ShellPerm{Policy: "denylist"},
+		Net:   NetPerm{Allow: true},
+	}
+	if d := g.Check(prof, segAction("ls")); d.Verdict != Allow {
+		t.Fatalf("precondition: an ordinary command must be allowed under this profile, got %v (%s)",
+			d.Verdict, d.Reason)
+	}
+	for _, cmd := range []string{">/dev/null rm -rf /", "rm >/dev/null -rf /"} {
+		d := g.Check(prof, segAction(cmd))
+		if d.Verdict != HardDeny || d.Overridable {
+			t.Errorf("Check(%q) = {%v overridable=%v reason=%q}, want a structural HardDeny",
+				cmd, d.Verdict, d.Overridable, d.Reason)
+		}
 	}
 }
 
