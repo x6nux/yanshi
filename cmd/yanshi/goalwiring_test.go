@@ -37,41 +37,115 @@ func TestGoalLoopResumeIsWired(t *testing.T) {
 	file, err := parser.ParseFile(fset, "main.go", nil, 0)
 	require.NoError(t, err)
 
-	// The fields runGoal must set on the goalloop.Config it builds, and the
-	// expression each must be set to. Matching the value too keeps `State: nil`
-	// from passing a check that only looked for the key.
+	// Scoped to runGoal. resetGoalRun resolves a workdir too, correctly and
+	// from its own parameter, and it has its own end-to-end test; a file-wide
+	// scan would collect it and make this assertion about two functions.
+	var runGoalDecl *ast.FuncDecl
+	for _, d := range file.Decls {
+		if fn, ok := d.(*ast.FuncDecl); ok && fn.Name.Name == "runGoal" && fn.Recv == nil {
+			runGoalDecl = fn
+		}
+	}
+	require.NotNil(t, runGoalDecl, "runGoal must exist for this gate to mean anything")
+
+	// The fields the real path's goalloop.Config must set, and the expression
+	// each must be set to. Matching the value too keeps `State: nil` from
+	// passing a check that only looked for the key, and keeps Budget from
+	// being quietly replaced by a literal that ignores the flags.
 	want := map[string]string{
 		"State":          "loopStore",
 		"BudgetExplicit": "explicitBudgetFlags(fs)",
+		"Budget":         "budget",
 	}
 
-	got := map[string]string{}
-	ast.Inspect(file, func(n ast.Node) bool {
+	// Collected per literal, not merged. runGoal builds two goalloop.Configs —
+	// the fake demo path and the real one — and they share field names, so a
+	// single flat map would let one path answer for the other. Only the real
+	// path wires State, which is what identifies it here.
+	var configs []map[string]string
+	// goalloop.Goal carries the working directory, which is the key the resume
+	// point is stored under. Feeding it anything but the resolved -workdir
+	// makes every project on the machine share one resume row.
+	var goalWorkdirs []string
+
+	ast.Inspect(runGoalDecl, func(n ast.Node) bool {
 		lit, ok := n.(*ast.CompositeLit)
-		if !ok || !isSelector(lit.Type, "goalloop", "Config") {
+		if !ok {
 			return true
 		}
+		isConfig := isSelector(lit.Type, "goalloop", "Config")
+		isGoal := isSelector(lit.Type, "goalloop", "Goal")
+		if !isConfig && !isGoal {
+			return true
+		}
+		fields := map[string]string{}
 		for _, elt := range lit.Elts {
 			kv, ok := elt.(*ast.KeyValueExpr)
 			if !ok {
 				continue
 			}
-			key, ok := kv.Key.(*ast.Ident)
-			if !ok {
-				continue
+			if key, ok := kv.Key.(*ast.Ident); ok {
+				fields[key.Name] = exprString(fset, kv.Value)
 			}
-			if _, wanted := want[key.Name]; wanted {
-				got[key.Name] = exprString(fset, kv.Value)
-			}
+		}
+		if isConfig {
+			configs = append(configs, fields)
+		} else if wd, ok := fields["Workdir"]; ok {
+			goalWorkdirs = append(goalWorkdirs, wd)
 		}
 		return true
 	})
 
-	for field, value := range want {
-		require.Equalf(t, value, got[field],
-			"runGoal must build its goalloop.Config with %s: %s — without it the goal loop "+
-				"neither persists nor resumes, and no other test notices", field, value)
+	var real map[string]string
+	for _, c := range configs {
+		if _, ok := c["State"]; !ok {
+			continue
+		}
+		require.Nil(t, real, "only one goalloop.Config may wire State; found several")
+		real = c
 	}
+	require.NotNil(t, real,
+		"no goalloop.Config in runGoal sets State — the goal loop neither persists "+
+			"nor resumes, and no other test notices")
+
+	for field, value := range want {
+		require.Equalf(t, value, real[field],
+			"runGoal must build its real-path goalloop.Config with %s: %s", field, value)
+	}
+
+	require.Equal(t, []string{"wd"}, goalWorkdirs,
+		"goalloop.Goal must carry the resolved -workdir; it is the key the resume "+
+			"point is stored under")
+
+	// ...and that wd is the -workdir flag, not some other path. Checking only
+	// the identifier above was not enough: swapping absWorkdir(*workdir) for
+	// absWorkdir(".") left every test green while making every project on the
+	// machine share a single resume row. The chain is flag -> absWorkdir -> wd
+	// -> Goal.Workdir, and it is only guarded if all three links are.
+	var workdirSources []string
+	ast.Inspect(runGoalDecl, func(n ast.Node) bool {
+		as, ok := n.(*ast.AssignStmt)
+		if !ok || len(as.Lhs) == 0 || len(as.Rhs) != 1 {
+			return true
+		}
+		lhs, ok := as.Lhs[0].(*ast.Ident)
+		if !ok || lhs.Name != "wd" {
+			return true
+		}
+		call, ok := as.Rhs[0].(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		fn, ok := call.Fun.(*ast.Ident)
+		if !ok || fn.Name != "absWorkdir" || len(call.Args) != 1 {
+			return true
+		}
+		workdirSources = append(workdirSources, exprString(fset, call.Args[0]))
+		return true
+	})
+	require.Equal(t, []string{"*workdir"}, workdirSources,
+		"wd must come from absWorkdir(*workdir); anything else silently detaches the "+
+			"resume point from the directory the operator named")
 }
 
 // isSelector reports whether e is the qualified identifier pkg.name.
