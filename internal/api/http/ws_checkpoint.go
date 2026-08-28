@@ -47,7 +47,7 @@ func handleCheckpoint(s *Server, conn *wsConn, cs *connSession, cf proto.ClientF
 		text, err := s.planCheckpoint(cf.ID, cf.Dim)
 		writeCheckpointReply(conn, text, err)
 	case proto.CheckpointRestore:
-		text, err := s.restoreCheckpoint(cf.ID, cf.Dim)
+		text, err := s.restoreCheckpoint(cs, cf.ID, cf.Dim)
 		writeCheckpointReply(conn, text, err)
 	default:
 		conn.write(proto.NewError("checkpoint: unknown action " + strconv.Quote(cf.Name)))
@@ -116,7 +116,24 @@ func (s *Server) planCheckpoint(id, dim string) (string, error) {
 // the server itself just computed. ApplyRestore re-plans under the repo lane and
 // rejects a token that no longer matches, so a write that lands in between is
 // still named rather than silently overwritten.
-func (s *Server) restoreCheckpoint(id, dim string) (string, error) {
+//
+// THE SESSION DIMENSION ALSO REFRESHES THE LIVE WINDOW, which is why this takes
+// the connSession. The store restore moves the durable boundary, and the other
+// two dimensions are felt immediately because they are re-read from disk on
+// every use — memories from the table, files from the working copy. The
+// conversation is not: connSession.history is an in-memory copy, so without
+// this the restore was durable and INVISIBLE, and the next turn on the same
+// connection still sent the model the messages it had just rolled back.
+// Measured: the projection dropped from 4 rows to 2 while turn 3 still carried
+// the first exchange, under a reply that said "session restored". Two of three
+// dimensions real and one not, with identical wording, is the shape
+// ErrNoCheckpointDimension's own doc names as the thing to avoid. Every sibling
+// restore path in this package (restore_session in ws_handlers.go, both seam
+// branches in ws_seam.go) reassigns cs.history for the same reason.
+//
+// Only when the checkpoint belongs to THIS connection's session: rolling back
+// another conversation's boundary must not rewrite the one in front of the user.
+func (s *Server) restoreCheckpoint(cs *connSession, id, dim string) (string, error) {
 	if store.CheckpointDimension(dim) == store.CheckpointFiles {
 		if s.vcs == nil || s.repoID == "" {
 			return "", fmt.Errorf("the files dimension needs a repository; none is configured")
@@ -137,6 +154,19 @@ func (s *Server) restoreCheckpoint(id, dim string) (string, error) {
 	undo, err := s.store.RestoreCheckpoint(id, store.CheckpointDimension(dim))
 	if err != nil {
 		return "", err
+	}
+	if store.CheckpointDimension(dim) == store.CheckpointSession &&
+		cs.sessionID != "" && undo.SessionID == cs.sessionID {
+		window, werr := s.store.ProjectWindow(cs.sessionID)
+		if werr != nil {
+			// The rollback IS durable at this point, so reporting a plain
+			// failure would be as wrong as reporting a plain success. Name both
+			// halves and the one action that recovers the second.
+			return "", fmt.Errorf(
+				"session restored from %s, but this connection still holds the old "+
+					"context — reconnect to pick it up: %w", id, werr)
+		}
+		cs.history = restoreMessages(window)
 	}
 	return fmt.Sprintf("%s restored from %s\nundo with: /checkpoint restore %s %s yes",
 		dim, id, undo.ID, dim), nil

@@ -20,7 +20,14 @@ import (
 // the same silence as one whose handler did nothing.
 func newCheckpointServer(t *testing.T, st *store.Store) *websocket.Conn {
 	t.Helper()
-	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"hi"}, nil)})
+	return newCheckpointServerWithModel(t, st, einollm.NewFakeModel([]string{"hi"}, nil))
+}
+
+// newCheckpointServerWithModel is the same, with the caller's fake — the live
+// window is only observable through what the NEXT turn hands the model.
+func newCheckpointServerWithModel(t *testing.T, st *store.Store, m *einollm.FakeModel) *websocket.Conn {
+	t.Helper()
+	o, err := orchestrator.New(orchestrator.Config{Model: m})
 	require.NoError(t, err)
 	s := New(Config{Token: "t", Store: st})
 	s.ChatWS(o, nil, nil)
@@ -164,4 +171,84 @@ func TestCheckpointDimensionVocabulariesAgree(t *testing.T) {
 	assert.Equal(t, string(store.CheckpointSession), proto.CheckpointDimSession)
 	assert.Equal(t, string(store.CheckpointMemory), proto.CheckpointDimMemory)
 	assert.Equal(t, string(store.CheckpointFiles), proto.CheckpointDimFiles)
+}
+
+// TestCheckpointFrame_SessionRestoreReachesTheLiveWindow is the regression for
+// a restore that was durable and invisible.
+//
+// The session dimension moved the stored boundary and left connSession.history
+// alone, so the very next turn on the SAME connection still sent the model the
+// exchange the user had just rolled back — under a reply saying "session
+// restored". The memory and files dimensions do not have this failure mode
+// because both are re-read from disk on use; the conversation is an in-memory
+// copy.
+//
+// The assertion is on WHAT THE MODEL WAS HANDED, not on the reply text or the
+// store: the reply was already truthful-looking while wrong, and the store was
+// already correct. BETATWO is the positive control — without it an empty
+// history would satisfy "did not see ALPHAONE" and prove nothing.
+//
+// Deleting the cs.history assignment in restoreCheckpoint makes this red.
+func TestCheckpointFrame_SessionRestoreReachesTheLiveWindow(t *testing.T) {
+	st, err := store.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { st.Close() })
+
+	fm := einollm.NewFakeModel([]string{"REPLYONE", "REPLYTWO", "REPLYTHREE"}, nil)
+	fm.RecordMessages = true
+	c := newCheckpointServerWithModel(t, st, fm)
+
+	turn := func(text string) {
+		require.NoError(t, c.WriteJSON(proto.ClientFrame{Type: "user_message", Text: text}))
+		for readFrame(t, c).Type != "done" {
+		}
+	}
+	turn("ALPHAONE")
+	turn("BETATWO")
+
+	sessions, err := st.ListSessions(10)
+	require.NoError(t, err)
+	require.Len(t, sessions, 1)
+	sid := sessions[0].ID
+	rows, err := st.Messages(sid)
+	require.NoError(t, err)
+	require.Len(t, rows, 4, "two turns of prose, one row each")
+
+	// A compaction hides the first exchange; the checkpoint captures that
+	// boundary; then the boundary is undone, as a /compact undo would do.
+	require.NoError(t, st.AppendContextEvent(sid, store.ContextEventCompact, 2, nil))
+	require.NoError(t, c.WriteJSON(proto.NewCheckpoint(proto.CheckpointCreate, "", "", "B")))
+	f := readFrame(t, c)
+	require.Equalf(t, "checkpoint_result", f.Type, "got %s: %s", f.Type, f.Text)
+	cps, err := st.Checkpoints(10)
+	require.NoError(t, err)
+	require.Len(t, cps, 1)
+	require.NoError(t, st.AppendContextEvent(sid, store.ContextEventUndo, 0, nil))
+
+	window, err := st.ProjectWindow(sid)
+	require.NoError(t, err)
+	require.Len(t, window, 4, "the undo put the whole transcript back in the window")
+
+	require.NoError(t, c.WriteJSON(proto.NewCheckpoint(proto.CheckpointRestore, cps[0].ID, "session", "")))
+	f = readFrame(t, c)
+	require.Equalf(t, "checkpoint_result", f.Type, "got %s: %s", f.Type, f.Text)
+
+	window, err = st.ProjectWindow(sid)
+	require.NoError(t, err)
+	require.Len(t, window, 2, "the durable half of the restore")
+
+	turn("GAMMA")
+	var sawAlpha, sawBeta bool
+	for _, m := range fm.ReceivedMessages {
+		switch {
+		case m == nil:
+		case m.Content == "ALPHAONE":
+			sawAlpha = true
+		case m.Content == "BETATWO":
+			sawBeta = true
+		}
+	}
+	assert.True(t, sawBeta, "the kept tail must still be in the live window")
+	assert.False(t, sawAlpha,
+		"the live connection kept sending the model an exchange the restore rolled back")
 }
