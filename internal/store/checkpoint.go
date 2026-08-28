@@ -301,7 +301,11 @@ func (s *Store) PlanCheckpointRestore(id string, dim CheckpointDimension) (Check
 			return CheckpointPlan{}, fmt.Errorf("%w: no session (checkpoint %s)",
 				ErrNoCheckpointDimension, cp.ID)
 		}
-		now, err := s.ProjectWindow(cp.SessionID)
+		here, err := s.boundary(cp.SessionID)
+		if err != nil {
+			return CheckpointPlan{}, err
+		}
+		now, err := s.messagesInWindow(cp.SessionID, here.HiddenSeq, here.PinnedSeqs)
 		if err != nil {
 			return CheckpointPlan{}, err
 		}
@@ -312,7 +316,7 @@ func (s *Store) PlanCheckpointRestore(id string, dim CheckpointDimension) (Check
 		plan.Before, plan.After = len(now), len(then)
 		plan.Summary = fmt.Sprintf(
 			"session %s: context window %d → %d messages (boundary %d → %d, one appended event)",
-			cp.SessionID, plan.Before, plan.After, mustHiddenSeq(s, cp.SessionID), cp.HiddenSeq)
+			cp.SessionID, plan.Before, plan.After, here.HiddenSeq, cp.HiddenSeq)
 	case CheckpointMemory:
 		if err := s.DB.QueryRow("SELECT COUNT(*) FROM memories").Scan(&plan.Before); err != nil {
 			return CheckpointPlan{}, err
@@ -331,17 +335,6 @@ func (s *Store) PlanCheckpointRestore(id string, dim CheckpointDimension) (Check
 		return CheckpointPlan{}, fmt.Errorf("store: unknown checkpoint dimension %q", dim)
 	}
 	return plan, nil
-}
-
-// mustHiddenSeq reports the session's current boundary for a plan's summary,
-// falling back to the checkpoint's own value on error. A summary line is not
-// worth failing a plan over, and the counts above are the load-bearing half.
-func mustHiddenSeq(s *Store, sessionID string) int {
-	h, err := s.HiddenSeq(sessionID)
-	if err != nil {
-		return 0
-	}
-	return h
 }
 
 // RestoreCheckpoint rolls one dimension back and returns the checkpoint it took

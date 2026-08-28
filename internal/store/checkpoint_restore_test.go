@@ -417,3 +417,234 @@ func TestCheckpoint_FailedRestoreRollsBackTheSnapshotToo(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, mems, 3, "and the memories are untouched")
 }
+
+// TestCheckpoint_ClosedDBErrorPaths walks the checkpoint API against a closed
+// pool, the way error_paths_test.go does for the rest of the store.
+//
+// Every one of these functions has an error return that production reads and
+// nothing else would exercise. The reason to cover them is not the number: a
+// checkpoint call that swallows a database error and reports a zero-value
+// Checkpoint has told the caller a snapshot exists.
+func TestCheckpoint_ClosedDBErrorPaths(t *testing.T) {
+	s := storeWithClosedDB(t)
+
+	t.Run("CreateCheckpoint", func(t *testing.T) {
+		_, err := s.CreateCheckpoint("l", "s", "c")
+		assert.Error(t, err)
+	})
+	t.Run("Checkpoints", func(t *testing.T) {
+		_, err := s.Checkpoints(10)
+		assert.Error(t, err)
+	})
+	t.Run("CheckpointByID", func(t *testing.T) {
+		_, err := s.CheckpointByID("x")
+		assert.Error(t, err)
+	})
+	t.Run("PlanCheckpointRestore", func(t *testing.T) {
+		for _, dim := range CheckpointDimensions() {
+			_, err := s.PlanCheckpointRestore("x", dim)
+			assert.Errorf(t, err, "dimension %s", dim)
+		}
+	})
+	t.Run("RestoreCheckpoint", func(t *testing.T) {
+		_, err := s.RestoreCheckpoint("x", CheckpointMemory)
+		assert.Error(t, err)
+	})
+	t.Run("MemorySource", func(t *testing.T) {
+		_, err := s.MemorySource("x")
+		assert.Error(t, err)
+	})
+	t.Run("ClearMemories", func(t *testing.T) {
+		_, err := s.ClearMemories(MemoryFilter{})
+		assert.Error(t, err)
+	})
+	t.Run("WriteMemoryFromSession", func(t *testing.T) {
+		// The boundary read fails, which must NOT fail the write — but the
+		// write fails too here, on the same closed pool. What is asserted is
+		// that it reports the failure rather than returning an empty id and nil.
+		id, err := s.WriteMemoryFromSession("note", "x", MemoryFilter{SessionID: "s"})
+		assert.Error(t, err)
+		assert.Empty(t, id)
+	})
+}
+
+// TestCheckpoint_PlanCountsTheWholeMemoryTable: the memory plan must not be
+// scoped, because the restore is not. A plan that counted only one session's
+// rows would understate what the restore is about to replace.
+func TestCheckpoint_PlanCountsTheWholeMemoryTable(t *testing.T) {
+	s, sid := checkpointFixture(t)
+	_, err := s.WriteMemoryScoped("note", "another session's", MemoryFilter{SessionID: "elsewhere"})
+	require.NoError(t, err)
+
+	cp, err := s.CreateCheckpoint("all four", sid, "")
+	require.NoError(t, err)
+	assert.Equal(t, 4, cp.Memories)
+
+	plan, err := s.PlanCheckpointRestore(cp.ID, CheckpointMemory)
+	require.NoError(t, err)
+	assert.Equal(t, 4, plan.Before)
+	assert.Equal(t, 4, plan.After)
+	assert.Equal(t, CheckpointMemory, plan.Dimension)
+	assert.Equal(t, cp.ID, plan.Checkpoint.ID)
+}
+
+// TestCheckpointDimensions_IsTheCanonicalEnumeration.
+//
+// The list exists so a consumer in another package can be held to the same
+// three words without hard-coding them — internal/api/http compares it to
+// proto's copy. It is asserted here as well so the two ends of that comparison
+// are each pinned to the constants, rather than only to each other: two lists
+// that drift together would still agree.
+func TestCheckpointDimensions_IsTheCanonicalEnumeration(t *testing.T) {
+	assert.Equal(t,
+		[]CheckpointDimension{CheckpointSession, CheckpointMemory, CheckpointFiles},
+		CheckpointDimensions())
+}
+
+// TestCheckpoint_MemorySnapshotIsEmptyNotNull: a checkpoint taken with no
+// memories at all must still produce a decodable blob, and restoring it must
+// empty the table rather than fail. The NOT NULL column makes the first half a
+// real constraint.
+func TestCheckpoint_MemorySnapshotIsEmptyNotNull(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "empty.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	cp, err := s.CreateCheckpoint("nothing yet", "", "")
+	require.NoError(t, err)
+	assert.Zero(t, cp.Memories)
+
+	_, err = s.WriteMemory("note", "written after")
+	require.NoError(t, err)
+	_, err = s.RestoreCheckpoint(cp.ID, CheckpointMemory)
+	require.NoError(t, err)
+
+	left, err := s.RecallMemory(10)
+	require.NoError(t, err)
+	assert.Empty(t, left, "restoring an empty snapshot empties the table")
+}
+
+// dropTable removes a table from an open store, so a call that reads or writes
+// it fails while everything around it keeps working.
+//
+// A closed pool cannot reach these branches: WriteTx fails at BeginTx and never
+// calls its body, so every error path INSIDE a transaction stays unexercised.
+// Dropping one table is the smallest fault that gets past the transaction
+// boundary, and it targets exactly the statement under test.
+func dropTable(t *testing.T, s *Store, table string) {
+	t.Helper()
+	require.NoError(t, s.WriteTx(t.Context(), func(tx *sql.Tx) error {
+		_, e := tx.Exec("DROP TABLE " + table) //nolint:gosec // fixed literals from the callers below
+		return e
+	}))
+}
+
+// TestCheckpoint_InTransactionFailures covers the error paths that only exist
+// once a transaction has started.
+//
+// These are not decorative. Each one is a point where a checkpoint could
+// otherwise report a snapshot that does not exist, or a restore that did not
+// happen — the failure mode this whole file is arranged to make impossible.
+func TestCheckpoint_InTransactionFailures(t *testing.T) {
+	t.Run("boundary unreadable", func(t *testing.T) {
+		s, sid := checkpointFixture(t)
+		dropTable(t, s, "context_events")
+		_, err := s.CreateCheckpoint("l", sid, "")
+		assert.Error(t, err, "a checkpoint that cannot read the boundary must not claim one")
+	})
+	t.Run("memories unreadable", func(t *testing.T) {
+		s, sid := checkpointFixture(t)
+		dropTable(t, s, "memories")
+		_, err := s.CreateCheckpoint("l", sid, "")
+		assert.Error(t, err)
+	})
+	t.Run("checkpoints table gone", func(t *testing.T) {
+		s, sid := checkpointFixture(t)
+		dropTable(t, s, "checkpoints")
+		_, err := s.CreateCheckpoint("l", sid, "")
+		assert.Error(t, err)
+	})
+	t.Run("list unreadable", func(t *testing.T) {
+		s, sid := checkpointFixture(t)
+		_, err := s.CreateCheckpoint("l", sid, "")
+		require.NoError(t, err)
+		dropTable(t, s, "checkpoints")
+		_, err = s.Checkpoints(10)
+		assert.Error(t, err)
+		_, err = s.CheckpointByID("whatever")
+		assert.Error(t, err)
+	})
+	t.Run("plan cannot read the current boundary", func(t *testing.T) {
+		s, sid := checkpointFixture(t)
+		cp, err := s.CreateCheckpoint("l", sid, "")
+		require.NoError(t, err)
+		dropTable(t, s, "context_events")
+		_, err = s.PlanCheckpointRestore(cp.ID, CheckpointSession)
+		assert.Error(t, err)
+	})
+	t.Run("plan cannot project the window", func(t *testing.T) {
+		s, sid := checkpointFixture(t)
+		cp, err := s.CreateCheckpoint("l", sid, "")
+		require.NoError(t, err)
+		dropTable(t, s, "messages")
+		_, err = s.PlanCheckpointRestore(cp.ID, CheckpointSession)
+		assert.Error(t, err)
+	})
+	t.Run("plan cannot count memories", func(t *testing.T) {
+		s, sid := checkpointFixture(t)
+		cp, err := s.CreateCheckpoint("l", sid, "")
+		require.NoError(t, err)
+		dropTable(t, s, "memories")
+		_, err = s.PlanCheckpointRestore(cp.ID, CheckpointMemory)
+		assert.Error(t, err)
+	})
+	t.Run("restore cannot rewrite memories", func(t *testing.T) {
+		s, sid := checkpointFixture(t)
+		cp, err := s.CreateCheckpoint("l", sid, "")
+		require.NoError(t, err)
+		dropTable(t, s, "memories")
+		_, err = s.RestoreCheckpoint(cp.ID, CheckpointMemory)
+		assert.Error(t, err)
+	})
+	t.Run("session restore cannot append", func(t *testing.T) {
+		s, sid := checkpointFixture(t)
+		cp, err := s.CreateCheckpoint("l", sid, "")
+		require.NoError(t, err)
+		dropTable(t, s, "context_events")
+		_, err = s.RestoreCheckpoint(cp.ID, CheckpointSession)
+		assert.Error(t, err)
+	})
+}
+
+// TestWriteMemoryFromSession_KeepsTheMemoryWhenProvenanceFails is the one
+// documented degradation on the write path, asserted rather than asserted in
+// prose: the memory is the asset and provenance is metadata about it, so an
+// unreadable event log must cost the record of where the note came from and not
+// the note.
+func TestWriteMemoryFromSession_KeepsTheMemoryWhenProvenanceFails(t *testing.T) {
+	s, sid := checkpointFixture(t)
+	dropTable(t, s, "context_events")
+
+	id, err := s.WriteMemoryFromSession("note", "still worth keeping", MemoryFilter{SessionID: sid})
+	require.NoError(t, err, "the memory must survive a provenance failure")
+	require.NotEmpty(t, id)
+
+	got, err := s.RecallMemoryScoped(10, MemoryFilter{SessionID: sid})
+	require.NoError(t, err)
+	require.Len(t, got, 4)
+
+	_, err = s.MemorySource(id)
+	assert.ErrorIs(t, err, ErrNoMemorySource,
+		"and it must say it has no source rather than inventing one")
+}
+
+// TestClearMemories_ReportsAFailedDelete: "cleared 0" and "the delete failed"
+// are different answers, and a wipe that reported the first for the second
+// would tell the user their memories are gone while they are still there.
+func TestClearMemories_ReportsAFailedDelete(t *testing.T) {
+	s, _ := checkpointFixture(t)
+	dropTable(t, s, "memories")
+	n, err := s.ClearMemories(MemoryFilter{})
+	assert.Error(t, err)
+	assert.Zero(t, n)
+}

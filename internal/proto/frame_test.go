@@ -646,3 +646,36 @@ func TestClientFrame_UntestedConstructorsRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// TestClientFrameConstructors_MemoryAndCheckpoint pins which ClientFrame field
+// each new request puts its arguments in.
+//
+// This is not a coverage formality. The server reads these frames by field
+// name, and ClientFrame reuses Name and ID across a dozen unrelated requests —
+// a constructor that filled the wrong one would produce a frame that decodes
+// cleanly, routes correctly, and carries an empty scope. json.Decode reports
+// nothing for either half of that.
+func TestClientFrameConstructors_MemoryAndCheckpoint(t *testing.T) {
+	f := NewClearMemories(MemoryClearAgent, "a1")
+	assert.Equal(t, "clear_memories", f.Type)
+	assert.Equal(t, MemoryClearAgent, f.Name)
+	assert.Equal(t, "a1", f.ID)
+
+	f = NewCheckpoint(CheckpointRestore, "cp1", CheckpointDimFiles, "label")
+	assert.Equal(t, "checkpoint", f.Type)
+	assert.Equal(t, CheckpointRestore, f.Name)
+	assert.Equal(t, "cp1", f.ID)
+	assert.Equal(t, CheckpointDimFiles, f.Dim)
+	assert.Equal(t, "label", f.Text)
+
+	assert.Equal(t,
+		[]string{CheckpointDimSession, CheckpointDimMemory, CheckpointDimFiles},
+		CheckpointDimensions())
+
+	// The three scope words and the three dimension words are distinct
+	// vocabularies that both travel in this struct; nothing stops a caller
+	// mixing them, so the constants are pinned to their literal spellings.
+	assert.Equal(t, "session", MemoryClearSession)
+	assert.Equal(t, "agent", MemoryClearAgent)
+	assert.Equal(t, "all", MemoryClearAll)
+}
