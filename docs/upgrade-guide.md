@@ -44,6 +44,57 @@ compatible). When you do:
 Deprecate → warn for N releases → remove (removal is a schema bump). A
 deprecated field should emit a `doctor` warn so operators notice.
 
+## Behavior changes that need no schema bump
+
+A config field can keep its name, its type, and its default value and still
+change what the running system does — because the code that reads it started
+enforcing something it previously ignored. Those changes are invisible to
+`schema_version` (nothing about the file changed) but very visible to
+operators. They belong here, and their commit carries a `BREAKING CHANGE:`
+footer so git-cliff surfaces them.
+
+### Windows: `security.sandbox.tier` now actually restricts `shell_run`
+
+**What changed.** The default `tier: read-only` is now enforced for shell
+subprocesses on Windows. Before this release the Windows backend accepted the
+field and did not restrict writes; a `shell_run` command could write anywhere
+the yanshi process could. It now cannot write anywhere.
+
+The enforcement itself is asserted by tests that only run on the Windows CI
+leg — they compile into the `GOOS=windows` test binary and are not gated
+behind any opt-in tag, so that leg gives a verdict rather than skipping. A
+developer machine on macOS or Linux cannot reproduce it.
+
+**Why this is convergence, not a new policy.** Linux with the landlock backend
+has behaved this way since the tier field existed — `read-only` meant
+read-only there. Windows was the platform that quietly disagreed with its own
+configuration. The other direction (silently keeping Windows permissive)
+would mean the same `config.yaml` grants different authority per platform,
+which is exactly what an operator cannot audit.
+
+**What breaks.** Any workflow whose `shell_run` writes files — build steps,
+code generators, `go build -o`, test runs that emit artifacts — fails on
+Windows under the default config with a permission error from the child
+process, not from guard.
+
+**How to restore the previous behavior**, per workspace:
+
+```yaml
+security:
+  sandbox:
+    tier: workspace-write     # read-only | workspace-write | full-access
+```
+
+`workspace-write` confines writes to the workspace root, which is what most
+build workflows actually need; `full-access` disables the write restriction
+entirely and is the literal pre-upgrade behavior.
+
+**How to tell which one you are running.** `yanshi doctor` prints the
+sandbox row with the requested tier, the effective isolation, and the backend
+that enforces it, plus a warning naming any configured field the backend does
+not enforce. If that row says `effective os-isolated` with no warning about
+the tier, the restriction is live.
+
 ## Release runbook
 
 Before cutting a release:
