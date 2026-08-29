@@ -1254,7 +1254,7 @@ func TestOutputLanguageInstructionIndependentOfUILocale(t *testing.T) {
 	}
 }
 
-func fakeProviderBuilder(cfg *config.Config) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, error) {
+func fakeProviderBuilder(cfg *config.Config, _ ...einollm.SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, error) {
 	named := make(map[string]model.BaseChatModel)
 	var chain []model.BaseChatModel
 	for _, p := range cfg.LLM.Providers {
@@ -1263,6 +1263,91 @@ func fakeProviderBuilder(cfg *config.Config) (map[string]model.BaseChatModel, []
 		chain = append(chain, fm)
 	}
 	return named, chain, nil, nil, nil
+}
+
+// TestBuild_PerProviderMaxRetriesSentinelIsWiredCorrectly is the W-C-07 C2
+// review's M-2 finding: bootstrap.go's *int -> []int conversion loop
+// (perProviderMaxRetries) writes -1 for "MaxRetries omitted" so
+// maxRetriesFor falls back to the global ceiling, and the provider's OWN
+// value — including an explicit 0, "never retry" — otherwise. Nothing
+// exercised that conversion end to end before this test: mutating the -1
+// sentinel to 0 (turning "omitted" into "never retry this provider") left
+// bootstrap, eino, config and archtest fully green, because
+// TestMaxRetriesFor and TestResilientModel_GeneratePerProviderMaxRetries*
+// (internal/llm/eino/resilient_test.go) exercise
+// einollm.ResilientConfig.PerProviderMaxRetries directly and never touch
+// bootstrap's construction of that slice from a real config.Config.
+//
+// Two providers cover the if/else's two branches:
+//   - "omitted" (max_retries left out of the YAML) must fall back to the
+//     global llm.max_retries (2 here): 1 initial call + 2 retries = 3.
+//   - "explicit 0" must never retry regardless of the global ceiling: 1
+//     call, period — the OTHER branch of the same if/else, and the reason a
+//     fix that just special-cased "always fall back" would not be enough.
+//
+// Both providers' FakeModel always fails (RetryableModelError), so
+// ResilientChatModel.Generate walks the whole chain and each provider's
+// GenerateCalls ends up exactly the number of attempts maxRetriesFor(i)
+// allowed it. The mutation this test exists to catch (-1 -> 0 in the else
+// branch) only moves the "omitted" provider's count (3 -> 1); the
+// "explicit 0" provider is the control proving the if branch is untouched.
+//
+// The two FakeModel pointers are captured directly from the ProviderBuilder
+// closure rather than read back via app.Models: Build unconditionally runs
+// every provider through BuildAdaptiveModels (M5/M6/M7/M10/C6) before the
+// resilient chain is assembled, so app.Models holds *einollm.AdaptiveModel
+// wrappers, not the raw fakes — asserting through the wrapper would make
+// this test depend on AdaptiveModel's pass-through behavior staying
+// call-for-call transparent, which is a second thing to prove and not what
+// M-2 is about.
+func TestBuild_PerProviderMaxRetriesSentinelIsWiredCorrectly(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgContent := `
+storage:
+  sqlite_path: "` + toYAMLPath(filepath.Join(dir, "test.db")) + `"
+llm:
+  max_retries: 2
+  providers:
+    - name: omitted-retries
+      model: model-omitted
+    - name: never-retry
+      model: model-never
+      max_retries: 0
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(cfgContent), 0o644))
+
+	var fakes []*einollm.FakeModel
+	builder := func(cfg *config.Config, _ ...einollm.SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, error) {
+		named := make(map[string]model.BaseChatModel)
+		var chain []model.BaseChatModel
+		for _, p := range cfg.LLM.Providers {
+			fm := einollm.NewFakeModel(nil, &einollm.RetryableModelError{Err: errors.New("transient")})
+			named[p.Model] = fm
+			chain = append(chain, fm)
+			fakes = append(fakes, fm)
+		}
+		return named, chain, nil, nil, nil
+	}
+
+	app, err := bootstrap.Build(bootstrap.Options{
+		ConfigPath:      cfgPath,
+		ProviderBuilder: builder,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
+	require.NotNil(t, app.Model, "App.Model (resilient chain) must be non-nil")
+	require.Len(t, fakes, 2, "builder must have been given both configured providers")
+	omitted, never := fakes[0], fakes[1]
+
+	_, err = app.Model.Generate(context.Background(), []*schema.Message{schema.UserMessage("hi")})
+	require.Error(t, err, "both fakes always fail, so the whole chain must be exhausted")
+
+	assert.Equal(t, 3, omitted.GenerateCalls,
+		"MaxRetries omitted must fall back to the global max_retries=2 (1 initial + 2 retries); "+
+			"got %d — the -1 'not set' sentinel is no longer reaching maxRetriesFor", omitted.GenerateCalls)
+	assert.Equal(t, 1, never.GenerateCalls,
+		"MaxRetries: 0 must mean never retry regardless of the global ceiling; got %d calls", never.GenerateCalls)
 }
 
 func TestBuildSelectsFirstMultimodalProviderAsAux(t *testing.T) {
