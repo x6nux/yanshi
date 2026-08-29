@@ -42,6 +42,62 @@ func TestBothLaunchFactoriesPublishTheManagedProxy(t *testing.T) {
 	}
 	require.Equal(t, app.LaunchProxyURLs["secproc"], app.LaunchProxyURLs["shell_v2"],
 		"the two launch paths point at different proxies")
+
+	// The SOCKS endpoint has exactly one production producer — this wiring —
+	// and exactly one production consumer, the ALL_PROXY variable the posture
+	// publishes. Drop it here and the SOCKS5 handler is code with no clients:
+	// every ALL_PROXY-honouring child goes back to connecting directly, and
+	// nothing anywhere reports it. A probe confirmed that deleting the
+	// assignment used to leave every test green.
+	secure, v2 := productionFactories(t, app)
+	host := strings.TrimPrefix(app.LaunchProxyURLs["secproc"], "http://")
+	for name, socks := range map[string]string{"secproc": secure.SOCKSURL, "shell_v2": v2.SOCKSURL} {
+		require.Equal(t, "socks5h://"+host, socks,
+			"the %s launch factory publishes no usable SOCKS endpoint, so ALL_PROXY-honouring "+
+				"children bypass the managed proxy entirely", name)
+	}
+}
+
+// TestAFailedProfileCaptureDoesNotRefuseTheBoot is W-B-21's fail-safe clause
+// measured where it matters.
+//
+// CaptureSnapshot's own test pins that a failure yields the zero Snapshot; this
+// pins that bootstrap USES it that way. A probe confirmed the two are
+// independent: turning the warning into `return nil, snapErr` left every other
+// test green, and the result would be a yanshi that refuses to start because
+// the operator named a shell they do not have installed.
+func TestAFailedProfileCaptureDoesNotRefuseTheBoot(t *testing.T) {
+	dir := t.TempDir()
+	skillsDir := filepath.Join(dir, "skills")
+	require.NoError(t, os.MkdirAll(skillsDir, 0o755))
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"server:\n  http_addr: 127.0.0.1:0\n"+
+			"storage:\n  sqlite_path: \":memory:\"\n"+
+			"skills:\n  user_dir: "+skillsDir+"\n"+
+			"security:\n  shell:\n    capture_profile: true\n"+
+			"    profile_shell: definitely-not-a-shell\n"), 0o644))
+
+	app, err := Build(Options{ConfigPath: path, FakeModel: true})
+	require.NoError(t, err, "an uncapturable login shell refused the whole boot")
+	defer app.Shutdown(context.Background())
+
+	// And the children still get a working environment: the zero Snapshot's
+	// Apply is the identity, so the posture is exactly the un-captured one.
+	_, v2 := productionFactories(t, app)
+	require.True(t, v2.Snapshot.Empty(),
+		"a failed capture produced a non-empty snapshot, so children are being handed "+
+			"a partially-read environment")
+}
+
+// productionFactories reads both assembled launch factories back off the App.
+func productionFactories(t *testing.T, app *App) (shell.DefaultSecureFactory, shell.SecureLaunchFactory) {
+	t.Helper()
+	secure, ok := app.SecureFactory.(shell.DefaultSecureFactory)
+	require.True(t, ok, "the orchestrator is not running the production secure factory")
+	v2, ok := app.ShellManager.Factory().(shell.SecureLaunchFactory)
+	require.True(t, ok, "the shell manager is not running the production factory")
+	return secure, v2
 }
 
 // TestManagedProxyIsAskableFromTheAssembledServer pins the other half: the
@@ -135,10 +191,7 @@ func TestInspectionAndCaptureWireUpWhenAsked(t *testing.T) {
 // shell v2 lost its proxy URL while secproc kept it.
 func childTrustEnvs(t *testing.T, app *App) map[string]string {
 	t.Helper()
-	v2, ok := app.ShellManager.Factory().(shell.SecureLaunchFactory)
-	require.True(t, ok, "the shell manager is not running the production factory")
-	secure, ok := app.SecureFactory.(shell.DefaultSecureFactory)
-	require.True(t, ok, "the orchestrator is not running the production secure factory")
+	secure, v2 := productionFactories(t, app)
 	return map[string]string{
 		"shell_v2": strings.Join(netpolicy.CAEnv(v2.CAFile), "\n"),
 		"secproc":  strings.Join(netpolicy.CAEnv(secure.CAFile), "\n"),
