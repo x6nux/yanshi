@@ -147,8 +147,9 @@ yanshi 起的每个辅助程序（MCP server、language server、`gh`、`git`、
 export YANSHI_ALLOW_CHILD_ENV=NETRC,npm_config_registry,SSH_AUTH_SOCK
 ```
 
-三条边界：
+四条边界：
 
+- ⚠️ **不要在这里点名 provider key 或云凭据**（`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`AWS_SECRET_ACCESS_KEY` 之类）。上面那张表里的 `task_gate_run` 是这批子进程中**唯一一个命令串由模型撰写**的：模型写 gate 命令、命令的输出又作为证据回喂给模型，所以一条 `printenv OPENAI_API_KEY` 就能把 key 送进对话。「这个变量是我自己 export 的」不等于「我希望模型读到它」。这条**没有代码拦着**，而且拦不了：这个开关能放回来的每个名字，按定义都是清洗规则匹配到的名字（`NETRC`、`SSH_AUTH_SOCK`、`npm_config_*` 全都是），按「像凭据就拒绝」去拦等于把这个开关本身拒掉。
 - **只按名字**，不接受前缀或模式 —— 「凡是看起来像 token 的都放行」正是攻击者提供的值会满足的谓词。
 - **不放宽 `shell_run` / ACP agent 那条路**。那条是**不受信程序**的发射路径，它的 allowlist 属于 profile 的安全姿态；让一个进程级环境变量悄悄放宽它，等于给了操作员一个不用改安全配置就能关掉安全控制的开关。
 - 这个变量**自己不会进子进程环境** —— 它列举的正是「这台机器上还留着哪些凭据」，没有子进程需要这份清单。

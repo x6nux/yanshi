@@ -75,13 +75,47 @@ import (
 // otherwise. The recognised and unrecognised shapes are enumerated on
 // spawnCallRe and pinned by TestSpawnCensusRecognisesEveryKnownSpawnShape.
 //
-// NOT ENFORCED: whether the answer is TRUE. This is a text scan over an AST,
-// not a taint analysis; it can tell you the answer is about the right function,
-// it cannot tell "cmd.Env = netpolicy.ScrubbedEnviron()" from a sentence saying
-// so. The value is that adding a spawn site now costs a sentence somebody has
-// to write, about a function they have to name. Do not quote this file as proof
-// that a child is scrubbed; quote the child test in internal/netpolicy for the
-// mechanism and this table for the coverage.
+// NOT ENFORCED, in three separate directions. All three are stated because the
+// sentence "adding a spawn site costs a sentence somebody has to write" is true
+// of a NEW FILE and false of the other two cases, and a reader who takes it as
+// universal is the reader this census was written to protect.
+//
+//  1. WHETHER THE ANSWER IS TRUE. This is a text scan over an AST, not a taint
+//     analysis; it can tell you the answer is about the right function, it
+//     cannot tell "cmd.Env = netpolicy.ScrubbedEnviron()" from a sentence
+//     saying so. Do not quote this file as proof that a child is scrubbed;
+//     quote the child test in internal/netpolicy for the mechanism and this
+//     table for the coverage.
+//
+//  2. GRANULARITY: per-DECLARATION, not per-CALL. spawnSitesIn returns a
+//     DEDUPLICATED set of declaration names, so a second spawn added inside a
+//     declaration this table already names costs nothing at all. That is B1's
+//     own shape one level down — shellCommand, startOne and Run are precisely
+//     the functions most likely to grow a second spawn — and it is measured,
+//     not theoretical: a second exec.CommandContext with no cmd.Env, added
+//     inside shellCommand, leaves this gate green.
+//
+//     Deliberately not fixed, and the cost is the reason. Per-call enforcement
+//     requires the entry to carry a NUMBER of spawn calls per declaration, and
+//     that is exactly the shape CLAUDE.md forbids under "don't write how many
+//     things another file currently has": the number describes a file this
+//     table does not live in, it rots on that file's next refactor, and the
+//     cheapest way to discharge a rotted number is to bump it. The defence
+//     against a second leaky spawn is the netpolicy child tests; this table's
+//     job is coverage bookkeeping.
+//
+//  3. PHANTOM NAMES IN AN ANSWER. The SUBJECT direction checks "every real
+//     declaration is named", not "every name is a real declaration", so
+//     "shellCommand and totallyBogusNeverExisted set …" passes. The names in
+//     an answer are therefore not evidence that those declarations exist.
+//
+//     Deliberately not fixed, and here the cost is the interesting half: the
+//     fix is to give each entry a structure (a []string of declarations plus a
+//     prose note) and check set equality. The check would then bind to the
+//     LIST while the prose floated free again — which is exactly the
+//     decoupling B1 WAS: an answer describing shell_run's route while the code
+//     under it was task_gate_run's. Names woven into the sentence are what
+//     makes the reader of the sentence read the name.
 var spawnEnvCensus = map[string]string{
 	// Each answer opens with the declaration that holds the spawn call, because
 	// that name is what the SUBJECT direction checks. Where a file has two, both
@@ -93,6 +127,17 @@ var spawnEnvCensus = map[string]string{
 		"managed proxy variables published. The reference posture.",
 	"internal/shell/console_unix.go": "StartPTYProcess: the same LaunchSpec.Env as the pipe " +
 		"path; the PTY backend differs in the console, not the environment.",
+	// Construction, not a spawn: prepare builds a stand-in *exec.Cmd for the
+	// sandbox seam and never starts it. The entry exists because the detector
+	// recognises the CONSTRUCTION (see spawnCallRe's doc for why it cannot
+	// anchor on .Start()), and because "this Cmd is never started" is the
+	// answer a reader needs — adding one line here would otherwise turn a file
+	// with no census obligation into a real spawn point.
+	"internal/shell/childlaunch.go": "prepare constructs an &exec.Cmd{} whose Env is " +
+		"spec.Env — what childLaunchPosture.env already built — hands it to Sandbox.Prepare " +
+		"so a backend can rewrite argv or add to the environment, copies the mutations back " +
+		"into the LaunchSpec, and NEVER calls Start. The spawn happens in the OS factory " +
+		"(internal/shell/process.go).",
 	"internal/shell/console_windows.go": "startConPTYClient: conptyEnvBlock(spec.Env) — the " +
 		"same LaunchSpec.Env as its unix twin, packed into the UTF-16 block CreateProcess " +
 		"wants. The unix twin was in this table from the start and this one was not, purely " +
@@ -126,8 +171,12 @@ var spawnEnvCensus = map[string]string{
 		"windows backends cannot disagree about the child's environment.",
 	"cmd/yanshi/pr.go": "realGHExec: netpolicy.ScrubbedEnviron(netpolicy.GitHubCLICredentialEnv...) " +
 		"for gh, which authenticates with GH_TOKEN, GH_ENTERPRISE_TOKEN or not at all. " +
-		"detectGitHubRemote inherits — `git remote get-url` is a local read of .git/config " +
-		"with no network leg.",
+		"detectGitHubRemote: netpolicy.ScrubbedEnviron() with no allowlist — `git remote " +
+		"get-url` is a local read of .git/config and needs no credential at all. It used to " +
+		"inherit, on the argument that a local read has no network leg; that argument is about " +
+		"where the credentials could GO, not about whether the child receives them, and the " +
+		"same file scrubbing one spawn and not the other is the asymmetry that makes the next " +
+		"reader guess.",
 	"internal/agent/goalloop/implementer.go": "gitWorktreeCommand: netpolicy.ScrubbedEnviron(). " +
 		"Local worktree add/remove/list, no network leg.",
 
@@ -191,23 +240,95 @@ var spawnEnvCensus = map[string]string{
 //     dead ones nobody can discharge, and the first response to that is to
 //     weaken the gate. Four package names cover every spawn in this tree.
 //
-// NOT RECOGNISED, stated rather than implied: a spawn reached through a
-// function value or an interface method (`f := exec.Command; f(...)`), through
-// reflection, through cgo, or through a package aliased away from the four
-// names above. None exists here today, and a text scan cannot see any of them —
-// that is the same "NOT ENFORCED" boundary the file header states about answer
-// truthfulness, applied to the detector rather than to the answers.
+// A third shape is recognised in the AST rather than here, because a regexp
+// cannot separate it from a map type: see execCmdLiteral for `&exec.Cmd{…}`.
 //
-// This list grew because it was WRONG: the first version knew only ".Command(",
-// so internal/shell/console_windows.go — a real CreateProcess site whose unix
-// twin WAS in the table — was invisible, along with both syscall.Exec sites.
-// The header sentence "a new production file that spawns anything must state
-// what the child's environment is" was true of the intent and false of the
-// mechanism. TestSpawnCensusRecognisesEveryKnownSpawnShape is what keeps the
-// two together from here.
+// # KNOWN BLIND SPOTS — a list of what somebody thought of, NOT an enumeration
+//
+// The shapes below are pinned by the `unrecognised` table in
+// TestSpawnCensusRecognisesEveryKnownSpawnShape, so if the detector ever grows
+// to catch one, that test says so and this paragraph gets corrected. What no
+// test can pin is the shape nobody has thought of yet, and THAT is the thing to
+// carry away from this comment:
+//
+//	spawn through a function value or an interface method (`f := exec.Command;
+//	f(...)`); through reflection; through cgo; through a raw
+//	syscall.Syscall(SYS_EXECVE, …); through syscall.NewLazyDLL("kernel32").
+//	NewProc("CreateProcessW").Call(…); or through a package aliased away from
+//	the four names in the second group.
+//
+// # Why this list keeps being wrong, four times now
+//
+// Every previous version of this comment was written as an enumeration and was
+// not one, and the mechanism was identical each time: the author listed the
+// shapes THEY could think of, found no counter-example in the tree, and wrote
+// "none exists here today" — which reads as a property of the repository while
+// being a property of the author's imagination. The four:
+//
+//  1. The AST gate that walked only *ast.FuncDecl, so every spawn in a
+//     package-level `var f = func(){…}` seam had no owning declaration.
+//  2. destructivecensus_test.go's findDestructiveReadingSites, which saw only
+//     composite literals carrying an EXPLICIT type — a literal whose type is
+//     inferred from context has a nil CompositeLit.Type and was invisible, as
+//     was every field assigned after construction.
+//  3. This detector's first version, which knew only ".Command(" — so
+//     internal/shell/console_windows.go, a real CreateProcess site whose unix
+//     twin WAS in the table, was invisible along with both syscall.Exec sites.
+//  4. This one: `&exec.Cmd{…}` + cmd.Start(), the SECOND idiomatic way to
+//     start a process in Go and the one the standard library's own docs show
+//     for SysProcAttr, was missing while the paragraph above it said "stated
+//     rather than implied". A live instance was already in the tree
+//     (internal/shell/childlaunch.go) and the file was not in the census.
+//
+// The lesson is not "add a fifth entry". It is that a blind-spot list can only
+// ever be an inventory of considered shapes, so it must be LABELLED as one —
+// a reader who treats it as exhaustive stops looking, and the first three
+// misses were all found by somebody who kept looking anyway.
 var spawnCallRe = regexp.MustCompile(
 	`\b[A-Za-z_][A-Za-z0-9_]*\.Command(Context)?\(` +
 		`|\b(syscall|unix|windows|os)\.(Exec|ForkExec|StartProcess|CreateProcess|CreateProcessAsUser)\(`)
+
+// execCmdLiteral reports whether lit is a `pkg.Cmd{…}` composite literal — the
+// os/exec form that builds the command struct directly instead of through
+// exec.Command.
+//
+// # Why construction and not the Start() that follows it
+//
+// The thing that actually spawns is cmd.Start()/Run()/Output(), and anchoring
+// there is not an option: ".Start(" and ".Run(" name a method on half the types
+// in this repository (every Manager, every server, every session), so the
+// census would demand entries for dozens of files that start no process — and
+// entries nobody can discharge are how a gate gets weakened back out. The
+// construction is the only text-visible anchor that is specific to os/exec.
+//
+// The cost of anchoring there is over-approximation in the safe direction: a
+// Cmd that is built and never started still demands a row. Exactly one exists
+// (internal/shell/childlaunch.go's sandbox stand-in), its row says so in one
+// sentence, and that row is what makes ADDING a Start() to it a change to an
+// answer rather than an invisible new spawn point.
+//
+// # Why the package qualifier is not checked
+//
+// `X.Cmd{}` for any X, matching the alias-tolerance of ".Command(" — cmd/yanshi
+// imports os/exec as osexec, and a detector that only knew the canonical
+// spelling is miss #3 in spawnCallRe's list. The over-match (some other
+// package's type named Cmd) costs one honest sentence in a row; the under-match
+// costs a silent credential leak.
+//
+// A type expression is required, which is what keeps `map[string]*exec.Cmd{}`
+// out: that literal's Type is an *ast.MapType, and its inner *exec.Cmd never
+// appears as a composite literal at all. internal/lsp/manager.go holds one, and
+// a regexp for `\bexec\.Cmd\{` would have matched it.
+func execCmdLiteral(lit *ast.CompositeLit) bool {
+	sel, ok := lit.Type.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	if _, ok := sel.X.(*ast.Ident); !ok {
+		return false
+	}
+	return sel.Sel.Name == "Cmd"
+}
 
 // TestEverySpawnSiteDeclaresItsChildEnvironment enumerates the spawn surface in
 // both directions.
@@ -303,7 +424,8 @@ func TestEverySpawnSiteDeclaresItsChildEnvironment(t *testing.T) {
 }
 
 // spawnSitesIn parses src and returns, sorted and deduplicated, the name of
-// every top-level declaration containing a call spawnCallRe recognises.
+// every top-level declaration containing a call spawnCallRe recognises or a
+// command struct execCmdLiteral recognises.
 //
 // # Why an AST and not a line scan
 //
@@ -338,18 +460,21 @@ func spawnSitesIn(src string) ([]string, error) {
 	for _, decl := range file.Decls {
 		owner := declOwnerName(decl)
 		ast.Inspect(decl, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			var rendered strings.Builder
-			if printer.Fprint(&rendered, fset, call.Fun) != nil {
-				return true
-			}
-			// The trailing "(" is what spawnCallRe anchors on, and Fun is the
-			// callee without it.
-			if spawnCallRe.MatchString(rendered.String() + "(") {
-				seen[owner] = true
+			switch node := n.(type) {
+			case *ast.CallExpr:
+				var rendered strings.Builder
+				if printer.Fprint(&rendered, fset, node.Fun) != nil {
+					return true
+				}
+				// The trailing "(" is what spawnCallRe anchors on, and Fun is
+				// the callee without it.
+				if spawnCallRe.MatchString(rendered.String() + "(") {
+					seen[owner] = true
+				}
+			case *ast.CompositeLit:
+				if execCmdLiteral(node) {
+					seen[owner] = true
+				}
 			}
 			return true
 		})
@@ -420,6 +545,9 @@ func TestSpawnCensusRecognisesEveryKnownSpawnShape(t *testing.T) {
 		{"os.StartProcess", "func spawn() { _, _ = os.StartProcess(n, argv, attr) }", "spawn"},
 		{"windows.CreateProcess", "func spawn() { _ = windows.CreateProcess(nil, c, nil, nil, false, 0, e, d, s, p) }", "spawn"},
 		{"unix.Exec", "func spawn() error { return unix.Exec(p, argv, env) }", "spawn"},
+		{"&exec.Cmd composite literal", "func spawn() error { c := &exec.Cmd{Path: p, Args: argv}; return c.Start() }", "spawn"},
+		{"exec.Cmd value literal", "func spawn() { c := exec.Cmd{Path: p}; _ = c.Run() }", "spawn"},
+		{"aliased exec.Cmd literal", "func spawn() { _ = &osexec.Cmd{Path: p} }", "spawn"},
 		{"method receiver", "func (f *F) Start() { _ = exec.Command(\"true\") }", "Start"},
 		{"package-level var seam", "var commandOutput = func() { _ = exec.CommandContext(ctx, \"x\") }", "commandOutput"},
 		{"nested in a closure", "func spawn() { go func() { _ = exec.Command(\"true\") }() }", "spawn"},
@@ -449,6 +577,12 @@ func TestSpawnCensusRecognisesEveryKnownSpawnShape(t *testing.T) {
 		"a doc line":              "// syscall.Exec replaces the process image.\nfunc q() {}",
 		"a string literal":        "const s = \"os.StartProcess(\"",
 		"unrelated identifier":    "func q() { _ = buildCommand(name) }",
+		// The reason execCmdLiteral checks the AST type instead of matching
+		// `\bexec\.Cmd\{` textually: internal/lsp/manager.go holds this exact
+		// line, and demanding a census row for a map declaration is how a gate
+		// earns its first unanswerable entry.
+		"a map of Cmd pointers": "func q() { m := map[string]*exec.Cmd{}; _ = m }",
+		"a slice of Cmd":        "func q() { s := []exec.Cmd{}; _ = s }",
 	}
 	for name, src := range ignored {
 		got, err := spawnSitesIn("package p\n\n" + src + "\n")
@@ -460,6 +594,39 @@ func TestSpawnCensusRecognisesEveryKnownSpawnShape(t *testing.T) {
 			t.Errorf("%q is treated as a spawn site (attributed to %v); the census would demand "+
 				"an entry for a file that starts no process, and that entry can never be "+
 				"discharged:\n  %s", name, got, src)
+		}
+	}
+
+	// unrecognised pins the KNOWN blind spots spawnCallRe's doc names, so that
+	// paragraph stops being an unverifiable claim. It is the honest half of a
+	// dishonest history: four times running, this repository wrote a shape list
+	// as if it were an enumeration and it was an inventory of what its author
+	// happened to think of.
+	//
+	// What this table CAN do: catch the doc going stale in the direction where
+	// the detector improves. What it deliberately does NOT do: assert that the
+	// blind-spot list is complete. It cannot — a shape nobody has imagined has
+	// no row here, which is exactly how all four misses happened.
+	unrecognised := []struct{ name, src string }{
+		{"function value", "var spawner = exec.Command\n\nfunc spawn() { _ = spawner(\"true\") }"},
+		{"interface method", "func spawn(r Runner) error { return r.Run(p, argv) }"},
+		{"reflection", "func spawn() { reflect.ValueOf(exec.Command).Call(args) }"},
+		{"raw syscall number", "func spawn() { _, _, _ = syscall.Syscall(syscall.SYS_EXECVE, a, b, c) }"},
+		{"lazy DLL proc", "func spawn() { syscall.NewLazyDLL(\"kernel32\").NewProc(\"CreateProcessW\").Call(a) }"},
+		{"aliased syscall package", "func spawn() error { return sys.Exec(p, argv, env) }"},
+	}
+	for _, tc := range unrecognised {
+		got, err := spawnSitesIn("package p\n\n" + tc.src + "\n")
+		if err != nil {
+			t.Errorf("blind-spot case %q did not parse: %v", tc.name, err)
+			continue
+		}
+		if len(got) > 0 {
+			t.Errorf("blind spot %q is now RECOGNISED (attributed to %v). That is an "+
+				"improvement, not a regression — but spawnCallRe's doc still lists it as a "+
+				"shape this detector cannot see, and a stale blind-spot list is the exact "+
+				"defect that paragraph exists to record. Move the row to the recognised "+
+				"table above and delete it from the doc:\n  %s", tc.name, got, tc.src)
 		}
 	}
 }

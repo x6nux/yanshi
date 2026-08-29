@@ -156,9 +156,17 @@ func parsePRInput(input string) (string, int) {
 }
 
 // detectGitHubRemote runs `git remote get-url origin` and extracts owner/repo.
+//
+// Scrubbed like realGHExec above, with no allowlist at all: this reads
+// .git/config off the local disk and authenticates against nothing, so there is
+// no credential it can need. The previous answer — "a local read has no network
+// leg, so inheriting is harmless" — is about where the credentials could GO
+// rather than about whether the child receives them, and it left one file
+// scrubbing one of its two spawns.
 func detectGitHubRemote() string {
 	var out bytes.Buffer
 	cmd := osexec.Command("git", "remote", "get-url", "origin")
+	cmd.Env = netpolicy.ScrubbedEnviron()
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
 		return ""

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -302,5 +303,115 @@ func TestShellV2HandsTheResolvedInterpreterToGuard(t *testing.T) {
 		if act.Tool != tool {
 			t.Errorf("Action.Tool = %q, want %q", act.Tool, tool)
 		}
+	}
+}
+
+// TestShellV2EveryToolAuthorizesUnderItsOwnName drives every tool the v2
+// surface constructs and requires each one to consult the guard, exactly once,
+// under its own registered name, before it does anything else.
+//
+// # What it replaces, and why the thing it replaces was a hazard
+//
+// CLAUDE.md used to tell a reader to check this invariant by hand:
+//
+//	grep -c 'NewGuardedTool(' internal/tools/shell_v2.go
+//	grep -c 'Authorize('      internal/tools/shell_v2.go
+//	# "the two numbers must be equal"
+//
+// The counts were 9/9 when that was written and are not equal now, because
+// shell_start and task_shell_start were refactored to share authorizeLaunch and
+// shell_resize was added. The underlying invariant never broke — one Authorize
+// serving two launches is the correct shape — but the PROXY for it did, so the
+// instruction now reports a violation that does not exist. A reader who trusts
+// it goes looking for a missing Authorize; a reader who has been burned once
+// stops running it. Both outcomes are worse than no instruction.
+//
+// This is CLAUDE.md's own rule about bare counts, turned on a count it was
+// itself printing: a number describing another file's current contents cannot
+// survive that file being refactored, and nobody comes back to update it.
+//
+// # Why reflection over the struct rather than a list of the ten
+//
+// A written-out list is the same defect one level up: it is correct on the day
+// it is written and silently incomplete the day an eleventh tool is added —
+// which is exactly how shell_resize broke the grep. Walking the *GuardedTool
+// fields of ShellV2Tools means a new tool is covered by construction, and the
+// only way to escape this test is to build a v2 tool that is not a field of the
+// struct the composition root registers from.
+//
+// # Why the assertion is the callback and not just "it returned an error"
+//
+// An empty PermissionProfile denies everything, so a tool that never called
+// Authorize would still fail — on its own merits, with a manager bound and no
+// such session — and a test that only checked for AN error would pass while
+// proving nothing. What cannot happen without Authorize is the permission
+// callback firing with the tool's own name, so that is what is asserted. The
+// shell manager is bound for the same reason in the other direction: without
+// it, a tool that skipped the guard would fail with "runtime unavailable" and
+// look sufficiently denied to anyone reading the output rather than the check.
+func TestShellV2EveryToolAuthorizesUnderItsOwnName(t *testing.T) {
+	root := t.TempDir()
+	manager := shell.NewManager(shell.Config{Root: root, MaxOutputBytes: 256, Factory: fakeShellFactory{}})
+	defer func() { _ = manager.Close() }()
+
+	// One args object that satisfies every v2 tool's shape at once: encoding/json
+	// ignores the fields a given tool does not declare, and every handler
+	// unmarshals before it authorizes, so a shape error would mask the thing
+	// under test. "nosuch" is a session id nothing can resolve, which is what
+	// makes a guard-skipping tool fail visibly rather than act.
+	const args = `{"command":"echo hi","id":"nosuch","data":"x","rows":24,"cols":80,` +
+		`"max_bytes":16,"timeout_s":1}`
+
+	v := NewShellV2Tools(root)
+	rv := reflect.ValueOf(v).Elem()
+	rt := rv.Type()
+	guardedToolType := reflect.TypeOf((*GuardedTool)(nil))
+	checked := 0
+	for i := 0; i < rt.NumField(); i++ {
+		field := rt.Field(i)
+		if !field.IsExported() || field.Type != guardedToolType {
+			continue
+		}
+		gt, _ := rv.Field(i).Interface().(*GuardedTool)
+		if gt == nil {
+			t.Errorf("ShellV2Tools.%s is nil; NewShellV2Tools left a tool unbuilt", field.Name)
+			continue
+		}
+		info, err := gt.Info(context.Background())
+		if err != nil {
+			t.Fatalf("ShellV2Tools.%s: Info: %v", field.Name, err)
+		}
+
+		var asked []string
+		ctx := WithShellManager(context.Background(), manager)
+		ctx = WithProfile(ctx, guard.PermissionProfile{})
+		ctx = WithPermissionCallback(ctx, func(req PermissionRequest) PermissionDecision {
+			asked = append(asked, req.Tool)
+			return PermissionDeny
+		})
+		out, runErr := runTool(ctx, gt, args)
+		if runErr != nil {
+			t.Fatalf("ShellV2Tools.%s (%s): unexpected transport error: %v", field.Name, info.Name, runErr)
+		}
+		switch {
+		case len(asked) == 0:
+			t.Errorf("ShellV2Tools.%s (%s) never reached the guard: the permission callback was "+
+				"not consulted, so this tool acts on an empty profile that permits nothing. "+
+				"Every v2 tool must call Authorize itself — there is no secproc backstop on "+
+				"this path. It returned: %s", field.Name, info.Name, out)
+		case len(asked) != 1 || asked[0] != info.Name:
+			t.Errorf("ShellV2Tools.%s authorized as %v, want exactly one consult under %q. "+
+				"Authorizing under another tool's name gates this action with that tool's "+
+				"profile entry, which is how a narrow allowlist silently covers a wide action",
+				field.Name, asked, info.Name)
+		case !strings.Contains(out, "permission denied"):
+			t.Errorf("ShellV2Tools.%s (%s) consulted the guard, was denied, and acted anyway: %s",
+				field.Name, info.Name, out)
+		}
+		checked++
+	}
+	if checked == 0 {
+		t.Fatal("no *GuardedTool fields found on ShellV2Tools — this test passed without " +
+			"examining anything, which is the failure mode it exists to prevent")
 	}
 }

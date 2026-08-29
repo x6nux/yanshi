@@ -151,6 +151,27 @@ func ScrubbedEnviron(allow ...string) []string {
 // Not a security hole for the same reason harden.DisableEnv is not: an attacker
 // who can set this process's environment has already won. The names are by
 // definition ones the operator exported on purpose.
+//
+// # But do not name a provider key or a cloud credential here
+//
+// That analogy covers WHO can set this variable. It does not cover the
+// CONSEQUENCE, and the two differ: YANSHI_NO_HARDEN turns off measures that
+// keep other processes out of THIS process, while a name in this list is handed
+// to children — one of which, the gate command behind task_gate_run, runs a
+// command string the MODEL wrote and feeds the output back to the model as
+// evidence. `printenv OPENAI_API_KEY` in a gate command is a two-hop
+// exfiltration of a key the operator exported for an entirely different reason.
+// "The operator exported this variable on purpose" does not imply "the operator
+// wants the model to read it".
+//
+// This is not enforced, and refusing a category here would be worse than
+// useless: every name that can be put back is by definition a name the scrub
+// matched, so "reject credential-looking names" rejects the entire purpose of
+// the hatch (NETRC, SSH_AUTH_SOCK and npm_config_* are all matches). Separating
+// "provider key" from "credential the child needs" would take a second
+// blacklist of vendor prefixes, which fails open on the next vendor while
+// blocking a legitimate use the operator can already see is legitimate. The
+// boundary is stated instead, here and in docs/user-guide/configuration.md.
 const ChildEnvAllowlistEnv = "YANSHI_ALLOW_CHILD_ENV"
 
 // OperatorAllowedChildEnv parses ChildEnvAllowlistEnv into variable names.
