@@ -17,6 +17,16 @@ type Action struct {
 	// Workdir is the project/work root used as the in-scope boundary for the
 	// destructive-deletion dimension (checkDestructive). The shell tool
 	// populates it; other tools leave it empty (the dimension no-ops on Shell=="").
+	//
+	// IT MUST COME FROM THE SERVER, NEVER FROM THE REQUEST. A caller that hands
+	// over the model's own "workdir" argument lets the model move the line that
+	// decides whether its own deletion crosses one — measured, `{"workdir":"/"}`
+	// took an ancestor-of-the-root deletion off the structural floor. Every
+	// production site that sets this field, and every site that consumes the
+	// reading it feeds, is enumerated and machine-checked in
+	// internal/archtest/destructivecensus_test.go::destructiveReadingCensus;
+	// that census exists because this field was wired correctly at one shell
+	// tool and not at the other for two releases.
 	Workdir string
 
 	// Interpreter names the shell LANGUAGE Shell will be handed to — the

@@ -46,6 +46,7 @@ var overlayImmuneGateFiles = []string{
 	"bench_test.go",
 	"ctxinject_test.go",
 	"deps_test.go",
+	"destructivecensus_test.go",
 	"docs_test.go",
 	"docsymbols_ablation_test.go",
 	"docsymbols_test.go",
