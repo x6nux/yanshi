@@ -39,6 +39,82 @@ type Policy struct {
 	Allow        []string
 	Deny         []string
 	AllowPrivate bool
+	// Methods narrows a host verdict to individual HTTP methods. It is only
+	// consultable on a request whose method is KNOWN, which for a subprocess
+	// talking HTTPS means the proxy decrypted it — see CheckRequest.
+	Methods []MethodRule
+}
+
+// MethodRule is one "within this host, these methods" entry. Host uses the
+// same pattern syntax as Allow/Deny (exact, or ".example.com" for subdomains);
+// Methods is compared case-insensitively and an empty list matches every
+// method.
+//
+// It exists because host granularity cannot express the request an operator
+// actually wants to allow. "Let the build read from registry.npmjs.org" and
+// "let the build publish to registry.npmjs.org" are one host and two very
+// different grants; before this the only way to permit the read was to permit
+// the write with it.
+type MethodRule struct {
+	Host    string
+	Methods []string
+	Allow   bool
+}
+
+// matches reports whether this rule speaks to (host, method). host must
+// already be normalized; method is folded here.
+func (r MethodRule) matches(host, method string) bool {
+	if !hostMatches(r.Host, host) {
+		return false
+	}
+	if len(r.Methods) == 0 {
+		return true
+	}
+	for _, m := range r.Methods {
+		if strings.EqualFold(strings.TrimSpace(m), method) {
+			return true
+		}
+	}
+	return false
+}
+
+// CheckRequest is CheckHost plus the method dimension: the host verdict is
+// computed first and, when it admits, the first matching MethodRule may
+// override it in EITHER direction.
+//
+// Ordering is the load-bearing part and it is deliberately asymmetric. A host
+// DENY is never reconsidered — the method table narrows a grant, it does not
+// widen a refusal, so `deny: ["evil.test"]` cannot be undone by adding a GET
+// rule for the same host. Within an admitted host the first matching rule wins
+// (source order), which is what lets an operator write "allow GET, deny
+// everything else" as two lines in the order they would say it out loud.
+//
+// method == "" means "not known at this layer" and returns the plain host
+// verdict. That is the honest answer for a blind CONNECT tunnel: nobody read
+// the method, so no rule about methods can have fired. Returning a method
+// rule's verdict there would be a decision about a request this code never
+// saw.
+func (p Policy) CheckRequest(host, method string) Decision {
+	d := p.CheckHost(host)
+	if !d.Allowed || method == "" {
+		return d
+	}
+	normalized := normalizeHost(host)
+	for _, rule := range p.Methods {
+		if !rule.matches(normalized, method) {
+			continue
+		}
+		verb := "deny"
+		if rule.Allow {
+			verb = "allow"
+		}
+		return Decision{
+			Allowed: rule.Allow,
+			Rule:    "method-" + verb + ":" + rule.Host + " " + strings.ToUpper(method),
+			Reason:  "method " + strings.ToUpper(method) + " " + verb + "ed by a method rule for " + rule.Host,
+		}
+	}
+	return d
 }
 
 // CheckHost evaluates raw against the policy. Patterns are case-insensitive
@@ -123,6 +199,21 @@ func (p Policy) CheckResolvedIPs(host string, ips []net.IP) Decision {
 	if d := p.CheckHost(host); !d.Allowed {
 		return d
 	}
+	return p.checkIPRanges(ips)
+}
+
+// checkIPRanges is the SSRF half of CheckResolvedIPs with the host rules left
+// out.
+//
+// Split off for the dialer, which may be carrying a runtime grant that admits
+// a host the rules do not. Running the bundled CheckResolvedIPs there would
+// re-apply the host rules and refuse the connection a few microseconds after
+// the operator approved it — the inert-grant failure Policy.GrantHost's doc
+// describes, moved one layer down where nothing reports it.
+//
+// The IP half is deliberately NOT skippable. A grant widens the host rules by
+// exactly one name; it does not make 169.254.169.254 reachable.
+func (p Policy) checkIPRanges(ips []net.IP) Decision {
 	if len(ips) == 0 {
 		return Decision{Reason: "DNS returned no addresses"}
 	}

@@ -351,6 +351,33 @@ type NetworkConfig struct {
 	Allow        []string `yaml:"allow"`
 	Deny         []string `yaml:"deny"`
 	AllowPrivate bool     `yaml:"allow_private"`
+	// InspectHTTPS turns the managed proxy's CONNECT handling from a blind
+	// tunnel into a terminated one, so requests inside it are judged on method
+	// as well as host. OFF by default, and that default is the decision
+	// ADR-0014 made — read ADR-0023 before turning it on, especially the part
+	// about which children can be made to trust the generated root and which
+	// cannot.
+	InspectHTTPS bool `yaml:"inspect_https"`
+	// Methods narrows an allowed host to particular HTTP methods. Entries are
+	// evaluated in order and the first match wins; a host the top-level Deny
+	// list refuses is never reconsidered here.
+	//
+	// It has no effect on a request whose method nobody read — a blind CONNECT
+	// or a SOCKS5 tunnel — so a method rule for an https host is inert unless
+	// InspectHTTPS is on. Validation says so out loud rather than letting the
+	// operator discover it from traffic.
+	Methods []NetworkMethodRule `yaml:"methods"`
+}
+
+// NetworkMethodRule is one entry of NetworkConfig.Methods. Host uses the same
+// pattern syntax as Allow/Deny; Methods is a list of HTTP verbs, and an empty
+// list means every method. Action must be "allow" or "deny" — there is no
+// default, because a rule whose verdict was guessed is a rule that silently
+// does the opposite of what its author meant.
+type NetworkMethodRule struct {
+	Host    string   `yaml:"host"`
+	Methods []string `yaml:"methods"`
+	Action  string   `yaml:"action"`
 }
 
 // ShellRuntimeConfig caps the shell v2 runtime (Task 16+). MaxOutputBytes
@@ -360,6 +387,24 @@ type NetworkConfig struct {
 type ShellRuntimeConfig struct {
 	MaxOutputBytes int           `yaml:"max_output_bytes"`
 	IdleTimeout    time.Duration `yaml:"idle_timeout"`
+	// MaxConcurrent caps how many shell sessions may hold a live OS process at
+	// once. 0 (the default) means no cap. Over the cap a start QUEUES rather
+	// than failing — see shell.Config.MaxConcurrent for why refusing would be
+	// the wrong reflex here.
+	MaxConcurrent int `yaml:"max_concurrent"`
+	// CaptureProfile runs the operator's login shell once at startup and
+	// layers the environment it produces under every child launch, so a yanshi
+	// started from a desktop launcher can still find the toolchains the
+	// operator's rc files put on PATH.
+	//
+	// OFF by default: it executes the operator's startup files, which is a
+	// side effect nobody asked for at boot, and the failure it fixes is
+	// invisible to an operator who launched yanshi from their own terminal.
+	CaptureProfile bool `yaml:"capture_profile"`
+	// ProfileShell selects which shell CaptureProfile asks
+	// (bash|zsh|sh|powershell). Empty means $SHELL on unix, powershell on
+	// Windows.
+	ProfileShell string `yaml:"profile_shell"`
 }
 
 // GoalConfig configures the self-driven goal loop's budget.
@@ -889,7 +934,40 @@ func (c *Config) validate() error {
 	if err := c.loadGuardianPrompt(); err != nil {
 		return err
 	}
+	if err := c.validateNetworkMethods(); err != nil {
+		return err
+	}
 	return c.validateProfiles()
+}
+
+// validateNetworkMethods rejects a method rule whose verdict or subject is
+// missing.
+//
+// Both checks refuse the start rather than dropping the rule, for the reason
+// validateProfiles gives: an ignored security rule is discovered from traffic,
+// months later, by someone who has no reason to suspect their config. A rule
+// with no host names nothing; a rule with no action ("action: alow") would
+// silently become a deny under any zero-value reading, which is the opposite
+// verdict from the one an operator writing an allow rule intended.
+//
+// It does NOT refuse a method rule for an https host while inspect_https is
+// off. That combination is inert rather than wrong — the rule applies the
+// moment inspection is enabled, and plain-HTTP requests through the proxy
+// carry a readable method with no inspection at all — so refusing it would
+// reject a valid configuration. bootstrap says it out loud on stderr instead.
+func (c *Config) validateNetworkMethods() error {
+	for i, rule := range c.Security.Network.Methods {
+		if strings.TrimSpace(rule.Host) == "" {
+			return fmt.Errorf("security.network.methods[%d]: host is required", i)
+		}
+		switch strings.ToLower(strings.TrimSpace(rule.Action)) {
+		case "allow", "deny":
+		default:
+			return fmt.Errorf("security.network.methods[%d] (host %q): action must be \"allow\" or \"deny\", got %q",
+				i, rule.Host, rule.Action)
+		}
+	}
+	return nil
 }
 
 // loadGuardianPrompt reads and validates security.guardian_prompt_file (W-B-14).

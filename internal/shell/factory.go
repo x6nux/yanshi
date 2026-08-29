@@ -24,7 +24,27 @@ type DefaultSecureFactory struct {
 	OS       ProcessFactory
 	Policy   *netpolicy.Policy
 	ProxyURL string
+	// SOCKSURL, CAFile and Snapshot are the rest of the launch posture; see
+	// childLaunchPosture for what each one does and when it is empty.
+	SOCKSURL string
+	CAFile   string
 	Sandbox  sandbox.Sandbox
+	Snapshot Snapshot
+}
+
+// posture builds the shared launch posture, in one place, for the same reason
+// SecureLaunchFactory.posture exists: a second struct literal is a second
+// thing to forget a field in, and a forgotten field here is a child launched
+// under a posture nobody declared.
+func (f DefaultSecureFactory) posture() childLaunchPosture {
+	return childLaunchPosture{
+		Policy:   f.Policy,
+		ProxyURL: f.ProxyURL,
+		SOCKSURL: f.SOCKSURL,
+		CAFile:   f.CAFile,
+		Sandbox:  f.Sandbox,
+		Snapshot: f.Snapshot,
+	}
 }
 
 // Start runs the full spawn pipeline:
@@ -56,7 +76,7 @@ func (f DefaultSecureFactory) Start(ctx context.Context, spec secproc.SecureProc
 	if f.OS == nil {
 		return nil, fmt.Errorf("shell: DefaultSecureFactory.OS is nil (fail-closed)")
 	}
-	posture := childLaunchPosture{Policy: f.Policy, ProxyURL: f.ProxyURL, Sandbox: f.Sandbox}
+	posture := f.posture()
 	launch, err := posture.prepare(ctx, LaunchSpec{
 		ShellName:      spec.Shell,
 		Env:            spec.Env,

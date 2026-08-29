@@ -38,7 +38,12 @@ type SecureLaunchFactory struct {
 	// must be published to the child even if the caller left ProxyURL empty.
 	Policy   *netpolicy.Policy
 	ProxyURL string
+	// SOCKSURL, CAFile and Snapshot are the rest of the launch posture; see
+	// childLaunchPosture for what each one does and when it is empty.
+	SOCKSURL string
+	CAFile   string
 	Sandbox  sandbox.Sandbox
+	Snapshot Snapshot
 }
 
 // SecureLaunchFactory must satisfy the Manager's factory seam; the assertion
@@ -63,7 +68,14 @@ func NewSecureLaunchFactory(f SecureLaunchFactory) SecureLaunchFactory {
 // there (the new field would be missing here, and the sandbox seam would run
 // against a posture nothing was launched under).
 func (f SecureLaunchFactory) posture() childLaunchPosture {
-	return childLaunchPosture{Policy: f.Policy, ProxyURL: f.ProxyURL, Sandbox: f.Sandbox}
+	return childLaunchPosture{
+		Policy:   f.Policy,
+		ProxyURL: f.ProxyURL,
+		SOCKSURL: f.SOCKSURL,
+		CAFile:   f.CAFile,
+		Sandbox:  f.Sandbox,
+		Snapshot: f.Snapshot,
+	}
 }
 
 // prepareLaunch delegates to the shared childLaunchPosture. There is no

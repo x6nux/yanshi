@@ -305,9 +305,49 @@ security:
     allow: []                  # glob host patterns admitted (e.g. "*.github.com")
     deny: []                   # glob host patterns always rejected (deny wins)
     allow_private: false       # admit loopback / RFC1918 / link-local (SSRF risk)
+    # HTTPS inspection (W-B-17). OFF by default, and that default is itself a
+    # load-bearing decision: with it off the managed proxy handles CONNECT as a
+    # blind tunnel, exactly as ADR-0014 specified. Turning it on lets the proxy
+    # decrypt tunnels from factory-launched subprocesses using a locally
+    # generated root at ~/.yanshi/tls/ca.pem, which is published to those
+    # children through SSL_CERT_FILE and friends. It is NOT installed into any
+    # system trust store. Read docs/adr/0023-inspecting-proxy-trust-boundary.md
+    # first — especially the table of which platforms and clients can bypass
+    # it, and the note that a certificate-pinning child stops being able to
+    # reach the network at all.
+    inspect_https: false
+    # Per-method rules inside an allowed host. Evaluated in order, first match
+    # wins, and they can only NARROW a host the rules above admitted — a host
+    # in `deny` is never reconsidered here.
+    #
+    # They apply to plain http:// through the proxy always, and to https ONLY
+    # when inspect_https is on: nobody can read the method inside a blind
+    # CONNECT tunnel. bootstrap says so on stderr if you configure rules
+    # without inspection.
+    methods: []
+    # - host: registry.npmjs.org   # same pattern syntax as allow/deny
+    #   methods: [GET, HEAD]       # empty list = every method
+    #   action: allow              # "allow" or "deny"; there is no default
+    # - host: registry.npmjs.org
+    #   action: deny               # ... so publishing is refused
   shell:
     max_output_bytes: 1048576  # ring buffer cap per session (1 MiB)
     idle_timeout: 30m          # session reaped after this idle window
+    # Cap on shell sessions holding a live OS process at once (W-B-22).
+    # 0 = uncapped. Over the cap a start QUEUES rather than failing — the wait
+    # is bounded by the calling tool's own deadline.
+    max_concurrent: 0
+    # Run the operator's login shell once at startup and layer the environment
+    # it produces under every subprocess launch (W-B-21). Turn this on when
+    # yanshi is started from a desktop launcher or a service manager and the
+    # model reports "command not found" for tools that work in your terminal.
+    #
+    # OFF by default because it executes your startup files at boot. Capture
+    # failure is never fatal: children then get yanshi's own environment.
+    # Credentials the rc files export are stripped on the same path that
+    # strips yanshi's own.
+    capture_profile: false
+    profile_shell: ""          # bash|zsh|sh|powershell; empty = $SHELL
 
 # Batch C1: RLM fan-out, automation scheduling, and agent batch jobs.
 # RLM needs a cheap provider (cost_class: cheap) for rlm_query fan-out.

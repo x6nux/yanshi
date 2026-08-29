@@ -164,6 +164,13 @@ var spawnEnvCensus = map[string]string{
 		"config files rather than the environment.",
 	"internal/execprobe/probe.go": "Run: netpolicy.ScrubbedEnviron(). A `tool --version` " +
 		"probe reads a banner and needs nothing else.",
+	"internal/shell/snapshot.go": "CaptureSnapshot: cmd.Env = os.Environ(), INHERITS " +
+		"deliberately. The child is the operator's own login shell reading the operator's " +
+		"own startup files, and a scrubbed HOME/USER would make it read a different user's " +
+		"files or none — the capture would then describe an environment nobody has. What it " +
+		"prints is scrubbed downstream instead: Snapshot.Apply layers it into the base that " +
+		"childLaunchPosture.env then runs ScrubCredentials over, so an rc file exporting an " +
+		"API key is stripped on exactly the path that strips yanshi's own.",
 	"internal/clipimg/clipimg.go": "commandOutput: netpolicy.ScrubbedEnviron() in that single " +
 		"package-level seam, so all four platform backends are covered at once.",
 	"internal/tools/screenshot.go": "captureCommand sets netpolicy.ScrubbedEnviron(). The " +

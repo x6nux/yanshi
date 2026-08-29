@@ -310,6 +310,19 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 		}
 		connCtx = tools.WithApprovalManager(connCtx, approvalManager, connectionSessionID)
 
+		// W-B-16: make this connection able to answer the managed proxy's
+		// per-domain egress prompts. Registered here rather than beside
+		// registerClient above because it needs pt, unattended and
+		// approvalManager, all of which are built between the two points.
+		defer s.registerEgressAsker(&egressAsker{
+			write:      conn.write,
+			perm:       pt,
+			unattended: unattended,
+			approvals:  approvalManager,
+			sessionID:  connectionSessionID,
+			connCtx:    connCtx,
+		})()
+
 		// S9: the connection's approval rule set is created lazily on first
 		// approval and MUST be dropped here. Without this defer the
 		// orchestrator's map grows by one RuleSet per WebSocket connection for

@@ -138,6 +138,11 @@ type Server struct {
 	// clientRegistry holds the open WebSocket connections so background
 	// goroutines can push server-initiated frames. See broadcast.go.
 	clientRegistry
+	// egressRegistry holds the connections able to answer a per-domain egress
+	// prompt raised by the managed proxy. Separate from clientRegistry because
+	// answering needs the connection's permission tracker, which a *wsConn
+	// does not carry. See ws_egress.go.
+	egressRegistry
 
 	mux        *http.ServeMux
 	token      string

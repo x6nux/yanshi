@@ -37,58 +37,62 @@ type childLaunchPosture struct {
 	// must be published to the child even when ProxyURL is empty.
 	Policy   *netpolicy.Policy
 	ProxyURL string
+	// SOCKSURL and CAFile carry the other two halves of the managed proxy: the
+	// SOCKS endpoint for clients that do not read http_proxy, and the
+	// inspection root for children that must trust the forged chain. Both are
+	// empty unless bootstrap started the corresponding facility.
+	SOCKSURL string
+	CAFile   string
 	Sandbox  sandbox.Sandbox
+	// Snapshot is the operator's login-shell environment (W-B-21). The zero
+	// value means capture was off or failed, and layering it is then a no-op.
+	Snapshot Snapshot
 }
 
-// proxy resolves the proxy endpoint published to the child. A policy with no
-// endpoint configured must still not let the child talk directly, so it points
-// at a dead local port rather than leaving the vars empty (which exec would
-// hand to the child as "no proxy").
+// proxy resolves the managed-proxy endpoints published to the child.
 //
-// ⚠️ Phase 0: that dead port is the ONLY case in production. bootstrap.Build
-// constructs a netpolicy.Policy unconditionally and leaves ProxyURL empty, and
-// netpolicy.Proxy is never started, so every child launched through these two
-// factories gets http(s)_proxy=http://127.0.0.1:0. This is a BLACK HOLE, not
-// an egress policy:
+// No placeholder. A policy with no proxy behind it used to publish
+// http://127.0.0.1:0, which looked like enforcement and was a black hole: it
+// broke proxy-aware clients, let everything else straight out, and recorded no
+// decision anywhere. Half-enforcement is worse than none, because it reads as
+// containment.
 //
-//   - It consults nothing. security.network's default/allow/deny/allow_private
-//     do not reach this decision — `default: allow` with `allow: ["*"]` still
-//     gets the dead port.
-//   - It only stops programs that honor the proxy variables (curl, gh, go mod
-//     download, npm, git-over-HTTP). Anything speaking raw sockets, SSH or its
-//     own DNS is unaffected, so it blocks the well-behaved tools and leaves the
-//     actual exfiltration paths open.
-//   - It produces no decision record, so a blocked fetch surfaces to the
-//     operator only as "connect to 127.0.0.1 port 0 failed".
+// Either a real managed proxy is running and children are pointed at it, or
+// nothing is published and the posture is honestly unenforced.
+//
+// # What the published variables buy, and what they do not
+//
+// When ProxyURL is set, security.network IS evaluated per host for every
+// request a child makes THROUGH the proxy, and every decision is audited.
+// SOCKSURL widens which clients that covers — ALL_PROXY reaches ssh
+// ProxyCommand and the many clients that never read http_proxy — and CAFile,
+// when HTTPS inspection is on, is what lets the proxy judge method as well as
+// host.
+//
+// It is still an environment variable, not a boundary:
+//
+//   - It only stops programs that HONOR the variables. A raw socket, its own
+//     DNS, or a proxy set from a config file wins over anything published
+//     here. On Linux the seccomp filter under a landlock sandbox closes the
+//     raw-socket half (ADR-0014's amendment); on darwin and Windows it is
+//     open.
 //   - It reaches only THESE launchers. ACP agent CLIs (internal/acp/spawn.go),
 //     stdio MCP servers (internal/mcp/manager.go), LSP servers
 //     (internal/lsp/manager.go), the skills installer and `gh`/`git` spawned
 //     from cmd/yanshi all build their env from os.Environ() directly, so they
 //     see no managed proxy AND inherit whatever proxy the operator's shell had.
 //     Two of those (ACP, MCP-over-stdio to a remote model) need real egress to
-//     function at all, which is why the dead port is not simply applied there.
+//     function at all, which is why they were never simply cut off.
 //
-// Even within these launchers it only reaches those that use env at all: an
-// invocation that sets its own proxy via a config file or CLI flag wins.
-//
-// The variables are published in both upper and lower case — that is a
+// The http variables are published in both upper and lower case — that is a
 // correctness requirement rather than caution, because curl ignores uppercase
 // HTTP_PROXY for plain http:// URLs. See netpolicy.PrepareEnv.
 //
-// The policy IS enforced for yanshi's own in-process HTTP (web_fetch and
-// web_search go through netpolicy.NewTransport/PolicyDialer) — the gap is
-// subprocess-only. Closing it means actually starting netpolicy.Proxy and
-// setting ProxyURL, which is W5's work package; do not paper over it here.
-func (p childLaunchPosture) proxy() string {
-	// No placeholder. A policy with no proxy behind it used to publish
-	// http://127.0.0.1:0, which looked like enforcement and was a black hole:
-	// it broke proxy-aware clients, let everything else straight out, and
-	// recorded no decision anywhere. Half-enforcement is worse than none,
-	// because it reads as containment.
-	//
-	// Either a real managed proxy is running and children are pointed at it,
-	// or nothing is published and the posture is honestly unenforced.
-	return p.ProxyURL
+// The policy is ALSO enforced for yanshi's own in-process HTTP (web_fetch and
+// web_search go through netpolicy.NewTransport/PolicyDialer); that path never
+// depended on these variables.
+func (p childLaunchPosture) proxy() netpolicy.ManagedProxy {
+	return netpolicy.ManagedProxy{HTTPURL: p.ProxyURL, SOCKSURL: p.SOCKSURL, CAFile: p.CAFile}
 }
 
 // env builds the child environment: the host env as the baseline, caller
@@ -123,17 +127,23 @@ func (p childLaunchPosture) proxy() string {
 // recognises — so the managed variables would be stripped from the child that
 // needs them to reach the proxy at all.
 //
-// The proxy variables this function appends are NOT a second boundary: see
-// proxy() for why they are a black hole rather than an egress policy in
-// Phase 0.
+// The proxy variables this function appends are NOT a containment boundary:
+// see proxy() for exactly which clients and which launchers they reach.
+//
+// The login-shell snapshot (W-B-21) is layered in BEFORE the credential scrub,
+// which is the only correct order: an rc file that exports an API key is one
+// of the likeliest sources of a credential in this environment, and applying
+// the snapshot afterwards would hand the child exactly the secrets the scrub
+// exists to remove. Sitting under the scrub means the snapshot is subject to
+// the same policy as yanshi's own environment, with no second allowlist.
 func (p childLaunchPosture) env(callerEnv []string, allowEnv []string) []string {
-	proxy := p.proxy()
 	base := os.Environ()
 	if len(callerEnv) > 0 {
 		base = append(base, callerEnv...)
 	}
+	base = p.Snapshot.Apply(base)
 	kept, _ := netpolicy.ScrubCredentials(base, netpolicy.CredentialPolicy{AllowEnv: allowEnv})
-	return netpolicy.PrepareEnv(kept, proxy)
+	return netpolicy.PrepareEnvFor(kept, p.proxy())
 }
 
 // prepare computes the spec handed to the OS factory without spawning

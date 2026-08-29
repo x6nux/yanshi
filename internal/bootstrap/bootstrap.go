@@ -120,6 +120,23 @@ type App struct {
 	// through some path that skips the constructor.
 	ToolTimeouts map[string]time.Duration
 
+	// LaunchProxyURLs maps each production launch factory to the managed-proxy
+	// URL it publishes to its children ("secproc" and "shell_v2").
+	//
+	// Its purpose is a wiring assertion, for the same reason ToolNames and
+	// ToolTimeouts are exposed: the two factories share one childLaunchPosture,
+	// so their env SEMANTICS cannot drift — and that is exactly why nothing
+	// noticed when their INPUTS did. shell_v2's literal omitted ProxyURL while
+	// secproc's set it, so every shell v2 tool published an empty http_proxy,
+	// which a child reads as "no proxy" and answers by connecting directly.
+	// Reading the call site could not catch it; comparing the assembled values
+	// can.
+	LaunchProxyURLs map[string]string
+
+	// NetProxy is the managed egress proxy, or nil when it failed to start
+	// (which is non-fatal — see the Build site). Shutdown closes it.
+	NetProxy *netpolicy.Proxy
+
 	// AgentAPI is the versioned thread/turn/item service shared by HTTP and
 	// JSON-RPC app-server transports. Non-nil after a successful Build; the
 	// `yanshi app` subcommand consumes it directly.
@@ -1102,33 +1119,17 @@ func Build(opts Options) (*App, error) {
 	// even when OS isolation is not enforced, so the rest of the system can
 	// label itself correctly. The tier string maps to sandbox.AccessTier; an
 	// unrecognized value falls through to ReadOnly (fail-safe).
-	sandboxTier := sandbox.ParseTier(cfg.Security.Sandbox.Tier)
-	sb := sandbox.New(sandbox.Config{
-		Enabled:       cfg.Security.Sandbox.Enabled == nil || *cfg.Security.Sandbox.Enabled,
-		WorkspaceRoot: workRoot,
-		Tier:          sandboxTier,
-		NetworkDeny:   cfg.Security.Sandbox.NetworkDeny,
-	})
-	if report := sb.Report(); report.Effective != sandbox.OSIsolated {
-		// Security posture: goes through slog so it lands in the log file and
-		// any collector, not only on the terminal of whoever started the
-		// process. An operator auditing after the fact needs this line, and
-		// stderr on a detached server is nobody's inbox.
-		slog.Warn("sandbox not enforcing OS/network isolation",
-			"effective", string(report.Effective), "reason", report.Reason)
-	}
 	// networkPolicy is enforced for yanshi's OWN in-process HTTP (web_fetch and
-	// web_search, via netpolicy.NewTransport/PolicyDialer). It is NOT enforced
-	// for subprocesses: no netpolicy.Proxy is started here, so the launch
-	// posture publishes proxy variables pointing at http://127.0.0.1:0 to
-	// factory-launched children instead — a dead port that consults none of
-	// these fields. See shell.childLaunchPosture's proxy() for the full
-	// account, including which launchers bypass it; closing the gap is W5.
+	// web_search, via netpolicy.NewTransport/PolicyDialer) AND, through the
+	// managed proxy started just below, for the subprocesses launched by the
+	// shell/secproc factories. See shell.childLaunchPosture's proxy() for
+	// exactly which clients and which launchers that second half reaches.
 	networkPolicy := &netpolicy.Policy{
 		Default:      cfg.Security.Network.Default,
 		Allow:        append([]string(nil), cfg.Security.Network.Allow...),
 		Deny:         append([]string(nil), cfg.Security.Network.Deny...),
 		AllowPrivate: cfg.Security.Network.AllowPrivate,
+		Methods:      networkMethodRules(cfg.Security.Network.Methods),
 	}
 	// Start the managed proxy so children have something real to be pointed
 	// at. Before this, no proxy existed and the launch posture published
@@ -1139,7 +1140,12 @@ func Build(opts Options) (*App, error) {
 	// inputs, and refusing to boot over it would be worse than running with
 	// the honest unenforced posture. It is reported like the other degraded
 	// subsystems, and proxyURL stays empty so no placeholder is published.
-	var proxyURL string
+	//
+	// This block runs BEFORE sandbox.New on purpose. The darwin backend needs
+	// the proxy URL: its Seatbelt profile only re-permits loopback when
+	// Config.ProxyURL is non-empty, so a sandboxed child built in the other
+	// order was pointed at a proxy the sandbox then forbade it to reach.
+	var proxyURL, socksURL string
 	netProxy, proxyErr := netpolicy.NewProxy(*networkPolicy, nil)
 	if proxyErr != nil {
 		fmt.Fprintf(os.Stderr,
@@ -1147,6 +1153,91 @@ func Build(opts Options) (*App, error) {
 	} else {
 		// NewProxy already listens and serves in its own goroutine.
 		proxyURL = netProxy.URL().String()
+		socksURL = netProxy.SOCKSURL()
+	}
+	// HTTPS inspection (W-B-17, ADR-0023). Off unless the operator asked, and
+	// a failure to establish the root leaves it off rather than failing the
+	// boot: CONNECT then behaves exactly as ADR-0014 specified, which is a
+	// working posture, and the stderr line says the method rules will not
+	// fire.
+	//
+	// These three go through slog rather than stderr for the reason the sandbox
+	// warning below states: they are security POSTURE, and an operator auditing
+	// after the fact needs them in the log file and the collector. stderr on a
+	// detached server is nobody's inbox. (The stderr budget in
+	// wiring_test.go::TestStderrIsReservedForPreLoggerAndTTYMessages is the
+	// mechanical half of the same rule.)
+	caFile := ""
+	if cfg.Security.Network.InspectHTTPS && netProxy != nil {
+		ca, caErr := netpolicy.LoadOrCreateCA(inspectionCADir())
+		if caErr != nil {
+			slog.Warn("HTTPS inspection requested but the certificate authority could not be prepared",
+				"error", caErr,
+				"effect", "CONNECT stays a blind tunnel and security.network.methods will not apply to https")
+		} else {
+			netProxy.SetCertAuthority(ca)
+			caFile = ca.CertPath()
+			slog.Warn("HTTPS inspection is ON: the managed proxy decrypts CONNECT tunnels "+
+				"from factory-launched subprocesses",
+				"root", caFile,
+				"recorded", "host and method only; never bodies, headers or URLs",
+				"adr", "docs/adr/0023-inspecting-proxy-trust-boundary.md")
+		}
+	}
+	if len(cfg.Security.Network.Methods) > 0 && caFile == "" {
+		// A method rule the operator can see in their config and that can
+		// never fire on https is the "written but unread" shape; say so at the
+		// only moment anyone is looking.
+		slog.Warn("security.network.methods is configured but inspect_https is off",
+			"rules", len(cfg.Security.Network.Methods),
+			"effect", "the rules apply to plain http:// through the proxy only — an https "+
+				"request's method is not readable inside a blind CONNECT tunnel")
+	}
+
+	// Task 10/13: build the security posture from config and warn the operator
+	// when Phase 0 is in effect. sandbox.New returns an honest CapabilityReport
+	// even when OS isolation is not enforced, so the rest of the system can
+	// label itself correctly. The tier string maps to sandbox.AccessTier; an
+	// unrecognized value falls through to ReadOnly (fail-safe).
+	sandboxTier := sandbox.ParseTier(cfg.Security.Sandbox.Tier)
+	sb := sandbox.New(sandbox.Config{
+		Enabled:       cfg.Security.Sandbox.Enabled == nil || *cfg.Security.Sandbox.Enabled,
+		WorkspaceRoot: workRoot,
+		Tier:          sandboxTier,
+		NetworkDeny:   cfg.Security.Sandbox.NetworkDeny,
+		// The field had no production producer until now: bootstrap left it
+		// empty and only the darwin backend read it, so on macOS the Seatbelt
+		// profile denied the loopback connection the managed proxy needs. It
+		// is wired rather than deleted — the consumer was correct and the
+		// producer was missing.
+		ProxyURL: proxyURL,
+	})
+	if report := sb.Report(); report.Effective != sandbox.OSIsolated {
+		// Security posture: goes through slog so it lands in the log file and
+		// any collector, not only on the terminal of whoever started the
+		// process. An operator auditing after the fact needs this line, and
+		// stderr on a detached server is nobody's inbox.
+		slog.Warn("sandbox not enforcing OS/network isolation",
+			"effective", string(report.Effective), "reason", report.Reason)
+	}
+
+	// W-B-21: capture the operator's login-shell environment once, so children
+	// can find the toolchains their rc files put on PATH. Opt-in, and every
+	// failure path here is a warning plus the zero Snapshot, whose Apply is
+	// the identity function — a shell that is missing, slow or unparseable
+	// costs the extra PATH entries and nothing else.
+	var shellSnapshot shell.Snapshot
+	if cfg.Security.Shell.CaptureProfile {
+		captureCtx, cancelCapture := context.WithTimeout(ctx, shellSnapshotTimeout)
+		snap, snapErr := shell.CaptureSnapshot(captureCtx, cfg.Security.Shell.ProfileShell)
+		cancelCapture()
+		if snapErr != nil {
+			slog.Warn("login-shell environment not captured",
+				"error", snapErr,
+				"effect", "subprocesses use yanshi's own environment")
+		} else {
+			shellSnapshot = snap
+		}
 	}
 
 	// Say it out loud, next to the sandbox phase0 line. Without this the
@@ -1177,10 +1268,12 @@ func Build(opts Options) (*App, error) {
 	//     enforces their allowlist would debug the wrong thing entirely.
 	if proxyURL != "" {
 		fmt.Fprintf(os.Stderr, "yanshi: network: factory-launched subprocesses route through "+
-			"the managed proxy at %s, which applies security.network per host. It stops only "+
-			"proxy-aware clients (curl/gh/go/npm) and is NOT a containment boundary — raw "+
-			"sockets, SSH and ACP/MCP/LSP subprocesses bypass it entirely (see "+
-			"docs/adr/0014-managed-proxy-is-the-only-governed-egress-channel.md)\n", proxyURL)
+			"the managed proxy at %s (SOCKS5 at %s), which applies security.network per host. "+
+			"It stops only proxy-aware clients (curl/gh/go/npm and anything honouring "+
+			"ALL_PROXY) and is NOT a containment boundary — raw sockets, SSH and ACP/MCP/LSP "+
+			"subprocesses bypass it entirely (see "+
+			"docs/adr/0014-managed-proxy-is-the-only-governed-egress-channel.md)\n",
+			proxyURL, socksURL)
 	} else {
 		fmt.Fprintf(os.Stderr, "yanshi: network: the managed proxy is NOT running, so "+
 			"factory-launched subprocesses get no proxy variables and their egress is "+
@@ -1211,9 +1304,23 @@ func Build(opts Options) (*App, error) {
 		Root:           workRoot,
 		MaxOutputBytes: cfg.Security.Shell.MaxOutputBytes,
 		IdleTimeout:    cfg.Security.Shell.IdleTimeout,
+		// W-B-22. Zero means uncapped, which is the previous behaviour.
+		MaxConcurrent: cfg.Security.Shell.MaxConcurrent,
 		Factory: shell.NewSecureLaunchFactory(shell.SecureLaunchFactory{
-			Policy:  networkPolicy,
-			Sandbox: sb,
+			Policy: networkPolicy,
+			// ProxyURL was MISSING here while DefaultSecureFactory below had
+			// it, so the two production launch paths had different egress
+			// postures: shell_run went through the managed proxy and every
+			// shell v2 tool (shell_start, task_shell_start, …) was published
+			// an EMPTY http_proxy, which a child reads as "no proxy" and
+			// answers by connecting directly. The shared childLaunchPosture
+			// made the env semantics identical; it could not make the inputs
+			// identical.
+			ProxyURL: proxyURL,
+			SOCKSURL: socksURL,
+			CAFile:   caFile,
+			Sandbox:  sb,
+			Snapshot: shellSnapshot,
 		}),
 	})
 	if st != nil {
@@ -1234,7 +1341,10 @@ func Build(opts Options) (*App, error) {
 		OS:       shell.OSProcessFactory{},
 		Policy:   networkPolicy,
 		ProxyURL: proxyURL,
+		SOCKSURL: socksURL,
+		CAFile:   caFile,
 		Sandbox:  sb,
+		Snapshot: shellSnapshot,
 	}
 
 	orchConfig := orchestrator.Config{
@@ -1404,6 +1514,18 @@ func Build(opts Options) (*App, error) {
 	// start there, so reaching this line means it is usable).
 	httpCfg.GuardianPrompt = cfg.Security.GuardianPrompt
 	srv := apihttp.New(httpCfg)
+	// W-B-16: give the managed proxy something to ask. Wired here rather than
+	// at NewProxy because the server is what can reach a human and it does not
+	// exist until now — the proxy URL had to be known first, since the launch
+	// posture the server's tools use is built out of it.
+	//
+	// Until this line runs, and whenever no client is connected afterwards,
+	// ApproveEgress answers false and an unapproved host stays refused. That
+	// is the fail-closed direction: a subprocess reaching a host nobody
+	// allowed does not get out because there was nobody to ask.
+	if netProxy != nil {
+		netProxy.SetApprover(srv)
+	}
 	srv.Chat(orch, providerModels, registry)
 	srv.ChatWS(orch, providerModels, registry) // WebSocket endpoint (TUI primary transport)
 	srv.AgentV1(agentAPI)                      // V14 versioned resource API (thread/turn/item)
@@ -1489,6 +1611,8 @@ func Build(opts Options) (*App, error) {
 		AgentAPI:        agentAPI,
 		Skills:          registry,
 		ToolNames:       toolNames,
+		LaunchProxyURLs: launchProxyURLs(secureFactory, shellManager),
+		NetProxy:        netProxy,
 		mcpHealthCancel: mcpHealthCancel,
 		ToolTimeouts:    toolTimeouts,
 		VCS:             vcsInstance,
@@ -1731,6 +1855,16 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if err := a.Server.Shutdown(ctx); err != nil {
 		errs = append(errs, err)
 	}
+	// The managed proxy owns a loopback listener and two goroutines per
+	// connection, and nothing closed it: every App built in a process — every
+	// bootstrap test, every in-process TUI restart — left one behind, still
+	// accepting. Closed AFTER the HTTP server so an in-flight tool call is not
+	// cut off mid-fetch by a proxy that vanished. Its error is deliberately
+	// dropped: a teardown failure on a facility that is going away cannot be
+	// acted on and would mask the errors that can.
+	if a.NetProxy != nil {
+		_ = a.NetProxy.Close()
+	}
 	// Close the ShellManager BEFORE the store so pending jobs are flushed.
 	if a.ShellManager != nil {
 		if cerr := a.ShellManager.Close(); cerr != nil {
@@ -1811,6 +1945,66 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return "skills"
+}
+
+// launchProxyURLs reads back what each production launch factory will publish
+// to its children. See App.LaunchProxyURLs for why this is read from the
+// assembled objects instead of from the literals a few hundred lines up.
+//
+// A factory the manager was given but that is not the shell v2 one yields no
+// entry, which the assertion reads as "shell v2 publishes nothing" — the same
+// verdict as an empty URL, and the correct one: a substituted factory is not
+// the production egress posture either.
+func launchProxyURLs(secure shell.DefaultSecureFactory, manager *shell.Manager) map[string]string {
+	out := map[string]string{"secproc": secure.ProxyURL}
+	if manager != nil {
+		if v2, ok := manager.Factory().(shell.SecureLaunchFactory); ok {
+			out["shell_v2"] = v2.ProxyURL
+		}
+	}
+	return out
+}
+
+// shellSnapshotTimeout bounds the login-shell capture (W-B-21). It sits on the
+// path to the first prompt, and an rc file that waits on a network call or a
+// keypress would otherwise hold the whole start-up there.
+const shellSnapshotTimeout = 5 * time.Second
+
+// inspectionCADir is where the HTTPS-inspection root lives: ~/.yanshi/tls,
+// beside the other per-user state this process owns. The directory is created
+// 0700 and the key 0600 by netpolicy.LoadOrCreateCA.
+//
+// Falls back to a temp directory when the home directory is unknowable, which
+// makes the root ephemeral rather than making inspection unavailable. A
+// per-boot root is worse for the operator (children re-trust a new one each
+// start) and strictly better than a root in a world-readable location.
+func inspectionCADir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return filepath.Join(os.TempDir(), "yanshi-tls")
+	}
+	return filepath.Join(home, ".yanshi", "tls")
+}
+
+// networkMethodRules converts the YAML method table into the policy's form.
+//
+// Action was already validated by config.Load (an unrecognised verdict refuses
+// the start), so the comparison here is the only reading of it and cannot fall
+// through to a guessed default: anything that is not "allow" is a deny, and
+// nothing that is not "allow" or "deny" reaches this function.
+func networkMethodRules(in []config.NetworkMethodRule) []netpolicy.MethodRule {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]netpolicy.MethodRule, 0, len(in))
+	for _, rule := range in {
+		out = append(out, netpolicy.MethodRule{
+			Host:    rule.Host,
+			Methods: append([]string(nil), rule.Methods...),
+			Allow:   strings.EqualFold(strings.TrimSpace(rule.Action), "allow"),
+		})
+	}
+	return out
 }
 
 // expandHome resolves a leading "~" to the user's home directory. Empty input
