@@ -83,13 +83,15 @@ type CapabilityReport struct {
 	// that this backend does NOT enforce, one entry per field (W-B-13).
 	//
 	// Enforced/Effective answer at BACKEND granularity, and that granularity is
-	// too coarse to be actionable on the one backend where it matters: the
-	// Landlock path reports Enforced=true and OSIsolated because it really does
-	// confine the filesystem, while `network_deny: true` means nothing at all
-	// there unless the seccomp filter also loaded. An operator reading
-	// "os-isolated" has no way to learn that half of what they configured is
-	// inert. Each constructor therefore DECLARES the field set it enforces and
-	// UnenforcedFields subtracts it from what the operator actually requested.
+	// too coarse to be actionable on the backends where it matters. The Landlock
+	// path reports Enforced=true and OSIsolated because it really does confine
+	// the filesystem, while `network_deny: true` means nothing at all there
+	// unless the seccomp filter also loaded; the Windows restricted-token path
+	// confines writes and installs no WFP filter at all, so the same setting is
+	// permanently inert there. An operator reading "os-isolated" has no way to
+	// learn that half of what they configured is doing nothing. Each constructor
+	// therefore DECLARES the field set it enforces and UnenforcedFields
+	// subtracts it from what the operator actually requested.
 	//
 	// Empty means "everything the operator asked for is enforced" — including
 	// the case where they asked for nothing (see requestedFields: a

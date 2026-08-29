@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -71,81 +70,12 @@ func (p jobProbe) enforcing() bool {
 	return p.Created && p.LimitsApplied && p.KillOnCloseObserved
 }
 
-// windowsJobReport is the honesty decision for the Windows backend.
-//
-// # Why Effective is DegradedHostGuard even when the job object works
-//
-// This is the load-bearing judgement in the whole file, and it goes against the
-// intuition that "a working OS mechanism means os-isolated".
-//
-// EffectiveMode is not read as "is some OS mechanism active". Its one
-// programmatic consumer is tools.SandboxEnforcing, which ANDs Effective ==
-// OSIsolated with Enforced and uses the answer to decide whether a failed
-// command's stderr may be interpreted as an ACCESS REFUSAL by the sandbox. A
-// job object refuses no access whatsoever: it caps lifetime and resources, and
-// a child inside one reads and writes exactly what the parent's token allows.
-//
-// So claiming OSIsolated here would arm tools.ClassifySandboxViolation's
-// Windows pattern table — which matches "Access is denied", "error 5",
-// "Permission denied" and 拒绝访问 — against every failing command on the host.
-// On Windows those strings are the ordinary spelling of "another process holds
-// this file", "this directory is read-only", "you are not an administrator".
-// Each false positive turns into an escalation prompt asking the operator to
-// approve a higher access tier that cannot possibly fix the problem, because
-// nothing denied it in the first place. That is worse than reporting nothing:
-// it trains the operator to approve escalations reflexively.
-//
-// The mirror error is real too and is why this does not simply report Disabled:
-// a job object IS doing something, and Backend/Reason/CanKillTree say what.
-// DegradedHostGuard is the accurate statement — "no OS-level ACCESS isolation,
-// the host guard is the boundary" — and CanKillTree carries the one guarantee
-// this backend genuinely adds.
-//
-// # Why CanKillTree may be true while Enforced is false
-//
-// They answer different questions. Enforced is about access control; CanKillTree
-// is about whether the OS reaps descendants. Windows has no process groups and
-// no cgroups: without a job object, killing a shell leaves its grandchildren
-// running with no way to find them. With one, closing the handle kills every
-// process in it, transitively, including ones that already double-forked.
-// Those two facts are independent, and collapsing them into a single flag is
-// what would force a lie in one direction or the other.
-func windowsJobReport(cfg Config, p jobProbe) CapabilityReport {
-	rep := CapabilityReport{
-		// Hard-coded rather than runtime.GOOS so this function produces the
-		// same answer when a test on any workstation drives it. A report that
-		// only says "windows" on Windows is a report no one can test.
-		Platform:  "windows",
-		Requested: cfg.Tier,
-		Effective: DegradedHostGuard,
-		Enforced:  false,
-		// Set on BOTH branches (probe passed or not) because neither one
-		// enforces an access field: a job object is a lifetime control. This is
-		// the machine-readable twin of windowsUnenforcedNote's prose, and the
-		// two are held together by
-		// TestWindowsUnenforcedNoteAgreesWithUnenforcedFields.
-		Unenforced: UnenforcedFields(cfg),
-	}
-	if !p.enforcing() {
-		rep.Backend = jobBackendUnavailable
-		rep.CanKillTree = false
-		rep.Reason = fmt.Sprintf(
-			"Job Object containment unavailable (%s); this backend applies no "+
-				"filesystem, network or process-tree control at all and the host "+
-				"guard is the only boundary", jobProbeDetail(p))
-		return rep
-	}
-	rep.Backend = jobBackend
-	rep.CanKillTree = true
-	rep.Reason = "Job Object containment (kill-on-job-close): every child this " +
-		"sandbox prepares is bound to one job, so Close — and this process " +
-		"exiting or crashing — terminates the entire descendant tree, which " +
-		"Windows cannot otherwise guarantee. This is a LIFETIME control, not an " +
-		"access control: no filesystem and no network isolation is applied, and " +
-		"the host guard remains the only thing deciding what a child may touch" +
-		windowsUnenforcedNote(cfg)
-	return rep
-}
+// The honesty decision itself — windowsReport, and the windowsJobReport shape
+// that is windowsReport with the restricted token switched off — lives in
+// restrictedtoken.go, because the Windows backend now has two independent
+// mechanisms and the report is a function of both. What used to be documented
+// here about WHY a working job object alone does not justify Effective=
+// OSIsolated is documented on windowsReport, next to the branch that decides it.
 
 // jobProbeDetail returns a non-empty explanation for a failed probe.
 //

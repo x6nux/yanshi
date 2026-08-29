@@ -62,6 +62,27 @@ type LaunchSpec struct {
 	// A factory that honors it returns a Console satisfying StderrConsole.
 	// Ignoring it is safe but lossy — see StderrConsole.
 	SeparateStderr bool
+
+	// ProcessToken is the OS primary-token handle the child must run under, or
+	// 0 to run under this process's own token.
+	//
+	// Windows only, and it exists because sandbox.Prepare speaks *exec.Cmd while
+	// the spawn happens inside the factory. childLaunchPosture.prepare hands the
+	// backend a stand-in Cmd and copies the mutations back into this struct;
+	// before this field, SysProcAttr was not among the things copied, so a
+	// backend setting SysProcAttr.Token was writing into a value that was thrown
+	// away and every child ran under the unrestricted token while the report
+	// claimed otherwise. sandbox/poststart.go documents the same gap for
+	// CreationFlags, which is still open.
+	//
+	// uintptr rather than a typed handle so this struct stays buildable on every
+	// platform; the two conversions live in sandboxtoken_windows.go. A zero
+	// value is the inherit-everything default on all platforms, so no caller
+	// that does not know about it can be broken by it.
+	//
+	// The handle is OWNED by the sandbox that produced it and is closed when
+	// that sandbox is closed. A spec must not outlive it.
+	ProcessToken uintptr
 }
 
 // Session describes a persistent shell session at a point in time. The

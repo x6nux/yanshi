@@ -216,6 +216,11 @@ var spawnEnvCensus = map[string]string{
 		"Prepare rewrites argv rather than spawning.",
 	"internal/sandbox/sandbox_darwin.go":  "runProbe sets an empty Env; production is argv rewrite only.",
 	"internal/sandbox/sandbox_windows.go": "runJobProbe sets an empty Env; production is argv rewrite only.",
+	"internal/sandbox/restrictedtoken_windows.go": "runUnderToken builds the child's Env " +
+		"explicitly from five variables (SystemRoot, windir, ComSpec, TEMP, TMP) and is " +
+		"reached only from the construction-time self-check. Production spawns are not " +
+		"started here at all: Prepare attaches a token to a command the shell factory " +
+		"already built, so that factory owns the environment.",
 
 	// ---- developer tooling, not part of the running product -----------------
 	"cmd/covercheck/main.go":  "run: developer tool, executes `go test` from the maintainer's own shell.",

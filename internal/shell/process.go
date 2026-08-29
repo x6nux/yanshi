@@ -52,6 +52,10 @@ func (OSProcessFactory) Start(ctx context.Context, spec LaunchSpec) (Process, Co
 	// group exists to prevent. Both cancellation paths must go through the
 	// same function.
 	cmd.Cancel = func() error { return killProcessTree(cmd) }
+	// After setProcessGroup, which owns SysProcAttr on Unix: applySandboxToken
+	// merges into whatever is there rather than replacing it, but doing it in
+	// this order means neither function has to know about the other.
+	applySandboxToken(cmd, spec.ProcessToken)
 	if len(spec.Env) > 0 {
 		cmd.Env = spec.Env
 	}

@@ -172,6 +172,14 @@ func (p childLaunchPosture) prepare(ctx context.Context, spec LaunchSpec, tier s
 	if len(cmd.Args) > 0 {
 		spec.Args = cmd.Args[1:]
 	}
+	// The Windows backend's mutation is not in argv or the environment: a
+	// restricted token is an argument to process creation, so it arrives on the
+	// stand-in's SysProcAttr. Without this line it would be discarded here and
+	// every child would run under the unrestricted token while Report() claimed
+	// os-isolated — the shape sandbox/poststart.go documents for CreationFlags,
+	// which is still open. sandboxTokenFromCmd returns 0 on every non-Windows
+	// platform, so this is an unconditional assignment of a zero.
+	spec.ProcessToken = sandboxTokenFromCmd(cmd)
 	return spec, nil
 }
 

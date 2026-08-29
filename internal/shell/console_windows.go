@@ -212,12 +212,27 @@ func startConPTYClient(ctx context.Context, pc *pseudoConsole, spec LaunchSpec) 
 	// pseudoconsole attribute, not through inherited std handles, and
 	// inheriting would hand it every other inheritable handle this process
 	// holds.
-	if err := windows.CreateProcess(
-		nil, cmdline, nil, nil, false,
-		windows.EXTENDED_STARTUPINFO_PRESENT|windows.CREATE_UNICODE_ENVIRONMENT,
-		env, dir, &si.StartupInfo, pi,
-	); err != nil {
-		return nil, fmt.Errorf("shell: CreateProcess %q: %w", spec.Program, err)
+	//
+	// The two spawns differ only in the token. CreateProcessAsUser is not used
+	// unconditionally because it is documented to need SE_ASSIGNPRIMARYTOKEN and
+	// SE_INCREASE_QUOTA, which yanshi does not hold — the exemption that makes
+	// spec.ProcessToken usable applies only to a token that is a RESTRICTED
+	// VERSION of the caller's own, so passing this process's own token through
+	// it would start failing on hosts where the plain call works today.
+	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_UNICODE_ENVIRONMENT)
+	var spawnErr error
+	if spec.ProcessToken != 0 {
+		spawnErr = windows.CreateProcessAsUser(
+			windows.Token(spec.ProcessToken),
+			nil, cmdline, nil, nil, false, flags, env, dir, &si.StartupInfo, pi,
+		)
+	} else {
+		spawnErr = windows.CreateProcess(
+			nil, cmdline, nil, nil, false, flags, env, dir, &si.StartupInfo, pi,
+		)
+	}
+	if spawnErr != nil {
+		return nil, fmt.Errorf("shell: CreateProcess %q: %w", spec.Program, spawnErr)
 	}
 	_ = windows.CloseHandle(pi.Thread)
 
