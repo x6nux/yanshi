@@ -14,8 +14,12 @@ import (
 )
 
 // shellStartArgs is the args shape for shell_start and task_shell_start. PTY
-// is honored only when the platform's StartPTYProcess is implemented (Phase 0
-// returns ErrPTYUnavailable for every platform).
+// asks for a real terminal, which linux, darwin and windows all provide; a
+// platform with no adapter, or a host that cannot allocate one, fails the start
+// with the reason rather than silently downgrading to a pipe (a caller that
+// asked for a terminal because it is driving a REPL would otherwise get a
+// session that accepts input and never prompts). `yanshi doctor` reports the
+// same answer up front.
 type shellStartArgs struct {
 	Command string `json:"command"`
 	Workdir string `json:"workdir"`

@@ -4,23 +4,33 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"strings"
 	"testing"
 )
 
-func TestPlatformPTYCapabilityIsHonestUnavailable(t *testing.T) {
-	cap := PlatformPTYCapability()
-	if cap.Available {
-		t.Fatalf("Phase 0 must NOT advertise PTY as available: %#v", cap)
+// TestPTYRequestNeedsAProgram pins the one input error that is the caller's
+// fault rather than the platform's.
+//
+// It is asserted separately from the sentinel because the two mean opposite
+// things to a caller: ErrPTYUnavailable says "ask for a pipe instead", an empty
+// Program says "your LaunchSpec is wrong and a pipe will not help either". The
+// pipe path in process.go already rejects it; this keeps the PTY path from
+// answering a different question for the same broken spec.
+//
+// Platforms without a PTY backend legitimately answer with the sentinel before
+// they ever look at Program, so both outcomes are accepted here and the
+// availability-vs-sentinel agreement is pinned by
+// TestPTYConsoleIsWiredOnEveryPlatform instead.
+func TestPTYRequestNeedsAProgram(t *testing.T) {
+	_, _, err := StartPTYProcess(context.Background(), LaunchSpec{PTY: true})
+	if err == nil {
+		t.Fatalf("a PTY spawn with no Program must fail")
 	}
-	if cap.Backend == "" || cap.Reason == "" {
-		t.Fatalf("capability fields missing: %#v", cap)
+	if errors.Is(err, ErrPTYUnavailable) {
+		return
 	}
-}
-
-func TestStartPTYReturnsErrPTYUnavailable(t *testing.T) {
-	_, _, err := StartPTYProcess(context.Background(), LaunchSpec{Program: "echo", PTY: true})
-	if !errors.Is(err, ErrPTYUnavailable) {
-		t.Fatalf("want ErrPTYUnavailable, got %v", err)
+	if !strings.Contains(err.Error(), "Program required") {
+		t.Fatalf("want a spec error naming Program, got %v", err)
 	}
 }
 

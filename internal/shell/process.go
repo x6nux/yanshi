@@ -14,17 +14,17 @@ import (
 // SecureProcessFactory in Task 19 wraps this to inject netpolicy.PrepareEnv
 // and Sandbox.Prepare before delegating here.
 //
-// PTY requests route through StartPTYProcess, which is platform-specific and
-// currently returns ErrPTYUnavailable on every platform (Phase 0). When a
-// real PTY backend lands (Task 18+), it plugs in via the same entry point.
+// PTY requests route through StartPTYProcess, which is platform-specific:
+// linux and darwin allocate a real pty pair, windows a ConPTY, and any other
+// platform returns ErrPTYUnavailable. Callers that want to know before
+// spawning ask PlatformPTYCapability.
 type OSProcessFactory struct{}
 
-// Start spawns spec.Program with spec.Args. stdin is not connected in Phase 0
-// (shell v2 callers that need stdin set spec.PTY=true, which fails closed
-// for now). cmd.Env is populated from spec.Env when non-empty so the child
-// does not inherit the parent's environment — netpolicy.PrepareEnv is what
-// populates that slice, so stripping the parent's HTTP_PROXY happens once at
-// the boundary rather than via fragile parent-env scrubbing here.
+// Start spawns spec.Program with spec.Args over a pipe pair; spec.PTY routes to
+// StartPTYProcess instead. cmd.Env is populated from spec.Env when non-empty so
+// the child does not inherit the parent's environment — netpolicy.PrepareEnv is
+// what populates that slice, so stripping the parent's HTTP_PROXY happens once
+// at the boundary rather than via fragile parent-env scrubbing here.
 //
 // The child's two streams are routed per spec.SeparateStderr: false yields a
 // Console carrying both, concurrently interleaved (secproc.MergeOutput);
@@ -113,10 +113,11 @@ func (p *osProcess) Capabilities() ProcessCapabilities {
 	return ProcessCapabilities{CanKillTree: CanKillTreeOnPlatform()}
 }
 
-// pipeConsole is the read-only Console used for pipe-pair spawns. Write
-// returns an error (Phase 0 does not wire stdin for non-PTY spawns); Resize
-// is a no-op (no PTY to resize); PTY() reports false so callers know to
-// render in line-buffered rather than terminal mode.
+// pipeConsole is the Console used for pipe-pair spawns. Write goes to the
+// child's stdin pipe; Resize fails (there is no terminal to resize, and
+// answering nil would let a caller believe a geometry change took effect);
+// PTY() reports false so callers know to render in line-buffered rather than
+// terminal mode.
 //
 // stderr is non-nil only for a LaunchSpec.SeparateStderr spawn, in which case
 // r carries stdout alone and this console satisfies StderrConsole.
@@ -172,17 +173,24 @@ func (c *pipeConsole) Stderr() io.Reader {
 	return c.stderr
 }
 
-// ErrPTYUnavailable is the single sentinel every platform returns from
-// StartPTYProcess in Phase 0. Tests assert errors.Is(err, ErrPTYUnavailable)
-// so a future backend that forgets to actually wire up the PTY will be
-// caught (it would return a different error).
-var ErrPTYUnavailable = fmt.Errorf("shell: PTY adapter unavailable in Phase 0")
+// ErrPTYUnavailable is the sentinel StartPTYProcess returns on a platform with
+// no reviewed PTY adapter (see ptyopen_unixother.go and console_other.go).
+//
+// It is deliberately NOT what a linux/darwin/windows host returns when its own
+// PTY allocation fails: those answer with the errno, wrapped, because "this
+// build has no adapter for your GOOS" and "your container has no /dev/ptmx"
+// call for completely different operator action. Callers branch on
+// errors.Is(err, ErrPTYUnavailable) to decide whether asking again could ever
+// work.
+var ErrPTYUnavailable = fmt.Errorf("shell: no PTY adapter for this platform")
 
-// PTYCapability is the platform-reported PTY state. Available=false on every
-// platform in Phase 0; the Backend/Reason strings explain WHY (so the TUI
-// can render a useful "PTY unavailable: <reason>" instead of a generic
-// failure). When real PTY backends land, each platform file fills in the
-// real Backend/Reason and sets Available=true.
+// PTYCapability is the platform-reported PTY state, answered by a real
+// allocation attempt rather than by a build-time constant.
+//
+// The Backend/Reason strings explain WHY (so the TUI and doctor can render a
+// useful "PTY unavailable: <reason>" instead of a generic failure). Available
+// means this process could allocate one just now — see PlatformPTYCapability
+// for why that is a different question from "this GOOS has an adapter".
 type PTYCapability struct {
 	Platform  string
 	Backend   string

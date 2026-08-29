@@ -21,6 +21,7 @@ import (
 	"github.com/x6nux/yanshi/internal/lsp"
 	"github.com/x6nux/yanshi/internal/sandbox"
 	"github.com/x6nux/yanshi/internal/secrets"
+	"github.com/x6nux/yanshi/internal/shell"
 	"github.com/x6nux/yanshi/internal/store"
 )
 
@@ -157,6 +158,7 @@ func RunDoctor(ctx context.Context, opts DoctorOptions) DoctorReport {
 	checks = append(checks, checkPort(cfg, cfgErr, opts.Release))
 	checks = append(checks, checkDirectories(cfg, cfgErr))
 	checks = append(checks, checkSandbox(cfg, cfgErr, root))
+	checks = append(checks, checkPTY())
 	checks = append(checks, checkMCP(cfg, cfgErr))
 	checks = append(checks, checkLSP(ctx, root))
 	checks = append(checks, checkPermissions(cfg, cfgErr))
@@ -587,6 +589,33 @@ func checkSandbox(cfg *config.Config, cfgErr error, workRoot string) CheckResult
 			Message: msg + "; OS/network isolation NOT enforced — guard is the boundary"}
 	}
 	return CheckResult{Name: "sandbox", Status: StatusOK, Message: msg}
+}
+
+// checkPTY reports whether this host can give a shell session a real terminal.
+//
+// It is a doctor check rather than an error the operator meets at the first
+// `shell_start {"pty": true}` because the failure is a property of the HOST, not
+// of the request: a container built without /dev/ptmx, a devpts that is not
+// mounted, a Windows older than 1809. Each of those is a one-line fix the
+// operator would never derive from "shell: open /dev/ptmx: no such file or
+// directory" arriving mid-turn as a tool result.
+//
+// Warn rather than fail when unavailable: everything except interactive
+// sessions works fine on a host with no PTY — non-PTY spawns use the pipe
+// console — so this is a reduced capability, not a broken install.
+//
+// It calls shell.PlatformPTYCapability, which is the SAME probe the spawn path
+// consults, rather than deriving an answer from runtime.GOOS. Two independent
+// answers to "can we do PTYs here" is how a report ends up disagreeing with the
+// thing it reports on.
+func checkPTY() CheckResult {
+	cap := shell.PlatformPTYCapability()
+	msg := fmt.Sprintf("backend %s (%s)", cap.Backend, cap.Reason)
+	if !cap.Available {
+		return CheckResult{Name: "pty", Status: StatusWarn,
+			Message: msg + "; interactive sessions (shell_start pty=true) will fail on this host"}
+	}
+	return CheckResult{Name: "pty", Status: StatusOK, Message: msg}
 }
 
 // checkMCP reports the configured MCP servers and which of them are enabled.

@@ -121,10 +121,11 @@ type Job struct {
 
 // Console is the byte-level seam the Manager pumps. Read returns io.EOF when
 // the underlying process exits; Write blocks if the PTY/pipe back-pressures.
-// Resize is a no-op for non-PTY backends (they return ErrPTYUnavailable from
-// the platform-specific constructors in Task 18). PTY() reports whether the
-// underlying transport is a real PTY (vs. a pipe pair), which the Manager
-// surfaces in Session.PTY so the TUI can render differently.
+// Resize returns an error on non-PTY backends rather than nil, so a caller
+// cannot come away believing a geometry change reached a child that has no
+// terminal. PTY() reports whether the underlying transport is a real PTY (vs. a
+// pipe pair), which the Manager surfaces in Session.PTY so the TUI can render
+// differently.
 type Console interface {
 	io.ReadWriteCloser
 	Resize(rows, cols uint16) error
