@@ -43,8 +43,9 @@ type LaunchSpec struct {
 	Args      []string
 	Dir       string
 	// Env is the child environment as KEY=VALUE entries.
-	// netpolicy.PrepareEnv populates this; OSProcessFactory.Start applies it via
-	// cmd.Env. This is a []string to match SecureProcessSpec.Env.
+	// childLaunchPosture.env (internal/shell/childlaunch.go), which calls
+	// netpolicy.PrepareEnvFor, populates this; OSProcessFactory.Start applies it
+	// via cmd.Env. This is a []string to match SecureProcessSpec.Env.
 	Env []string
 	// AllowEnv names the credential-bearing environment variables this spawn
 	// legitimately needs (e.g. GH_TOKEN for `gh`). Empty — the default — means

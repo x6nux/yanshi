@@ -206,7 +206,8 @@ func MergeOutput(stdout, stderr io.Reader) io.ReadCloser {
 }
 
 // Factory is the per-process-launch strategy. The production implementation
-// (DefaultSecureFactory, Task 19) wires netpolicy.PrepareEnv + Sandbox.Prepare
+// (DefaultSecureFactory, Task 19) wires netpolicy.PrepareEnvFor (via
+// childLaunchPosture.env, internal/shell/childlaunch.go) + Sandbox.Prepare
 // + exec.Start; tests substitute a spy to assert the launch pipeline without
 // spawning real processes.
 type Factory interface {

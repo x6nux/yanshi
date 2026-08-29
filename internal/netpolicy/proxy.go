@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -168,7 +167,7 @@ type Proxy struct {
 
 // NewProxy binds a loopback listener on 127.0.0.1:0 (kernel-chosen port) and
 // starts serving. The returned Proxy's URL() is what callers hand to child
-// processes via PrepareEnv. resolver may be nil (defaults to
+// processes via PrepareEnvFor. resolver may be nil (defaults to
 // net.DefaultResolver).
 func NewProxy(policy Policy, resolver Resolver) (*Proxy, error) {
 	if resolver == nil {
@@ -251,7 +250,7 @@ func (p *Proxy) certAuthority() *CertAuthority {
 // dial, an inspected tunnel's upstream call). Close cancels it.
 func (p *Proxy) baseCtx() context.Context { return p.ctx }
 
-// URL is the proxy URL to hand to child processes (via PrepareEnv →
+// URL is the proxy URL to hand to child processes (via PrepareEnvFor →
 // HTTP_PROXY/HTTPS_PROXY).
 func (p *Proxy) URL() *url.URL {
 	u, _ := url.Parse("http://" + p.listener.Addr().String())
@@ -467,11 +466,29 @@ func (l *chanListener) close() { l.once.Do(func() { close(l.done) }) }
 
 func (l *chanListener) Addr() net.Addr { return l.addr }
 
-// PrepareEnv returns a new environment slice derived from `in` with all
+// ManagedProxy is everything a child needs in order to reach the managed proxy
+// AND to believe what comes back through it.
+//
+// SOCKSURL and CAFile are separate fields rather than derived from HTTPURL
+// because each is independently optional: SOCKS is always available when a
+// proxy is running, but the CA exists only when the operator opted into HTTPS
+// inspection, and a child pointed at a CA file that does not exist fails every
+// TLS handshake it attempts.
+type ManagedProxy struct {
+	HTTPURL  string
+	SOCKSURL string
+	// CAFile is the inspecting root's PEM path, or "" when inspection is off.
+	// Empty means the child's certificate trust is left exactly as inherited —
+	// no variable is added AND none is stripped, so an operator's own
+	// SSL_CERT_FILE keeps working.
+	CAFile string
+}
+
+// PrepareEnvFor returns a new environment slice derived from `in` with all
 // inherited proxy-related variables (HTTP_PROXY/HTTPS_PROXY/NO_PROXY/ALL_PROXY
 // in any case) stripped, then appends the managed proxy entries pointing at
-// proxyURL in BOTH cases. Returning a new slice (rather than mutating in
-// place) keeps the caller's slice clean for reuse.
+// mp in BOTH cases. Returning a new slice (rather than mutating in place)
+// keeps the caller's slice clean for reuse.
 //
 // The case-insensitive strip is deliberate: child processes inherit envs in
 // arbitrary case depending on the parent (Windows cmd.exe uppercases; POSIX
@@ -497,31 +514,6 @@ func (l *chanListener) Addr() net.Addr { return l.addr }
 //
 // This publishes proxy variables; it does not enforce them. See
 // shell.childLaunchPosture.proxy for what that buys and what it does not.
-func PrepareEnv(in []string, proxyURL string) []string {
-	return PrepareEnvFor(in, ManagedProxy{HTTPURL: proxyURL})
-}
-
-// ManagedProxy is everything a child needs in order to reach the managed proxy
-// AND to believe what comes back through it.
-//
-// SOCKSURL and CAFile are separate fields rather than derived from HTTPURL
-// because each is independently optional: SOCKS is always available when a
-// proxy is running, but the CA exists only when the operator opted into HTTPS
-// inspection, and a child pointed at a CA file that does not exist fails every
-// TLS handshake it attempts.
-type ManagedProxy struct {
-	HTTPURL  string
-	SOCKSURL string
-	// CAFile is the inspecting root's PEM path, or "" when inspection is off.
-	// Empty means the child's certificate trust is left exactly as inherited —
-	// no variable is added AND none is stripped, so an operator's own
-	// SSL_CERT_FILE keeps working.
-	CAFile string
-}
-
-// PrepareEnvFor is PrepareEnv with the SOCKS endpoint and the inspection root
-// as well. See PrepareEnv for why both cases of each proxy variable are
-// published.
 func PrepareEnvFor(in []string, mp ManagedProxy) []string {
 	blocked := map[string]bool{
 		"http_proxy": true, "https_proxy": true, "no_proxy": true, "all_proxy": true,
@@ -562,24 +554,13 @@ func PrepareEnvFor(in []string, mp ManagedProxy) []string {
 	return append(out, caEnv...)
 }
 
-// managedProxyKeys is the exact set PrepareEnv publishes. Both cases of each
-// name are present on purpose — see PrepareEnv for why the lowercase spellings
-// are load-bearing rather than redundant.
+// managedProxyKeys is the exact set PrepareEnvFor publishes. Both cases of
+// each name are present on purpose — see PrepareEnvFor for why the lowercase
+// spellings are load-bearing rather than redundant.
 var managedProxyKeys = []string{
 	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
 	"http_proxy", "https_proxy", "no_proxy",
 }
-
-// ManagedEnv is the convenience wrapper for child-process spawning: it
-// starts from os.Environ() and applies PrepareEnv in one call.
-//
-// It does NOT strip credentials. os.Environ() carries whatever the operator
-// exported — provider API keys, cloud credentials, VCS tokens — and this
-// function hands all of it to the child. Callers spawning an untrusted program
-// want ManagedEnvWithPolicy instead, which takes the per-spawn allowlist and
-// removes everything else. This one survives for callers whose child is yanshi
-// itself or a trusted helper, where the host environment is the point.
-func ManagedEnv(proxyURL string) []string { return PrepareEnv(os.Environ(), proxyURL) }
 
 // serveConnect gates a CONNECT on its target host and, when allowed, splices
 // the two connections together without looking inside.

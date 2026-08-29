@@ -35,42 +35,6 @@ func (c CredentialPolicy) scrubPolicy() secrets.EnvScrubPolicy {
 	return secrets.EnvScrubPolicy{Allow: c.AllowEnv}
 }
 
-// PrepareEnvWithPolicy is PrepareEnv plus credential stripping.
-//
-// Order matters and is not arbitrary: the credential scrub runs BEFORE the
-// managed proxy variables are appended. Running it after would make the scrub's
-// own output eligible for inspection — harmless today, since no proxy name
-// matches a credential rule, but it would silently become a bug the first time
-// a proxy URL carried inline basic-auth credentials (http://user:pass@proxy),
-// which is a shape LooksLikeCredentialValue recognises and which the child
-// genuinely needs in order to reach the proxy at all.
-//
-// Dropped names are logged, never values. A credential that vanishes silently
-// produces the worst failure this feature can cause: `gh` reporting "not logged
-// in" on a machine where the operator demonstrably is, with nothing in any log
-// to search for. The log line is what turns that into a two-minute diagnosis.
-func PrepareEnvWithPolicy(in []string, proxyURL string, policy CredentialPolicy) []string {
-	res := secrets.ScrubEnv(in, policy.scrubPolicy())
-	if len(res.DroppedNames) > 0 {
-		slog.Info("netpolicy credential scrub",
-			"dropped_count", len(res.DroppedNames),
-			"dropped_names", res.DroppedNames,
-			"allowed", policy.AllowEnv)
-	}
-	return PrepareEnv(res.Env, proxyURL)
-}
-
-// ManagedEnvWithPolicy is ManagedEnv plus credential stripping: it starts from
-// os.Environ(), removes every credential not named in policy.AllowEnv, then
-// publishes the managed proxy variables.
-//
-// This is the function child-process launchers should call. ManagedEnv remains
-// for the callers that have not yet been given a policy to declare; see its doc
-// for why it is not simply an alias with an empty policy.
-func ManagedEnvWithPolicy(proxyURL string, policy CredentialPolicy) []string {
-	return PrepareEnvWithPolicy(os.Environ(), proxyURL, policy)
-}
-
 // ScrubbedEnviron is this process's environment with every credential removed
 // except the names in allow.
 //
@@ -83,10 +47,11 @@ func ManagedEnvWithPolicy(proxyURL string, policy CredentialPolicy) []string {
 // the scrub those two apply.
 //
 // It publishes NO proxy variables, which is what makes it different from
-// ManagedEnvWithPolicy and is deliberate: the callers above are not the
-// untrusted-program launch path, and pointing a language server at the managed
-// proxy would change its egress behaviour as a side effect of a credential fix.
-// This function does one thing.
+// shell.childLaunchPosture.env (internal/shell/childlaunch.go) and is
+// deliberate: the callers above are not the untrusted-program launch path,
+// and pointing a language server at the managed proxy would change its
+// egress behaviour as a side effect of a credential fix. This function does
+// one thing.
 //
 // The allowlist is by NAME and variadic so the common case reads as
 // ScrubbedEnviron() with nothing to explain. A caller passing names is making an
@@ -137,12 +102,13 @@ func ScrubbedEnviron(allow ...string) []string {
 //
 // Only ScrubbedEnviron, which is the path for programs YANSHI chose to run: MCP
 // and language servers, gh, git, the skills clone, the screenshot and clipboard
-// helpers, the version probes, and the gate command. PrepareEnvWithPolicy and
-// ManagedEnvWithPolicy — the untrusted-program launch path behind shell_run and
-// the ACP agents — are untouched, because there the allowlist is part of the
-// profile's posture and a process-wide variable that quietly widened it would be
-// a security control an operator could disable without editing the security
-// config.
+// helpers, the version probes, and the gate command.
+// shell.childLaunchPosture.env (internal/shell/childlaunch.go) — the
+// untrusted-program launch path behind shell_run and the ACP agents, reached
+// via secproc.Launch — is untouched, because there the allowlist is part of
+// the profile's posture and a process-wide variable that quietly widened it
+// would be a security control an operator could disable without editing the
+// security config.
 //
 // The variable is removed from the child's own environment. It describes the
 // host's posture and nothing downstream has any use for it; leaving it in would

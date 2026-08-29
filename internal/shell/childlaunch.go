@@ -86,7 +86,7 @@ type childLaunchPosture struct {
 //
 // The http variables are published in both upper and lower case — that is a
 // correctness requirement rather than caution, because curl ignores uppercase
-// HTTP_PROXY for plain http:// URLs. See netpolicy.PrepareEnv.
+// HTTP_PROXY for plain http:// URLs. See netpolicy.PrepareEnvFor.
 //
 // The policy is ALSO enforced for yanshi's own in-process HTTP (web_fetch and
 // web_search go through netpolicy.NewTransport/PolicyDialer); that path never
@@ -98,7 +98,7 @@ func (p childLaunchPosture) proxy() netpolicy.ManagedProxy {
 // env builds the child environment: the host env as the baseline, caller
 // entries layered on top (exec keeps the last duplicate, so they win),
 // credential-bearing variables stripped under allowEnv, and
-// netpolicy.PrepareEnv run over the result so any inherited or smuggled-in
+// netpolicy.PrepareEnvFor run over the result so any inherited or smuggled-in
 // proxy variable is stripped and replaced by the managed ones.
 //
 // Starting from the host is deliberate and is the whole point of this helper:
@@ -119,13 +119,15 @@ func (p childLaunchPosture) proxy() netpolicy.ManagedProxy {
 // Empty means strip everything, which is the correct default.
 //
 // The credential scrub runs ONCE, over host+caller entries, BEFORE the managed
-// proxy variables are appended. Layering the two helpers the other way round
-// (ManagedEnvWithPolicy, then PrepareEnvWithPolicy over the result) reads
-// equivalently and is not: the second pass would re-inspect the proxy entries
-// this function just published, and a proxy URL carrying inline basic-auth
-// credentials (http://user:pass@proxy) is a shape LooksLikeCredentialValue
-// recognises — so the managed variables would be stripped from the child that
-// needs them to reach the proxy at all.
+// proxy variables are appended. Calling netpolicy.PrepareEnvFor first and
+// netpolicy.ScrubCredentials over ITS result reads equivalently and is not:
+// the scrub would then re-inspect the proxy entries this function just
+// published, and a proxy URL carrying inline basic-auth credentials
+// (http://user:pass@proxy) is a shape LooksLikeCredentialValue recognises —
+// so the managed variables would be stripped from the child that needs them
+// to reach the proxy at all. See internal/shell/posture_egress_test.go's
+// TestProxyCredentialsSurviveTheScrub, which pins exactly this ordering
+// against this method.
 //
 // The proxy variables this function appends are NOT a containment boundary:
 // see proxy() for exactly which clients and which launchers they reach.

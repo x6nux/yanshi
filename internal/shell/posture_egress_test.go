@@ -98,6 +98,31 @@ func TestSnapshotDoesNotSmuggleAProxyVariable(t *testing.T) {
 	}
 }
 
+// TestProxyCredentialsSurviveTheScrub pins the ordering that used to be
+// documented on the now-deleted netpolicy.PrepareEnvWithPolicy (W-B fix-b57
+// finding 7): childLaunchPosture.env runs netpolicy.ScrubCredentials BEFORE
+// netpolicy.PrepareEnvFor appends the managed proxy variables. Running it the
+// other way round would make the scrub's own output eligible for inspection,
+// which is harmless until a proxy URL carries inline basic-auth credentials
+// (http://user:pass@proxy) — a shape LooksLikeCredentialValue recognises, and
+// exactly the value the child needs in order to reach the proxy at all.
+//
+// This invariant used to be pinned only in internal/netpolicy against
+// PrepareEnvWithPolicy directly; that function had zero production callers
+// (production always went through this posture) and was deleted along with
+// its dedicated test. This is the replacement, against the composition that
+// actually ships.
+func TestProxyCredentialsSurviveTheScrub(t *testing.T) {
+	const proxy = "http://proxyuser:proxypass@127.0.0.1:9000"
+	posture := childLaunchPosture{Policy: &netpolicy.Policy{}, ProxyURL: proxy}
+	joined := strings.Join(postureEnv(posture), "\n")
+	for _, want := range []string{"HTTP_PROXY=" + proxy, "http_proxy=" + proxy} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("%s missing: the credential scrub must run before the proxy is published, not after: %s", want, joined)
+		}
+	}
+}
+
 // TestBothProductionFactoriesShareOnePosture is the drift guard the two
 // factories' posture() methods exist for. shell v2 shipped without ProxyURL
 // while the secproc path had it, so identical env SEMANTICS were applied to

@@ -11,8 +11,9 @@ import (
 
 // OSProcessFactory is the legacy ProcessFactory implementation used when a
 // shell session is started directly (e.g. via shell_run in tests). The
-// SecureProcessFactory in Task 19 wraps this to inject netpolicy.PrepareEnv
-// and Sandbox.Prepare before delegating here.
+// SecureProcessFactory in Task 19 wraps this to inject netpolicy.PrepareEnvFor
+// (via childLaunchPosture.env, internal/shell/childlaunch.go) and
+// Sandbox.Prepare before delegating here.
 //
 // PTY requests route through StartPTYProcess, which is platform-specific:
 // linux and darwin allocate a real pty pair, windows a ConPTY, and any other
@@ -22,9 +23,9 @@ type OSProcessFactory struct{}
 
 // Start spawns spec.Program with spec.Args over a pipe pair; spec.PTY routes to
 // StartPTYProcess instead. cmd.Env is populated from spec.Env when non-empty so
-// the child does not inherit the parent's environment — netpolicy.PrepareEnv is
-// what populates that slice, so stripping the parent's HTTP_PROXY happens once
-// at the boundary rather than via fragile parent-env scrubbing here.
+// the child does not inherit the parent's environment — netpolicy.PrepareEnvFor
+// is what populates that slice, so stripping the parent's HTTP_PROXY happens
+// once at the boundary rather than via fragile parent-env scrubbing here.
 //
 // The child's two streams are routed per spec.SeparateStderr: false yields a
 // Console carrying both, concurrently interleaved (secproc.MergeOutput);
