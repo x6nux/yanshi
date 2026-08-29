@@ -96,18 +96,33 @@ func requireEnforcingLandlock(t *testing.T) string {
 }
 
 // requireEnforcingBwrap skips unless bubblewrap really enforces here.
+//
+// Same non-verdict shape as requireEnforcingLandlock above (W-B fix-b57
+// finding 4): the four TestBwrapReally* tests below are the only evidence
+// that bwrap blocks anything, and a skip here reads exactly like an
+// unrelated "this platform does not apply" skip unless it says otherwise.
+// This one file previously had two skip vocabularies side by side — the
+// Landlock skips said "non-verdict", these three did not — and a reader
+// scanning `go test -v` output has no way to tell them apart.
 func requireEnforcingBwrap(t *testing.T) string {
 	t.Helper()
 	path, err := exec.LookPath(bwrapProgram)
 	if err != nil {
-		t.Skipf("bwrap not on PATH: %v", err)
+		t.Skipf("bwrap not on PATH: %v\n\n"+
+			"THIS IS A NON-VERDICT, NOT A PASS: W-B-23's bwrap enforcement evidence requires "+
+			"bubblewrap installed on this runner. If this is the linux CI leg, that half of "+
+			"W-B-23 is unverified on this run.", err)
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		t.Skipf("bwrap path unusable: %v", err)
+		t.Skipf("bwrap path unusable: %v\n\n"+
+			"THIS IS A NON-VERDICT, NOT A PASS: see the PATH case above.", err)
 	}
 	if reason, ok := probeBwrapAt(abs); !ok {
-		t.Skipf("bwrap does not enforce on this host: %s", reason)
+		t.Skipf("bwrap does not enforce on this host: %s\n\n"+
+			"THIS IS A NON-VERDICT, NOT A PASS: W-B-23's bwrap enforcement evidence comes from "+
+			"a runner where bubblewrap actually confines. If this is the linux CI leg, that "+
+			"half of W-B-23 is unverified on this run.", reason)
 	}
 	return abs
 }

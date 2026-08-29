@@ -30,6 +30,15 @@ const seccompHelperEnv = "YANSHI_SECCOMP_TEST_HELPER"
 // thing under test.
 func TestSeccompHelper(t *testing.T) {
 	if os.Getenv(seccompHelperEnv) == "" {
+		// THIS IS A NON-VERDICT, NOT A PASS: unlike the requireEnforcing* skips
+		// elsewhere in this package, this one is unconditional — it fires on
+		// every top-level `go test` run regardless of host capability, because
+		// this function is only ever a real test when runSeccompHelper below
+		// re-execs the binary with seccompHelperEnv set. Its own PASS/SKIP says
+		// nothing about whether the filter enforces; that verdict comes from
+		// the parent tests (TestSeccompDeniesNonUnixSocketsUnderNetworkDeny and
+		// TestSeccompAlwaysDeniesMemoryAndUringSyscalls) reading this process's
+		// stdout.
 		t.Skip("subprocess helper; driven by the tests below")
 	}
 	netDeny := os.Getenv(seccompHelperEnv) == "netdeny"

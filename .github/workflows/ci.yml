@@ -26,6 +26,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # W-B fix-b57 finding 4: without bubblewrap on the ubuntu leg, every
+      # TestBwrapReally* enforcement test (internal/sandbox) skips instead of
+      # verifying, and if the runner's kernel also lacks Landlock the whole
+      # linux enforcement story for W-B-23 goes green without a single test
+      # actually confining anything. Installing it here turns those from
+      # "may skip forever" into "always gives a verdict".
+      - name: install bubblewrap (linux sandbox enforcement tests)
+        if: matrix.os == 'ubuntu'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
       # e2e_real build tag is off by default -> codex/claudecode CLIs are not
       # needed. eino/bootstrap t.Skip on missing providers is expected, not a fail.
       - run: go test ./...
