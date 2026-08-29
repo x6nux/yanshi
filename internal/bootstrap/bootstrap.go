@@ -597,6 +597,25 @@ func Build(opts Options) (*App, error) {
 		redactor.Register(key)
 	}
 
+	// W-C-02: provider Headers are extra HTTP headers, most commonly a
+	// gateway token (Azure API key, enterprise proxy auth) rather than
+	// arbitrary text. Register every value with the redactor for the exact
+	// same reason as APIKey above — a header is at least as likely to carry
+	// a credential as the api_key field is, and it flows through the same
+	// logs/WS/SSE/SQLite surfaces the redactor already guards. Header NAMES
+	// are never secret and are not registered; only values are.
+	for i := range cfg.LLM.Providers {
+		for _, v := range cfg.LLM.Providers[i].Headers {
+			if v == "" {
+				continue
+			}
+			if len(v) < secrets.MinSecretLength {
+				output.Logger.Printf("warning: provider %q: a configured header value is too short to redact safely; it will appear verbatim in logs and stored messages\n", cfg.LLM.Providers[i].Name)
+			}
+			redactor.Register(v)
+		}
+	}
+
 	// Inject the redactor into Store (CreateSession / AppendMessage /
 	// UpdateSessionTitle all redact before SQL write) — the Server gets it
 	// via httpCfg.Redactor below.

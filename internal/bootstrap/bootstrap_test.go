@@ -1057,6 +1057,75 @@ func TestBuild_APIKeysAreUsedVerbatimAndRedacted(t *testing.T) {
 	}
 }
 
+// TestWC02_HeaderValuesAreRedacted is W-C-02's redaction half. The claim it
+// pins is narrower than "Redactor.Register was called on a header value" —
+// that would only prove the redactor EXISTS, which a plain grep for the call
+// site already answers. What it actually checks is whether the SAME redactor
+// instance Build wires into Store/WS/SSE (app.Redactor) scrubs a value that
+// made a REAL round trip: injected into a REAL outgoing request by the
+// production Anthropic adapter (einollm.NewAnthropicModel, not a hand-built
+// config struct at the redactor seam), echoed back by a gateway-style stub
+// into a REAL 401 error the adapter's own error-formatting code produced
+// (internal/llm/eino's TestWC02_HeaderValueSurvivesIntoAGenuineProviderError
+// is the negative control proving that echo is a genuine leak vector, not a
+// straw man — this test cannot reuse that file's helpers across packages, so
+// it reruns the same stub-and-adapter shape here). A raw-text negative
+// control (errText itself, never redacted) sits alongside the redacted
+// assertion so this test cannot pass by asserting something that was never
+// actually at risk.
+func TestWC02_HeaderValuesAreRedacted(t *testing.T) {
+	const headerName = "X-Gateway-Token"
+	const canary = "wc02-bootstrap-canary-4d2b8f"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen := r.Header.Get(headerName)
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprintf(w, `{"error":{"message":"invalid gateway token: %s","type":"authentication_error"}}`, seen)
+	}))
+	defer srv.Close()
+
+	// Drive the REAL adapter (not bootstrap.Build's chain — that would also
+	// exercise BuildProviders/ResilientChatModel for no added signal on the
+	// question this test asks) to get an error string production code
+	// actually produces, carrying the header value it actually sent.
+	m, err := einollm.NewAnthropicModel(context.Background(), &einollm.AnthropicModelConfig{
+		APIKey: "k", Model: "claude-opus-4-8", BaseURL: srv.URL,
+		Headers: map[string]string{headerName: canary},
+	})
+	require.NoError(t, err)
+	_, genErr := m.Generate(context.Background(), []*schema.Message{schema.UserMessage("hi")})
+	require.Error(t, genErr, "want an error from the 401 stub")
+	errText := genErr.Error()
+	require.Contains(t, errText, canary,
+		"negative control failed: the real adapter error does not even contain the canary, "+
+			"so this test would prove nothing about redaction")
+
+	// Now register the SAME value the way Build does (cfg.LLM.Providers[i].Headers)
+	// and confirm app.Redactor — the instance wired into Store/WS/SSE — scrubs
+	// the real error text captured above.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	dbPath := toYAMLPath(filepath.Join(dir, "yanshi.db"))
+	cfgContent := "server:\n  http_addr: \"127.0.0.1:0\"\nstorage:\n  sqlite_path: \"" + dbPath + "\"\n" +
+		"llm:\n  providers:\n" +
+		"    - name: gw\n      kind: anthropic\n      model: claude-opus-4-8\n      api_key: k\n" +
+		"      headers:\n        " + headerName + ": " + canary + "\n"
+	require.NoError(t, os.WriteFile(cfgPath, []byte(cfgContent), 0o644))
+
+	cfg, err := config.Load(cfgPath)
+	require.NoError(t, err)
+	require.Equal(t, canary, cfg.LLM.Providers[0].Headers[headerName])
+
+	app, err := bootstrap.Build(bootstrap.Options{Cfg: cfg, FakeModel: true})
+	require.NoError(t, err)
+	defer app.Shutdown(context.Background())
+	require.NotNil(t, app.Redactor, "app.Redactor must be non-nil after Build")
+
+	redacted := app.Redactor.Redact(errText)
+	assert.NotContains(t, redacted, canary,
+		"a header value that made a real round trip through a real provider error was not redacted: %q", redacted)
+}
+
 // TestBuild_DeviceProviderInjection (structural fix #2) covers both sources:
 //
 //	(a) cfg-driven providers get NewGenericRFC8628Provider validation, and a

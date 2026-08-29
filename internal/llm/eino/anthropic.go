@@ -42,6 +42,14 @@ type AnthropicModelConfig struct {
 	TopP *float32
 	// HTTPClient is the HTTP client used for API calls.
 	HTTPClient *http.Client
+	// Headers (W-C-02) are extra HTTP headers applied to every request AFTER
+	// the built-ins (Content-Type/x-api-key/anthropic-version) in setHeaders,
+	// so an operator entry can override a built-in name (e.g. routing through
+	// a proxy that wants its own anthropic-version) as well as add new ones
+	// (an enterprise gateway token). See ProviderConfig.Headers for the
+	// SECURITY note — these values must reach the redactor before this
+	// struct is constructed; this type does not register them itself.
+	Headers map[string]string
 }
 
 // AnthropicModel implements model.BaseChatModel via the Anthropic Messages API.
@@ -86,6 +94,7 @@ func NewAnthropicModel(_ context.Context, cfg *AnthropicModelConfig) (*Anthropic
 			Temperature: cfg.Temperature,
 			TopP:        cfg.TopP,
 			HTTPClient:  hc,
+			Headers:     cfg.Headers,
 		},
 	}, nil
 }
@@ -360,10 +369,17 @@ func (m *AnthropicModel) Stream(ctx context.Context, in []*schema.Message, opts 
 // helpers
 // ---------------------------------------------------------------------------
 
+// setHeaders sets the built-in headers, then applies the operator's
+// W-C-02 Headers on top — deliberately AFTER, so an operator entry can
+// override a built-in name (e.g. a proxy that wants its own
+// anthropic-version) rather than the built-in silently winning.
 func (m *AnthropicModel) setHeaders(r *http.Request) {
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("x-api-key", m.config.APIKey)
 	r.Header.Set("anthropic-version", "2023-06-01")
+	for k, v := range m.config.Headers {
+		r.Header.Set(k, v)
+	}
 }
 
 // buildRequest converts eino messages + options into an Anthropic API request.

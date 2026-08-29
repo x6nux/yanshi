@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sort"
 	"strings"
 
@@ -161,28 +162,68 @@ func normalizeKind(k string) string {
 // and 0 is meaningful for both temperature (deterministic judge calls) and
 // top_p (greedy decoding).
 func buildOne(ctx context.Context, p config.ProviderConfig) (model.BaseChatModel, error) {
+	// W-C-12: apiKeyOrPlaceholder stands in for the three adapters' non-empty
+	// APIKey validation when the real credential comes from auth.command
+	// instead. It never reaches the wire — each branch's authRefreshTransport
+	// overwrites the credential header on every request before the
+	// RoundTripper it wraps sees it. See placeholderAPIKeyForCommandAuth.
+	apiKeyOrPlaceholder := p.APIKey
+	if apiKeyOrPlaceholder == "" && p.Auth != nil {
+		apiKeyOrPlaceholder = placeholderAPIKeyForCommandAuth
+	}
 	switch normalizeKind(p.Kind) {
 	case "anthropic":
+		// x-api-key is Anthropic's credential header, sent raw (no "Bearer "
+		// prefix) — see AnthropicModel.setHeaders.
+		var hc *http.Client
+		if p.Auth != nil {
+			hc = &http.Client{Transport: authRefreshHTTPTransport(http.DefaultTransport, p.Auth, "x-api-key", false)}
+		}
 		return NewAnthropicModel(ctx, &AnthropicModelConfig{
-			APIKey:      p.APIKey,
+			APIKey:      apiKeyOrPlaceholder,
 			Model:       p.Model,
 			BaseURL:     p.BaseURL,
 			MaxTokens:   derefOr(p.MaxTokens, 0),
 			Temperature: p.Temperature,
 			TopP:        p.TopP,
+			Headers:     p.Headers,
+			HTTPClient:  hc,
 		})
 	case "openai-responses":
+		// Authorization: Bearer <key> — see openaiResponsesModel.setHeaders.
+		var hc *http.Client
+		if p.Auth != nil {
+			hc = &http.Client{Transport: authRefreshHTTPTransport(http.DefaultTransport, p.Auth, "Authorization", true)}
+		}
 		return NewOpenAIResponsesModel(ctx, &ResponsesConfig{
-			APIKey:          p.APIKey,
+			APIKey:          apiKeyOrPlaceholder,
 			Model:           p.Model,
 			BaseURL:         p.BaseURL,
 			MaxOutputTokens: derefOr(p.MaxTokens, 0),
 			Temperature:     p.Temperature,
 			TopP:            p.TopP,
+			Headers:         p.Headers,
+			HTTPClient:      hc,
 		})
 	default: // "openai" and any unrecognized kind (backward-compat)
+		// go-openai builds Authorization: Bearer <APIKey> itself, so unlike
+		// the two hand-rolled adapters above the credential header is
+		// already on the request by the time it reaches this transport —
+		// authRefreshHTTPTransport's Set still overwrites it with the
+		// command-sourced token every request, same as it overrides the
+		// two adapters' own setHeaders. It sits BELOW headerCaptureTransport
+		// (base, not the client's outer Transport) so it runs LAST, closest
+		// to the wire: a static W-C-02 operator header of the same name must
+		// not be able to shadow the live, just-refreshed credential.
+		hc := newHeaderCaptureClient(p.Headers)
+		if p.Auth != nil {
+			hc = &http.Client{Transport: &headerCaptureTransport{
+				base:    authRefreshHTTPTransport(http.DefaultTransport, p.Auth, "Authorization", true),
+				headers: p.Headers,
+			}}
+		}
 		inner, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
-			APIKey:  p.APIKey,
+			APIKey:  apiKeyOrPlaceholder,
 			Model:   p.Model,
 			BaseURL: p.BaseURL,
 			// Pointers forwarded as-is: eino-ext's ChatModelConfig uses the
@@ -197,8 +238,11 @@ func buildOne(ctx context.Context, p config.ProviderConfig) (model.BaseChatModel
 			// when it builds its error, so without this the Retry-After of
 			// every 429 from an OpenAI-compatible endpoint is unrecoverable
 			// and M1's cooldown degrades to a blind exponential. See
-			// retryafter.go.
-			HTTPClient: newHeaderCaptureClient(),
+			// retryafter.go. The same transport also injects p.Headers
+			// (W-C-02) — go-openai owns request construction end to end for
+			// this kind, so the transport is the only seam that sees the
+			// outgoing *http.Request before it is sent.
+			HTTPClient: hc,
 		})
 		if err != nil {
 			return nil, err

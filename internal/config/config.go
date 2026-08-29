@@ -763,12 +763,27 @@ type ProviderConfig struct {
 // config is not automatically trusted either — a config.yaml can come from a
 // shared template, a team repo, or (since agents write files through the
 // same fs tools that can touch config.yaml) from the agent's own prior edit.
-// The command therefore goes through internal/secproc.Launch exactly like
-// any other untrusted spawn (shell_run, an ACP agent CLI): it is Authorized
-// against a purpose-built minimal profile, its environment is scrubbed of
-// ambient credentials, and it runs under the production sandbox factory. See
-// internal/llm/eino/cmdauth.go and internal/bootstrap's AuthCommandRunner
-// registration.
+// The command therefore goes through secproc.Launch exactly like any other
+// untrusted spawn (shell_run, an ACP agent CLI): it is Authorized against a
+// purpose-built minimal profile, its environment is scrubbed of ambient
+// credentials, and it runs under sandbox.FullAccess. It calls secproc.Launch
+// directly rather than through internal/tools.LaunchSecureProcess (a thin,
+// behavior-identical wrapper around the same call) because
+// internal/llm/eino cannot import internal/tools — see runAuthCommand's doc
+// comment in internal/llm/eino/cmdauth.go for the import-cycle this avoids.
+// The Authorize firewall is unaffected either way: internal/tools' init
+// registers internal/tools.Authorize as secproc.Launch's Authorizer
+// process-wide, independent of which package calls Launch.
+//
+// No bootstrap-level wiring is needed for this specifically: the
+// secproc.Factory the command spawns through is whatever the calling
+// request's context already carries. Every orchestrator turn binds one
+// unconditionally (orchestrator's effectiveSecureFactory falls back to
+// shell.UnsandboxedSecureFactory when none is configured), so by the time a
+// provider's Generate/Stream runs, a Factory is always present. A caller
+// that builds a provider against a bare context.Background() (no
+// orchestrator turn) gets the same fail-closed error any other secproc
+// caller gets without a bound Factory.
 type ProviderAuthConfig struct {
 	// Command is the argv to run: Command[0] is the program, the rest are
 	// its arguments. The command's stdout, trimmed of trailing whitespace,

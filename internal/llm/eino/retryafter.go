@@ -113,16 +113,34 @@ func respHeaderHolderFrom(ctx context.Context) *respHeaderHolder {
 type headerCaptureTransport struct {
 	// base is the wrapped transport. nil means http.DefaultTransport.
 	base http.RoundTripper
+	// headers (W-C-02) are extra request headers this transport injects on
+	// every outgoing request, applied AFTER go-openai's own headers (so an
+	// operator entry can override e.g. Authorization to route through a
+	// gateway that wants its own scheme) — the injection point for the
+	// default "openai" adapter kind, which — unlike anthropic.go and
+	// responses.go — never gets a chance to set headers itself because
+	// go-openai owns request construction end to end. This is the only seam
+	// with access to the outgoing *http.Request before it is sent. See
+	// ProviderConfig.Headers for the SECURITY note: values must reach the
+	// redactor before this struct is constructed; this type does not
+	// register them itself.
+	headers map[string]string
 }
 
-// RoundTrip forwards to the base transport and records the headers of any
-// response with a >=400 status.
+// RoundTrip injects the configured extra headers, forwards to the base
+// transport, and records the headers of any response with a >=400 status.
 //
 // The response itself is returned completely untouched — body unread, headers
 // unmodified. Reading the body here would consume it before the SDK could
 // parse the error message out of it, turning a precise "invalid_api_key" into
 // an empty one.
 func (t *headerCaptureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if len(t.headers) > 0 {
+		req = req.Clone(req.Context())
+		for k, v := range t.headers {
+			req.Header.Set(k, v)
+		}
+	}
 	base := t.base
 	if base == nil {
 		base = http.DefaultTransport
@@ -136,13 +154,16 @@ func (t *headerCaptureTransport) RoundTrip(req *http.Request) (*http.Response, e
 }
 
 // newHeaderCaptureClient returns an http.Client whose transport captures failed
-// responses' headers. It is what BuildProviders installs on the openai adapter.
+// responses' headers and injects the given extra headers (W-C-02; may be nil
+// or empty) into every outgoing request. It is what BuildProviders installs on
+// the openai adapter.
 //
 // The client still has NO Timeout and NO transport-level retry, for the reason
 // spelled out in BuildProviders: ResilientChatModel is the single retry
-// authority. Capturing a header is observation, not policy.
-func newHeaderCaptureClient() *http.Client {
-	return &http.Client{Transport: &headerCaptureTransport{base: http.DefaultTransport}}
+// authority. Capturing a header is observation, not policy; injecting one is
+// the operator's policy, not this package's.
+func newHeaderCaptureClient(headers map[string]string) *http.Client {
+	return &http.Client{Transport: &headerCaptureTransport{base: http.DefaultTransport, headers: headers}}
 }
 
 // HeaderAwareModel wraps a model adapter whose SDK discards response headers,
