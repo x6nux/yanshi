@@ -21,7 +21,7 @@ func TestUnenforcedFieldsSubtractsTheDeclaration(t *testing.T) {
 		NetworkDeny:   true,
 		ProxyURL:      "http://127.0.0.1:8080",
 	}
-	all := []string{FieldTier, FieldWorkspaceRoot, FieldNetworkDeny, FieldProxyURL}
+	all := []string{FieldTier, FieldWorkspaceRoot, FieldNetworkDeny}
 
 	if got := UnenforcedFields(cfg); !reflect.DeepEqual(got, all) {
 		t.Fatalf("declaring nothing enforced: got %v, want %v", got, all)
@@ -30,9 +30,43 @@ func TestUnenforcedFieldsSubtractsTheDeclaration(t *testing.T) {
 		t.Fatalf("declaring everything enforced: got %v, want empty", got)
 	}
 	// The per-field case: exactly the field left out of the declaration.
-	got := UnenforcedFields(cfg, FieldTier, FieldWorkspaceRoot, FieldProxyURL)
+	got := UnenforcedFields(cfg, FieldTier, FieldWorkspaceRoot)
 	if !reflect.DeepEqual(got, []string{FieldNetworkDeny}) {
 		t.Fatalf("partial declaration: got %v, want [%s]", got, FieldNetworkDeny)
+	}
+}
+
+// TestRequestedFieldsIgnoresProxyURL is the fix for W-B fix-b57 finding 2:
+// doctor's checkSandbox builds a sandbox.Config without ProxyURL (it never
+// starts the managed proxy) while bootstrap's real Config always carries it
+// once the proxy is up, for a config the operator wrote identically in both
+// places. ProxyURL used to be read by requestedFields, so those two Configs
+// produced different Unenforced lists — the runtime warned "configured but
+// NOT enforced by this backend: proxy_url" and doctor stayed silent — for a
+// key that was never in doctor's control (`proxy_url` is not a
+// security.sandbox YAML key at all; config.example.yaml only has
+// enabled/tier/network_deny under it).
+//
+// This is checked at the requestedFields level rather than by re-deriving
+// doctor's and bootstrap's two Config literals here: any future field with
+// the same "internal wiring, not an operator setting" shape would recreate
+// the disagreement the same way, and the fix is the same in both cases —
+// requestedFields must be blind to it.
+func TestRequestedFieldsIgnoresProxyURL(t *testing.T) {
+	base := Config{Enabled: true, Tier: WorkspaceWrite, WorkspaceRoot: "/w", NetworkDeny: true}
+	withProxy := base
+	withProxy.ProxyURL = "http://127.0.0.1:8080"
+
+	got, want := requestedFields(withProxy), requestedFields(base)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("requestedFields differs by ProxyURL alone: with-proxy=%v without=%v — "+
+			"this is exactly why doctor (never sets ProxyURL) and bootstrap (always does) "+
+			"disagreed about the SAME operator configuration", got, want)
+	}
+	for _, f := range got {
+		if f == FieldProxyURL {
+			t.Fatalf("proxy_url must never appear in requestedFields: %v", got)
+		}
 	}
 }
 

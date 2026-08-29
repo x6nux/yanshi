@@ -64,3 +64,47 @@ func TestSandboxRowShowsEveryUnenforcedField(t *testing.T) {
 		}
 	})
 }
+
+// TestDoctorAndRuntimeReportTheSameSandboxPosture is the fix for W-B
+// fix-b57 finding 2: checkSandbox and bootstrap.Build construct the same
+// operator-facing sandbox.Config (same tier / workspace_root /
+// network_deny) but historically differed in exactly one field —
+// bootstrap always threads the managed proxy's address into ProxyURL,
+// doctor never does because it never starts a proxy. Before the fix,
+// ProxyURL was read by requestedFields, so on any backend that does not
+// specially wire it (every one except darwin's seatbelt) the SAME
+// `security.sandbox:` stanza rendered "ok" from doctor and "warn ... NOT
+// enforced by this backend: proxy_url" from the runtime — a warning about a
+// key that does not exist under security.sandbox at all
+// (config.example.yaml only has enabled/tier/network_deny there).
+//
+// The enforced-field declaration below is landlock/bwrap/windows'
+// declaration, not darwin's (see sandbox_darwin.go — it is the one backend
+// that reads ProxyURL for a loopback re-permit and so is the one place this
+// disagreement never showed up). Reproducing it directly through
+// UnenforcedFields, rather than calling sandbox.New and depending on which
+// platform runs the test, is what the review used to catch this on a
+// darwin host in the first place — sandbox.New here would have to run on
+// linux or windows to ever go red.
+func TestDoctorAndRuntimeReportTheSameSandboxPosture(t *testing.T) {
+	doctorCfg := sandbox.Config{ // mirrors checkSandbox's sandbox.Config literal
+		Enabled: true, WorkspaceRoot: "/w", Tier: sandbox.WorkspaceWrite, NetworkDeny: true,
+	}
+	runtimeCfg := doctorCfg // same operator config...
+	runtimeCfg.ProxyURL = "http://127.0.0.1:38080" // ...plus bootstrap's own wiring doctor never sets.
+
+	enforced := []string{sandbox.FieldTier, sandbox.FieldWorkspaceRoot, sandbox.FieldNetworkDeny}
+	report := func(cfg sandbox.Config) sandbox.CapabilityReport {
+		return sandbox.CapabilityReport{
+			Platform: "linux", Requested: cfg.Tier, Effective: sandbox.OSIsolated, Backend: "landlock+seccomp",
+			Enforced: true, Unenforced: sandbox.UnenforcedFields(cfg, enforced...),
+		}
+	}
+	doctorRow := sandboxCheckResult(report(doctorCfg))
+	runtimeRow := sandboxCheckResult(report(runtimeCfg))
+
+	if doctorRow != runtimeRow {
+		t.Fatalf("doctor and runtime disagree about the SAME security.sandbox config:\ndoctor:  %+v\nruntime: %+v",
+			doctorRow, runtimeRow)
+	}
+}

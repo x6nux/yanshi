@@ -104,6 +104,15 @@ type CapabilityReport struct {
 // enforcement declaration. They are the YAML spellings under
 // security.sandbox, so an operator can grep a warning straight back to the line
 // they wrote.
+//
+// FieldProxyURL is the one exception: Config.ProxyURL is not a
+// security.sandbox YAML key at all (config.example.yaml only has
+// enabled/tier/network_deny under it) — it is bootstrap's internal wiring of
+// the managed-proxy address into the sandbox, doctor's checkSandbox never
+// sets it, and requestedFields deliberately does not read it (see below). The
+// constant survives only because a couple of backends still name it in their
+// own enforcement declaration for documentation purposes; it can never appear
+// in an Unenforced list.
 const (
 	FieldTier          = "tier"
 	FieldWorkspaceRoot = "workspace_root"
@@ -122,6 +131,19 @@ const (
 //
 // WorkspaceRoot rides on the tier for the same reason: it is the boundary a
 // non-FullAccess tier is measured against and it constrains nothing on its own.
+//
+// ProxyURL is deliberately NEVER in this list, even though it is a real
+// Config field with real backend-visible effects (see sandbox_darwin.go's use
+// of it for the loopback re-permit). It is not something the OPERATOR asked
+// for — it is bootstrap's own wiring of the managed proxy's address, set on
+// every production boot and never set by doctor's checkSandbox, which builds
+// the same Config to describe the same posture. Reading it here made the two
+// disagree about the identical configuration an operator actually wrote: the
+// runtime warned "configured but NOT enforced by this backend: proxy_url" and
+// doctor stayed silent, for a value neither the operator's config nor the
+// operator's mental model of `security.sandbox` contains. Any residual risk
+// from a backend that does not gate the managed proxy belongs in that
+// backend's CapabilityReport.Reason text, not in this mechanical list.
 func requestedFields(cfg Config) []string {
 	var out []string
 	if cfg.Tier != FullAccess {
@@ -132,9 +154,6 @@ func requestedFields(cfg Config) []string {
 	}
 	if cfg.NetworkDeny {
 		out = append(out, FieldNetworkDeny)
-	}
-	if cfg.ProxyURL != "" {
-		out = append(out, FieldProxyURL)
 	}
 	return out
 }
