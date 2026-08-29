@@ -26,34 +26,38 @@ import (
 // # What this backend does NOT do, and why saying so matters
 //
 // Landlock is a filesystem LSM. It has no process isolation and -- at the ABI
-// levels this code targets -- no network control. Concretely, a process
-// confined here can still:
+// levels this code targets -- no network control of its own. The seccomp layer
+// (seccomp_linux.go) supplies part of what is missing; what remains missing is
+// still real. A process confined here can:
 //
-//   - open sockets and reach any host the routing table allows, regardless of
-//     Config.NetworkDeny;
-//   - see, signal and ptrace-adjacent-inspect every other process owned by the
-//     same uid, because there is no PID namespace;
-//   - exhaust memory, fds and pids, because there is no cgroup.
+//   - exhaust memory, fds and pids, because there is no cgroup;
+//   - see and signal every other process owned by the same uid, because there
+//     is no PID namespace. It can no longer READ their memory: ptrace and
+//     process_vm_readv are denied by the syscall filter.
+//   - reach the network freely WHEN Config.NetworkDeny is false or when the
+//     filter could not be installed. When both hold, socket(2) is refused for
+//     every address family except AF_UNIX -- see seccomp_linux.go for why the
+//     enforcement is at socket creation rather than at connect(2).
 //
-// The Reason string states this verbatim, and that is load-bearing rather than
-// documentation politeness: internal/tools' SandboxEnforcing check consults
-// the report to decide whether a failure it observed was a sandbox denial. If
-// this backend claimed network enforcement, a plain connection refusal -- a
-// down server, a DNS failure, a proxy hiccup -- would be classified as a
-// sandbox denial and would raise an escalation prompt asking the operator to
-// approve more privilege for something privilege cannot fix. The honest Reason
-// is what keeps that prompt from firing on unrelated network noise.
+// The Reason string states this verbatim and is recomputed from what actually
+// got installed, which is load-bearing rather than documentation politeness:
+// internal/tools' SandboxEnforcing check consults the report to decide whether
+// a failure it observed was a sandbox denial. A backend that claimed network
+// enforcement it does not have would turn a plain connection refusal -- a down
+// server, a DNS failure, a proxy hiccup -- into a sandbox denial, and raise an
+// escalation prompt asking the operator to approve more privilege for something
+// privilege cannot fix. The converse is now also true: a backend that denied
+// having network enforcement while the filter really is blocking sockets would
+// send the operator hunting for a network fault that is a policy decision.
 //
 // # ABI 4 network support is deliberately not used
 //
-// Landlock ABI 4 (kernel 6.7) adds TCP bind/connect restrictions, which would
-// let this backend honour NetworkDeny on new enough kernels. It is not wired
-// up, because a control that works only on 6.7+ would make the SAME
-// configuration enforce network policy on one host and silently not on
-// another, and the capability report has one Reason string for both. Adding it
-// means reporting the negotiated ABI in a machine-readable field so callers
-// can branch, which is a larger change than this one. Until then the answer to
-// "does this backend deny network?" is an unambiguous no.
+// Landlock ABI 4 (kernel 6.7) adds TCP bind/connect restrictions. It is still
+// not wired up, and now for a smaller reason than before: a control that works
+// only on 6.7+ would make the SAME configuration enforce on one host and not on
+// another, while seccomp filtering is available on essentially every kernel
+// this project runs on and needs no ABI negotiation. What ABI 4 would add over
+// the filter is per-port granularity, which nothing here asks for.
 
 // landlockProbeTimeout bounds the enforcement self-check. Same rationale as
 // the bubblewrap probe: this runs during bootstrap and a hung probe must
@@ -80,6 +84,14 @@ type landlockBackend struct {
 
 	workspace string
 	scratch   []string
+
+	// seccomp records whether the helper will be asked to install the syscall
+	// filter. False means the probe below could not get one installed on this
+	// host, and the Reason says why -- it is never a silent downgrade, because
+	// the difference is whether NetworkDeny means anything on this backend.
+	seccomp bool
+	// seccompReason explains a false seccomp, and is empty otherwise.
+	seccompReason string
 
 	warnOnce sync.Once
 }
@@ -112,23 +124,99 @@ func newLandlock(cfg Config) (Sandbox, string) {
 		workspace: ResolvePath(cfg.WorkspaceRoot),
 		scratch:   BwrapScratchPaths(),
 	}
+	sb.seccompReason, sb.seccomp = probeSeccompAt(exe, cfg.NetworkDeny)
 	sb.report = CapabilityReport{
 		Platform:  "linux",
 		Requested: cfg.Tier,
 		Effective: OSIsolated,
-		Backend:   "landlock",
+		Backend:   sb.backendName(),
 		Reason: fmt.Sprintf(
-			"landlock ABI %d enforcing FILESYSTEM access only (tier=%s); "+
-				"NOT enforced by this backend: network egress (Config.NetworkDeny=%t is "+
-				"ignored here), process/pid isolation, and resource limits — "+
-				"bubblewrap was unavailable%s",
-			abi, cfg.Tier, cfg.NetworkDeny, sb.vacuityNote()),
+			"landlock ABI %d enforcing filesystem access (tier=%s); %s; "+
+				"NOT enforced by this backend: process/pid isolation and resource "+
+				"limits — bubblewrap was unavailable%s",
+			abi, cfg.Tier, sb.syscallNote(), sb.vacuityNote()),
 		Enforced: true,
 		// No PID namespace, no cgroup: this backend cannot enumerate or
 		// terminate a process tree. Killing trees stays the shell layer's job.
 		CanKillTree: false,
+		// THE per-field case W-B-13 exists for. Landlock confines the
+		// filesystem unconditionally, so tier/workspace_root are enforced and
+		// Effective is honestly OSIsolated — but NetworkDeny is carried by the
+		// seccomp filter alone, and probeSeccompAt can decline (old kernel,
+		// blocked prctl, unsupported arch). Without it `network_deny: true` is
+		// inert under a report that says "os-isolated", which is precisely the
+		// backend-granularity blind spot: syscallNote() already says so in
+		// prose, and prose is not something a doctor check can branch on.
+		Unenforced: UnenforcedFields(cfg, landlockEnforcedFields(sb.seccomp)...),
 	}
 	return sb, ""
+}
+
+// backendName distinguishes the two shapes this backend can take, because
+// "landlock" and "landlock+seccomp" enforce different things and the Backend
+// field is what a machine-readable consumer branches on.
+func (l *landlockBackend) backendName() string {
+	if l.seccomp {
+		return "landlock+seccomp"
+	}
+	return "landlock"
+}
+
+// syscallNote renders the syscall-filter half of the capability Reason.
+//
+// Three distinct states, and collapsing any two of them would mislead: the
+// filter is on and denying sockets, the filter is on but the operator did not
+// ask for network denial, or there is no filter at all. Only the first makes
+// Config.NetworkDeny mean anything on this backend, and an operator debugging a
+// blocked fetch needs to know which one they are in.
+func (l *landlockBackend) syscallNote() string {
+	if !l.seccomp {
+		return fmt.Sprintf(
+			"seccomp syscall filter NOT installed (%s), so network egress is unrestricted "+
+				"(Config.NetworkDeny=%t is ignored) and ptrace/io_uring are reachable",
+			l.seccompReason, l.cfg.NetworkDeny)
+	}
+	if !l.cfg.NetworkDeny {
+		return "seccomp filter denying ptrace/process_vm_readv/io_uring; network egress " +
+			"NOT restricted (Config.NetworkDeny=false)"
+	}
+	return "seccomp filter denying ptrace/process_vm_readv/io_uring and enforcing network " +
+		"egress denial by refusing socket(2) for every address family except AF_UNIX"
+}
+
+// probeSeccompAt verifies that the helper can really install the syscall filter
+// on this host, by running the real re-exec path with a filter-carrying token.
+//
+// It uses the same machinery as probeLandlockAt for the same reason: the thing
+// that must work in production is the helper, not applySeccomp in isolation, and
+// a probe that called applySeccomp directly would install an irreversible filter
+// on YANSHI ITSELF — inherited by every child it ever spawns, including the ones
+// this sandbox is not meant to confine.
+//
+// What it proves and what it does not, stated plainly because the landlock probe
+// next door proves more: this establishes that the filter can be BUILT and
+// INSTALLED and that a permitted command still runs underneath it (an
+// over-broad filter would kill /bin/true). It does NOT observe a denied syscall
+// being denied — that would need a probe target that attempts one, and the only
+// binary guaranteed to exist for the purpose is yanshi itself, which the helper
+// refuses to wrap. The blocking behaviour is pinned by the package's own linux
+// tests instead.
+func probeSeccompAt(exe string, netDeny bool) (string, bool) {
+	if err := seccompSupported(); err != nil {
+		return err.Error(), false
+	}
+	rules := BuildLandlockRules(BwrapInput{Tier: FullAccess}, nil)
+	rules.Seccomp = true
+	rules.NetDeny = netDeny
+	token, err := EncodeLandlockRules(rules)
+	if err != nil {
+		return fmt.Sprintf("cannot encode a seccomp probe policy (%v)", err), false
+	}
+	if err := runLandlockProbe(exe, token, "/bin/true"); err != nil {
+		return fmt.Sprintf(
+			"the helper could not run a permitted command with the filter installed (%v)", err), false
+	}
+	return "", true
 }
 
 // probeLandlockAt verifies that Landlock actually confines on this host by
@@ -267,7 +355,7 @@ func (l *landlockBackend) Prepare(_ context.Context, cmd *exec.Cmd, spec Command
 // second hand-built value would drift the first time a field is added and the
 // honesty note would then describe a policy nobody runs.
 func (l *landlockBackend) rulesFor(tier AccessTier) LandlockRules {
-	return BuildLandlockRules(BwrapInput{
+	rules := BuildLandlockRules(BwrapInput{
 		Tier:          tier,
 		WorkspaceRoot: l.workspace,
 		ScratchPaths:  l.scratch,
@@ -275,6 +363,13 @@ func (l *landlockBackend) rulesFor(tier AccessTier) LandlockRules {
 		_, err := os.Stat(p)
 		return err == nil
 	})
+	// The syscall filter rides on the per-invocation policy but is NOT
+	// per-invocation: it is the same for every tier, because nothing it denies
+	// becomes acceptable at a more permissive access class. FullAccess widens
+	// the filesystem, not the right to read another process's memory.
+	rules.Seccomp = l.seccomp
+	rules.NetDeny = l.cfg.NetworkDeny
+	return rules
 }
 
 // vacuityNote discloses a configured tier whose policy restricts nothing.

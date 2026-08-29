@@ -113,7 +113,17 @@ func (w *WebTools) runFetch(ctx context.Context, argsJSON string) (string, error
 		return "", &DenyErr{Reason: "invalid url / empty host"}
 	}
 	if d := policy.CheckHost(host); !d.Allowed {
-		return "", &DenyErr{Reason: d.Reason}
+		// W-B-12's net dimension is consumed HERE, and this is the only place
+		// it ever was going to be: netpolicy replaced the profile-based
+		// guard.NetHost check, so nothing downstream of a permission profile
+		// judges a host any more. Without these three lines the operator
+		// approves, the model reads granted=true, and this function returns the
+		// identical DenyErr.
+		granted, ok := grantedNetworkPolicy(ctx, "web_fetch", host, policy)
+		if !ok {
+			return "", &DenyErr{Reason: d.Reason}
+		}
+		policy = granted
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.URL, nil)
@@ -228,7 +238,11 @@ func (w *WebTools) runSearch(ctx context.Context, argsJSON string) (string, erro
 		return "", &DenyErr{Reason: "invalid search base URL"}
 	}
 	if d := policy.CheckHost(searchHost); !d.Allowed {
-		return "", &DenyErr{Reason: d.Reason}
+		granted, ok := grantedNetworkPolicy(ctx, "web_search", searchHost, policy)
+		if !ok {
+			return "", &DenyErr{Reason: d.Reason}
+		}
+		policy = granted
 	}
 	// POST with a form body, not GET with a query string. The lite endpoint
 	// this used to query became an anti-bot page that returns no results at

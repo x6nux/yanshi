@@ -14,6 +14,7 @@ import (
 
 	"github.com/x6nux/yanshi/internal/acp"
 	"github.com/x6nux/yanshi/internal/guard"
+	"github.com/x6nux/yanshi/internal/netpolicy"
 	"github.com/x6nux/yanshi/internal/vcs"
 )
 
@@ -95,7 +96,7 @@ func (h *WorktreeHelper) Add(name string) (string, error) {
 	}
 
 	branch := "goalloop/" + name
-	cmd := exec.Command("git", "-C", h.RepoDir, "worktree", "add", "-b", branch, tmpDir)
+	cmd := gitWorktreeCommand(h.RepoDir, "worktree", "add", "-b", branch, tmpDir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("worktree: git worktree add: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -107,9 +108,22 @@ func (h *WorktreeHelper) Add(name string) (string, error) {
 	return tmpDir, nil
 }
 
+// gitWorktreeCommand builds one `git worktree` invocation.
+//
+// A single constructor so the credential scrub cannot be applied to two of the
+// three call sites. These are purely local repository operations — add, remove,
+// list — with no network leg, so git needs no credential; leaving Env nil, as
+// all three did, handed the operator's provider keys and tokens to git and to
+// every hook it runs.
+func gitWorktreeCommand(repoDir string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", append([]string{"-C", repoDir}, args...)...)
+	cmd.Env = netpolicy.ScrubbedEnviron()
+	return cmd
+}
+
 // Remove removes a git worktree at the given path.
 func (h *WorktreeHelper) Remove(path string) error {
-	cmd := exec.Command("git", "-C", h.RepoDir, "worktree", "remove", "--force", path)
+	cmd := gitWorktreeCommand(h.RepoDir, "worktree", "remove", "--force", path)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("worktree: git worktree remove: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -118,7 +132,7 @@ func (h *WorktreeHelper) Remove(path string) error {
 
 // List returns the paths of all git worktrees for the repository.
 func (h *WorktreeHelper) List() ([]string, error) {
-	cmd := exec.Command("git", "-C", h.RepoDir, "worktree", "list", "--porcelain")
+	cmd := gitWorktreeCommand(h.RepoDir, "worktree", "list", "--porcelain")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("worktree: git worktree list: %w: %s", err, strings.TrimSpace(string(out)))
@@ -330,20 +344,21 @@ func (w *worker) runWithGit(ctx context.Context, task workerTask) (string, error
 	defer w.wt.Remove(wtPath)
 
 	profile := resolveProfile(w.profile, w.profileSet, wtPath)
-	spawned, err := acp.Spawn(ctx, w.spawnOpts(wtPath, profile))
+	// W-B-02: SpawnSecure, not Spawn. An external agent CLI is the textbook
+	// untrusted program — named in a config file, handed the project directory,
+	// and told to execute whatever the model asks — so it goes through
+	// secproc.Launch like every other one. The exec-based Spawn this used to
+	// call was the last subprocess in the repo that skipped the Authorize
+	// firewall, the credential scrub and the sandbox seam, and it is gone.
+	//
+	// SecureSpawned.Close closes the client (agent sees EOF) and reaps. There is
+	// no separate Kill: the process is bound to ctx by the OS factory, so a
+	// cancelled turn tears it down without the caller reaching for the pid.
+	spawned, err := acp.SpawnSecure(ctx, w.spawnOpts(wtPath, profile))
 	if err != nil {
 		return "", fmt.Errorf("worker %d: spawn %q: %w", task.Index, w.agent, err)
 	}
-	// Cleanup: close the client (closes stdin pipe -> agent sees EOF), kill
-	// the process (in case it doesn't exit on EOF), and Wait to reap it.
-	// Order matters: Close must happen before Kill/Wait so the agent can
-	// exit gracefully; Kill ensures exit even if the agent ignores EOF;
-	// Wait reaps the process to avoid zombies.
-	defer func() {
-		spawned.Client.Close()
-		spawned.Cmd.Process.Kill()
-		spawned.Cmd.Wait()
-	}()
+	defer spawned.Close()
 
 	stopReason, err := w.promptWithUsageWatch(ctx, spawned, task)
 	if err != nil {
@@ -364,15 +379,11 @@ func (w *worker) runWithAutoVCS(ctx context.Context, task workerTask) (string, e
 	defer w.vcs.RemoveWorktree(wt.ID) // mark inactive on every exit path
 
 	profile := resolveProfile(w.profile, w.profileSet, wt.Path)
-	spawned, err := acp.Spawn(ctx, w.vcsSpawnOpts(wt.Path, profile, wt.ID))
+	spawned, err := acp.SpawnSecure(ctx, w.vcsSpawnOpts(wt.Path, profile, wt.ID))
 	if err != nil {
 		return "", fmt.Errorf("worker %d: spawn %q: %w", task.Index, w.agent, err)
 	}
-	defer func() {
-		spawned.Client.Close()
-		spawned.Cmd.Process.Kill()
-		spawned.Cmd.Wait()
-	}()
+	defer spawned.Close()
 
 	if _, err := w.promptWithUsageWatch(ctx, spawned, task); err != nil {
 		return "", err
@@ -439,7 +450,7 @@ func shouldWarnUnmetered(sink *UsageSink, sawUsage bool) bool {
 // promptWithUsageWatch runs one ACP turn and warns when the agent finished work
 // without reporting any token usage, so an unmetered run is visible rather than
 // looking like a free one. Returns the stop reason.
-func (w *worker) promptWithUsageWatch(ctx context.Context, spawned *acp.Spawned, task workerTask) (string, error) {
+func (w *worker) promptWithUsageWatch(ctx context.Context, spawned *acp.SecureSpawned, task workerTask) (string, error) {
 	forward, sawUsage := w.usageWatch()
 	stopReason, err := spawned.Client.Prompt(ctx, spawned.SessionID, task.Step, forward)
 	if err != nil {

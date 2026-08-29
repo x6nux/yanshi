@@ -7,9 +7,13 @@ import (
 )
 
 // RedirectSpec is a parsed redirection operator + its target word.
-// Target is empty for "&>N"-style operators that fold a fd reference into the
-// operator itself (e.g. "2>&1"); in that case the full operator carries the
-// information and Target is "".
+//
+// Target is empty ONLY for the two operators that name no file: a descriptor
+// duplication whose word is a plain fd number ("2>&1", ">&2") and the close
+// token (">&-"). In both cases the full operator carries the information.
+// Everything else has a Target, INCLUDING `>&word` with a non-numeric word,
+// which bash, sh and zsh all execute as "write the file called word" — reading
+// that as a duplication left the path invisible to the guard's FS dimension.
 type RedirectSpec struct {
 	Operator string
 	Target   string
@@ -17,10 +21,38 @@ type RedirectSpec struct {
 
 // Segment is a single executable inside a pipeline / control chain. A simple
 // `go test ./...` parses to one Segment with Program="go", Args=["test","./..."].
+//
+// Text is populated by ParseCommandList only, and Parse leaves it zero. Parse
+// describes ONE command for the rule engine, which matches on program and
+// argument words and has no use for it; ParseCommandList describes a command
+// LIST, where a segment's verbatim source text is what the guard matches
+// profile globs against.
+//
+// There WAS a third such field, Operator, carrying the control operator that
+// joined a segment to the next one. It was kept on the argument that W-B-03 /
+// W-B-04 would be the reader that cared. Those landed and did not: the guard
+// folds every segment's verdict with moreSevere, which does not care whether
+// the segments were joined with `&&` or `|`, and the approval scope refuses
+// multi-segment commands outright rather than reasoning about how they were
+// joined. It is deleted rather than kept for a hypothetical third consumer. A
+// scanner that needs it again can re-emit it in the same three lines that were
+// removed.
 type Segment struct {
 	Program   string
 	Args      []string
 	Redirects []RedirectSpec
+
+	// Text is the VERBATIM source slice this segment was cut from, whitespace
+	// trimmed. ParseCommandList only.
+	//
+	// It is a slice rather than a re-join of Program+Args because the guard
+	// matches profile globs against it, and a re-join loses quoting: the
+	// policy layer would be matching `rm -rf /my dir` (two targets) against a
+	// pattern written for `rm -rf "/my dir"` (one). For a single-segment
+	// command Text is therefore byte-identical to the trimmed input, which is
+	// what keeps the segmented guard path behaviour-identical to the
+	// whole-string one for every unchained command.
+	Text string
 }
 
 // Command is the fully parsed shell command. Segments is non-empty; Control

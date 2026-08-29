@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/schema"
+	"github.com/x6nux/yanshi/internal/netpolicy"
 	"github.com/x6nux/yanshi/internal/sandbox"
 	"github.com/x6nux/yanshi/internal/secproc"
 )
@@ -137,13 +138,11 @@ func ghSpec(tool string, args ...string) secproc.SecureProcessSpec {
 
 // ghCredentialEnv is the exact credential set `gh` is allowed to inherit.
 //
-// GH_CONFIG_DIR is here because gh's other authentication route is the token
-// stored in its config directory, which it locates through this variable when
-// the operator has relocated it. The variable holds a PATH, not a secret; it
-// needs naming only because it ends in a word the name-based scrub treats as
-// credential material, and losing it silently sends gh looking in the wrong
-// directory.
-var ghCredentialEnv = []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR"}
+// The list itself moved to netpolicy.GitHubCLICredentialEnv when `yanshi pr`
+// stopped handing gh the whole environment: that path spawns gh too and needs
+// the same answer, and two copies would diverge the first time one was
+// widened. The name survives here because it is what this file reads.
+var ghCredentialEnv = netpolicy.GitHubCLICredentialEnv
 
 // ghFailure reports the error result for a `gh` invocation that did not
 // succeed, or "" when it did. Both failure shapes must be surfaced: a launch

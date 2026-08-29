@@ -24,7 +24,27 @@ type DefaultSecureFactory struct {
 	OS       ProcessFactory
 	Policy   *netpolicy.Policy
 	ProxyURL string
+	// SOCKSURL, CAFile and Snapshot are the rest of the launch posture; see
+	// childLaunchPosture for what each one does and when it is empty.
+	SOCKSURL string
+	CAFile   string
 	Sandbox  sandbox.Sandbox
+	Snapshot Snapshot
+}
+
+// posture builds the shared launch posture, in one place, for the same reason
+// SecureLaunchFactory.posture exists: a second struct literal is a second
+// thing to forget a field in, and a forgotten field here is a child launched
+// under a posture nobody declared.
+func (f DefaultSecureFactory) posture() childLaunchPosture {
+	return childLaunchPosture{
+		Policy:   f.Policy,
+		ProxyURL: f.ProxyURL,
+		SOCKSURL: f.SOCKSURL,
+		CAFile:   f.CAFile,
+		Sandbox:  f.Sandbox,
+		Snapshot: f.Snapshot,
+	}
 }
 
 // Start runs the full spawn pipeline:
@@ -56,7 +76,7 @@ func (f DefaultSecureFactory) Start(ctx context.Context, spec secproc.SecureProc
 	if f.OS == nil {
 		return nil, fmt.Errorf("shell: DefaultSecureFactory.OS is nil (fail-closed)")
 	}
-	posture := childLaunchPosture{Policy: f.Policy, ProxyURL: f.ProxyURL, Sandbox: f.Sandbox}
+	posture := f.posture()
 	launch, err := posture.prepare(ctx, LaunchSpec{
 		ShellName:      spec.Shell,
 		Env:            spec.Env,
@@ -71,8 +91,13 @@ func (f DefaultSecureFactory) Start(ctx context.Context, spec secproc.SecureProc
 	if err != nil {
 		return nil, err
 	}
+	// Step 1b: install the elevation shims. After prepare because it edits the
+	// PATH prepare built; before the spawn because the child reads that PATH at
+	// exec. See childLaunchPosture.interceptElevation.
+	launch, stopBroker := posture.interceptElevation(ctx, launch, spec.Workdir)
 	proc, console, err := f.OS.Start(ctx, launch)
 	if err != nil {
+		stopBroker()
 		return nil, err
 	}
 	// Step 2b: the post-spawn half of the sandbox seam, for backends whose
@@ -85,6 +110,7 @@ func (f DefaultSecureFactory) Start(ctx context.Context, spec secproc.SecureProc
 	// rather than handing back a StartedProcess the capability report claims is
 	// inside a container. See childLaunchPosture.postStart.
 	if err := posture.postStart(proc.PID()); err != nil {
+		stopBroker()
 		if console != nil {
 			_ = console.Close()
 		}
@@ -101,8 +127,14 @@ func (f DefaultSecureFactory) Start(ctx context.Context, spec secproc.SecureProc
 	// half-closing stdin; secproc.StartedProcess.Stdin documents that as a
 	// factory-defined property, and the one caller that writes to it (the ACP
 	// delegation path) only closes at teardown.
+	// The broker outlives the spawn and dies with the reap. Tying it to Wait
+	// rather than to ctx alone is what bounds the temp directory and the
+	// listener goroutine: on the shell v2 path the launch context is
+	// deliberately detached from the turn (context.WithoutCancel in
+	// Manager.Start), so a ctx-only teardown would keep one of each alive per
+	// session until the whole manager shut down.
 	return &secproc.StartedProcess{
-		Wait:   proc.Wait,
+		Wait:   func() error { defer stopBroker(); return proc.Wait() },
 		PID:    proc.PID(),
 		Stdout: consoleReader{console},
 		Stderr: separatedStderr(console),
@@ -153,4 +185,23 @@ func (c consoleReader) Read(p []byte) (int, error) {
 		return n, err
 	}
 	return n, nil
+}
+
+// UnsandboxedSecureFactory is the secproc.Factory used when no sandbox and no
+// network policy have been configured: a real spawn through the same
+// DefaultSecureFactory pipeline, with the two optional seams left out.
+//
+// It exists so "no factory in context" can stop being a representable state.
+// Before W-B-02 an unbound factory made shell_run fall back to its own raw
+// exec.Cmd pipe, which meant a composition root that simply forgot to pass the
+// field produced a spawn with no credential scrub and no managed proxy env —
+// indistinguishable, from the outside, from a deployment that had chosen not to
+// sandbox. Substituting this factory keeps the credential scrub, the env
+// baseline and the reaper contract while omitting only what the caller has not
+// configured.
+//
+// It is NOT a bypass of authorization: every caller reaches a Factory through
+// secproc.Launch, which Authorizes before any factory is consulted.
+func UnsandboxedSecureFactory() secproc.Factory {
+	return DefaultSecureFactory{OS: OSProcessFactory{}}
 }

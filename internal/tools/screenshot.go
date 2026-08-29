@@ -2,10 +2,12 @@ package tools
 
 import (
 	"context"
+	"os/exec"
 	"time"
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/x6nux/yanshi/internal/imagestore"
+	"github.com/x6nux/yanshi/internal/netpolicy"
 )
 
 // CaptureFunc captures the primary screen and returns (bytes, fmt, err).
@@ -49,4 +51,18 @@ func (s *screenshotTool) run(ctx context.Context, _ string) (string, error) {
 		return errorResult(err.Error()), nil
 	}
 	return s.store.Placeholder(id), nil
+}
+
+// captureCommand builds the exec.Cmd a platform screenshot backend runs.
+//
+// It exists so the credential scrub is applied once rather than in each of the
+// three platform files, where the fourth one to be written would inevitably
+// omit it. The screenshot backends are PATH-resolved third-party binaries
+// (screencapture, grim, gnome-screenshot, powershell) started on behalf of a
+// model tool call; before this they inherited yanshi's whole environment,
+// including every provider API key the operator exported.
+func captureCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = netpolicy.ScrubbedEnviron()
+	return cmd
 }

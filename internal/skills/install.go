@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/x6nux/yanshi/internal/netpolicy"
 )
 
 // InstallSource describes a parsed install source. Owner and Repo are required;
@@ -75,6 +77,12 @@ type realClone struct{}
 func (realClone) Clone(ctx context.Context, owner, repo, intoDir string) error {
 	url := fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
 	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", url, intoDir)
+	// git inherits this process's environment minus every credential. The URL
+	// above is public HTTPS, so nothing here needs one: an authenticated clone
+	// goes through git's credential helper, which reads the operator's config
+	// files rather than the environment. Before this, `git` — and every hook and
+	// helper it starts — received the provider API keys yanshi holds.
+	cmd.Env = netpolicy.ScrubbedEnviron()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git clone %s/%s: %w\n%s", owner, repo, err, out)
 	}

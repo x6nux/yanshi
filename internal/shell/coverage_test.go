@@ -314,11 +314,29 @@ func TestOSProcessFactoryHelper(t *testing.T) {
 	}
 }
 
-func TestOSProcessFactoryPTYUnavailable(t *testing.T) {
-	_, _, err := (&OSProcessFactory{}).Start(context.Background(), LaunchSpec{Program: "x", PTY: true})
-	if !errors.Is(err, ErrPTYUnavailable) {
-		t.Fatalf("PTY spawn must return ErrPTYUnavailable, got %v", err)
+// TestOSProcessFactoryRoutesPTYRequests pins that spec.PTY is what selects the
+// terminal backend, rather than being a field the pipe path quietly ignores.
+//
+// The assertion is on console.PTY(), not on the absence of an error: a factory
+// that dropped the flag would spawn happily and hand back a pipeConsole, so
+// "Start succeeded" is exactly the outcome the bug produces. Hosts with no PTY
+// must answer with the sentinel, which is the other half of the same routing
+// claim — the request reached StartPTYProcess either way.
+func TestOSProcessFactoryRoutesPTYRequests(t *testing.T) {
+	proc, console, err := (&OSProcessFactory{}).Start(context.Background(),
+		LaunchSpec{Program: ptySelfTestProgram(), PTY: true})
+	if err != nil {
+		if !errors.Is(err, ErrPTYUnavailable) {
+			t.Fatalf("PTY spawn failed for a reason other than the platform sentinel: %v", err)
+		}
+		return
 	}
+	defer console.Close()
+	if !console.PTY() {
+		t.Fatal("spec.PTY=true produced a non-PTY console: the flag was dropped")
+	}
+	_ = proc.Kill()
+	_ = proc.Wait()
 }
 
 func TestOSProcessFactoryProgramRequired(t *testing.T) {

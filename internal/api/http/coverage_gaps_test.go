@@ -40,7 +40,7 @@ import (
 func TestResolvePermissionMode_AllowEditsDeniesNonEditTool(t *testing.T) {
 	cs := &connSession{perm: &permModeState{}}
 	cs.perm.set(guard.ModeAllowEdits)
-	d, ok := resolvePermissionMode(context.Background(), cs, nil, tools.PermissionRequest{
+	d, ok := resolvePermissionMode(context.Background(), cs, nil, &tools.PermissionRequest{
 		Tool: "shell_run", Args: `{"command":"echo hi"}`,
 	})
 	assert.False(t, ok, "non-edit tool in allow-edits must not auto-resolve")
@@ -85,7 +85,7 @@ func TestResolvePermissionMode_AutoHasNoStaticOverride(t *testing.T) {
 			cs := &connSession{perm: &permModeState{}, defaultModel: "default"}
 			cs.perm.set(guard.ModeAuto)
 			d, ok := resolvePermissionMode(context.Background(), cs, models,
-				tools.PermissionRequest{Tool: "shell_run", Shell: shell})
+				&tools.PermissionRequest{Tool: "shell_run", Shell: shell})
 			assert.True(t, ok, "no static layer may override the model's ALLOW")
 			assert.Equal(t, tools.PermissionAllow, d)
 		})
@@ -100,7 +100,7 @@ func TestResolvePermissionMode_AutoHasNoStaticOverride(t *testing.T) {
 			cs := &connSession{perm: &permModeState{}, defaultModel: "default"}
 			cs.perm.set(guard.ModeAuto)
 			d, ok := resolvePermissionMode(context.Background(), cs, models,
-				tools.PermissionRequest{Tool: "shell_run", Shell: shell})
+				&tools.PermissionRequest{Tool: "shell_run", Shell: shell})
 			assert.False(t, ok)
 			assert.Equal(t, tools.PermissionDeny, d)
 		})
@@ -141,7 +141,7 @@ func TestResolvePermissionMode_AutoStillCannotCrossTheStructuralGate(t *testing.
 			cs := &connSession{perm: &permModeState{}, defaultModel: "default"}
 			cs.perm.set(guard.ModeAuto)
 			d, ok := resolvePermissionMode(context.Background(), cs, models,
-				tools.PermissionRequest{Tool: "shell_run", Shell: shell, Workdir: "/proj"})
+				&tools.PermissionRequest{Tool: "shell_run", Shell: shell, Workdir: "/proj"})
 			assert.True(t, ok, "catastrophic destruction resolves without asking the user")
 			assert.Equal(t, tools.PermissionDeny, d, "and it resolves to DENY, whatever the model said")
 		})
@@ -168,7 +168,7 @@ func TestResolvePermissionMode_AutoAsksTheModel(t *testing.T) {
 			cs := &connSession{perm: &permModeState{}, defaultModel: "default"}
 			cs.perm.set(guard.ModeAuto)
 			d, ok := resolvePermissionMode(context.Background(), cs, models,
-				tools.PermissionRequest{Tool: "shell_run", Shell: "go build ./..."})
+				&tools.PermissionRequest{Tool: "shell_run", Shell: "go build ./..."})
 			if c.wantAllow {
 				assert.True(t, ok)
 				assert.Equal(t, tools.PermissionAllow, d)
@@ -188,7 +188,7 @@ func TestResolvePermissionMode_AutoFailsToPrompting(t *testing.T) {
 		cs := &connSession{perm: &permModeState{}}
 		cs.perm.set(guard.ModeAuto)
 		d, ok := resolvePermissionMode(context.Background(), cs, nil,
-			tools.PermissionRequest{Tool: "shell_run", Shell: "go build ./..."})
+			&tools.PermissionRequest{Tool: "shell_run", Shell: "go build ./..."})
 		assert.False(t, ok)
 		assert.Equal(t, tools.PermissionDeny, d)
 	})
@@ -198,7 +198,7 @@ func TestResolvePermissionMode_AutoFailsToPrompting(t *testing.T) {
 		cs := &connSession{perm: &permModeState{}, defaultModel: "default"}
 		cs.perm.set(guard.ModeAuto)
 		d, ok := resolvePermissionMode(context.Background(), cs, models,
-			tools.PermissionRequest{Tool: "shell_run", Shell: "go build ./..."})
+			&tools.PermissionRequest{Tool: "shell_run", Shell: "go build ./..."})
 		assert.False(t, ok)
 		assert.Equal(t, tools.PermissionDeny, d)
 	})
@@ -254,7 +254,7 @@ func TestLatestUserMessage(t *testing.T) {
 
 func TestResolvePermissionMode_DefaultReturnsNotResolved(t *testing.T) {
 	cs := &connSession{perm: &permModeState{}}
-	d, ok := resolvePermissionMode(context.Background(), cs, nil, tools.PermissionRequest{
+	d, ok := resolvePermissionMode(context.Background(), cs, nil, &tools.PermissionRequest{
 		Tool: "fs_write", Args: `{}`,
 	})
 	assert.False(t, ok, "default mode must not auto-resolve")
@@ -266,7 +266,7 @@ func TestResolvePermissionMode_ForcePromptNotAutoResolved(t *testing.T) {
 		t.Run(string(mode), func(t *testing.T) {
 			cs := &connSession{perm: &permModeState{}}
 			cs.perm.set(mode)
-			d, ok := resolvePermissionMode(context.Background(), cs, nil, tools.PermissionRequest{
+			d, ok := resolvePermissionMode(context.Background(), cs, nil, &tools.PermissionRequest{
 				Tool: "dangerous_tool", ForcePrompt: true,
 			})
 			assert.False(t, ok, "ForcePrompt tool must not auto-resolve in mode %s", mode)
@@ -278,7 +278,7 @@ func TestResolvePermissionMode_ForcePromptNotAutoResolved(t *testing.T) {
 func TestResolvePermissionMode_ApprovalRequiredNotAutoResolved(t *testing.T) {
 	cs := &connSession{perm: &permModeState{}}
 	cs.perm.set(guard.ModeYOLO)
-	d, ok := resolvePermissionMode(context.Background(), cs, nil, tools.PermissionRequest{
+	d, ok := resolvePermissionMode(context.Background(), cs, nil, &tools.PermissionRequest{
 		Tool: "github_push", ApprovalRequired: true,
 	})
 	assert.False(t, ok, "ApprovalRequired tool must not auto-resolve in YOLO mode")
@@ -288,7 +288,7 @@ func TestResolvePermissionMode_ApprovalRequiredNotAutoResolved(t *testing.T) {
 func TestResolvePermissionMode_AutoNoModelFallsThrough(t *testing.T) {
 	cs := &connSession{perm: &permModeState{}}
 	cs.perm.set(guard.ModeAuto)
-	d, ok := resolvePermissionMode(context.Background(), cs, nil, tools.PermissionRequest{
+	d, ok := resolvePermissionMode(context.Background(), cs, nil, &tools.PermissionRequest{
 		Tool: "fs_write", Args: `{}`,
 	})
 	assert.False(t, ok, "auto mode with no model must fall through to prompt")

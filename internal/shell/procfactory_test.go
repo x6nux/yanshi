@@ -75,7 +75,7 @@ func TestSecureLaunchFactoryKeepsProxyEnv(t *testing.T) {
 		Program: "go",
 		Args:    []string{"version"},
 		// A caller-supplied (or inherited) proxy var must not shadow the
-		// managed one — that is the TOCTOU bypass netpolicy.PrepareEnv exists
+		// managed one — that is the TOCTOU bypass netpolicy.PrepareEnvFor exists
 		// to close, and widening the env must not reopen it.
 		Env: []string{"http_proxy=http://evil.example", "CALLER_VAR=1"},
 	})

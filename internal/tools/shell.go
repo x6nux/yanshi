@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/schema"
-	"github.com/x6nux/yanshi/internal/guard"
+	"github.com/x6nux/yanshi/internal/netpolicy"
 	"github.com/x6nux/yanshi/internal/secproc"
 	"github.com/x6nux/yanshi/internal/shell"
 )
@@ -73,7 +73,14 @@ func NewShellTools(root string) *ShellTools {
 		"shell_run", "Bash",
 		"Run a single shell command. Returns combined stdout+stderr and exit code.\n"+
 			"\n⚠️  Restrictions:\n"+
-			"  • No shell metacharacters allowed (&& || | ; > < ` $())\n"+
+			"  • Chaining with && || | ; is allowed, but EVERY segment is checked "+
+			"separately and the strictest verdict decides the whole command — one "+
+			"disallowed segment refuses all of them, and nothing runs.\n"+
+			"  • Redirection is allowed; the target path is checked against the "+
+			"filesystem permissions like any other write (or read, for <).\n"+
+			"  • Not allowed at all: command substitution $(...) and backticks, "+
+			"process substitution <(...), subshells ( ), here-documents <<, "+
+			"background &, and newlines.\n"+
 			"  • No \"../\" path traversal\n"+
 			"\n═══ Default shell (env=\"auto\") ═══\n"+
 			"  Windows → cmd /c\n"+
@@ -92,7 +99,7 @@ func NewShellTools(root string) *ShellTools {
 			"Use env=\"cmd\" (default) to avoid this issue entirely.",
 		120*time.Second,
 		params(map[string]*schema.ParameterInfo{
-			"command": {Type: schema.String, Desc: "command line (metacharacters are rejected)", Required: true},
+			"command": {Type: schema.String, Desc: "command line; && || | ; and redirection are allowed and judged segment by segment, but command/process substitution, subshells, here-docs, background & and newlines are rejected", Required: true},
 			"workdir": {Type: schema.String, Desc: "working directory (default work root)"},
 			"timeout": {Type: schema.Integer, Desc: "timeout in seconds (default 120)"},
 			"env":     {Type: schema.String, Desc: "Shell environment. Default (auto): Windows→cmd, Unix→sh. Options: auto, cmd, powershell, bash, zsh, sh. See full description for details."},
@@ -116,22 +123,21 @@ func (s *ShellTools) stream(ctx context.Context, argsJSON string) <-chan ToolChu
 			pushErrChunk(ch, err)
 			return
 		}
-		// Every shell command goes through Authorize, including those whose
-		// first word appears in safeShellCommands. The map remains for UI
-		// display hints (Task 18's TUI may surface a "known safe command"
-		// affordance), but it no longer affects the security path — the guard's
-		// structural HardDeny on shell metachar / unknown policy / execpolicy
-		// parse-error, and the overridable HardDeny on shell-policy=deny and on
-		// a denylist match (both of which YOLO/Auto may still bypass via the
-		// callback), MUST NOT be affected by knowing the safe-list. A denylist
-		// hit is profile policy, not the structural floor; filing it under
-		// "structural" here overstated what the safe-list is being kept away
-		// from. Workdir = s.root feeds the destructive-deletion dimension
-		// (catastrophic block / out-of-workdir escalation) for yolo/auto.
-		if err := Authorize(ctx, guard.Action{Tool: "shell_run", Shell: a.Command, Workdir: s.root}, argsJSON); err != nil {
-			pushErrChunk(ch, err)
-			return
-		}
+		// NOTE: shell_run does NOT call Authorize here. It used to, and then
+		// handed the spec to the factory directly; W-B-02 routed the spawn
+		// through secproc.Launch, which Authorizes the same guard.Action as its
+		// first fail-closed step. Keeping both would ask the operator twice for
+		// one command. The two fields that made the local call richer than
+		// Launch's travel down in the spec instead: Workdir (destructive
+		// dimension boundary) and ArgsJSON (what the dialog displays).
+		//
+		// safeShellCommands is unaffected either way. It survives as a UI
+		// display hint and has not been on the security path since Task 18 —
+		// the guard's structural HardDeny on unreadable shell structure /
+		// unknown policy / execpolicy parse-error, and the overridable HardDeny
+		// on shell-policy=deny and on a denylist match (both of which YOLO/Auto
+		// may still bypass via the callback), MUST NOT be affected by knowing
+		// the safe-list.
 		if strings.Contains(a.Command, "../") || strings.Contains(a.Command, `..\`) {
 			pushErrChunk(ch, fmt.Errorf("'..' path traversal is not allowed; use paths relative to the work root"))
 			return
@@ -148,175 +154,124 @@ func (s *ShellTools) stream(ctx context.Context, argsJSON string) <-chan ToolChu
 		if wd == "" {
 			wd = s.root
 		}
-		// (Task 21) Prefer SecureProcessFactory when bound; otherwise fall back
-		// to the direct exec path so SSE / unit tests without a factory still
-		// work. The fallback still goes through Authorize above; it only skips
-		// the central launcher seam (e.g. when no manager is configured).
-		if f, ok := SecureProcessFactoryFromContext(ctx); ok {
-			prog, args, _ := shell.ShellArgv(a.Env, a.Command)
-			factoryStart := time.Now()
-			started, err := f.Start(ctx, secproc.SecureProcessSpec{
-				Tool: "shell_run", Shell: a.Command, Program: prog, Args: args, Dir: wd,
-			})
+		// W-B-02: ONE launch path, and it is the central one.
+		//
+		// This used to read "prefer the factory when bound, otherwise fall back
+		// to a direct exec pipe". That fallback was not a degraded mode, it was
+		// a second implementation of the whole spawn: no credential scrub, no
+		// sandbox seam, no managed proxy env, and no fail-closed check that the
+		// launcher wiring was present at all. Which one ran was decided by
+		// whether some ancestor had remembered to bind a factory — and
+		// bindExecutionContext's nil gate meant "forgot to wire it" and
+		// "deliberately unsandboxed" were the same observable state.
+		//
+		// It is deleted rather than patched. Routing it through Authorize too
+		// would have left two spawn implementations to keep in step, and the
+		// pair had already drifted once (see childLaunchPosture's header for
+		// the env divergence that shipped).
+		//
+		// The factory is now bound unconditionally by
+		// orchestrator.bindExecutionContext, so the "no factory" case is a
+		// wiring bug and secproc.Launch reports it as one instead of silently
+		// spawning outside the firewall.
+		prog, args, _ := shell.ShellArgv(a.Env, a.Command)
+		factoryStart := time.Now()
+		started, err := LaunchSecureProcess(ctx, secproc.SecureProcessSpec{
+			Tool: "shell_run", Shell: a.Command, Program: prog, Args: args, Dir: wd,
+			// prog is the interpreter ShellArgv resolved for a.Env, so it is
+			// already the answer to "which shell language is a.Command written
+			// in". The guard picks its segmenter from it (W-B-05): a
+			// `env: "powershell"` command read by the POSIX reader loses every
+			// backslash path separator it contains.
+			Interpreter: prog,
+			// s.root, NOT wd: wd may come from the model's own "workdir"
+			// argument, and letting it move the destructive dimension's
+			// boundary would make `{"workdir":"/"}` turn every deletion into an
+			// in-scope one.
+			Workdir: s.root, ArgsJSON: argsJSON,
+		})
+		if err != nil {
+			pushErrChunk(ch, err)
+			return
+		}
+		// Fail closed on a Factory that forgot the reaper, exactly as
+		// RunSecureCapture does — this inlined path used to skip that check
+		// AND never call Wait at all, leaking one unreaped child per
+		// shell_run.
+		if started.Wait == nil {
+			pushErrChunk(ch, fmt.Errorf("shell: Factory returned a process with no reaper (fail-closed)"))
+			return
+		}
+		// Reap on EVERY exit path, not just the successful one. The
+		// success path calls waitExitCode below; the streaming-error path
+		// (which is how cancellation and per-call timeouts leave this
+		// function — Esc in the TUI, `timeout_s` expiry) used to return
+		// straight to the caller, so the fix above only ever covered the
+		// commands that ran to completion.
+		//
+		// Wait is not just bookkeeping here: for the production factory it
+		// is (*exec.Cmd).Wait, which is what closes the child's pipes.
+		// Skipping it left both the unreaped child AND the goroutines
+		// pumping those pipes parked forever.
+		//
+		// A guarded defer rather than an unconditional one, because the
+		// success path needs Wait's exit STATUS and Wait must not be
+		// called twice. No synchronization is needed on `reaped`: both the
+		// write below and the deferred read happen on this goroutine.
+		// Registered after `defer close(ch)`, so LIFO reaps the child
+		// before the channel closes.
+		reaped := false
+		reap := func() {
+			if !reaped {
+				reaped = true
+				_ = started.Wait()
+			}
+		}
+		defer reap()
+		// shell_run is a DISPLAY consumer: the model must see stderr as
+		// well as stdout — a compiler error or a "permission denied" is
+		// the whole answer for most commands. The factory hands the two
+		// streams back separately (so the capture path's parsers get an
+		// unpolluted stdout), so re-merge them here rather than dropping
+		// stderr on the floor.
+		//
+		// "What a terminal would show" is the intent, not the guarantee.
+		// MergeOutput races two copiers, so relative order between the two
+		// streams is approximate (~11% of lines land ahead of an earlier one
+		// in a stress measurement). Lines are never split or spliced. Order
+		// matters less than presence here — the exit footer, not the
+		// interleaving, is what tells the model whether the command failed —
+		// but do not describe this stream as faithful. The deleted pipe path
+		// used a single fd and did preserve order exactly; that is the one
+		// thing lost with it, and it is why this paragraph exists.
+		//
+		// Drain to EOF BEFORE Wait: (*exec.Cmd).Wait closes the child's
+		// pipes, so reading after it races into "file already closed" and
+		// silently truncates the output.
+		if started.Stdout != nil || started.Stderr != nil {
+			merged := started.MergedOutput()
+			err := streamFromReader(ctx, ch, merged)
+			_ = merged.Close()
 			if err != nil {
 				pushErrChunk(ch, err)
 				return
 			}
-			// Fail closed on a Factory that forgot the reaper, exactly as
-			// RunSecureCapture does — this inlined path used to skip that check
-			// AND never call Wait at all, leaking one unreaped child per
-			// shell_run.
-			if started.Wait == nil {
-				pushErrChunk(ch, fmt.Errorf("shell: Factory returned a process with no reaper (fail-closed)"))
-				return
-			}
-			// Reap on EVERY exit path, not just the successful one. The
-			// success path calls waitExitCode below; the streaming-error path
-			// (which is how cancellation and per-call timeouts leave this
-			// function — Esc in the TUI, `timeout_s` expiry) used to return
-			// straight to the caller, so the fix above only ever covered the
-			// commands that ran to completion.
-			//
-			// Wait is not just bookkeeping here: for the production factory it
-			// is (*exec.Cmd).Wait, which is what closes the child's pipes.
-			// Skipping it left both the unreaped child AND the goroutines
-			// pumping those pipes parked forever.
-			//
-			// A guarded defer rather than an unconditional one, because the
-			// success path needs Wait's exit STATUS and Wait must not be
-			// called twice. No synchronization is needed on `reaped`: both the
-			// write below and the deferred read happen on this goroutine.
-			// Registered after `defer close(ch)`, so LIFO reaps the child
-			// before the channel closes.
-			reaped := false
-			reap := func() {
-				if !reaped {
-					reaped = true
-					_ = started.Wait()
-				}
-			}
-			defer reap()
-			// shell_run is a DISPLAY consumer: the model must see stderr as
-			// well as stdout — a compiler error or a "permission denied" is
-			// the whole answer for most commands, and the legacy pipe path
-			// below merges them for exactly that reason. The factory hands the
-			// two streams back separately (so the capture path's parsers get
-			// an unpolluted stdout), so re-merge them here rather than
-			// dropping stderr on the floor.
-			//
-			// "What a terminal would show" is the intent, not the guarantee.
-			// MergeOutput races two copiers, so relative order between the two
-			// streams is approximate (~11% of lines land ahead of an earlier
-			// one in a stress measurement); the legacy single-fd path below
-			// preserves order exactly. Lines are never split or spliced on
-			// either path. Order matters less than presence here — the exit
-			// footer, not the interleaving, is what tells the model whether the
-			// command failed — but do not describe this stream as faithful.
-			//
-			// Drain to EOF BEFORE Wait: (*exec.Cmd).Wait closes the child's
-			// pipes, so reading after it races into "file already closed" and
-			// silently truncates the output.
-			if started.Stdout != nil || started.Stderr != nil {
-				merged := started.MergedOutput()
-				err := streamFromReader(ctx, ch, merged)
-				_ = merged.Close()
-				if err != nil {
-					pushErrChunk(ch, err)
-					return
-				}
-			}
-			reaped = true
-			exitCode, err := waitExitCode(started.Wait)
-			if err != nil {
-				pushErrChunk(ch, fmt.Errorf("shell: %w", err))
-				return
-			}
-			// The footer is not decoration: without it a non-zero exit is
-			// indistinguishable from success for the model, because stderr and
-			// stdout are merged into the same untagged line stream. The legacy
-			// pipe path below always emitted it; this path must match.
-			footer := fmt.Sprintf("── exit %d · %s ──\n", exitCode, formatDur(time.Since(factoryStart)))
-			select {
-			case ch <- ToolChunk{Text: footer, Result: footer}:
-			case <-ctx.Done():
-			}
+		}
+		reaped = true
+		exitCode, err := waitExitCode(started.Wait)
+		if err != nil {
+			pushErrChunk(ch, fmt.Errorf("shell: %w", err))
 			return
 		}
-		cmd := shellCommand(ctx, a.Env, a.Command)
-		cmd.Dir = wd
-		cmd.WaitDelay = 5 * time.Second
-		pr, pw := io.Pipe() // merge stdout+stderr into one readable stream
-		cmd.Stdout = pw
-		cmd.Stderr = pw
-		start := time.Now()
-		if err := cmd.Start(); err != nil {
-			pw.Close()
-			pushErrChunk(ch, fmt.Errorf("shell start: %w", err))
-			return
+		// The footer is not decoration: without it a non-zero exit is
+		// indistinguishable from success for the model, because stderr and
+		// stdout are merged into the same untagged line stream.
+		footer := fmt.Sprintf("── exit %d · %s ──\n", exitCode, formatDur(time.Since(factoryStart)))
+		select {
+		case ch <- ToolChunk{Text: footer, Result: footer}:
+		case <-ctx.Done():
 		}
-		// Wait in a goroutine and close pw when the command exits so the scanner
-		// sees EOF. waitCh carries the wait error (nil on clean exit).
-		waitCh := make(chan error, 1)
-		go func() {
-			waitCh <- cmd.Wait()
-			pw.Close()
-		}()
-		// Status ticker: per-second "运行中·Xs" on the right-side panel (overwrite).
-		// Non-blocking send so a status tick can never stall the stdout pump.
-		// tickStopped is closed when the ticker goroutine actually exits, so the
-		// main goroutine can wait for it before returning (and thus before
-		// defer close(ch) runs) — without this, close(ch) races with a final
-		// in-flight ch<- from the ticker (DATA RACE: closechan vs chansend).
-		tickDone := make(chan struct{})
-		tickStopped := make(chan struct{})
-		go func() {
-			t := time.NewTicker(time.Second)
-			defer t.Stop()
-			defer close(tickStopped)
-			for {
-				select {
-				case <-tickDone:
-					return
-				case <-t.C:
-					select {
-					case ch <- ToolChunk{Status: "运行中·" + formatDur(time.Since(start))}:
-					default:
-					}
-				}
-			}
-		}()
-		// Ensure the ticker has fully stopped before this goroutine returns
-		// (and defer close(ch) fires) on EVERY exit path — the scanner's
-		// ctx.Done return, the pushErrChunk returns, and the normal footer
-		// path. Registered after defer close(ch) so LIFO runs it FIRST.
-		defer func() {
-			close(tickDone)
-			<-tickStopped
-		}()
-		sc := bufio.NewScanner(pr)
-		sc.Buffer(make([]byte, 64*1024), 1024*1024)
-		for sc.Scan() {
-			line := sc.Text() + "\n"
-			select {
-			case ch <- ToolChunk{Text: line, Result: line}:
-			case <-ctx.Done():
-				return
-			}
-		}
-		waitErr := <-waitCh
-		// tickDone is closed + tickStopped awaited by the deferred func above;
-		// no close(tickDone) here (would double-close).
-		if ctx.Err() != nil {
-			pushErrChunk(ch, fmt.Errorf("shell: %w", ctx.Err()))
-			return
-		}
-		exitCode, waitFail := exitCodeFromWaitErr(waitErr)
-		if waitFail != nil {
-			pushErrChunk(ch, fmt.Errorf("shell: %w", waitFail))
-			return
-		}
-		footer := fmt.Sprintf("── exit %d · %s ──\n", exitCode, formatDur(time.Since(start)))
-		ch <- ToolChunk{Text: footer, Result: footer}
+		return
 	}()
 	return ch
 }
@@ -329,13 +284,34 @@ type shellRunArgs struct {
 }
 
 // shellCommand returns an exec.Cmd configured for the requested shell env.
-// Task 15: the resolution logic now lives in internal/shell.ShellArgv so
-// SecureProcessFactory (Task 14) and the future shell v2 (Task 20) share one
-// interpreter-argv builder with legacy shell_run. This wrapper preserves the
-// pre-Task-15 fallback shape (cmd on Windows, sh elsewhere) so the existing
-// shell_run path stays byte-identical on the happy path; the only behavior
-// change is that an unrecognized env ("fish", etc.) now degrades to the
-// platform default rather than silently dispatching to a different shell.
+// Task 15: the resolution logic lives in internal/shell.ShellArgv so
+// SecureProcessFactory (Task 14) and shell v2 (Task 20) share one
+// interpreter-argv builder. This wrapper adds the platform-default fallback
+// (cmd on Windows, sh elsewhere) for an env ShellArgv rejects.
+//
+// Its ONE remaining caller is task_gate_run (gate.go). shell_run used to share
+// it through the direct-pipe fallback W-B-02 deleted; gate keeps it because it
+// runs an operator-declared gate command with its own argv contract
+// (ADR-0012), not a model-authored one.
+//
+// # The child's environment is scrubbed HERE, not at the call site
+//
+// W-B-11 stripped credentials from nine spawn sites and missed this one, which
+// is the worst one to miss: task_gate_run is in the default profile's allow
+// list, the command string comes from the MODEL, and its combined output is
+// written into work.Evidence.Summary — which the model reads back on the next
+// turn. A gate command of `go test ./...` needs no dialog, and any test in the
+// tree can print os.Environ(). Leaving cmd.Env nil, which is what this returned
+// for its whole existence, means "inherit the parent whole" — OPENAI_API_KEY
+// included.
+//
+// The scrub takes no allowlist, matching shell_run's posture rather than
+// goalloop's evaluator: that evaluator inherits deliberately because its
+// command comes from the operator's config, and this one does not.
+//
+// It is set here rather than in runGate because a second caller would have to
+// remember, and the last two-line exec.Command written in this repository is
+// exactly how this leak got here.
 //
 // Supported env values (mirrors shell.ShellArgv):
 //
@@ -358,17 +334,15 @@ func shellCommand(ctx context.Context, env, command string) *exec.Cmd {
 			prog, args = "sh", []string{"-c", command}
 		}
 	}
-	return exec.CommandContext(ctx, prog, args...)
+	cmd := exec.CommandContext(ctx, prog, args...)
+	cmd.Env = netpolicy.ScrubbedEnviron()
+	return cmd
 }
 
-// streamFromReader is the shared scanner helper (Task 21) used by BOTH
-// the SecureProcessFactory path and the legacy pipe path in shell_run's
-// stream(). It scans r line-by-line into Text chunks, feeds lines into
-// both Text and Result, and emits a per-second Status tick. ctx.Done stops
-// the scan early (tool context cancellation).
-//
-// The ticker is identical to the legacy path's, so both code paths produce
-// the same TUI experience ("running·Xs").
+// streamFromReader is shell_run's output pump (Task 21): it scans r
+// line-by-line into Text chunks, feeds lines into both Text and Result, and
+// emits a per-second Status tick. ctx.Done stops the scan early (tool context
+// cancellation).
 //
 // r is an io.ReadCloser rather than an io.Reader because the cancellation path
 // REQUIRES closing it, and a signature that accepted a bare Reader let callers

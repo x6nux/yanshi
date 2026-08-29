@@ -38,7 +38,12 @@ type SecureLaunchFactory struct {
 	// must be published to the child even if the caller left ProxyURL empty.
 	Policy   *netpolicy.Policy
 	ProxyURL string
+	// SOCKSURL, CAFile and Snapshot are the rest of the launch posture; see
+	// childLaunchPosture for what each one does and when it is empty.
+	SOCKSURL string
+	CAFile   string
 	Sandbox  sandbox.Sandbox
+	Snapshot Snapshot
 }
 
 // SecureLaunchFactory must satisfy the Manager's factory seam; the assertion
@@ -63,7 +68,14 @@ func NewSecureLaunchFactory(f SecureLaunchFactory) SecureLaunchFactory {
 // there (the new field would be missing here, and the sandbox seam would run
 // against a posture nothing was launched under).
 func (f SecureLaunchFactory) posture() childLaunchPosture {
-	return childLaunchPosture{Policy: f.Policy, ProxyURL: f.ProxyURL, Sandbox: f.Sandbox}
+	return childLaunchPosture{
+		Policy:   f.Policy,
+		ProxyURL: f.ProxyURL,
+		SOCKSURL: f.SOCKSURL,
+		CAFile:   f.CAFile,
+		Sandbox:  f.Sandbox,
+		Snapshot: f.Snapshot,
+	}
 }
 
 // prepareLaunch delegates to the shared childLaunchPosture. There is no
@@ -98,15 +110,40 @@ func (f SecureLaunchFactory) Start(ctx context.Context, spec LaunchSpec) (Proces
 	if backend == nil {
 		backend = OSProcessFactory{}
 	}
+	// The elevation shims, on the same seam and for the same reason as on the
+	// secproc path. The workdir handed to the decider is empty here because
+	// LaunchSpec carries no project boundary — see interceptElevation for why
+	// the shim's own directory must not be substituted for it.
+	prepared, stopBroker := posture.interceptElevation(ctx, prepared, "")
 	proc, console, err := backend.Start(ctx, prepared)
 	if err != nil {
+		stopBroker()
 		return nil, nil, err
 	}
 	if err := posture.postStart(proc.PID()); err != nil {
+		stopBroker()
 		if console != nil {
 			_ = console.Close()
 		}
 		return nil, nil, err
 	}
-	return proc, console, nil
+	return &brokeredProcess{Process: proc, stop: stopBroker}, console, nil
+}
+
+// brokeredProcess ties an elevation broker's lifetime to the reap of the
+// process it was installed for.
+//
+// Manager.pump always calls Wait, on every exit path, so this is where the
+// listener goroutine and the shim directory are reclaimed. The ctx watchdog
+// inside execbroker.Listen is the backstop for a caller that abandons the
+// process without reaping, not the primary mechanism: the shell v2 launch
+// context is detached from the turn, so it may not be cancelled for hours.
+type brokeredProcess struct {
+	Process
+	stop func()
+}
+
+func (p *brokeredProcess) Wait() error {
+	defer p.stop()
+	return p.Process.Wait()
 }

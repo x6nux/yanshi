@@ -9,6 +9,16 @@ import (
 // governs what happens when the static PermissionProfile would DENY a tool call
 // (i.e. the permission callback is about to prompt the user):
 //
+//   - ModeStrict:      confirm every tool call OF THE MAIN TURN, including ones
+//     the static profile already allows. The only mode that reaches the
+//     callback on an Allow verdict; see tools.WithConfirmEveryCall.
+//     The qualifier is load-bearing and was missing: a MANAGED SUB-AGENT turn
+//     runs on registry.Manager's RootContext (context.Background()) and
+//     inherits only what managedTurnRunner.Run re-binds by name, which does not
+//     include the confirm predicate. So the agent_start call is confirmed and
+//     the calls the sub-agent then makes are not.
+//     internal/agent/orchestrator::TestStrictModeDoesNotReachManagedSubAgents
+//     pins that, and names what else would have to change to widen it.
 //   - ModeDefault:     prompt the user (the original behavior).
 //   - ModeAllowEdits:  auto-approve file write/edit tools; prompt for the rest.
 //   - ModeYOLO:        auto-approve everything, never prompt.
@@ -22,6 +32,7 @@ type PermissionMode string
 
 // Permission mode values.
 const (
+	ModeStrict     PermissionMode = "strict"
 	ModeDefault    PermissionMode = "default"
 	ModeAllowEdits PermissionMode = "allow-edits"
 	ModeYOLO       PermissionMode = "yolo"
@@ -29,13 +40,19 @@ const (
 	ModePlan       PermissionMode = "plan"
 )
 
-// allModes 是 Modes() 返回的完整列表（含 ModePlan）。供 TUI 的 /mode 帮助、
-// status line 与 NormalizeMode 校验使用。
+// allModes 是 Modes() 返回的完整列表（含 ModePlan 与 ModeStrict）。供 TUI 的
+// /mode 帮助、status line 与 NormalizeMode 校验使用。
 //
-// cycleOrder 是 Shift+Tab 推进的子集 —— ModePlan 不在里面，让用户只有显式
-// /plan 才能进入只读模式，避免误切（已决策约束 §7）。
+// cycleOrder 是 Shift+Tab 推进的子集 —— ModePlan 与 ModeStrict 都不在里面。
+// ModePlan 的理由是「只有显式 /plan 才进只读」（已决策约束 §7）；ModeStrict
+// 的理由是对称的另一端：它对**每一次**工具调用弹窗，包括 profile 本来就允许
+// 的那些，误切进去会把一整轮变成一串对话框。两个极端都要显式键入。
+//
+// 这四个 cycle 档位就是 W-B-20 的「四档执行级别」在 yanshi 的映射，
+// ModeStrict 是其中此前缺的那一档：STRICT=strict / SMART=auto /
+// AUTO=allow-edits / OFF=yolo，default 与 plan 是 yanshi 自己多出来的两档。
 var (
-	allModes   = []PermissionMode{ModeDefault, ModeAllowEdits, ModeAuto, ModeYOLO, ModePlan}
+	allModes   = []PermissionMode{ModeStrict, ModeDefault, ModeAllowEdits, ModeAuto, ModeYOLO, ModePlan}
 	cycleOrder = []PermissionMode{ModeDefault, ModeAllowEdits, ModeAuto, ModeYOLO}
 )
 
@@ -84,6 +101,8 @@ func NormalizeMode(s string) (PermissionMode, bool) {
 		return ModeAuto, true
 	case "plan", "read-only", "readonly", "ro":
 		return ModePlan, true
+	case "strict", "confirm", "ask", "paranoid":
+		return ModeStrict, true
 	}
 	return "", false
 }
@@ -94,7 +113,7 @@ func NormalizeMode(s string) (PermissionMode, bool) {
 // 出现在 cycle 中：从 ModePlan 调用 CycleMode 直接回到 ModeDefault（让
 // Shift+Tab 退出 plan，与 /plan-off 行为对齐）。
 func CycleMode(cur PermissionMode) PermissionMode {
-	if cur == ModePlan {
+	if cur == ModePlan || cur == ModeStrict {
 		return ModeDefault
 	}
 	if cur == "" {
@@ -183,6 +202,8 @@ func ModeLabel(m PermissionMode) string {
 		return "auto"
 	case ModePlan:
 		return "plan"
+	case ModeStrict:
+		return "strict"
 	default:
 		return "default"
 	}

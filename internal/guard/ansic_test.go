@@ -2,47 +2,6 @@ package guard
 
 import "testing"
 
-// TestDecodeANSIC is the table for the $'...' decoder. Every escape form bash
-// honors is covered, plus the two behaviours that keep decoding honest:
-// unrecognized escapes keep their backslash (bash does the same, so the decoder
-// cannot manufacture a token the shell would not produce), and an unterminated
-// span is left alone.
-func TestDecodeANSIC(t *testing.T) {
-	cases := []struct {
-		name    string
-		in      string
-		want    string
-		decoded bool
-	}{
-		{"no ansi-c span", "rm -rf /tmp", "rm -rf /tmp", false},
-		{"hex escapes spell rm -rf /", `$'\x72\x6d -rf /'`, "rm -rf /", true},
-		{"single-digit hex", `$'\x7a'`, "z", true},
-		{"octal escapes", `$'\162\155'`, "rm", true},
-		{"short octal", `$'\11'`, "\t", true},
-		{"simple escapes", `$'a\nb\tc\\d'`, "a\nb\tc\\d", true},
-		{"escaped quote", `$'it\'s'`, "it's", true},
-		{"bell and escape", `$'\a\e'`, "\a\x1b", true},
-		{"control char", `$'\cA'`, "\x01", true},
-		{"unicode short", `$'A'`, "A", true},
-		{"unicode long", `$'\U00000042'`, "B", true},
-		{"unknown escape keeps backslash", `$'\q'`, `\q`, true},
-		{"bare x with no digits", `$'\x'`, `\x`, true},
-		{"span in the middle of a command", `bash -c $'\x72\x6d' /tmp`, "bash -c rm /tmp", true},
-		{"multiple spans", `$'\x61'$'\x62'`, "ab", true},
-		{"unterminated span is left verbatim", `$'\x72\x6d`, `$'\x72\x6d`, false},
-		{"empty span", `$''`, "", true},
-		{"dollar without quote is untouched", "$HOME/x", "$HOME/x", false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got, decoded := decodeANSIC(c.in)
-			if got != c.want || decoded != c.decoded {
-				t.Fatalf("decodeANSIC(%q) = (%q, %v), want (%q, %v)", c.in, got, decoded, c.want, c.decoded)
-			}
-		})
-	}
-}
-
 // TestUnwrapShellCommand covers the wrapper-detection table: which invocations
 // carry an inner command, and which merely look like they do.
 func TestUnwrapShellCommand(t *testing.T) {
@@ -117,15 +76,30 @@ func TestClassifyDestruction_ObfuscatedAndWrapped(t *testing.T) {
 		{"ansi-c in a benign command", `printf $'\n'`, DestructionNone},
 		{"grep with a tab escape", `grep $'\t' file.txt`, DestructionNone},
 
-		// A chain whose operators are VISIBLE in the raw string — even inside a
-		// wrapper's quotes — still defers to checkShell's structural
-		// metacharacter HardDeny, which tests the raw string and is the
-		// stronger refusal of the two.
-		{"plain chain defers to metachar deny", `ls && rm -rf /`, DestructionNone},
-		{"chain inside a wrapper is still visible to checkShell", `bash -c "ls && rm -rf /"`, DestructionNone},
-		// When the operators are ANSI-C ENCODED there is no metacharacter in
-		// the raw string, so checkShell will not fire and there is no stronger
-		// gate to defer to. Those are classified here instead.
+		// A chain whose operators are VISIBLE in the raw string used to answer
+		// DestructionNone here and lean on checkShell's whole-string
+		// metacharacter HardDeny. INF1 (ADR-0004 supplement) made checkShell
+		// judge such a chain segment by segment, which left that deferral
+		// pointing at nobody, so the chain is now split and graded here.
+		// Flipping either of these back to DestructionNone is what "INF1 was a
+		// loosening" would look like.
+		{"plain chain is split and graded", `ls && rm -rf /`, DestructionCatastrophic},
+		{"chain inside a wrapper is split and graded", `bash -c "ls && rm -rf /"`, DestructionCatastrophic},
+
+		// Subshell grouping and process substitution inside a WRAPPER PAYLOAD.
+		// ParseCommandList refuses a bare paren, so the unwrapped spellings are
+		// a structural HardDeny at the shell dimension — but it never sees the
+		// paren inside `bash -c "…"`, where the payload is one quoted word.
+		// This classifier is the only reader that gets the chance, and it read
+		// `(rm -rf /)` as a program called `(rm`: measured Allow under a
+		// permissive profile, no prompt.
+		{"subshell inside a wrapper", `bash -c "(rm -rf /)"`, DestructionCatastrophic},
+		{"process substitution inside a wrapper", `bash -c "cat >(rm -rf /)"`, DestructionCatastrophic},
+		{"nested subshell inside a wrapper", `sh -c "( ( rm -rf / ) )"`, DestructionCatastrophic},
+		// …and grouping must not INVENT danger either.
+		{"benign subshell inside a wrapper", `bash -c "(cd build && ls)"`, DestructionNone},
+		// ANSI-C ENCODED operators leave no literal operator in the raw string,
+		// so the split above cannot fire; the decode branch is what catches them.
 		{"encoded chain inside a wrapper", `bash -c $'ls \x26\x26 rm -rf /'`, DestructionCatastrophic},
 		{"encoded chain at top level", `ls $'\x26\x26' rm -rf /`, DestructionCatastrophic},
 	}
@@ -150,8 +124,15 @@ func TestClassifyDestruction_WrapperRecursionIsBounded(t *testing.T) {
 	// Deep nesting exceeds the budget, so the payload is no longer reached.
 	// The requirement is only that this TERMINATES and returns a verdict; the
 	// metacharacter and quoting layers still see the outer string.
+	//
+	// The verdict is not pinned because every layer that can see the outer
+	// string is entitled to raise it, and one of them now does: the
+	// trailing-argv scan reads the suffixes of the outermost argv and reports
+	// the unknown-program cap (DestructionOpaque) for the payload it finds
+	// there. Pinning a value here would make this termination test into an
+	// assertion about which layer speaks first.
 	got := ClassifyDestruction(cmd, "/home/me/proj")
-	if got != DestructionNone && got != DestructionCatastrophic {
+	if got < DestructionNone || got > DestructionUnreadable {
 		t.Fatalf("unexpected verdict %v", got)
 	}
 	// Within the budget the payload IS reached.

@@ -119,6 +119,7 @@ func newPlatformSandbox(cfg Config) Sandbox {
 			Reason:      reason,
 			Enforced:    false,
 			CanKillTree: false,
+			Unenforced:  UnenforcedFields(cfg),
 		}
 		return sb
 	}
@@ -138,6 +139,12 @@ func newPlatformSandbox(cfg Config) Sandbox {
 		// claiming it here would have SecureProcessFactory advertise a
 		// guarantee this backend cannot supply.
 		CanKillTree: false,
+		// The SBPL profile carries all four: the tier and workspace root become
+		// file-write rules, NetworkDeny becomes (deny network*), and a non-empty
+		// ProxyURL becomes the loopback re-permit that keeps the managed proxy
+		// reachable while everything else is denied (see sbplInput below).
+		Unenforced: UnenforcedFields(cfg,
+			FieldTier, FieldWorkspaceRoot, FieldNetworkDeny, FieldProxyURL),
 	}
 	return sb
 }

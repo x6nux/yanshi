@@ -24,7 +24,7 @@ go run ./cmd/testchanged             # 仅测有变更的包（增量）
 
 ### Guard fail-closed
 
-空 `Tools.Allow` **一律拒绝**（fail-closed）；guard 无状态；shell 元字符（`&&`/`||`/`;`/`|`/反引号/`$()`/`>`/`<`/换行）硬拦截。**新增工具必须显式配权限**，不会因遗忘而静默放行。详见 [ADR-0003](./docs/adr/0003-guard-fail-closed-empty-allow.md) / [ADR-0004](./docs/adr/0004-guard-stateless-and-shell-metachar-hardblock.md)。
+空 `Tools.Allow` **一律拒绝**（fail-closed）；guard 无状态；shell 命令按 `&&`/`||`/`;`/`|` **拆段逐个判、取最严**，拆不出段的形态（反引号、`$()`、进程替换、子 shell、here-doc、后台 `&`、换行）硬拦截。**新增工具必须显式配权限**，不会因遗忘而静默放行。详见 [ADR-0003](./docs/adr/0003-guard-fail-closed-empty-allow.md) / [ADR-0004](./docs/adr/0004-guard-stateless-and-shell-metachar-hardblock.md)。
 
 ### Fake 优先于 mock
 

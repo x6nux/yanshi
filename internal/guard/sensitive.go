@@ -132,6 +132,189 @@ var sensitiveAbsolutePaths = []string{
 	"/proc/self/environ", // the process's own env, i.e. every API key
 }
 
+// executedOnWriteSuffixes and executedOnWriteAbsolutePaths are the WRITE
+// direction's own denylist. They exist because the two tables above are not one.
+//
+// # One table was answering two questions
+//
+// sensitivePathSuffixes states its membership rule on itself: "a path earns a
+// place here when READING it yields a secret". checkFS consulted it for reads
+// AND writes, so the write direction had no membership rule of its own — and the
+// family it should have been protecting was entirely outside the table.
+// Measured, all Allow under a profile with `write: ["**"]`:
+//
+//	tee -a ~/.bashrc          cp /tmp/x ~/.bashrc      tee -a ~/.zshrc
+//	tee -a ~/.profile         tee -a /etc/cron.d/zz    tee -a ~/.local/bin/ls
+//	tee -a /usr/local/bin/ls  tee -a ~/.config/fish/config.fish
+//
+// while `tee -a ~/.gitconfig` prompted. ~/.bashrc executes on the NEXT
+// interactive shell, unconditionally; ~/.gitconfig executes only if git reaches
+// a key that names a program. THE ONE THAT ALWAYS RUNS WAS OUTSIDE THE TABLE AND
+// THE CONDITIONAL ONE WAS INSIDE IT, because the question the table asks is
+// about reading.
+//
+// # The two rules, kept apart on purpose
+//
+//	READ:  reading this yields a secret that grants access to something outside
+//	       this project.                                   (sensitive* above)
+//	WRITE: writing this makes something EXECUTE LATER that nobody in this
+//	       session will read — the write IS the execution, deferred. (here)
+//
+// The read tables still apply to writes as well, and that overlap is deliberate
+// rather than sloppy: overwriting ~/.ssh/authorized_keys is not a secret leak
+// but it is exactly as bad, and a path can honestly satisfy both rules
+// (~/.gitconfig, /etc/sudoers). What the split fixes is the direction where one
+// rule was silently standing in for the other.
+//
+// # What is deliberately NOT here
+//
+//   - /etc/passwd and /etc/group. Writing them creates an ACCOUNT, which is a
+//     different harm with a different rule, and admitting it would restart the
+//     defect this split exists to fix: one table, two questions.
+//   - .git/hooks. CLOSED by W-B-18: it is PROJECT-relative, so neither a
+//     home-relative suffix nor an absolute prefix could name it, and the third
+//     matcher (protectedMetadataSegments, below) was added for exactly that
+//     shape. The note stays because the REASON it was missing — this file had
+//     two matchers and the path needed a third — is the maintainable part.
+//
+// Failure direction, same as the read table's: a path missing from here costs a
+// silent write, a path wrongly in it costs one prompt. So the list errs toward
+// inclusion.
+var executedOnWriteSuffixes = []string{
+	// Shell startup files. Every one of these is sourced by the next
+	// interactive or login shell, with no further condition.
+	".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile",
+	".zshrc", ".zshenv", ".zprofile", ".zlogin", ".zlogout",
+	".kshrc", ".cshrc", ".tcshrc",
+	".config/fish/config.fish", ".config/fish/conf.d",
+	// Directories on the default PATH of a normal login: a file dropped here
+	// replaces a command the user is about to type.
+	".local/bin", "bin",
+	// Per-user autostart and service units.
+	".config/autostart",
+	".config/systemd/user",
+	"Library/LaunchAgents",
+	// Windows: the per-user Startup folder runs everything in it at logon.
+	"AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup",
+}
+
+// executedOnWriteAbsolutePaths is the machine-wide half of the same rule.
+var executedOnWriteAbsolutePaths = []string{
+	// System-wide shell startup.
+	"/etc/profile", "/etc/profile.d", "/etc/bash.bashrc", "/etc/bashrc",
+	"/etc/zshrc", "/etc/zsh", "/etc/environment",
+	// Scheduled execution.
+	"/etc/crontab", "/etc/cron.d",
+	"/etc/cron.hourly", "/etc/cron.daily", "/etc/cron.weekly", "/etc/cron.monthly",
+	"/var/spool/cron",
+	// Service definitions and boot scripts.
+	"/etc/systemd/system", "/lib/systemd/system", "/usr/lib/systemd/system",
+	"/etc/init.d", "/etc/rc.local",
+	"/Library/LaunchDaemons", "/Library/LaunchAgents", "/Library/StartupItems",
+	// The dynamic loader runs these inside every process that starts.
+	"/etc/ld.so.preload", "/etc/ld.so.conf", "/etc/ld.so.conf.d",
+	// Directories on the default PATH.
+	"/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/local/bin", "/usr/local/sbin",
+}
+
+// protectedMetadataSegments is the THIRD matcher (W-B-18): directory names that
+// are protected wherever they appear, rather than at a fixed absolute prefix or
+// under the home directory.
+//
+// # Why a third shape and not another entry in the two tables above
+//
+// The two existing tables are anchored — one to the home directory, one to the
+// filesystem root — and both anchors are wrong for the thing this protects. A
+// repository's `.git` lives at whatever path the operator checked it out to,
+// which is INSIDE the tree the agent is jailed to and is the one place the
+// write globs are guaranteed to say yes. The shipped example profile writes
+// "**"; `.git/hooks/pre-commit` matches it, and a shell script dropped there
+// runs on the next commit with no prompt anywhere. That is the same rule
+// executedOnWriteSuffixes states ("the write IS the execution, deferred") on a
+// path shape neither anchor can express, which is why that table's header
+// recorded it as a known omission rather than pretending it was covered.
+//
+// Membership rule: writing into this directory changes what a TOOL does with
+// the project — hooks that run, config that redirects a remote, agent
+// instructions a later session obeys — rather than changing the project's own
+// source. Reading is not covered: `cat .git/config` is ordinary.
+//
+// Matching is on a whole path SEGMENT, folded, so `.github` (a different
+// directory that holds ordinary reviewable YAML) does not match `.git`, and a
+// submodule's or vendored checkout's `.git` at any depth does.
+//
+// Failure direction, as elsewhere in this file: a name missing here costs a
+// silent write, a name wrongly here costs one prompt.
+var protectedMetadataSegments = []string{
+	// git's own control directory: hooks execute, config names remotes and can
+	// point core.fsmonitor / core.editor at an arbitrary program.
+	".git",
+	// yanshi's per-project state.
+	".yanshi",
+	// Agent control directories. Instructions and settings inside them are
+	// obeyed by a LATER session, which is the deferred-execution rule again
+	// with a model in the interpreter's place.
+	".agents",
+	".codex",
+}
+
+// IsProtectedMetadataPath reports whether p writes into a protected project
+// metadata directory, returning the matched segment so the denial can name it.
+//
+// extra carries the operator's additions (FSPerm.Protected). They are ADDED to
+// the built-in set and can never remove from it: a config that could empty this
+// list would be a config that silently reopens the hole, and the supported way
+// to permit one of these paths is the literal grant every other gate in this
+// file uses (profileGrantsExplicitly).
+//
+// workdir participates only so a relative path can be resolved at all, exactly
+// as in IsSensitivePath — and, as there, a path that resolves INSIDE the
+// working directory is still matched. That is the entire point of this matcher:
+// the hole is that `.git` is inside the writable root.
+func IsProtectedMetadataPath(p, workdir string, extra []string) (string, bool) {
+	if entry, hit := protectedMetadataHitOnce(p, workdir, extra); hit {
+		return entry, true
+	}
+	// The elided second reading, for the same reason denylistHit has one:
+	// `> .g${x}it/hooks/pre-commit` lands in .git while breaking a literal
+	// segment comparison.
+	if elided, changed := elideExpansions(p); changed {
+		return protectedMetadataHitOnce(elided, workdir, extra)
+	}
+	return "", false
+}
+
+// protectedMetadataHitOnce is IsProtectedMetadataPath for ONE spelling.
+func protectedMetadataHitOnce(p, workdir string, extra []string) (string, bool) {
+	norm, ok := normalizePath(p, workdir)
+	if !ok {
+		return "", false
+	}
+	for _, seg := range strings.Split(foldForDeny(norm), "/") {
+		if seg == "" {
+			continue
+		}
+		for _, name := range protectedMetadataSegments {
+			if seg == foldForDeny(name) {
+				return name, true
+			}
+		}
+		for _, name := range extra {
+			if name != "" && seg == foldForDeny(name) {
+				return name, true
+			}
+		}
+	}
+	return "", false
+}
+
+// IsExecutedOnWritePath reports whether writing p schedules an execution nobody
+// in this session will read. See executedOnWriteSuffixes for the rule and for
+// why it is separate from IsSensitivePath's.
+func IsExecutedOnWritePath(p, workdir string) (string, bool) {
+	return denylistHit(p, workdir, executedOnWriteSuffixes, executedOnWriteAbsolutePaths)
+}
+
 // IsSensitivePath reports whether p names a credential store covered by the
 // built-in denylist, and returns the matched entry so the denial can name it.
 //
@@ -145,7 +328,36 @@ var sensitiveAbsolutePaths = []string{
 // credential path that resolves INSIDE the working directory is still matched:
 // a project that keeps a .git-credentials file in its own tree holds a real
 // token, and "it is in the repo" is not evidence that reading it is intended.
+// A path carrying an unresolved parameter expansion gets a SECOND reading with
+// the expansion elided, because the table above matches on literal directory
+// segments and an expansion spliced into one breaks the match without changing
+// where the write lands. Measured: `echo k > ~/.s${x}sh/authorized_keys` planted
+// a key with no prompt, as did `~/.ssh${x}/authorized_keys`. Blanking is the
+// right reading HERE and the wrong one for the deletion gate — see
+// elideExpansions for why the two dimensions take opposite decisions.
 func IsSensitivePath(p, workdir string) (string, bool) {
+	return denylistHit(p, workdir, sensitivePathSuffixes, sensitiveAbsolutePaths)
+}
+
+// denylistHit answers "does p fall under one of these home-relative suffixes or
+// absolute prefixes", including the second reading with expansions elided.
+//
+// It is shared by both denylists rather than copied, because the matching is the
+// part that has been wrong before (segment boundaries, case folding, the elided
+// re-read) and the tables are the part that differs. A second copy would be a
+// second place for `~/.s${x}sh/authorized_keys` to stop matching.
+func denylistHit(p, workdir string, suffixes, absolutes []string) (string, bool) {
+	if entry, hit := denylistHitOnce(p, workdir, suffixes, absolutes); hit {
+		return entry, true
+	}
+	if elided, changed := elideExpansions(p); changed {
+		return denylistHitOnce(elided, workdir, suffixes, absolutes)
+	}
+	return "", false
+}
+
+// denylistHitOnce is denylistHit for ONE spelling of the path.
+func denylistHitOnce(p, workdir string, suffixes, absolutes []string) (string, bool) {
 	norm, ok := normalizePath(p, workdir)
 	if !ok {
 		return "", false
@@ -154,7 +366,7 @@ func IsSensitivePath(p, workdir string) (string, bool) {
 
 	if home := homeDir(); home != "" {
 		if h, ok := normalizePath(home, ""); ok {
-			for _, suffix := range sensitivePathSuffixes {
+			for _, suffix := range suffixes {
 				full := foldForDeny(strings.TrimSuffix(h, "/") + "/" + suffix)
 				if pathHasPrefixSegment(folded, full) {
 					return "~/" + suffix, true
@@ -162,7 +374,7 @@ func IsSensitivePath(p, workdir string) (string, bool) {
 			}
 		}
 	}
-	for _, abs := range sensitiveAbsolutePaths {
+	for _, abs := range absolutes {
 		if pathHasPrefixSegment(folded, foldForDeny(abs)) {
 			return abs, true
 		}
@@ -232,8 +444,23 @@ func (g *Guard) checkSensitiveFS(p PermissionProfile, a Action) Decision {
 	if a.FS.Op != "read" {
 		patterns = p.FS.Write
 	}
+	writing := a.FS.Op != "read"
 	for _, raw := range a.FS.Paths {
 		entry, hit := IsSensitivePath(raw, a.Workdir)
+		what := "sensitive credential location"
+		if !hit && writing {
+			// The write direction's own rule. Consulted ONLY for writes: reading
+			// ~/.bashrc or listing /usr/bin is ordinary, and the harm this table
+			// names does not exist in that direction. See its header.
+			entry, hit = IsExecutedOnWritePath(raw, a.Workdir)
+			what = "location whose contents are executed later without being read"
+		}
+		if !hit && writing {
+			// W-B-18, and write-only for the same reason: reading .git/config
+			// is what every git command does.
+			entry, hit = IsProtectedMetadataPath(raw, a.Workdir, p.FS.Protected)
+			what = "protected project metadata directory"
+		}
 		if !hit {
 			continue
 		}
@@ -241,8 +468,8 @@ func (g *Guard) checkSensitiveFS(p PermissionProfile, a Action) Decision {
 			continue
 		}
 		return prompt(fmt.Sprintf(
-			"path %q is a built-in sensitive credential location (%s); grant it literally in the profile to allow without asking",
-			filepath.ToSlash(raw), entry))
+			"path %q is a built-in %s (%s); grant it literally in the profile to allow without asking",
+			filepath.ToSlash(raw), what, entry))
 	}
 	return allow()
 }

@@ -25,6 +25,7 @@ ADR 不复制 `CLAUDE.md` 的内容：每条 ADR 的"关联"段指向 `CLAUDE.md
 | [0011](0011-ledger-clause-level-evidence-handshake.md) | 台账终态证据逐句对账 + 测试侧双向握手（GOV8） | accepted | S0/W1 评审 |
 | [0012](0012-gate-runs-argv-directly-not-through-shell-session.md) | task_gate_run 直接执行 argv，不经 shell session | accepted | W3 裁定 3 |
 | [0013](0013-mid-turn-compaction-token-dimension.md) | mid-turn 压缩的 token 会计以未压缩历史为统一量纲 | accepted | W4 |
+| [0016](0016-two-shell-readers-one-word-layer.md) | guard 保留两个 shell reader，共用同一个词法层 | accepted | W-B 再评审 R-1/R-2 |
 
 ## 状态图例
 

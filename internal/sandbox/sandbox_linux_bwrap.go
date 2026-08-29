@@ -140,6 +140,12 @@ func newBubblewrap(cfg Config) (Sandbox, string) {
 		// and claiming the capability here would have SecureProcessFactory
 		// advertise semantics this backend does not supply.
 		CanKillTree: false,
+		// bwrap binds the workspace tier through its mount arguments and drops
+		// the network namespace outright for NetworkDeny (see bwrapargs.go).
+		// ProxyURL is not in the list: nothing in the bwrap argument builder
+		// reads it, so egress through the managed proxy is env-var level here
+		// exactly as it is outside the sandbox.
+		Unenforced: UnenforcedFields(cfg, FieldTier, FieldWorkspaceRoot, FieldNetworkDeny),
 	}
 	return sb, ""
 }

@@ -56,5 +56,6 @@ func newPlatformSandbox(cfg Config) Sandbox {
 		Reason:      fmt.Sprintf("bubblewrap unavailable: %s; landlock unavailable: %s", bwrapReason, landlockReason),
 		Enforced:    false,
 		CanKillTree: false,
+		Unenforced:  UnenforcedFields(cfg),
 	}}
 }

@@ -2,11 +2,19 @@ package shell
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sync"
 
+	"github.com/x6nux/yanshi/internal/execbroker"
+	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/netpolicy"
 	"github.com/x6nux/yanshi/internal/sandbox"
+	"github.com/x6nux/yanshi/internal/secproc"
 )
 
 // childLaunchPosture is the security posture the two production factories
@@ -29,64 +37,68 @@ type childLaunchPosture struct {
 	// must be published to the child even when ProxyURL is empty.
 	Policy   *netpolicy.Policy
 	ProxyURL string
+	// SOCKSURL and CAFile carry the other two halves of the managed proxy: the
+	// SOCKS endpoint for clients that do not read http_proxy, and the
+	// inspection root for children that must trust the forged chain. Both are
+	// empty unless bootstrap started the corresponding facility.
+	SOCKSURL string
+	CAFile   string
 	Sandbox  sandbox.Sandbox
+	// Snapshot is the operator's login-shell environment (W-B-21). The zero
+	// value means capture was off or failed, and layering it is then a no-op.
+	Snapshot Snapshot
 }
 
-// proxy resolves the proxy endpoint published to the child. A policy with no
-// endpoint configured must still not let the child talk directly, so it points
-// at a dead local port rather than leaving the vars empty (which exec would
-// hand to the child as "no proxy").
+// proxy resolves the managed-proxy endpoints published to the child.
 //
-// ⚠️ Phase 0: that dead port is the ONLY case in production. bootstrap.Build
-// constructs a netpolicy.Policy unconditionally and leaves ProxyURL empty, and
-// netpolicy.Proxy is never started, so every child launched through these two
-// factories gets http(s)_proxy=http://127.0.0.1:0. This is a BLACK HOLE, not
-// an egress policy:
+// No placeholder. A policy with no proxy behind it used to publish
+// http://127.0.0.1:0, which looked like enforcement and was a black hole: it
+// broke proxy-aware clients, let everything else straight out, and recorded no
+// decision anywhere. Half-enforcement is worse than none, because it reads as
+// containment.
 //
-//   - It consults nothing. security.network's default/allow/deny/allow_private
-//     do not reach this decision — `default: allow` with `allow: ["*"]` still
-//     gets the dead port.
-//   - It only stops programs that honor the proxy variables (curl, gh, go mod
-//     download, npm, git-over-HTTP). Anything speaking raw sockets, SSH or its
-//     own DNS is unaffected, so it blocks the well-behaved tools and leaves the
-//     actual exfiltration paths open.
-//   - It produces no decision record, so a blocked fetch surfaces to the
-//     operator only as "connect to 127.0.0.1 port 0 failed".
+// Either a real managed proxy is running and children are pointed at it, or
+// nothing is published and the posture is honestly unenforced.
+//
+// # What the published variables buy, and what they do not
+//
+// When ProxyURL is set, security.network IS evaluated per host for every
+// request a child makes THROUGH the proxy, and every decision is audited.
+// SOCKSURL widens which clients that covers — ALL_PROXY reaches ssh
+// ProxyCommand and the many clients that never read http_proxy — and CAFile,
+// when HTTPS inspection is on, is what lets the proxy judge method as well as
+// host.
+//
+// It is still an environment variable, not a boundary:
+//
+//   - It only stops programs that HONOR the variables. A raw socket, its own
+//     DNS, or a proxy set from a config file wins over anything published
+//     here. On Linux the seccomp filter under a landlock sandbox closes the
+//     raw-socket half (ADR-0014's amendment); on darwin and Windows it is
+//     open.
 //   - It reaches only THESE launchers. ACP agent CLIs (internal/acp/spawn.go),
 //     stdio MCP servers (internal/mcp/manager.go), LSP servers
 //     (internal/lsp/manager.go), the skills installer and `gh`/`git` spawned
 //     from cmd/yanshi all build their env from os.Environ() directly, so they
 //     see no managed proxy AND inherit whatever proxy the operator's shell had.
 //     Two of those (ACP, MCP-over-stdio to a remote model) need real egress to
-//     function at all, which is why the dead port is not simply applied there.
+//     function at all, which is why they were never simply cut off.
 //
-// Even within these launchers it only reaches those that use env at all: an
-// invocation that sets its own proxy via a config file or CLI flag wins.
-//
-// The variables are published in both upper and lower case — that is a
+// The http variables are published in both upper and lower case — that is a
 // correctness requirement rather than caution, because curl ignores uppercase
-// HTTP_PROXY for plain http:// URLs. See netpolicy.PrepareEnv.
+// HTTP_PROXY for plain http:// URLs. See netpolicy.PrepareEnvFor.
 //
-// The policy IS enforced for yanshi's own in-process HTTP (web_fetch and
-// web_search go through netpolicy.NewTransport/PolicyDialer) — the gap is
-// subprocess-only. Closing it means actually starting netpolicy.Proxy and
-// setting ProxyURL, which is W5's work package; do not paper over it here.
-func (p childLaunchPosture) proxy() string {
-	// No placeholder. A policy with no proxy behind it used to publish
-	// http://127.0.0.1:0, which looked like enforcement and was a black hole:
-	// it broke proxy-aware clients, let everything else straight out, and
-	// recorded no decision anywhere. Half-enforcement is worse than none,
-	// because it reads as containment.
-	//
-	// Either a real managed proxy is running and children are pointed at it,
-	// or nothing is published and the posture is honestly unenforced.
-	return p.ProxyURL
+// The policy is ALSO enforced for yanshi's own in-process HTTP (web_fetch and
+// web_search go through netpolicy.NewTransport/PolicyDialer); that path never
+// depended on these variables.
+func (p childLaunchPosture) proxy() netpolicy.ManagedProxy {
+	return netpolicy.ManagedProxy{HTTPURL: p.ProxyURL, SOCKSURL: p.SOCKSURL, CAFile: p.CAFile}
 }
 
 // env builds the child environment: the host env as the baseline, caller
 // entries layered on top (exec keeps the last duplicate, so they win),
 // credential-bearing variables stripped under allowEnv, and
-// netpolicy.PrepareEnv run over the result so any inherited or smuggled-in
+// netpolicy.PrepareEnvFor run over the result so any inherited or smuggled-in
 // proxy variable is stripped and replaced by the managed ones.
 //
 // Starting from the host is deliberate and is the whole point of this helper:
@@ -107,25 +119,38 @@ func (p childLaunchPosture) proxy() string {
 // Empty means strip everything, which is the correct default.
 //
 // The credential scrub runs ONCE, over host+caller entries, BEFORE the managed
-// proxy variables are appended. Layering the two helpers the other way round
-// (ManagedEnvWithPolicy, then PrepareEnvWithPolicy over the result) reads
-// equivalently and is not: the second pass would re-inspect the proxy entries
-// this function just published, and a proxy URL carrying inline basic-auth
-// credentials (http://user:pass@proxy) is a shape LooksLikeCredentialValue
-// recognises — so the managed variables would be stripped from the child that
-// needs them to reach the proxy at all.
+// proxy variables are appended. Calling netpolicy.PrepareEnvFor first and
+// netpolicy.ScrubCredentials over ITS result reads equivalently and is not:
+// the scrub would then re-inspect the proxy entries this function just
+// published, and any whose value happened to match a shape
+// secrets.LooksLikeCredentialValue recognises would be stripped from the
+// child that needs it to reach the proxy at all. No managed-proxy scheme
+// (http/https/socks5) currently matches one of those shapes — the
+// connection-string pattern only recognises mongodb/mysql/postgres(ql)/
+// redis(s)/amqp(s) — so an inline-basic-auth proxy URL is not reachable by
+// this failure mode today. The ordering is what keeps it that way rather
+// than luck, and costs nothing to get right; see
+// internal/shell/posture_egress_test.go's TestProxyCredentialsSurviveTheScrub,
+// which pins it against this method using a synthetic value chosen to match
+// a recognised credential shape, since no real proxy URL currently does.
 //
-// The proxy variables this function appends are NOT a second boundary: see
-// proxy() for why they are a black hole rather than an egress policy in
-// Phase 0.
+// The proxy variables this function appends are NOT a containment boundary:
+// see proxy() for exactly which clients and which launchers they reach.
+//
+// The login-shell snapshot (W-B-21) is layered in BEFORE the credential scrub,
+// which is the only correct order: an rc file that exports an API key is one
+// of the likeliest sources of a credential in this environment, and applying
+// the snapshot afterwards would hand the child exactly the secrets the scrub
+// exists to remove. Sitting under the scrub means the snapshot is subject to
+// the same policy as yanshi's own environment, with no second allowlist.
 func (p childLaunchPosture) env(callerEnv []string, allowEnv []string) []string {
-	proxy := p.proxy()
 	base := os.Environ()
 	if len(callerEnv) > 0 {
 		base = append(base, callerEnv...)
 	}
+	base = p.Snapshot.Apply(base)
 	kept, _ := netpolicy.ScrubCredentials(base, netpolicy.CredentialPolicy{AllowEnv: allowEnv})
-	return netpolicy.PrepareEnv(kept, proxy)
+	return netpolicy.PrepareEnvFor(kept, p.proxy())
 }
 
 // prepare computes the spec handed to the OS factory without spawning
@@ -154,7 +179,106 @@ func (p childLaunchPosture) prepare(ctx context.Context, spec LaunchSpec, tier s
 	if len(cmd.Args) > 0 {
 		spec.Args = cmd.Args[1:]
 	}
+	// The Windows backend's mutation is not in argv or the environment: a
+	// restricted token is an argument to process creation, so it arrives on the
+	// stand-in's SysProcAttr. Without this line it would be discarded here and
+	// every child would run under the unrestricted token while Report() claimed
+	// os-isolated — the shape sandbox/poststart.go documents for CreationFlags,
+	// which is still open. sandboxTokenFromCmd returns 0 on every non-Windows
+	// platform, so this is an unconditional assignment of a zero.
+	spec.ProcessToken = sandboxTokenFromCmd(cmd)
 	return spec, nil
+}
+
+// interceptElevation installs the elevation shims for one launch and returns
+// the spec pointed at them, plus the closer that tears the broker down.
+//
+// # Why the two production factories both call it here
+//
+// The shim only works if it is on the child's PATH, and PATH is decided by
+// prepare() — so this has to run after it and before the spawn. Putting it in
+// prepare() itself would have been tidier and is wrong: prepare has no teardown
+// and this owns a listener, a goroutine and a temp directory. The closer is
+// therefore returned, and both Start methods wire it into the reaper.
+//
+// # workdir is the outer launch's, not the shim's
+//
+// The shim reports its own working directory, which is where the script line
+// ran. That travels into the approval dialog because it is what an operator
+// wants to see. It deliberately does NOT become guard.Action.Workdir: that
+// field is the project boundary the destructive classifier measures deletions
+// against, and letting a child move it by cd'ing first would turn
+// `sudo rm -rf /x` into an in-scope deletion. An empty workdir — which is what
+// the shell v2 path has, since LaunchSpec carries no equivalent — means
+// "unknown", and the classifier treats every absolute target as out of scope.
+// That is the fail-safe direction.
+//
+// # Failure is not fatal
+//
+// A platform without symlinks, a temp dir that cannot be created, a socket that
+// will not bind: none of those are reasons to refuse to run the command the
+// operator approved. The launch proceeds with no shims, which is exactly the
+// behaviour that existed before this control, and the reason goes to stderr
+// once rather than into an error the caller would have to classify.
+func (p childLaunchPosture) interceptElevation(
+	ctx context.Context, spec LaunchSpec, workdir string,
+) (LaunchSpec, func()) {
+
+	noop := func() {}
+	exe, err := os.Executable()
+	if err != nil {
+		return spec, noop
+	}
+	exe, err = filepath.Abs(exe)
+	if err != nil {
+		return spec, noop
+	}
+	server, err := execbroker.Listen(ctx, exe, elevationDecider(workdir))
+	if err != nil {
+		if !errors.Is(err, execbroker.ErrUnsupported) {
+			warnElevationOnce.Do(func() {
+				fmt.Fprintf(os.Stderr,
+					"yanshi: nested privilege elevation is NOT being intercepted: %v\n", err)
+			})
+		}
+		return spec, noop
+	}
+	spec.Env = execbroker.PrependShimDir(append(spec.Env, server.Env()...), server.ShimDir())
+	return spec, func() { _ = server.Close() }
+}
+
+// warnElevationOnce keeps a host that simply cannot host the shims from
+// printing a line per spawn.
+var warnElevationOnce sync.Once
+
+// elevationDecider adjudicates one intercepted elevation through the same
+// authorizer a top-level tool call goes through.
+//
+// It calls secproc.Authorize rather than reimplementing a check, so the nested
+// `sudo` is judged by the operator's profile, reaches the same approval
+// callback, and is classified by the same destructive-deletion rules. A second
+// decision path here would be a second, quieter policy.
+//
+// The error is returned verbatim to the child, which prints it: an operator
+// reading a script's output sees why line 3 failed rather than a bare 126.
+func elevationDecider(workdir string) execbroker.Decider {
+	return func(ctx context.Context, req execbroker.Request) error {
+		display, err := json.Marshal(struct {
+			Program string   `json:"program"`
+			Args    []string `json:"args"`
+			Dir     string   `json:"dir"`
+			Nested  bool     `json:"nested_elevation"`
+		}{req.Program, req.Args, req.Dir, true})
+		if err != nil {
+			// The dialog loses its detail; the decision must still be made.
+			display = []byte("{}")
+		}
+		return secproc.Authorize(ctx, guard.Action{
+			Tool:    "shell_run",
+			Shell:   execbroker.CommandLine(req.Program, req.Args),
+			Workdir: workdir,
+		}, string(display))
+	}
 }
 
 // postStart runs the sandbox's optional post-spawn step for a process that has

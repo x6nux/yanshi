@@ -43,8 +43,9 @@ type LaunchSpec struct {
 	Args      []string
 	Dir       string
 	// Env is the child environment as KEY=VALUE entries.
-	// netpolicy.PrepareEnv populates this; OSProcessFactory.Start applies it via
-	// cmd.Env. This is a []string to match SecureProcessSpec.Env.
+	// childLaunchPosture.env (internal/shell/childlaunch.go), which calls
+	// netpolicy.PrepareEnvFor, populates this; OSProcessFactory.Start applies it
+	// via cmd.Env. This is a []string to match SecureProcessSpec.Env.
 	Env []string
 	// AllowEnv names the credential-bearing environment variables this spawn
 	// legitimately needs (e.g. GH_TOKEN for `gh`). Empty — the default — means
@@ -62,6 +63,27 @@ type LaunchSpec struct {
 	// A factory that honors it returns a Console satisfying StderrConsole.
 	// Ignoring it is safe but lossy — see StderrConsole.
 	SeparateStderr bool
+
+	// ProcessToken is the OS primary-token handle the child must run under, or
+	// 0 to run under this process's own token.
+	//
+	// Windows only, and it exists because sandbox.Prepare speaks *exec.Cmd while
+	// the spawn happens inside the factory. childLaunchPosture.prepare hands the
+	// backend a stand-in Cmd and copies the mutations back into this struct;
+	// before this field, SysProcAttr was not among the things copied, so a
+	// backend setting SysProcAttr.Token was writing into a value that was thrown
+	// away and every child ran under the unrestricted token while the report
+	// claimed otherwise. sandbox/poststart.go documents the same gap for
+	// CreationFlags, which is still open.
+	//
+	// uintptr rather than a typed handle so this struct stays buildable on every
+	// platform; the two conversions live in sandboxtoken_windows.go. A zero
+	// value is the inherit-everything default on all platforms, so no caller
+	// that does not know about it can be broken by it.
+	//
+	// The handle is OWNED by the sandbox that produced it and is closed when
+	// that sandbox is closed. A spec must not outlive it.
+	ProcessToken uintptr
 }
 
 // Session describes a persistent shell session at a point in time. The
@@ -121,10 +143,11 @@ type Job struct {
 
 // Console is the byte-level seam the Manager pumps. Read returns io.EOF when
 // the underlying process exits; Write blocks if the PTY/pipe back-pressures.
-// Resize is a no-op for non-PTY backends (they return ErrPTYUnavailable from
-// the platform-specific constructors in Task 18). PTY() reports whether the
-// underlying transport is a real PTY (vs. a pipe pair), which the Manager
-// surfaces in Session.PTY so the TUI can render differently.
+// Resize returns an error on non-PTY backends rather than nil, so a caller
+// cannot come away believing a geometry change reached a child that has no
+// terminal. PTY() reports whether the underlying transport is a real PTY (vs. a
+// pipe pair), which the Manager surfaces in Session.PTY so the TUI can render
+// differently.
 type Console interface {
 	io.ReadWriteCloser
 	Resize(rows, cols uint16) error

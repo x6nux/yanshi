@@ -22,8 +22,8 @@ func (f fakeResolver) LookupIPAddr(context.Context, string) ([]net.IPAddr, error
 	return f.ips, f.err
 }
 
-func TestPrepareEnvRemovesInheritedProxyVariants(t *testing.T) {
-	got := PrepareEnv([]string{"PATH=x", "http_proxy=evil", "HTTPS_PROXY=old", "no_proxy=*"}, "http://127.0.0.1:9000")
+func TestPrepareEnvForRemovesInheritedProxyVariants(t *testing.T) {
+	got := PrepareEnvFor([]string{"PATH=x", "http_proxy=evil", "HTTPS_PROXY=old", "no_proxy=*"}, ManagedProxy{HTTPURL: "http://127.0.0.1:9000"})
 	joined := strings.Join(got, "\n")
 	if strings.Contains(joined, "http_proxy=evil") || strings.Contains(joined, "HTTPS_PROXY=old") || strings.Contains(joined, "no_proxy=*") {
 		t.Fatalf("inherited proxy vars remain: %v", got)
@@ -33,13 +33,13 @@ func TestPrepareEnvRemovesInheritedProxyVariants(t *testing.T) {
 	}
 }
 
-// TestPrepareEnvPublishesLowercaseProxyVariants pins the case coverage of the
-// managed set. curl ignores uppercase HTTP_PROXY for plain http:// URLs (the
-// httpoxy mitigation) and honors only lowercase http_proxy there, so an
+// TestPrepareEnvForPublishesLowercaseProxyVariants pins the case coverage of
+// the managed set. curl ignores uppercase HTTP_PROXY for plain http:// URLs
+// (the httpoxy mitigation) and honors only lowercase http_proxy there, so an
 // uppercase-only set lets `curl http://…` out of a subprocess unimpeded while
 // appearing to block it. Dropping either case here is a silent egress hole.
-func TestPrepareEnvPublishesLowercaseProxyVariants(t *testing.T) {
-	got := PrepareEnv([]string{"PATH=x"}, "http://127.0.0.1:0")
+func TestPrepareEnvForPublishesLowercaseProxyVariants(t *testing.T) {
+	got := PrepareEnvFor([]string{"PATH=x"}, ManagedProxy{HTTPURL: "http://127.0.0.1:0"})
 	want := []string{
 		"HTTP_PROXY=http://127.0.0.1:0", "HTTPS_PROXY=http://127.0.0.1:0", "NO_PROXY=",
 		"http_proxy=http://127.0.0.1:0", "https_proxy=http://127.0.0.1:0", "no_proxy=",
@@ -55,12 +55,13 @@ func TestPrepareEnvPublishesLowercaseProxyVariants(t *testing.T) {
 	}
 }
 
-// TestPrepareEnvStripsLowercaseInheritedVariants guards the other half: the
-// strip must be case-insensitive, or a host-configured lowercase http_proxy
-// would survive alongside the managed uppercase one and (for plain HTTP under
-// curl) win — handing the child the operator's real upstream proxy.
-func TestPrepareEnvStripsLowercaseInheritedVariants(t *testing.T) {
-	got := PrepareEnv([]string{"http_proxy=http://host-proxy:9999", "ALL_PROXY=socks5://host:1080"}, "http://127.0.0.1:0")
+// TestPrepareEnvForStripsLowercaseInheritedVariants guards the other half:
+// the strip must be case-insensitive, or a host-configured lowercase
+// http_proxy would survive alongside the managed uppercase one and (for
+// plain HTTP under curl) win — handing the child the operator's real
+// upstream proxy.
+func TestPrepareEnvForStripsLowercaseInheritedVariants(t *testing.T) {
+	got := PrepareEnvFor([]string{"http_proxy=http://host-proxy:9999", "ALL_PROXY=socks5://host:1080"}, ManagedProxy{HTTPURL: "http://127.0.0.1:0"})
 	joined := strings.Join(got, "\n")
 	if strings.Contains(joined, "host-proxy") || strings.Contains(joined, "socks5") {
 		t.Fatalf("inherited proxy vars survived: %v", got)
@@ -104,25 +105,6 @@ func TestNewTransport_ReturnsTransport(t *testing.T) {
 	tr := NewTransport(&Policy{})
 	if tr == nil {
 		t.Fatal("NewTransport must return non-nil transport")
-	}
-}
-
-func TestManagedEnv_ReturnsEnvList(t *testing.T) {
-	env := ManagedEnv("http://127.0.0.1:9000")
-	if len(env) == 0 {
-		t.Fatal("ManagedEnv should return at least 3 proxy entries")
-	}
-	var hasHTTP, hasHTTPS bool
-	for _, e := range env {
-		if strings.HasPrefix(e, "HTTP_PROXY=") {
-			hasHTTP = true
-		}
-		if strings.HasPrefix(e, "HTTPS_PROXY=") {
-			hasHTTPS = true
-		}
-	}
-	if !hasHTTP || !hasHTTPS {
-		t.Fatal("ManagedEnv must include HTTP_PROXY and HTTPS_PROXY")
 	}
 }
 
@@ -291,15 +273,15 @@ func TestProxyBoundariesBeforeGoingLive(t *testing.T) {
 		}
 	})
 
-	t.Run("PrepareEnv strips inherited proxy variables", func(t *testing.T) {
+	t.Run("PrepareEnvFor strips inherited proxy variables", func(t *testing.T) {
 		// A real URL is the case that matters: an inherited https_proxy would
 		// shadow the managed one and route the child around the policy.
-		got := PrepareEnv([]string{
+		got := PrepareEnvFor([]string{
 			"PATH=/usr/bin",
 			"https_proxy=http://attacker.example:8080",
 			"HTTPS_PROXY=http://attacker.example:8080",
 			"NO_PROXY=*",
-		}, "http://127.0.0.1:54321")
+		}, ManagedProxy{HTTPURL: "http://127.0.0.1:54321"})
 
 		for _, kv := range got {
 			lower := strings.ToLower(kv)

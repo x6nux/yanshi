@@ -311,6 +311,24 @@ type SecurityConfig struct {
 	Sandbox SandboxConfig      `yaml:"sandbox"`
 	Network NetworkConfig      `yaml:"network"`
 	Shell   ShellRuntimeConfig `yaml:"shell"`
+	// GuardianPromptFile points at a file holding the instruction body the
+	// `auto` permission mode shows the model (W-B-14). Empty = the built-in
+	// policy in guard.AutoApprovalPrompt.
+	//
+	// A FILE rather than an inline string: the body is ~60 lines of prose, and
+	// a YAML block scalar that long turns every edit into a whitespace hazard
+	// in the one document an operator must not get wrong.
+	//
+	// The file is read and validated at load. Both failures — unreadable, or
+	// missing one of guard.RequiredRiskCategories — refuse the start, because
+	// the alternative is a deployment that believes it installed a policy and
+	// is running the built-in one.
+	GuardianPromptFile string `yaml:"guardian_prompt_file"`
+	// GuardianPrompt is the validated contents of GuardianPromptFile, filled in
+	// by Load. It is not a YAML key: writing the prose inline is the shape the
+	// file indirection exists to avoid, and a key that could set it directly
+	// would be a second, unvalidated way in.
+	GuardianPrompt string `yaml:"-"`
 }
 
 // SandboxConfig drives internal/sandbox.New. Enabled is *bool so an unset YAML
@@ -333,6 +351,33 @@ type NetworkConfig struct {
 	Allow        []string `yaml:"allow"`
 	Deny         []string `yaml:"deny"`
 	AllowPrivate bool     `yaml:"allow_private"`
+	// InspectHTTPS turns the managed proxy's CONNECT handling from a blind
+	// tunnel into a terminated one, so requests inside it are judged on method
+	// as well as host. OFF by default, and that default is the decision
+	// ADR-0014 made — read ADR-0023 before turning it on, especially the part
+	// about which children can be made to trust the generated root and which
+	// cannot.
+	InspectHTTPS bool `yaml:"inspect_https"`
+	// Methods narrows an allowed host to particular HTTP methods. Entries are
+	// evaluated in order and the first match wins; a host the top-level Deny
+	// list refuses is never reconsidered here.
+	//
+	// It has no effect on a request whose method nobody read — a blind CONNECT
+	// or a SOCKS5 tunnel — so a method rule for an https host is inert unless
+	// InspectHTTPS is on. Validation says so out loud rather than letting the
+	// operator discover it from traffic.
+	Methods []NetworkMethodRule `yaml:"methods"`
+}
+
+// NetworkMethodRule is one entry of NetworkConfig.Methods. Host uses the same
+// pattern syntax as Allow/Deny; Methods is a list of HTTP verbs, and an empty
+// list means every method. Action must be "allow" or "deny" — there is no
+// default, because a rule whose verdict was guessed is a rule that silently
+// does the opposite of what its author meant.
+type NetworkMethodRule struct {
+	Host    string   `yaml:"host"`
+	Methods []string `yaml:"methods"`
+	Action  string   `yaml:"action"`
 }
 
 // ShellRuntimeConfig caps the shell v2 runtime (Task 16+). MaxOutputBytes
@@ -342,6 +387,24 @@ type NetworkConfig struct {
 type ShellRuntimeConfig struct {
 	MaxOutputBytes int           `yaml:"max_output_bytes"`
 	IdleTimeout    time.Duration `yaml:"idle_timeout"`
+	// MaxConcurrent caps how many shell sessions may hold a live OS process at
+	// once. 0 (the default) means no cap. Over the cap a start QUEUES rather
+	// than failing — see shell.Config.MaxConcurrent for why refusing would be
+	// the wrong reflex here.
+	MaxConcurrent int `yaml:"max_concurrent"`
+	// CaptureProfile runs the operator's login shell once at startup and
+	// layers the environment it produces under every child launch, so a yanshi
+	// started from a desktop launcher can still find the toolchains the
+	// operator's rc files put on PATH.
+	//
+	// OFF by default: it executes the operator's startup files, which is a
+	// side effect nobody asked for at boot, and the failure it fixes is
+	// invisible to an operator who launched yanshi from their own terminal.
+	CaptureProfile bool `yaml:"capture_profile"`
+	// ProfileShell selects which shell CaptureProfile asks
+	// (bash|zsh|sh|powershell). Empty means $SHELL on unix, powershell on
+	// Windows.
+	ProfileShell string `yaml:"profile_shell"`
 }
 
 // GoalConfig configures the self-driven goal loop's budget.
@@ -681,6 +744,15 @@ func Load(path string) (*Config, error) {
 	}
 	cfg.PolicyNarrowed = cfg.ApplyPolicy(policy)
 	cfg.PolicyActive = policy != nil && len(policy.Profiles) > 0
+	// ApplyPolicy may have replaced security.guardian_prompt_file with the
+	// trusted one, so the body LoadBytes read from the local value is stale and
+	// was cleared. Re-read from whichever path is now authoritative, through the
+	// same validating function — a trusted policy that names an unreadable or
+	// hollow guardian file must fail the load for the reason loadGuardianPrompt
+	// gives, not fall back to the file the agent could write.
+	if err := cfg.loadGuardianPrompt(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -859,7 +931,71 @@ func (c *Config) validate() error {
 	if c.Subagents.Limit != 0 && (c.Subagents.Limit < 1 || c.Subagents.Limit > 20) {
 		return errors.New("subagents.limit must be within 1..20")
 	}
+	if err := c.loadGuardianPrompt(); err != nil {
+		return err
+	}
+	if err := c.validateNetworkMethods(); err != nil {
+		return err
+	}
 	return c.validateProfiles()
+}
+
+// validateNetworkMethods rejects a method rule whose verdict or subject is
+// missing.
+//
+// Both checks refuse the start rather than dropping the rule, for the reason
+// validateProfiles gives: an ignored security rule is discovered from traffic,
+// months later, by someone who has no reason to suspect their config. A rule
+// with no host names nothing; a rule with no action ("action: alow") would
+// silently become a deny under any zero-value reading, which is the opposite
+// verdict from the one an operator writing an allow rule intended.
+//
+// It does NOT refuse a method rule for an https host while inspect_https is
+// off. That combination is inert rather than wrong — the rule applies the
+// moment inspection is enabled, and plain-HTTP requests through the proxy
+// carry a readable method with no inspection at all — so refusing it would
+// reject a valid configuration. bootstrap says it out loud via slog instead
+// (security posture belongs in the log file an operator audits later, not
+// only on the terminal of whoever started the process — see bootstrap.go's
+// own comment next to that slog.Warn call).
+func (c *Config) validateNetworkMethods() error {
+	for i, rule := range c.Security.Network.Methods {
+		if strings.TrimSpace(rule.Host) == "" {
+			return fmt.Errorf("security.network.methods[%d]: host is required", i)
+		}
+		switch strings.ToLower(strings.TrimSpace(rule.Action)) {
+		case "allow", "deny":
+		default:
+			return fmt.Errorf("security.network.methods[%d] (host %q): action must be \"allow\" or \"deny\", got %q",
+				i, rule.Host, rule.Action)
+		}
+	}
+	return nil
+}
+
+// loadGuardianPrompt reads and validates security.guardian_prompt_file (W-B-14).
+//
+// Both failure modes refuse the start, for the same reason validateProfiles
+// refuses an unknown shell policy: the value is not consulted until the first
+// auto-mode call, so a silent fallback would be discovered as "auto mode is
+// using the wrong policy" hours later, if ever. The prompt is the ENTIRE
+// verdict in auto mode — there is no static list beside it — so "we ignored
+// your policy file" is not a warning-level event.
+func (c *Config) loadGuardianPrompt() error {
+	path := strings.TrimSpace(c.Security.GuardianPromptFile)
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(expandHome(path))
+	if err != nil {
+		return fmt.Errorf("security.guardian_prompt_file: %w", err)
+	}
+	body := string(data)
+	if err := guard.ValidateAutoApprovalTemplate(body); err != nil {
+		return fmt.Errorf("security.guardian_prompt_file %q: %w", path, err)
+	}
+	c.Security.GuardianPrompt = body
+	return nil
 }
 
 // validateProfiles rejects profile fields whose illegal values would otherwise

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -271,12 +272,19 @@ func TestDiagnosticsReportsTheBoundSandboxPosture(t *testing.T) {
 	got := decodeSandboxDiag(t, out)
 	rep := sb.Report()
 	want := sandboxDiag{
-		Requested: rep.Requested.String(),
-		Effective: string(rep.Effective),
-		Enforced:  rep.Enforced,
+		Requested:  rep.Requested.String(),
+		Effective:  string(rep.Effective),
+		Enforced:   rep.Enforced,
+		Unenforced: rep.Unenforced,
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("sandbox diagnostic = %+v, want %+v (the posture actually bound in ctx)", got, want)
+	}
+	// The Unenforced list is the half W-B-13 gave the doctor and not the model:
+	// on a backend where Enforced is true and network_deny is inert, a model
+	// reading only Enforced plans around a wall that is not there.
+	if !reflect.DeepEqual(got.Unenforced, rep.Unenforced) {
+		t.Fatalf("the probe dropped the unenforced-field list: %+v, want %v", got, rep.Unenforced)
 	}
 	if got.Requested == "unknown" || got.Effective == "unknown" {
 		t.Fatalf("the probe reported the unknown triple for a sandbox that IS bound: %+v", got)

@@ -137,6 +137,39 @@ func TestSpawnSecurePropagatesLaunchDenial(t *testing.T) {
 	}
 }
 
+// TestHandshakeFailureNamesTheWithheldCredentials: W-B-02 put every ACP agent
+// behind secproc, which strips credential-bearing variables from the
+// environment it inherits. An operator running `yanshi goal` with a perfectly
+// good ANTHROPIC_API_KEY exported then gets an authentication failure out of
+// the agent and nothing to connect it to — the stripping was recorded only in
+// an slog line, in a file they do not have open.
+//
+// So the handshake error names them. Values are never included, and the check
+// below asserts that in both directions: the NAME has to be there and the
+// VALUE must not be, because "print the environment we withheld" is one
+// careless format verb away from putting the credential in the transcript this
+// feature exists to keep it out of.
+func TestHandshakeFailureNamesTheWithheldCredentials(t *testing.T) {
+	const secret = "sk-do-not-print-this-value"
+	t.Setenv("ANTHROPIC_API_KEY", secret)
+	f := &stubFactory{proc: &secproc.StartedProcess{
+		Wait: func() error { return nil }, Stdout: strings.NewReader(""), Stdin: &deadPipe{},
+	}}
+	ctx := withStubFactory(t, f)
+	_, err := SpawnSecure(ctx, SpawnOptions{Agent: "codex"})
+	if err == nil {
+		t.Fatal("precondition: a dead stdin must fail the handshake")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "ANTHROPIC_API_KEY") {
+		t.Errorf("handshake error %q does not name the credential the launcher withheld; "+
+			"the operator has no way to connect their exported key to the agent's auth failure", msg)
+	}
+	if strings.Contains(msg, secret) {
+		t.Fatalf("handshake error leaked the credential VALUE: %q", msg)
+	}
+}
+
 // TestStderrTailKeepsTheEnd: the tail is what carries the cause ("npx: command
 // not found"), and it must be bounded so a crash-looping agent cannot grow the
 // parent's heap.

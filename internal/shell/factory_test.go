@@ -13,7 +13,7 @@ import (
 )
 
 // recordingFactory captures the env slice that DefaultSecureFactory hands off
-// to the OS layer, so we can assert PrepareEnv stripped the inherited vars.
+// to the OS layer, so we can assert PrepareEnvFor stripped the inherited vars.
 type recordingFactory struct {
 	gotEnv []string
 }
@@ -87,10 +87,12 @@ func TestDefaultSecureFactoryFailsClosedWhenNoOSFactory(t *testing.T) {
 //
 // DefaultSecureFactory used to build the child env from spec.Env alone. No
 // secproc caller populates that field — not shell_run, not run_tests, not
-// github_*, not diagnostics — so netpolicy.PrepareEnv(nil, proxy) returned
-// exactly HTTP_PROXY/HTTPS_PROXY/NO_PROXY and every spawned process ran with
-// no PATH, no HOME and no GOMODCACHE. `go version` answered "command not
-// found"; `go test` answered "module cache not found".
+// github_*, not diagnostics — so the proxy-injection call (now
+// netpolicy.PrepareEnvFor, then its since-deleted two-arg predecessor) ran
+// over an empty base and returned exactly HTTP_PROXY/HTTPS_PROXY/NO_PROXY,
+// and every spawned process ran with no PATH, no HOME and no GOMODCACHE.
+// `go version` answered "command not found"; `go test` answered "module
+// cache not found".
 //
 // PATH and HOME are asserted by name rather than by env length because they
 // are the two the failure was actually reported through, and an assertion on

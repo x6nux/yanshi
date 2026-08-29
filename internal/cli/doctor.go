@@ -21,6 +21,7 @@ import (
 	"github.com/x6nux/yanshi/internal/lsp"
 	"github.com/x6nux/yanshi/internal/sandbox"
 	"github.com/x6nux/yanshi/internal/secrets"
+	"github.com/x6nux/yanshi/internal/shell"
 	"github.com/x6nux/yanshi/internal/store"
 )
 
@@ -157,6 +158,7 @@ func RunDoctor(ctx context.Context, opts DoctorOptions) DoctorReport {
 	checks = append(checks, checkPort(cfg, cfgErr, opts.Release))
 	checks = append(checks, checkDirectories(cfg, cfgErr))
 	checks = append(checks, checkSandbox(cfg, cfgErr, root))
+	checks = append(checks, checkPTY())
 	checks = append(checks, checkMCP(cfg, cfgErr))
 	checks = append(checks, checkLSP(ctx, root))
 	checks = append(checks, checkPermissions(cfg, cfgErr))
@@ -574,10 +576,31 @@ func checkSandbox(cfg *config.Config, cfgErr error, workRoot string) CheckResult
 		Tier:          sandbox.ParseTier(cfg.Security.Sandbox.Tier),
 		NetworkDeny:   cfg.Security.Sandbox.NetworkDeny,
 	})
-	rep := sb.Report()
+	return sandboxCheckResult(sb.Report())
+}
+
+// sandboxCheckResult renders one CapabilityReport as the doctor row.
+//
+// Split from checkSandbox so it can be driven with a SYNTHESISED report. The
+// row that matters most for W-B-13 — a backend that is Enforced and OSIsolated
+// and still leaves network_deny inert — is the Landlock-without-seccomp shape,
+// which no developer machine and only one CI leg can produce. A test that could
+// only observe the local host's real backend would silently assert nothing
+// about it, which is the position the per-field warning exists to fix one layer
+// down.
+func sandboxCheckResult(rep sandbox.CapabilityReport) CheckResult {
 	msg := fmt.Sprintf("tier %s, effective %s, backend %s", rep.Requested, rep.Effective, rep.Backend)
 	if rep.Reason != "" {
 		msg += " (" + rep.Reason + ")"
+	}
+	// W-B-13: the per-field warnings come BEFORE the Enforced branch, because
+	// the case they exist for is the one where Enforced is TRUE. A Landlock
+	// backend without seccomp reports os-isolated and enforced, and
+	// `network_deny: true` does nothing on it; folding the warning into the
+	// !Enforced arm would hide it in exactly that configuration.
+	if len(rep.Unenforced) > 0 {
+		msg += fmt.Sprintf("; WARNING: configured but NOT enforced by this backend: %s",
+			strings.Join(rep.Unenforced, ", "))
 	}
 	if !rep.Enforced {
 		// Warn rather than fail: this is the documented Phase-0 posture, not a
@@ -586,7 +609,39 @@ func checkSandbox(cfg *config.Config, cfgErr error, workRoot string) CheckResult
 		return CheckResult{Name: "sandbox", Status: StatusWarn,
 			Message: msg + "; OS/network isolation NOT enforced — guard is the boundary"}
 	}
+	if len(rep.Unenforced) > 0 {
+		// Enforced, but not all of it. StatusOK here would be the report saying
+		// the configuration is fine while naming the part of it that is inert.
+		return CheckResult{Name: "sandbox", Status: StatusWarn, Message: msg}
+	}
 	return CheckResult{Name: "sandbox", Status: StatusOK, Message: msg}
+}
+
+// checkPTY reports whether this host can give a shell session a real terminal.
+//
+// It is a doctor check rather than an error the operator meets at the first
+// `shell_start {"pty": true}` because the failure is a property of the HOST, not
+// of the request: a container built without /dev/ptmx, a devpts that is not
+// mounted, a Windows older than 1809. Each of those is a one-line fix the
+// operator would never derive from "shell: open /dev/ptmx: no such file or
+// directory" arriving mid-turn as a tool result.
+//
+// Warn rather than fail when unavailable: everything except interactive
+// sessions works fine on a host with no PTY — non-PTY spawns use the pipe
+// console — so this is a reduced capability, not a broken install.
+//
+// It calls shell.PlatformPTYCapability, which is the SAME probe the spawn path
+// consults, rather than deriving an answer from runtime.GOOS. Two independent
+// answers to "can we do PTYs here" is how a report ends up disagreeing with the
+// thing it reports on.
+func checkPTY() CheckResult {
+	cap := shell.PlatformPTYCapability()
+	msg := fmt.Sprintf("backend %s (%s)", cap.Backend, cap.Reason)
+	if !cap.Available {
+		return CheckResult{Name: "pty", Status: StatusWarn,
+			Message: msg + "; interactive sessions (shell_start pty=true) will fail on this host"}
+	}
+	return CheckResult{Name: "pty", Status: StatusOK, Message: msg}
 }
 
 // checkMCP reports the configured MCP servers and which of them are enabled.

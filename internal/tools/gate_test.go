@@ -208,3 +208,61 @@ func TestTaskGateRun_NoManager(t *testing.T) {
 	// 给个超时上限来 drain
 	_ = time.Second
 }
+
+// gateEnvDumpCmd returns a single-argv command that prints the child's whole
+// environment, which is the only way to answer "what did the child actually
+// see" without trusting the parent's idea of it.
+func gateEnvDumpCmd() (env, command string) {
+	if runtime.GOOS == "windows" {
+		return "cmd", "set"
+	}
+	return "sh", "env"
+}
+
+// TestGateChildCannotReadTheProviderKey is the guard for W-B-11's first clause
+// ("no provider API key in the subprocess environment") at the tenth spawn
+// site — the one the first pass missed.
+//
+// task_gate_run is the worst place in the tree for this to be false. It is in
+// the default profile's allow list, so no dialog stands between the model and
+// it; the command string is MODEL-authored; and the combined output lands in
+// work.Evidence.Summary, which the model reads back on its next turn. A gate
+// command of `go test ./...` needs no approval and any test in the tree can
+// print os.Environ().
+//
+// The test starts a REAL child and reads back the environment that child was
+// given. Asserting on cmd.Env would pass against a scrub that built the right
+// slice and then handed the child something else, and the failure this is
+// guarding against was precisely a slice that was never built at all.
+//
+// Both directions are asserted: an implementation that returned an EMPTY
+// environment would strip the credential and also break every gate command
+// that needs PATH to find its interpreter, which is the regression this repo
+// has already shipped once in the credential-scrub family.
+func TestGateChildCannotReadTheProviderKey(t *testing.T) {
+	const sentinel = "sk-yanshi-gate-must-never-reach-a-child"
+	t.Setenv("OPENAI_API_KEY", sentinel)
+	t.Setenv("ANTHROPIC_API_KEY", sentinel)
+	t.Setenv("AWS_SECRET_ACCESS_KEY", sentinel)
+
+	env, command := gateEnvDumpCmd()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := shellCommand(ctx, env, command)
+	require.NotNil(t, cmd.Env,
+		"shellCommand left Env nil; in Go that means the child inherits the parent's "+
+			"environment whole, provider keys included")
+
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "environment dump failed: %s", out)
+	got := string(out)
+
+	if strings.Contains(got, sentinel) {
+		t.Errorf("the task_gate_run child read a provider credential back out of its own " +
+			"environment; that output goes into work.Evidence.Summary and the model reads it")
+	}
+	if !strings.Contains(strings.ToUpper(got), "PATH=") {
+		t.Errorf("the child has no PATH: the scrub broke the environment instead of "+
+			"constraining it. Dump was:\n%s", got)
+	}
+}

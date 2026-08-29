@@ -58,7 +58,7 @@ func TestDefaultSecureFactoryChildInheritsHostEnv(t *testing.T) {
 		t.Errorf("child has no HOME (gh writes its state into CWD without it); env was:\n%s", env)
 	}
 	// Inheriting must not have cost us the proxy injection: both halves have
-	// to hold at once, which is the whole reason PrepareEnv exists rather
+	// to hold at once, which is the whole reason PrepareEnvFor exists rather
 	// than a plain append.
 	if !strings.Contains(env, "HTTP_PROXY=http://127.0.0.1:9999") {
 		t.Errorf("proxy variable lost while inheriting host env; env was:\n%s", env)

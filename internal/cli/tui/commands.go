@@ -508,15 +508,20 @@ func cmdThink(m model, args []string) (tea.Model, tea.Cmd) {
 
 // cmdMode: set the permission mode. Forms:
 //
-//	/mode                    interactive picker
+//	/mode                    interactive picker (lists guard.Modes())
+//	/mode strict             confirm EVERY call, including allowed ones (W-B-20)
 //	/mode default            ask for every denied call
 //	/mode allow-edits        auto-approve fs_write/fs_edit
 //	/mode yolo               auto-approve EVERYTHING (no confirmation gate here;
 //	                        /mode is an explicit typed command, unlike Shift+Tab)
-//	/mode auto               AI-rated risk mode (threshold = default 4)
-//	/mode auto 6             auto mode with risk ceiling 6 (1-10)
+//	/mode auto               the model risk-assesses each denied call
+//	/mode plan               read-only
 //
-// An unrecognized mode renders a local error and sends nothing.
+// An unrecognized mode renders a local error and sends nothing. The error text
+// enumerates guard.Modes() rather than a hand-written list: the hand-written
+// one had already dropped `plan`, and a help string that names fewer modes than
+// exist is how a mode ends up unreachable for everyone who did not read the
+// source.
 func cmdPlan(m model, _ []string) (tea.Model, tea.Cmd) {
 	if m.sess.Mode() == "sse" {
 		m.entries = append(m.entries, errorEntry{text: "plan mode requires the WebSocket transport; SSE is stateless"})
@@ -585,8 +590,12 @@ func cmdMode(m model, args []string) (tea.Model, tea.Cmd) {
 	}
 	pm, ok := guard.NormalizeMode(args[0])
 	if !ok {
+		names := make([]string, 0, len(guard.Modes()))
+		for _, mode := range guard.Modes() {
+			names = append(names, string(mode))
+		}
 		m.entries = append(m.entries, errorEntry{
-			text: "unknown mode: " + args[0] + " (default|allow-edits|yolo|auto)",
+			text: "unknown mode: " + args[0] + " (" + strings.Join(names, "|") + ")",
 		})
 		m.refresh()
 		m.viewport.GotoBottom()

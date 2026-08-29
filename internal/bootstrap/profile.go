@@ -12,7 +12,10 @@
 package bootstrap
 
 import (
+	"context"
+
 	"github.com/x6nux/yanshi/internal/guard"
+	"github.com/x6nux/yanshi/internal/tools"
 )
 
 // ConditionalProfileTools names the tools that bootstrap.Build registers only
@@ -121,6 +124,13 @@ func DefaultOrchestratorProfile() guard.PermissionProfile {
 			// fail-closed while the tool still burned schema tokens.
 			"ast_search",
 			"shell_run", "shell_start", "shell_read", "shell_write_stdin", "shell_wait", "shell_cancel",
+			// shell_resize carries strictly less capability than shell_write_stdin,
+			// which is already allowed: it changes a terminal's geometry and cannot
+			// put a byte in front of the child. Leaving it out while shell_start's
+			// pty parameter is allowed would be the inverted gradient this list has
+			// been corrected for twice — the harmless tool costs a dialog, the one
+			// that types into the session does not.
+			"shell_resize",
 			"task_shell_start", "task_shell_wait", "task_shell_stdin", "task_shell_cancel",
 			// A2 durable tasks. These were registered but never allowed, so the
 			// model saw four tools it could call and the guard refused each one:
@@ -177,6 +187,15 @@ func DefaultOrchestratorProfile() guard.PermissionProfile {
 			"update_plan", "image_describe",
 			"checklist_add", "checklist_list", "checklist_update", "checklist_write",
 			"todo_add", "todo_list", "todo_update", "todo_write",
+			// W-B-12. Grants nothing on its own: every path through it either
+			// refuses without asking or goes through RequireApproval, which
+			// sets req.Force so no permission MODE — yolo included — can answer
+			// for the user. Withholding it would be an inverted gradient of the
+			// worst kind: the tool whose entire purpose is to ASK would be the
+			// one that costs a dialog to reach, and on SSE (no callback) it
+			// would be permanently fail-closed while still burning schema
+			// tokens telling the model to call it.
+			"request_permission",
 			"web_fetch", "web_search", "time_now", "skill_use", "vcs_*",
 			"agent_start", "workflow_start", "analysis", "summarize",
 			// B1 managed sub-agents. Deliberately NOT a widening of what the
@@ -227,5 +246,40 @@ func DefaultOrchestratorProfile() guard.PermissionProfile {
 			// batch.rlm_model names a cheap provider. See ConditionalProfileTools.
 		}},
 		Net: guard.NetPerm{Allow: true},
+	}
+}
+
+// BindAgentLaunchContext binds the two context values secproc.Launch fails
+// closed without — a permission profile and a process factory — for a caller
+// that spawns an external agent OUTSIDE an orchestrator turn.
+//
+// `yanshi goal` is that caller and, so far, the only one. Its worker used to
+// reach exec.CommandContext directly (acp.Spawn, deleted by W-B-02); routing it
+// through the same launcher as everything else means it now needs the same two
+// bindings, and the composition root is where knowledge of both belongs.
+//
+// # Why a purpose-built profile rather than the orchestrator's
+//
+// DefaultOrchestratorProfile deliberately omits acp_delegate so the CHAT path
+// prompts the operator every time (see tools.NewACPDelegateTool). That is the
+// right answer when a model chose to delegate mid-turn. It is the wrong one
+// here: the operator typed `yanshi goal -agent codex` at a shell prompt, which
+// IS the approval, and there is no permission callback on this path — a Prompt
+// would simply fail closed and the subcommand could never run.
+//
+// The profile therefore allows exactly one tool name and nothing else. Every
+// other dimension stays at its zero value, which is the fail-closed one: no FS
+// paths, no shell, no network, no MCP. Widening it is an authorization change.
+func (a *App) BindAgentLaunchContext(ctx context.Context) context.Context {
+	ctx = tools.WithProfile(ctx, agentLaunchProfile())
+	return tools.WithSecureProcessFactory(ctx, a.SecureFactory)
+}
+
+// agentLaunchProfile is the single-tool profile BindAgentLaunchContext binds.
+// Split out so the allow list is one greppable literal rather than an
+// expression buried in a context chain.
+func agentLaunchProfile() guard.PermissionProfile {
+	return guard.PermissionProfile{
+		Tools: guard.ToolsPerm{Allow: []string{"acp_delegate"}},
 	}
 }

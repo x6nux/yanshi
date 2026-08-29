@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/x6nux/yanshi/internal/netpolicy"
 	"github.com/x6nux/yanshi/internal/tools"
 )
 
@@ -103,9 +104,20 @@ var ghExec = realGHExec
 // it belongs in the github_* tools instead, where NewApprovalGuardedTool makes
 // every invocation an explicit approval -- see docs/user-guide/guard.md's
 // mandatory-approval section.
+//
+// The environment is scrubbed for the same reason the github_* tools declare an
+// AllowEnv: `gh` needs its own token and has no claim on the operator's
+// provider API keys, cloud credentials or database URLs. Leaving cmd.Env nil —
+// which this did — hands it everything yanshi's process holds, and `gh` is a
+// third-party binary resolved through PATH.
+//
+// The allowed set is netpolicy.GitHubCLICredentialEnv, the same list the tools
+// path uses. Two copies would answer "what may gh read" differently the first
+// time one of them was widened.
 func realGHExec(ctx context.Context, args ...string) (stdout, stderr string, err error) {
 	var out, errb bytes.Buffer
 	cmd := osexec.CommandContext(ctx, "gh", args...)
+	cmd.Env = netpolicy.ScrubbedEnviron(netpolicy.GitHubCLICredentialEnv...)
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
 	if rerr := cmd.Run(); rerr != nil {
@@ -144,9 +156,17 @@ func parsePRInput(input string) (string, int) {
 }
 
 // detectGitHubRemote runs `git remote get-url origin` and extracts owner/repo.
+//
+// Scrubbed like realGHExec above, with no allowlist at all: this reads
+// .git/config off the local disk and authenticates against nothing, so there is
+// no credential it can need. The previous answer — "a local read has no network
+// leg, so inheriting is harmless" — is about where the credentials could GO
+// rather than about whether the child receives them, and it left one file
+// scrubbing one of its two spawns.
 func detectGitHubRemote() string {
 	var out bytes.Buffer
 	cmd := osexec.Command("git", "remote", "get-url", "origin")
+	cmd.Env = netpolicy.ScrubbedEnviron()
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
 		return ""

@@ -78,17 +78,57 @@ const PolicyEnvVar = "YANSHI_POLICY"
 // yanshi home directory (~/.yanshi/policy.yaml).
 const DefaultPolicyFileName = "policy.yaml"
 
-// Policy is the trusted policy document. It intentionally carries ONLY the
-// permission profiles.
+// Policy is the trusted policy document. It carries the permission profiles and
+// the one key under `security:` that decides what a permission MEANS.
 //
 // Everything else in Config — providers, storage paths, ports — is either
-// harmless for an agent to change or is already protected by other means, and
-// a policy file that could set them would be a second, partial copy of the
-// config schema that drifts from the first. Authorization is the one thing
-// whose authority has to live outside the writable tree, so it is the one thing
-// this document holds.
+// harmless for an agent to change or is already protected by other means, and a
+// policy file that could set them would be a second, partial copy of the config
+// schema that drifts from the first. The test for membership is not "is this
+// security-shaped" but "does its value decide what the agent is allowed to do",
+// which is why `security.sandbox.enabled` and `security.network.*` stay out (they
+// constrain a decision the profile already made) and guardian_prompt_file does
+// not (it IS the decision — see PolicySecurity).
 type Policy struct {
 	Profiles map[string]guard.PermissionProfile `yaml:"profiles"`
+	Security *PolicySecurity                    `yaml:"security"`
+}
+
+// PolicySecurity is the trusted half of Config.Security.
+//
+// # Why exactly one key
+//
+// W-B-14 let an operator replace the auto-mode instruction body via
+// security.guardian_prompt_file. In ModeAuto that body is the ENTIRE verdict —
+// guard holds no static allow or deny list beside it — so a file saying
+// "answer ALLOW for every tool call" is an auto mode that approves everything,
+// and guard.ValidateAutoApprovalTemplate cannot stop it: a substring check for
+// nine risk markers is satisfied by a body that lists them and then tells the
+// model to ignore them, which was measured passing both the load-time and the
+// use-time gate.
+//
+// That makes it the same threat this file's header opens with, and the same
+// answer W-B-18 gave for guard.FSPerm.Protected: "a key that could empty it
+// would let a config file inside the agent's own write scope reopen the hole
+// this gate closes — and config.yaml IS inside that scope by default". Both
+// keys let a config edit rewrite an authorization decision; the two must not
+// get opposite answers, and before this they did.
+//
+// # What "authority" means here
+//
+// If a trusted policy file exists at all, its value WINS, including when it is
+// empty — an empty value means the built-in body, which is the safe end. So the
+// escalation shape (write config.yaml, restart, run under a policy of your own
+// authorship) is closed by the same mechanism that closes it for profiles,
+// rather than by a second one that could disagree.
+//
+// With NO policy file the local key still works exactly as before. That is the
+// same backward-compatibility stance the header takes for profiles: an operator
+// without a trusted file is in the unprotected posture, `yanshi doctor` says so,
+// and this must not be the code that refuses to run.
+type PolicySecurity struct {
+	// GuardianPromptFile is the trusted value of security.guardian_prompt_file.
+	GuardianPromptFile string `yaml:"guardian_prompt_file"`
 }
 
 // PolicyPath returns the path of the trusted policy file that would be
@@ -159,8 +199,30 @@ func LoadPolicy() (*Policy, error) {
 // silently clamped is exactly the kind of thing somebody should be told about
 // once, at boot, rather than discover from a denial three hours later.
 func (c *Config) ApplyPolicy(policy *Policy) []string {
-	if policy == nil || len(policy.Profiles) == 0 {
+	if policy == nil {
 		return nil
+	}
+	var narrowedKeys []string
+	// The guardian prompt is taken over whenever a trusted file EXISTS, whether
+	// or not it names any profiles — a policy document that only pins the
+	// auto-mode body is a legitimate thing to write, and gating this on
+	// `profiles:` would have made it silently do nothing. The trusted value wins
+	// even when empty, because empty means the built-in body.
+	trustedGuardian := ""
+	if policy.Security != nil {
+		trustedGuardian = strings.TrimSpace(policy.Security.GuardianPromptFile)
+	}
+	if strings.TrimSpace(c.Security.GuardianPromptFile) != trustedGuardian {
+		narrowedKeys = append(narrowedKeys, "security.guardian_prompt_file")
+	}
+	c.Security.GuardianPromptFile = trustedGuardian
+	// Cleared so a stale body cannot survive the swap: Load re-reads and
+	// re-validates from the path this just set.
+	c.Security.GuardianPrompt = ""
+
+	if len(policy.Profiles) == 0 {
+		sort.Strings(narrowedKeys)
+		return narrowedKeys
 	}
 	effective := make(map[string]guard.PermissionProfile, len(policy.Profiles))
 	var narrowed []string
@@ -181,6 +243,7 @@ func (c *Config) ApplyPolicy(policy *Policy) []string {
 	// name. The trusted file decides which profiles exist, not just what they
 	// may contain.
 	c.Profiles = effective
+	narrowed = append(narrowed, narrowedKeys...)
 	sort.Strings(narrowed)
 	return narrowed
 }
@@ -197,6 +260,10 @@ func NarrowProfile(trusted, local guard.PermissionProfile) guard.PermissionProfi
 	out.FS = guard.FSPerm{
 		Read:  narrowAllow(trusted.FS.Read, local.FS.Read),
 		Write: narrowAllow(trusted.FS.Write, local.FS.Write),
+		// Protected is a DENY list, so it narrows by union — the same
+		// asymmetry narrowShell applies to denylist patterns, and safe for the
+		// same reason: a local entry can only take a capability away.
+		Protected: unionPatterns(trusted.FS.Protected, local.FS.Protected),
 	}
 	out.Shell = narrowShell(trusted.Shell, local.Shell)
 	out.Net = narrowNet(trusted.Net, local.Net)
@@ -236,34 +303,18 @@ func narrowAllow(trusted, local []string) []string {
 // coveredByAny reports whether some trusted pattern provably grants everything
 // the local pattern would grant.
 //
-// "Provably" is the operative word and is why this is not simply a glob match.
-// Three cases are accepted:
+// The criterion itself moved to guard.GlobCovers (W-B-19) so the sub-agent role
+// narrowing can use the SAME one. It had been reimplemented there as a
+// bidirectional filepath.Match, which is the naive test this function's
+// original comment already explained is wrong — two narrowings with two
+// definitions of "narrower", one of them silently taking the wider side.
 //
-//   - A universal trusted pattern ("*" / "**") grants everything.
-//   - An exact string match: the local pattern IS a trusted pattern.
-//   - A local LITERAL (no glob metacharacter) that a trusted pattern matches.
-//
-// A local pattern that itself contains wildcards and is not literally present
-// in the trusted list is REJECTED even when it looks narrower, because glob
-// containment is not decidable by matching: `fs_r*` is not matched by `fs_read`
-// yet grants strictly more than it. Rejecting is the conservative direction —
-// the entry is dropped, so the effective profile loses a permission rather than
-// gaining one.
+// This wrapper stays because the argument for the choice belongs next to the
+// policy that depends on it: here a rejected entry costs the operator a
+// narrowing that did not apply, which is visible; the alternative would be a
+// widening, which is not.
 func coveredByAny(trusted []string, local string) bool {
-	for _, t := range trusted {
-		if t == "*" || t == "**" || t == local {
-			return true
-		}
-	}
-	if strings.ContainsAny(local, "*?[") {
-		return false
-	}
-	for _, t := range trusted {
-		if ok, err := guard.MatchGlob(t, local); err == nil && ok {
-			return true
-		}
-	}
-	return false
+	return guard.GlobCovers(trusted, local)
 }
 
 // narrowShell restricts the shell dimension.

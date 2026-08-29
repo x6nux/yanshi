@@ -110,6 +110,12 @@ type Config struct {
 	// disables /distill (the WS handler answers with an error frame) and
 	// silently skips the post-turn pass.
 	DistillModel tools.DistillModel
+	// GuardianPrompt is the operator's replacement for the auto-mode risk
+	// policy shown to the model (W-B-14, security.guardian_prompt_file).
+	// Empty = the built-in policy. Already validated by config.Load;
+	// guard.AutoApprovalPromptWith re-checks and falls back on its own, so a
+	// caller that skips validation cannot hollow the gate out.
+	GuardianPrompt string
 }
 
 // CompactionConfig is the http-layer mirror of config.CompactionConfig. It is
@@ -132,6 +138,11 @@ type Server struct {
 	// clientRegistry holds the open WebSocket connections so background
 	// goroutines can push server-initiated frames. See broadcast.go.
 	clientRegistry
+	// egressRegistry holds the connections able to answer a per-domain egress
+	// prompt raised by the managed proxy. Separate from clientRegistry because
+	// answering needs the connection's permission tracker, which a *wsConn
+	// does not carry. See ws_egress.go.
+	egressRegistry
 
 	mux        *http.ServeMux
 	token      string
@@ -189,6 +200,9 @@ type Server struct {
 	// distillModel backs the distill_memories control frame and the post-turn
 	// pass (A2/W-A-05). nil disables both (see Config.DistillModel).
 	distillModel tools.DistillModel
+	// guardianPrompt is Config.GuardianPrompt, copied onto each connSession so
+	// the permission callback can reach it without a Server pointer.
+	guardianPrompt string
 }
 
 // New creates a Server with the given configuration.
@@ -216,6 +230,7 @@ func New(cfg Config) *Server {
 		redactor:       cfg.Redactor,
 		permTimeout:    cfg.PermissionTimeout.resolve(),
 		distillModel:   cfg.DistillModel,
+		guardianPrompt: cfg.GuardianPrompt,
 	}
 }
 

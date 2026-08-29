@@ -101,9 +101,9 @@ func switchCases(t *testing.T, file, funcName, tagExpr string) (labels []string,
 // to checkShell without extending ShellPolicies() fails here, and so does the
 // reverse.
 func TestShellPolicyCatalogEqualsCheckShellSwitch(t *testing.T) {
-	labels, _, found := switchCases(t, "guard.go", "checkShell", "p.Shell.Policy")
+	labels, _, found := switchCases(t, "guard.go", "checkShellPolicy", "p.Shell.Policy")
 	require.True(t, found,
-		"no `switch p.Shell.Policy` found in checkShell — the switch was renamed or "+
+		"no `switch p.Shell.Policy` found in checkShellPolicy — the switch was renamed or "+
 			"restructured and this reconciliation is now blind; re-point it before trusting it")
 	// Self-proof that the extractor is live before its result is used as
 	// evidence (review-checklist.md, C-bis): a parser that silently returned
@@ -173,9 +173,9 @@ func TestExecPolicyVerdictsAreHandledByCheckShell(t *testing.T) {
 			"the matrix never produced %q, so it is not exercising Evaluate as intended", want)
 	}
 
-	handled, hasDefault, found := switchCases(t, "guard.go", "checkShell", "result.Verdict")
+	handled, hasDefault, found := switchCases(t, "guard.go", "checkShellPolicy", "result.Verdict")
 	require.True(t, found,
-		"no `switch result.Verdict` found in checkShell — re-point this reconciliation")
+		"no `switch result.Verdict` found in checkShellPolicy — re-point this reconciliation")
 	require.NotEmpty(t, handled, "the extractor found the switch but no case labels")
 	require.True(t, hasDefault,
 		"the default branch must stay: it is the fail-closed landing for a verdict this "+
@@ -661,13 +661,20 @@ var structuralFloor = []struct {
 	reason  string // substring the decision must explain itself with
 }{
 	{
-		name: "shell metacharacter",
+		// INF1 (ADR-0004 supplement) narrowed this class from "any control
+		// metacharacter" to "structure the segmenter cannot read". `ls && echo
+		// hi` is now judged segment by segment and is no longer structural;
+		// `ls $(whoami)` still is, because the text that actually runs is not
+		// in the string being judged. The class did not leave the floor — the
+		// floor is still five classes — its membership test moved from a
+		// substring scan to execpolicy.ParseCommandList.
+		name: "unreadable shell structure",
 		profile: PermissionProfile{
 			Tools: ToolsPerm{Allow: []string{"shell_run"}},
 			Shell: ShellPerm{Policy: "allowlist", Patterns: []string{"*"}},
 		},
-		action: Action{Tool: "shell_run", Shell: "ls && echo hi"},
-		reason: "metacharacter",
+		action: Action{Tool: "shell_run", Shell: "ls $(whoami)"},
+		reason: "rejected",
 	},
 	{
 		name: "unknown shell policy",

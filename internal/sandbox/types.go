@@ -78,6 +78,130 @@ type CapabilityReport struct {
 	Reason      string
 	Enforced    bool
 	CanKillTree bool
+
+	// Unenforced names the Config fields the operator asked something of and
+	// that this backend does NOT enforce, one entry per field (W-B-13).
+	//
+	// Enforced/Effective answer at BACKEND granularity, and that granularity is
+	// too coarse to be actionable on the backends where it matters. The Landlock
+	// path reports Enforced=true and OSIsolated because it really does confine
+	// the filesystem, while `network_deny: true` means nothing at all there
+	// unless the seccomp filter also loaded; the Windows restricted-token path
+	// confines writes and installs no WFP filter at all, so the same setting is
+	// permanently inert there. An operator reading "os-isolated" has no way to
+	// learn that half of what they configured is doing nothing. Each constructor
+	// therefore DECLARES the field set it enforces and UnenforcedFields
+	// subtracts it from what the operator actually requested.
+	//
+	// Empty means "everything the operator asked for is enforced" — including
+	// the case where they asked for nothing (see requestedFields: a
+	// FullAccess/no-network-deny config requests nothing, so even a backend
+	// that enforces nothing has nothing to warn about).
+	Unenforced []string
+}
+
+// Config field names used by CapabilityReport.Unenforced and by each backend's
+// enforcement declaration. They are the YAML spellings under
+// security.sandbox, so an operator can grep a warning straight back to the line
+// they wrote.
+//
+// FieldProxyURL is the one exception: Config.ProxyURL is not a
+// security.sandbox YAML key at all (config.example.yaml only has
+// enabled/tier/network_deny under it) — it is bootstrap's internal wiring of
+// the managed-proxy address into the sandbox, doctor's checkSandbox never
+// sets it, and requestedFields deliberately does not read it (see below). The
+// constant survives only because a couple of backends still name it in their
+// own enforcement declaration for documentation purposes; it can never appear
+// in an Unenforced list.
+const (
+	FieldTier          = "tier"
+	FieldWorkspaceRoot = "workspace_root"
+	FieldNetworkDeny   = "network_deny"
+	FieldProxyURL      = "proxy_url"
+)
+
+// requestedFields lists the Config fields the operator asked something of, in
+// a stable order.
+//
+// "Asked something of" is narrower than "set": a FullAccess tier is the absence
+// of a write restriction, so a backend that cannot restrict writes is not
+// failing to honour anything. Reporting it anyway would put a WARNING in front
+// of every operator who left the sandbox at its widest setting, which is how a
+// warning list stops being read.
+//
+// WorkspaceRoot rides on the tier for the same reason: it is the boundary a
+// non-FullAccess tier is measured against and it constrains nothing on its own.
+//
+// ProxyURL is deliberately NEVER in this list, even though it is a real
+// Config field with real backend-visible effects (see sandbox_darwin.go's use
+// of it for the loopback re-permit). It is not something the OPERATOR asked
+// for — it is bootstrap's own wiring of the managed proxy's address, set on
+// every production boot and never set by doctor's checkSandbox, which builds
+// the same Config to describe the same posture. Reading it here made the two
+// disagree about the identical configuration an operator actually wrote: the
+// runtime warned "configured but NOT enforced by this backend: proxy_url" and
+// doctor stayed silent, for a value neither the operator's config nor the
+// operator's mental model of `security.sandbox` contains. Any residual risk
+// from a backend that does not gate the managed proxy belongs in that
+// backend's CapabilityReport.Reason text, not in this mechanical list.
+func requestedFields(cfg Config) []string {
+	var out []string
+	if cfg.Tier != FullAccess {
+		out = append(out, FieldTier)
+		if cfg.WorkspaceRoot != "" {
+			out = append(out, FieldWorkspaceRoot)
+		}
+	}
+	if cfg.NetworkDeny {
+		out = append(out, FieldNetworkDeny)
+	}
+	return out
+}
+
+// landlockEnforcedFields is the Landlock backend's enforcement declaration
+// (W-B-13): the filesystem half always, the network half only when the seccomp
+// filter actually loaded.
+//
+// It lives HERE rather than beside the backend it describes, and the build tag
+// is the whole reason: sandbox_linux_landlock.go is linux-only, so a test for
+// this function next to it could only ever run on one leg of the CI matrix —
+// and the field it decides (network_deny) is the one field in this package
+// whose enforcement is conditional. A declaration nobody can test on the
+// developer's machine is how the conditional silently becomes unconditional.
+//
+// A free function taking the flag rather than a method on the backend, because
+// it is called from newLandlock while the report is still being built.
+func landlockEnforcedFields(seccomp bool) []string {
+	fields := []string{FieldTier, FieldWorkspaceRoot}
+	if seccomp {
+		fields = append(fields, FieldNetworkDeny)
+	}
+	return fields
+}
+
+// UnenforcedFields returns the requested Config fields that enforced does not
+// cover, preserving requestedFields' order.
+//
+// Backends pass the fields they genuinely enforce; passing none is the honest
+// declaration for every degraded path. The subtraction direction matters: a
+// backend that names a field it does not enforce silently removes a warning,
+// so the declaration is deliberately a positive list that has to be typed out
+// next to the code that does the enforcing.
+func UnenforcedFields(cfg Config, enforced ...string) []string {
+	if len(requestedFields(cfg)) == 0 {
+		return nil
+	}
+	have := make(map[string]bool, len(enforced))
+	for _, f := range enforced {
+		have[f] = true
+	}
+	var out []string
+	for _, f := range requestedFields(cfg) {
+		if !have[f] {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // ParseTier maps an operator's tier string to an AccessTier, falling back to

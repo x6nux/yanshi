@@ -521,6 +521,40 @@ func TestNetworkDenyWithProxyPermitsLoopback(t *testing.T) {
 	}
 }
 
+// TestLoopbackCarveOutIsPortWide states the cost of the carve-out above out
+// loud, as an executable assertion.
+//
+// The SBPL clause is `(allow network* (remote ip "localhost:*"))`. Seatbelt has
+// no port filter finer than that in the form this generator uses, so turning
+// the carve-out on for the egress proxy turns it on for EVERY loopback
+// listener: a local Postgres, a Redis, a debug server, another tool's admin
+// port. A sandboxed child under network_deny can reach all of them.
+//
+// That was inert until W-B-16, because bootstrap never set Config.ProxyURL and
+// the branch had no production producer. It does now — the proxy is started
+// before the sandbox precisely so this field can be filled — so the boundary is
+// live and needs to be somewhere a reader can find it.
+//
+// The test asserts the WIDE behaviour on purpose. If a future change narrows
+// the clause to the proxy's own port (which would be strictly better), this
+// fails, and whoever makes that change updates this comment deliberately
+// instead of leaving the boundary described in a doc nobody re-read.
+func TestLoopbackCarveOutIsPortWide(t *testing.T) {
+	proxy := startLoopbackServer(t)
+	other := startLoopbackServer(t)
+	ws := t.TempDir()
+	sb := requireEnforcing(t, Config{
+		Enabled: true, WorkspaceRoot: ws, Tier: ReadOnly,
+		NetworkDeny: true, ProxyURL: proxy,
+	})
+	got := runSandboxed(t, sb, ReadOnly, fmt.Sprintf("/usr/bin/curl -s --max-time 5 %q", other))
+	if !got.ok() || !strings.Contains(got.output, "yanshi-ok") {
+		t.Fatalf("the loopback carve-out no longer reaches a non-proxy port. That is a "+
+			"NARROWING and probably an improvement — update this test and the comment "+
+			"above it rather than reverting: %s", got)
+	}
+}
+
 // startLoopbackServer runs an HTTP server on 127.0.0.1 for the lifetime of the
 // test and returns its URL. Loopback rather than a public host so the network
 // tests are hermetic: an offline runner must still be able to tell a working

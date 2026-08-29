@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/cloudwego/eino/schema"
@@ -13,8 +14,12 @@ import (
 )
 
 // shellStartArgs is the args shape for shell_start and task_shell_start. PTY
-// is honored only when the platform's StartPTYProcess is implemented (Phase 0
-// returns ErrPTYUnavailable for every platform).
+// asks for a real terminal, which linux, darwin and windows all provide; a
+// platform with no adapter, or a host that cannot allocate one, fails the start
+// with the reason rather than silently downgrading to a pipe (a caller that
+// asked for a terminal because it is driving a REPL would otherwise get a
+// session that accepts input and never prompts). `yanshi doctor` reports the
+// same answer up front.
 type shellStartArgs struct {
 	Command string `json:"command"`
 	Workdir string `json:"workdir"`
@@ -28,6 +33,16 @@ type shellIDArgs struct {
 type shellWriteArgs struct {
 	ID   string `json:"id"`
 	Data string `json:"data"`
+}
+
+// shellResizeArgs is shell_resize's input. Rows and Cols are int rather than
+// uint16 so an out-of-range request arrives as itself and can be REFUSED; a
+// uint16 field would let encoding/json reject it with a message about the wire
+// type instead of about the terminal.
+type shellResizeArgs struct {
+	ID   string `json:"id"`
+	Rows int    `json:"rows"`
+	Cols int    `json:"cols"`
 }
 
 // shellWaitArgs is shell_wait's input. TimeoutS bounds the wait itself; the
@@ -51,7 +66,7 @@ type shellReadArgs struct {
 // real name (e.g. shell_write_stdin, NOT a shell string) so the guard profile
 // gates each action independently.
 type ShellV2Tools struct {
-	Start, Read, Write, Wait, Cancel           *GuardedTool
+	Start, Read, Write, Wait, Cancel, Resize   *GuardedTool
 	TaskStart, TaskWait, TaskWrite, TaskCancel *GuardedTool
 
 	// root is the work root: the destructive-deletion baseline handed to the
@@ -67,7 +82,7 @@ type ShellV2Tools struct {
 // task_shell_cancel spent its whole existence unable to cancel anything.
 const shellV2JobIDNote = "id is the job id returned by task_shell_start"
 
-// NewShellV2Tools builds the nine-tool shell v2 surface, anchored at the work
+// NewShellV2Tools builds the ten-tool shell v2 surface, anchored at the work
 // root. Tools share nothing else at construction time; per-call state (session
 // id, job id) is in args.
 //
@@ -109,6 +124,15 @@ func NewShellV2Tools(root string) *ShellV2Tools {
 			"id": {Type: schema.String, Required: true},
 		}),
 		SyncStream(v.cancel))
+	v.Resize = NewGuardedTool("shell_resize", "Shell",
+		"Change a PTY session's terminal size. Only meaningful for sessions started with pty=true.",
+		30*time.Second,
+		params(map[string]*schema.ParameterInfo{
+			"id":   {Type: schema.String, Required: true},
+			"rows": {Type: schema.Integer, Required: true, Desc: "terminal height in rows (1-65535)"},
+			"cols": {Type: schema.Integer, Required: true, Desc: "terminal width in columns (1-65535)"},
+		}),
+		SyncStream(v.resize))
 	v.TaskStart = NewGuardedTool("task_shell_start", "Shell Job", "Start a background shell job.", 30*time.Second,
 		params(map[string]*schema.ParameterInfo{
 			"command": {Type: schema.String, Required: true},
@@ -149,13 +173,11 @@ func (v *ShellV2Tools) manager(ctx context.Context) (*shell.Manager, error) {
 // caller's "workdir" arg when given, otherwise the work root (legacy shell_run
 // parity — an omitted workdir must NOT inherit the server process's cwd).
 //
-// The same value is handed to guard.Action.Workdir, because the destructive
-// deletion dimension classifies "inside vs outside the working directory"
-// against it: with an empty Workdir the guard fails safe and treats EVERY
-// absolute path as out-of-scope (prompting on each one) while losing the
-// "deleting the work root itself" judgement entirely. Keeping the guard's
-// baseline identical to the launch directory is what makes that classification
-// mean what it says.
+// This value used to go to guard.Action.Workdir as well, and that was W-2: it
+// let the model's own JSON move the line its deletions are judged against. The
+// guard's baseline now comes from guardWorkdir, which is a different question —
+// see its header. The two are equal whenever the caller omits "workdir" or names
+// a directory inside the root, which is every ordinary call.
 func (v *ShellV2Tools) effectiveWorkdir(argWorkdir string) string {
 	if argWorkdir != "" {
 		return argWorkdir
@@ -163,20 +185,114 @@ func (v *ShellV2Tools) effectiveWorkdir(argWorkdir string) string {
 	return v.root
 }
 
+// guardWorkdir is the boundary the destructive-deletion dimension classifies
+// "inside vs outside the working directory" against, and it is deliberately NOT
+// effectiveWorkdir.
+//
+// # What the model could do with the other one
+//
+// "workdir" is a field of shellStartArgs and it is in the tool schema, so the
+// model writes it. Handing it to guard.Action.Workdir let the model choose the
+// line that decides whether its own command crosses one. Measured, with the real
+// project root at /work/project:
+//
+//	{"workdir":"/","command":"rm -rf /home/user"}   Prompt              -> Allow
+//	{"workdir":"/","command":"rm -rf /work"}        structural HardDeny -> Allow
+//
+// The second one is the whole gate: `/work` is an ancestor of the project root,
+// which is what isCatastrophicTarget grades as a disaster — until the request
+// says the root is `/`, at which point nothing is an ancestor of anything. No
+// name has to be guessed; one JSON field is the entire escalation. The same
+// value reaches internal/api/http.resolvePermissionMode's fail-safe, so the mode
+// layer was reading the model's answer too.
+//
+// shell v1 has carried a comment naming this exact bug since W-B-02 and passes
+// s.root; v2 shipped without it.
+//
+// # Narrowing is allowed, widening is not
+//
+// A model-supplied workdir INSIDE the root is honoured, because moving the
+// boundary inwards can only tighten: every deletion the outer root graded
+// in-scope is either still in-scope or becomes out-of-scope (a Prompt), and the
+// subdirectory itself and its ancestors join the catastrophic set. Anything else
+// — outside the root, unresolvable, a symlink escape — falls back to the root.
+// withinRootAbs is the canonical containment check (it evaluates symlinks)
+// rather than a second prefix comparison, but its RESULT is deliberately not
+// what is returned: it hands back the canonical spelling, and on macOS that
+// rewrites /var into /private/var while the command's own paths still say /var.
+// A boundary spelled differently from the paths measured against it stops
+// recognising them. So containment is decided canonically and the boundary is
+// the caller's own cleaned spelling.
+//
+// A relative or non-existent workdir falls back to the root as well — the first
+// because "relative to what" has no answer the guard can trust, the second
+// because withinRootAbs stats the path. Both directions are safe: the fallback
+// is never WIDER than the root, which is the only property this function
+// promises.
+func (v *ShellV2Tools) guardWorkdir(argWorkdir string) string {
+	if argWorkdir == "" || v.root == "" || !filepath.IsAbs(argWorkdir) {
+		return v.root
+	}
+	if _, err := withinRootAbs(v.root, argWorkdir); err != nil {
+		return v.root
+	}
+	return filepath.Clean(argWorkdir)
+}
+
+// authorizeLaunch is the shared front half of shell_start and task_shell_start:
+// resolve the interpreter, then Authorize under the tool's own name with the
+// SERVER's boundary. Both launches need the same three answers and the pair had
+// already drifted once — v1's Interpreter and Workdir decisions were made in
+// W-B-02/W-B-05 and neither reached either v2 entry point.
+func (v *ShellV2Tools) authorizeLaunch(ctx context.Context, tool string, a shellStartArgs, raw string) (prog string, args []string, err error) {
+	act, args, err := v.launchAction(tool, a)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := Authorize(ctx, act, raw); err != nil {
+		return "", nil, err
+	}
+	return act.Interpreter, args, nil
+}
+
+// launchAction builds the guard.Action for a v2 launch. It is split out from
+// authorizeLaunch because it is the only place either field can be OBSERVED:
+// PermissionRequest mirrors Action.Workdir but has no Interpreter field, so an
+// end-to-end callback test can witness one half and not the other — and on a
+// POSIX host the Interpreter half has no visible effect at all (ShellArgv
+// resolves "sh", which CommandLanguage maps to the same reader an empty field
+// selects). Asserting the action directly is what makes that half checkable on
+// every platform instead of only on the Windows CI leg.
+func (v *ShellV2Tools) launchAction(tool string, a shellStartArgs) (guard.Action, []string, error) {
+	// The interpreter ShellArgv resolves is the answer to "which shell language
+	// is this command written in", and the guard picks its segmenter from it
+	// (W-B-05). Without it a cmd/PowerShell command is read by the POSIX reader,
+	// which dissolves every backslash path separator it contains —
+	// `Remove-Item -Recurse C:\temp` was measured reaching the FS dimension as
+	// `C:temp`. shell.go has set this since W-B-05; shell_v2.go resolved the
+	// very same `prog` and then did not hand it over.
+	prog, args, err := shell.ShellArgv("", a.Command)
+	if err != nil {
+		return guard.Action{}, nil, err
+	}
+	return guard.Action{
+		Tool:        tool,
+		Shell:       a.Command,
+		Interpreter: prog,
+		Workdir:     v.guardWorkdir(a.Workdir),
+	}, args, nil
+}
+
 func (v *ShellV2Tools) start(ctx context.Context, raw string) (string, error) {
 	var a shellStartArgs
 	if err := json.Unmarshal([]byte(raw), &a); err != nil {
 		return "", err
 	}
-	wd := v.effectiveWorkdir(a.Workdir)
-	if err := Authorize(ctx, guard.Action{Tool: "shell_start", Shell: a.Command, Workdir: wd}, raw); err != nil {
-		return "", err
-	}
-	m, err := v.manager(ctx)
+	prog, args, err := v.authorizeLaunch(ctx, "shell_start", a, raw)
 	if err != nil {
 		return "", err
 	}
-	prog, args, err := shell.ShellArgv("", a.Command)
+	m, err := v.manager(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -185,8 +301,11 @@ func (v *ShellV2Tools) start(ctx context.Context, raw string) (string, error) {
 		Command:   a.Command,
 		Program:   prog,
 		Args:      args,
-		Dir:       wd,
-		PTY:       a.PTY,
+		// effectiveWorkdir, not guardWorkdir: where the process RUNS is still
+		// the caller's choice. Only the boundary the guard judges against is
+		// the server's.
+		Dir: v.effectiveWorkdir(a.Workdir),
+		PTY: a.PTY,
 	})
 	if err != nil {
 		return "", err
@@ -249,6 +368,40 @@ func (v *ShellV2Tools) write(ctx context.Context, raw string) (string, error) {
 	return fmt.Sprintf(`{"written":%d}`, n), nil
 }
 
+// resize is shell_resize: the model-facing consumer of Console.Resize.
+//
+// A freshly allocated PTY is 24x80. That is the right default and the wrong
+// size for most of what a model runs in one — a test runner or a compiler wraps
+// its diagnostics at the terminal width, so a wide session is the difference
+// between reading a failure and reading it in fragments.
+//
+// Bounds are checked HERE rather than trusting the conversion. rows and cols
+// reach the kernel as uint16, so an int that does not fit wraps: a request for
+// 65536 columns silently becomes 0, and a zero winsize means "unknown", which
+// makes a child fall back to its own guess. Refusing is the only answer that
+// does not lie about what happened.
+func (v *ShellV2Tools) resize(ctx context.Context, raw string) (string, error) {
+	var a shellResizeArgs
+	if err := json.Unmarshal([]byte(raw), &a); err != nil {
+		return "", err
+	}
+	if err := Authorize(ctx, guard.Action{Tool: "shell_resize"}, raw); err != nil {
+		return "", err
+	}
+	if a.Rows < 1 || a.Rows > 65535 || a.Cols < 1 || a.Cols > 65535 {
+		return "", fmt.Errorf("shell_resize: rows and cols must be between 1 and 65535, got %dx%d",
+			a.Rows, a.Cols)
+	}
+	m, err := v.manager(ctx)
+	if err != nil {
+		return "", err
+	}
+	if err := m.Resize(a.ID, uint16(a.Rows), uint16(a.Cols)); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(`{"rows":%d,"cols":%d}`, a.Rows, a.Cols), nil
+}
+
 func (v *ShellV2Tools) wait(ctx context.Context, raw string) (string, error) {
 	var a shellWaitArgs
 	if err := json.Unmarshal([]byte(raw), &a); err != nil {
@@ -299,15 +452,11 @@ func (v *ShellV2Tools) taskStart(ctx context.Context, raw string) (string, error
 	if err := json.Unmarshal([]byte(raw), &a); err != nil {
 		return "", err
 	}
-	wd := v.effectiveWorkdir(a.Workdir)
-	if err := Authorize(ctx, guard.Action{Tool: "task_shell_start", Shell: a.Command, Workdir: wd}, raw); err != nil {
-		return "", err
-	}
-	m, err := v.manager(ctx)
+	prog, args, err := v.authorizeLaunch(ctx, "task_shell_start", a, raw)
 	if err != nil {
 		return "", err
 	}
-	prog, args, err := shell.ShellArgv("", a.Command)
+	m, err := v.manager(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -315,7 +464,7 @@ func (v *ShellV2Tools) taskStart(ctx context.Context, raw string) (string, error
 		Command: a.Command,
 		Program: prog,
 		Args:    args,
-		Dir:     wd,
+		Dir:     v.effectiveWorkdir(a.Workdir),
 	})
 	if err != nil {
 		return "", err

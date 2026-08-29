@@ -8,6 +8,8 @@ package clipimg
 import (
 	"context"
 	"os/exec"
+
+	"github.com/x6nux/yanshi/internal/netpolicy"
 )
 
 // commandOutput runs a named subprocess and captures its stdout. It is a
@@ -16,7 +18,13 @@ import (
 // exactly as each platform implementation always did. Swapping it is
 // behavior-preserving for every production caller.
 var commandOutput = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).Output()
+	cmd := exec.CommandContext(ctx, name, args...)
+	// The clipboard helpers (pbpaste, wl-paste, xclip, powershell) are
+	// PATH-resolved third-party binaries. They need a display/session
+	// environment, which survives the scrub, and no credential at all — which
+	// did not survive being inherited whole before this line existed.
+	cmd.Env = netpolicy.ScrubbedEnviron()
+	return cmd.Output()
 }
 
 // Reader reads one image from the clipboard.

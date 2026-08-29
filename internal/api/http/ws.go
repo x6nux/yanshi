@@ -49,6 +49,10 @@ type connSession struct {
 	// it. See permModeState and applySetMode.
 	perm *permModeState
 
+	// guardianPrompt is the operator's replacement for the auto-mode risk
+	// policy (W-B-14). Empty = built-in. See autoApprovalPromptFor.
+	guardianPrompt string
+
 	transientThreadID string
 
 	// defaultModel is the model name shown in status frames when no model is
@@ -306,6 +310,19 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 		}
 		connCtx = tools.WithApprovalManager(connCtx, approvalManager, connectionSessionID)
 
+		// W-B-16: make this connection able to answer the managed proxy's
+		// per-domain egress prompts. Registered here rather than beside
+		// registerClient above because it needs pt, unattended and
+		// approvalManager, all of which are built between the two points.
+		defer s.registerEgressAsker(&egressAsker{
+			write:      conn.write,
+			perm:       pt,
+			unattended: unattended,
+			approvals:  approvalManager,
+			sessionID:  connectionSessionID,
+			connCtx:    connCtx,
+		})()
+
 		// S9: the connection's approval rule set is created lazily on first
 		// approval and MUST be dropped here. Without this defer the
 		// orchestrator's map grows by one RuleSet per WebSocket connection for
@@ -410,6 +427,10 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 		var cs connSession
 		cs.perm = &permModeState{}
 		cs.startedAt = time.Now()
+		// W-B-14: copied per connection rather than reached through a Server
+		// pointer, because the permission callback runs deep inside the tool
+		// layer with only cs in hand.
+		cs.guardianPrompt = s.guardianPrompt
 		// Default display model: the first registry name (sorted), shown in
 		// status frames until the user picks one with /model.
 		cs.defaultModel = einollm.ResolveModelName(models, "")
@@ -684,11 +705,31 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 			// invoked, so this is a no-op for ordinary tool calls. SSE
 			// installs no callback and stays on the static profile.
 			turnCtx = tools.WithErrCounter(turnCtx)
+			// W-B-20: the one seam that lets an ALLOWED call reach the callback.
+			// It reads cs.perm LIVE for the reason permModeState exists at all —
+			// a /mode strict typed mid-turn must bind on the very next tool call
+			// of this turn, without waiting for the turn to end.
+			//
+			// It does NOT reach a call already running inside a managed
+			// sub-agent, and this comment used to say it did. registry.Manager
+			// runs those on context.Background(), so they inherit only what
+			// managedTurnRunner.Run re-binds by name and the predicate is not on
+			// that list. See guard.PermissionMode's ModeStrict entry and
+			// orchestrator's TestStrictModeDoesNotReachManagedSubAgents.
+			turnCtx = tools.WithConfirmEveryCall(turnCtx, func() bool {
+				return cs.perm.get() == guard.ModeStrict
+			})
 			turnCtx = tools.WithPermissionCallback(turnCtx, func(req tools.PermissionRequest) tools.PermissionDecision {
 				// B2-RB1 D3: resolvePermissionRequest skips auto-resolution for
 				// req.Force (set by tools.RequireApproval) so destructive actions
 				// (revert_turn) always reach the interactive prompt below.
-				if d, resolved := resolvePermissionRequest(turnCtx, &cs, models, req); resolved {
+				// &req: the mode gate ANNOTATES the request (W-B-15 marks an
+				// ASK verdict from the model and rewrites Reason to say so),
+				// and the annotation has to reach both the frame written below
+				// and the two post-answer steps that read AIDeclined. Passing a
+				// copy would have produced a prompt that named no source and an
+				// override nothing recorded.
+				if d, resolved := resolvePermissionRequest(turnCtx, &cs, models, &req); resolved {
 					return d
 				}
 				id := pt.newID()
@@ -729,6 +770,12 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 				// `go test ./b`. Shell prompts only; see recordSessionApproval
 				// for the mapping and for the scope caveat (no-op on profiles
 				// without shell.rules).
+				// W-B-15: an override of the model's ASK is good for THIS
+				// call. Downgrading before recordSessionApproval matters as
+				// much as before the return — a widened session rule is the
+				// same standing grant by another route.
+				decision = oneShotIfAIDeclined(req, decision)
+				auditAIOverride(turnCtx, req, decision)
 				recordSessionApproval(o, connectionSessionID, req, decision)
 				return decision
 			})

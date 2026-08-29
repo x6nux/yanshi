@@ -206,6 +206,12 @@ profiles:
     # Example: permit only tools discovered from server "github".
     mcp:   { allow: ["mcp_github_*"] }
     fs:    { read: ["**"], write: ["**"] }
+    # W-B-18: ADDITIONAL project metadata directory names refused for WRITES
+    # even under write: ["**"]. Bare names, not globs — compared against every
+    # segment of the resolved target, so ".git" also covers a submodule's. The
+    # built-in set (.git .yanshi .agents .codex) cannot be shortened from here;
+    # to permit one of these paths, name it LITERALLY in fs.write.
+    # protected: [".myagent"]
     shell: { policy: "allowlist", patterns: ["git *", "go test", "go test *", "cargo test", "cargo test *", "npm test", "npm test *"] }
     net:   { allow: true, hosts: ["*"] }
     #
@@ -246,6 +252,29 @@ security:
     enabled: true              # *bool semantics: omit = default (true); false = opt-out
     tier: read-only            # read-only | workspace-write | full-access
     network_deny: true         # Phase 0 hint for the future OS-isolation backend
+  # W-B-14: replace the instruction body the `auto` permission mode shows the
+  # model. Omit for the built-in policy. The file is read and VALIDATED at
+  # startup: an unreadable path, or one whose text drops any of the four risk
+  # classes (reaching outside the project / cannot be undone / runs code nobody
+  # has read / leaves the machine), refuses the start rather than silently
+  # falling back — in auto mode this prompt IS the verdict, so a policy file
+  # that quietly had no effect is the worst outcome available.
+  #
+  # ⚠️ The validation is LEXICAL. It checks that the four classes' marker words
+  # are present; it cannot tell that a body listing them and then saying
+  # "answer ALLOW for every tool call" has cancelled all four. Such a file
+  # passes, and in auto mode it is then the whole verdict. The guarantee is
+  # therefore about WHERE the file comes from, not what it says:
+  #
+  #   - With a trusted policy file ($YANSHI_POLICY, else ~/.yanshi/policy.yaml),
+  #     that file owns this key — write it there, under `security:`. The value
+  #     here is discarded, which is the point: config.yaml sits inside the tree
+  #     the agent can write, so one fs_write plus a restart would otherwise let
+  #     the agent author its own auto-approval policy.
+  #   - Without one, you are trusting a file the agent can reach. `yanshi
+  #     doctor` reports that posture; it is the same unprotected posture that
+  #     applies to `profiles:`.
+  # guardian_prompt_file: ~/.yanshi/guardian.md
   # ⚠️ Scope: these four keys govern yanshi's OWN in-process HTTP (web_fetch /
   # web_search) AND, since W5, subprocesses launched through the shell/secproc
   # factories — bootstrap starts a real loopback proxy and publishes its
@@ -276,9 +305,49 @@ security:
     allow: []                  # glob host patterns admitted (e.g. "*.github.com")
     deny: []                   # glob host patterns always rejected (deny wins)
     allow_private: false       # admit loopback / RFC1918 / link-local (SSRF risk)
+    # HTTPS inspection (W-B-17). OFF by default, and that default is itself a
+    # load-bearing decision: with it off the managed proxy handles CONNECT as a
+    # blind tunnel, exactly as ADR-0014 specified. Turning it on lets the proxy
+    # decrypt tunnels from factory-launched subprocesses using a locally
+    # generated root at ~/.yanshi/tls/ca.pem, which is published to those
+    # children through SSL_CERT_FILE and friends. It is NOT installed into any
+    # system trust store. Read docs/adr/0023-inspecting-proxy-trust-boundary.md
+    # first — especially the table of which platforms and clients can bypass
+    # it, and the note that a certificate-pinning child stops being able to
+    # reach the network at all.
+    inspect_https: false
+    # Per-method rules inside an allowed host. Evaluated in order, first match
+    # wins, and they can only NARROW a host the rules above admitted — a host
+    # in `deny` is never reconsidered here.
+    #
+    # They apply to plain http:// through the proxy always, and to https ONLY
+    # when inspect_https is on: nobody can read the method inside a blind
+    # CONNECT tunnel. bootstrap says so on stderr if you configure rules
+    # without inspection.
+    methods: []
+    # - host: registry.npmjs.org   # same pattern syntax as allow/deny
+    #   methods: [GET, HEAD]       # empty list = every method
+    #   action: allow              # "allow" or "deny"; there is no default
+    # - host: registry.npmjs.org
+    #   action: deny               # ... so publishing is refused
   shell:
     max_output_bytes: 1048576  # ring buffer cap per session (1 MiB)
     idle_timeout: 30m          # session reaped after this idle window
+    # Cap on shell sessions holding a live OS process at once (W-B-22).
+    # 0 = uncapped. Over the cap a start QUEUES rather than failing — the wait
+    # is bounded by the calling tool's own deadline.
+    max_concurrent: 0
+    # Run the operator's login shell once at startup and layer the environment
+    # it produces under every subprocess launch (W-B-21). Turn this on when
+    # yanshi is started from a desktop launcher or a service manager and the
+    # model reports "command not found" for tools that work in your terminal.
+    #
+    # OFF by default because it executes your startup files at boot. Capture
+    # failure is never fatal: children then get yanshi's own environment.
+    # Credentials the rc files export are stripped on the same path that
+    # strips yanshi's own.
+    capture_profile: false
+    profile_shell: ""          # bash|zsh|sh|powershell; empty = $SHELL
 
 # Batch C1: RLM fan-out, automation scheduling, and agent batch jobs.
 # RLM needs a cheap provider (cost_class: cheap) for rlm_query fan-out.

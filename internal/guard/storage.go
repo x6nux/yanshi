@@ -74,7 +74,19 @@ var storageDestroyers = map[string]bool{
 	"format":     true, // Windows
 	"shred":      true, // also a deletionProgram; on a device it is unrecoverable
 	"badblocks":  true, // -w is a destructive write test
+	"truncate":   true, // -s 0 on a device zeroes its size; on a file, its contents
+	// `tar` is here under a NARROWER rule than the rest of the table, applied in
+	// isStorageDestruction: only its WRITING modes count. The membership rule
+	// above ("the destruction is what the program is for") does not hold for an
+	// archiver — `tar -xf /dev/st0` restores from a tape and must keep working —
+	// but `tar -cf /dev/sda .` writes an archive over a raw block device, and
+	// the create flag makes the intent unambiguous without a second reading.
+	"tar": true,
 }
+
+// tarWritingModes are the tar operations that WRITE to the archive named by -f.
+// Everything else (-x extract, -t list, -d diff) reads it.
+var tarWritingModes = map[byte]bool{'c': true, 'r': true, 'u': true, 'A': true}
 
 // mkfsPrefixes are the program-name prefixes whose suffixed spellings name the
 // same tool: mkfs.ext4, mkfs.xfs, newfs_hfs, newfs_apfs.
@@ -191,6 +203,8 @@ func isStorageDestruction(program string, args []string) bool {
 			}
 		}
 		return false
+	case program == "tar":
+		return tarWritesArchive(args) && anyRawDeviceOperand(args)
 	case program == "fdisk" || program == "gdisk" || program == "parted":
 		// These are interactive partition editors: merely opening one is not
 		// destruction, and refusing `parted -l` (a listing) would be a false
@@ -203,6 +217,33 @@ func isStorageDestruction(program string, args []string) bool {
 	default:
 		return anyRawDeviceOperand(args)
 	}
+}
+
+// tarWritesArchive reports whether a tar invocation creates or appends to the
+// archive, in either the clustered (`-cf`, `cf`) or long (`--create`) spelling.
+func tarWritesArchive(args []string) bool {
+	for i, a := range args {
+		switch a {
+		case "--create", "--append", "--update", "--concatenate", "--catenate":
+			return true
+		}
+		if strings.HasPrefix(a, "--") {
+			continue
+		}
+		// tar accepts its mode cluster with or without a dash, but ONLY as the
+		// first word. Scanning every operand instead would find the `c` in a
+		// file named `create.txt` and read an extraction as a creation.
+		cluster, isFlag := strings.CutPrefix(a, "-")
+		if !isFlag && i != 0 {
+			continue
+		}
+		for j := 0; j < len(cluster); j++ {
+			if tarWritingModes[cluster[j]] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // hasScriptedPartitionFlag reports whether a partition editor was invoked in a

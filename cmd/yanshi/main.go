@@ -30,6 +30,8 @@ import (
 	"github.com/x6nux/yanshi/internal/cli"
 	"github.com/x6nux/yanshi/internal/cli/tui"
 	"github.com/x6nux/yanshi/internal/config"
+	"github.com/x6nux/yanshi/internal/execbroker"
+	"github.com/x6nux/yanshi/internal/harden"
 	"github.com/x6nux/yanshi/internal/lockfile"
 	"github.com/x6nux/yanshi/internal/sandbox"
 	"github.com/x6nux/yanshi/internal/secrets"
@@ -135,6 +137,21 @@ Subcommands:
 `
 
 func main() {
+	// Hardening runs before anything else this process does: before the config
+	// is read, before any subsystem starts, and — the part that decides where
+	// this line goes — before any child can be spawned, because clearing the
+	// loader-injection variables only helps the children that inherit the
+	// cleared environment.
+	//
+	// It is here in main rather than inside dispatch on purpose. dispatch is
+	// unit-tested, and PT_DENY_ATTACH inside a `go test` binary would make the
+	// whole package undebuggable for anyone who ran it. main is the one entry
+	// point no test calls.
+	//
+	// Failures are printed and ignored: a container that forbids setrlimit is a
+	// reduced posture, not a reason to refuse to run an agent server. See
+	// internal/harden for what each measure does and does not buy.
+	harden.Apply().WriteFailures(os.Stderr)
 	os.Exit(dispatch(os.Args, os.Stdin, os.Stdout, os.Stderr))
 }
 
@@ -143,6 +160,27 @@ func main() {
 // logic (version flag, managed-invocation gating, subcommand dispatch, unknown
 // subcommand usage error) is unit-testable. argv includes argv[0].
 func dispatch(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	// The elevation shim, before everything: this process was invoked through a
+	// symlink named `sudo` (or doas/su/pkexec) that yanshi itself put on a
+	// child's PATH, so argv[1] is the intercepted program's arguments and none
+	// of the routing below applies to it.
+	//
+	// Dispatching on argv[0]'s basename is the only signal available — the
+	// shims are symlinks to this same binary — and it is safe because this path
+	// is fail-closed: RunShim returns an error on every branch that does not
+	// exec, including "no broker in the environment", so a yanshi binary
+	// someone happened to name `sudo` refuses to act as one.
+	//
+	// On approval RunShim does not return; it has replaced this process with
+	// the real program. Any return is a refusal or a failure, and both must be
+	// a non-zero exit that does NOT fall through to the router.
+	if name, ok := execbroker.IsShimInvocation(argv[0]); ok {
+		cwd, _ := os.Getwd()
+		if err := execbroker.RunShim(name, argv, cwd); err != nil {
+			fmt.Fprintf(stderr, "%v\n", err)
+		}
+		return execbroker.ShimExitCode
+	}
 	// The Landlock re-exec helper, FIRST — before --version, before -h, before
 	// isManagedInvocation. This process was spawned by yanshi's own Linux
 	// sandbox as /proc/self/exe: it must apply the ruleset to itself and then
@@ -984,6 +1022,14 @@ func runGoal(args []string) int {
 			impl = impl.WithVCS(app.VCS, app.VCSRepoID, app.VCSDBPath, app.WorktreeDir)
 		}
 		evals := goalloop.EvaluatorsForTier(resolvedTier, chatModel, loopSink)
+		// W-B-02: the worker spawns the external agent CLI through
+		// secproc.Launch, which fails closed without a profile and a process
+		// factory in context. Bound here rather than inside goalloop so the
+		// package keeps its current dependency set — the composition root is
+		// the only place that knows both values. Lightweight (T0-T2) runs go
+		// through the orchestrator, which rebinds both per turn, so this is a
+		// no-op for them.
+		ctx = app.BindAgentLaunchContext(ctx)
 
 		loop = goalloop.New(goalloop.Config{
 			Planner:     planner,

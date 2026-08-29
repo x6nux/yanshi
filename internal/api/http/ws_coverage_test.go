@@ -225,7 +225,7 @@ func TestAuthorizeControlAction(t *testing.T) {
 func TestResolvePermissionMode_PlanDenies(t *testing.T) {
 	cs := &connSession{perm: &permModeState{}}
 	cs.perm.set(guard.ModePlan)
-	d, ok := resolvePermissionMode(context.Background(), cs, nil, tools.PermissionRequest{
+	d, ok := resolvePermissionMode(context.Background(), cs, nil, &tools.PermissionRequest{
 		Tool: "fs_write",
 		Args: `{"path":"/etc/config"}`,
 	})
@@ -238,7 +238,7 @@ func TestResolvePermissionMode_PlanDenies(t *testing.T) {
 func TestResolvePermissionMode_YoloAlwaysAllows(t *testing.T) {
 	cs := &connSession{perm: &permModeState{}}
 	cs.perm.set(guard.ModeYOLO)
-	d, ok := resolvePermissionMode(context.Background(), cs, nil, tools.PermissionRequest{
+	d, ok := resolvePermissionMode(context.Background(), cs, nil, &tools.PermissionRequest{
 		Tool: "shell_run",
 		Args: `{"command":"echo hi"}`,
 	})

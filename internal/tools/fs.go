@@ -161,10 +161,30 @@ func (f *FSTools) rootFor(ctx context.Context) string {
 // WalkDir) must NOT go through here; see checkFSSilent. The root itself is
 // resolved via rootFor(ctx), not the static f.root field — see its doc comment.
 func (f *FSTools) abs(ctx context.Context, p string) (string, error) {
+	return resolveWithinRoot(f.rootFor(ctx), p)
+}
+
+// resolveWithinRoot is the jail itself, lifted out of FSTools.abs so the one
+// other place that has to predict what a later fs call will resolve to runs the
+// SAME code instead of a second implementation of it.
+//
+// That other place is permissionActionFor (requestpermission.go), which records
+// an approval scope for the path a model says it will pass to fs_read/fs_write
+// later. approval.Manager matches scopes with reflect.DeepEqual, so a scope
+// holding the model's raw string while the real call resolves to an absolute
+// path is a grant that never matches and never says so — the operator approves,
+// the model is told "granted", and the next call prompts again. Three of the
+// four ways to spell a target were in exactly that state (W-B-12 Blocking-1).
+//
+// It also gives that caller the jail's REFUSAL, which matters more: the jail
+// runs BEFORE Authorize in every fs tool, so a path outside the root is not a
+// permission question at all and no approval can admit it. A caller that shares
+// this function finds that out while it can still say so, instead of minting a
+// rule for a call that cannot reach the guard.
+func resolveWithinRoot(root, p string) (string, error) {
 	if p == "" {
 		return "", fmt.Errorf("fs: empty path")
 	}
-	root := f.rootFor(ctx)
 	cleanRoot := filepath.Clean(root)
 	// Allow absolute paths that anchor at the project root — strip the root
 	// prefix and treat the result as relative from here. Absolute paths OUTSIDE

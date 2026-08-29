@@ -203,7 +203,7 @@ func (s *RuleSet) Approve(cmd string) GeneralizedApproval {
 	if strings.TrimSpace(cmd) == "" || hasControlOperator(cmd) {
 		return GeneralizedApproval{Reason: "command is not a single executable segment"}
 	}
-	decoded, _ := decodeANSIC(cmd)
+	decoded, _ := execpolicy.DecodeANSIC(cmd)
 	program, args, ok := lexShellLite(decoded)
 	if !ok {
 		return GeneralizedApproval{Reason: "command could not be tokenized"}
@@ -332,7 +332,7 @@ func ruleFamily(r execpolicy.Rule) string { return familyKey(r.Program, r.Prefix
 // Returns whether a family was actually demoted, so a caller can tell a real
 // demotion from a call about a command that was never generalized.
 func (s *RuleSet) Demote(cmd string) bool {
-	decoded, _ := decodeANSIC(cmd)
+	decoded, _ := execpolicy.DecodeANSIC(cmd)
 	program, args, ok := lexShellLite(decoded)
 	if !ok {
 		return false

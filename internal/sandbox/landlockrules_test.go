@@ -181,10 +181,17 @@ func TestLandlockVacuityAgreesWithFullAccessTier(t *testing.T) {
 // here means the child confines itself to LESS than the parent computed, while
 // both halves look correct in isolation.
 func TestLandlockRulesRoundTrip(t *testing.T) {
+	// The two boolean fields are here deliberately. They are the parent's
+	// DECISION about the syscall filter, and a token that lost them would make
+	// the child exec without one while the capability report says the filter is
+	// installed — the over-claim that is worse than no sandbox, because it is
+	// the line an operator trusts.
 	in := LandlockRules{
 		ReadPaths:     []string{"/"},
 		WritePaths:    []string{"/home/u/ws", "/tmp"},
 		DevWritePaths: []string{"/dev/null", "/dev/tty"},
+		Seccomp:       true,
+		NetDeny:       true,
 	}
 	token, err := EncodeLandlockRules(in)
 	if err != nil {

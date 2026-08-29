@@ -96,6 +96,15 @@ type sandboxDiag struct {
 	Requested string `json:"requested"`
 	Effective string `json:"effective"`
 	Enforced  bool   `json:"enforced"`
+	// Unenforced names the settings the operator asked for that this backend
+	// does not actually apply. It is the same list `yanshi doctor` prints
+	// (sandbox.CapabilityReport.Unenforced), and the model needs it for the
+	// reason the operator does: on the Landlock path with no seccomp filter,
+	// Enforced is true and `network_deny` is inert, so a model reading only
+	// Enforced concludes the network is closed and plans around a wall that is
+	// not there. W-B-13 gave the field to the doctor and stopped; the model
+	// reads the same posture and draws the same conclusions from it.
+	Unenforced []string `json:"unenforced,omitempty"`
 }
 
 type toolchainDiag struct {
@@ -138,9 +147,10 @@ func sandboxProbe(ctx context.Context) sandboxDiag {
 	}
 	rep := sb.Report()
 	return sandboxDiag{
-		Requested: rep.Requested.String(),
-		Effective: string(rep.Effective),
-		Enforced:  rep.Enforced,
+		Requested:  rep.Requested.String(),
+		Effective:  string(rep.Effective),
+		Enforced:   rep.Enforced,
+		Unenforced: rep.Unenforced,
 	}
 }
 

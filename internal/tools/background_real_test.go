@@ -13,6 +13,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/x6nux/yanshi/internal/guard"
+	"github.com/x6nux/yanshi/internal/shell"
 )
 
 // This file is the REAL-SUBPROCESS half of the T3 verification.
@@ -101,6 +102,7 @@ func offloadCtx(root string, mgr *BackgroundManager) context.Context {
 		FS:    guard.FSPerm{Read: []string{"**"}, Write: []string{"**"}},
 		Shell: guard.ShellPerm{Policy: "denylist"},
 	})
+	ctx = WithSecureProcessFactory(ctx, shell.UnsandboxedSecureFactory())
 	return WithBackgroundManager(ctx, mgr)
 }
 

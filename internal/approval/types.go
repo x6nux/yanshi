@@ -52,6 +52,39 @@ type Scope struct {
 	Paths   []string `json:"paths,omitempty"`
 	Host    string   `json:"host,omitempty"`
 
+	// Redirects carries the shell command's redirections, one entry per
+	// redirection, rendered as "<operator> <target>". It is part of the scope
+	// because a redirection is WHERE THE COMMAND WRITES, and the argument
+	// vector does not mention it: execpolicy puts the target in
+	// Segment.Redirects, not in Args.
+	//
+	// Measured before this field existed: `echo x > out.txt` and
+	// `echo x >> /etc/sudoers` produced byte-identical scopes, so approving the
+	// first for the session auto-allowed the second with no prompt. The guard's
+	// FS dimension judges the target correctly on the way in; without this the
+	// approval cache then remembered a decision that was never about it.
+	//
+	// The order is the source order and is NOT sorted. `> a 2> b` and `> b 2> a`
+	// are different commands.
+	Redirects []string `json:"redirects,omitempty"`
+
+	// Interpreter is the shell LANGUAGE the command is written in
+	// (execpolicy.CommandLanguage of the resolved interpreter): "" for POSIX,
+	// "powershell", "cmd".
+	//
+	// It is part of the scope because the same TEXT is a different COMMAND in a
+	// different language, and the scope is matched with reflect.DeepEqual.
+	// Measured before this field existed: `Remove-Item -Recurse C:\temp` run
+	// through powershell and the identical string run through sh produced
+	// byte-identical scopes, so one approval covered both.
+	//
+	// POSIX is the empty string deliberately (see execpolicy.LanguagePOSIX):
+	// every scope recorded before this field existed carries "", so persisted
+	// approvals for ordinary sh commands keep matching. A Windows operator's
+	// persisted cmd approvals do get re-asked once, which is the correct
+	// direction — they were recorded under a language nothing had identified.
+	Interpreter string `json:"interpreter,omitempty"`
+
 	// ScriptHash is the SHA-256 of the script a shell command executes, set
 	// only when the command runs a script FILE (`sh x.sh`, `./x.sh`,
 	// `node x.js`). It is what makes a rule about running a script safe to

@@ -29,8 +29,8 @@ import (
 )
 
 // SecureProcessSpec is the single shape callers use to describe a process
-// spawn. Tool/Shell echo the guard.Action fields so the Authorizer can match
-// them against the profile; Program/Args/Dir/Env are the exec payload;
+// spawn. Tool/Shell/Interpreter echo the guard.Action fields so the Authorizer
+// can match them against the profile; Program/Args/Dir/Env are the exec payload;
 // UseSandboxTier tells the factory which access class the sandbox should
 // enforce for THIS invocation (may be more permissive than the global
 // Config.Tier when a privileged helper is allowed).
@@ -42,6 +42,34 @@ type SecureProcessSpec struct {
 	Dir            string
 	Env            []string
 	UseSandboxTier sandbox.AccessTier
+
+	// Workdir is the in-scope boundary the guard's destructive-deletion
+	// dimension compares deletion targets against (guard.Action.Workdir). It is
+	// SEPARATE from Dir on purpose: Dir is where the child actually runs and a
+	// caller may legitimately point it anywhere, while Workdir is the project
+	// root the operator's policy is written about. Feeding Dir here would let a
+	// tool argument move the boundary — `{"workdir":"/","command":"rm -rf /x"}`
+	// would become an in-scope deletion.
+	//
+	// Empty means "unknown", which the classifier treats as fail-safe (every
+	// absolute target is out of scope).
+	Workdir string
+
+	// Interpreter is the shell LANGUAGE Shell is written in — the resolved
+	// interpreter program name, which for a shell spawn is exactly Program.
+	// It is a separate field rather than a reuse of Program because Program is
+	// an arbitrary executable for every other caller (an ACP agent CLI, a
+	// diagnostics helper), and the guard must not read those as shell
+	// languages. Empty means "a POSIX shell", the pre-W-B-05 behaviour.
+	//
+	// It travels to guard.Action.Interpreter, which is what picks the
+	// segmenter. See that field for why it matters.
+	Interpreter string
+
+	// ArgsJSON is the tool's raw argument JSON, forwarded to the Authorizer so
+	// the approval dialog shows the operator what they are approving. Display
+	// only: it is never written to the audit log (see tools.Authorize).
+	ArgsJSON string
 
 	// AllowEnv names the credential-bearing environment variables THIS
 	// invocation legitimately needs. Empty (the zero value) means the child
@@ -178,7 +206,8 @@ func MergeOutput(stdout, stderr io.Reader) io.ReadCloser {
 }
 
 // Factory is the per-process-launch strategy. The production implementation
-// (DefaultSecureFactory, Task 19) wires netpolicy.PrepareEnv + Sandbox.Prepare
+// (DefaultSecureFactory, Task 19) wires netpolicy.PrepareEnvFor (via
+// childLaunchPosture.env, internal/shell/childlaunch.go) + Sandbox.Prepare
 // + exec.Start; tests substitute a spy to assert the launch pipeline without
 // spawning real processes.
 type Factory interface {
@@ -238,11 +267,34 @@ func SwapAuthorizer(a Authorizer) Authorizer {
 	return prev
 }
 
+// Authorize runs the registered Authorizer for an action that is NOT a process
+// launch of its own.
+//
+// It exists for exactly one caller: internal/execbroker's decider, which has to
+// adjudicate a program a running child is about to exec through the shim. That
+// is not a Launch — there is no spec, no factory, and no environment to scrub,
+// because the child is doing the exec — but it must go through the same guard
+// pipeline, the same profile and the same approval callback, or a nested `sudo`
+// would be judged by rules other than the ones the operator wrote.
+//
+// It fails closed on an unregistered Authorizer for the same reason Launch
+// does: the zero value is nil, and a process that never ran tools' init must
+// not silently approve.
+func Authorize(ctx context.Context, action guard.Action, argsJSON string) error {
+	if currentAuthorizer == nil {
+		return ErrNoAuthorizer
+	}
+	return currentAuthorizer(ctx, action, argsJSON)
+}
+
 // Launch is the single entry point for any subprocess spawn in yanshi.
 // Pipeline (each step is a fail-closed check):
 //  1. Authorize via the registered Authorizer — HardDeny never reaches the
 //     factory; Prompt may record an approval rule through the same path
-//     tools.Authorize already uses.
+//     tools.Authorize already uses. This is the ONLY authorization a caller
+//     needs: a caller that also Authorizes the same guard.Action itself asks
+//     the operator twice for one command, which is why shell_run hands its
+//     Workdir/ArgsJSON down through the spec instead of keeping its own call.
 //  2. If no Factory is in context, fail closed (returns a factory-missing
 //     error rather than silently skipping the spawn).
 //  3. Strip credential-bearing variables out of spec.Env under spec.AllowEnv,
@@ -261,7 +313,12 @@ func Launch(ctx context.Context, spec SecureProcessSpec) (*StartedProcess, error
 	if currentAuthorizer == nil {
 		return nil, ErrNoAuthorizer
 	}
-	if err := currentAuthorizer(ctx, guard.Action{Tool: spec.Tool, Shell: spec.Shell}, ""); err != nil {
+	if err := currentAuthorizer(ctx, guard.Action{
+		Tool:        spec.Tool,
+		Shell:       spec.Shell,
+		Workdir:     spec.Workdir,
+		Interpreter: spec.Interpreter,
+	}, spec.ArgsJSON); err != nil {
 		return nil, err
 	}
 	f, ok := FromContext(ctx)

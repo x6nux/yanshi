@@ -9,14 +9,15 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-// This file is the Windows enforcement backend. It is a Job Object backend and
-// nothing more, and the "nothing more" is the part that must not be lost:
+// This file is the Windows enforcement backend. It carries TWO independent
+// mechanisms, and keeping them apart is the part that must not be lost:
 //
 //   - It DOES contain process lifetime. Every child prepared through this
 //     sandbox is assigned to one job created with
@@ -28,12 +29,19 @@ import (
 //     real guarantee the platform does not otherwise offer, and it is what
 //     CanKillTree=true means here.
 //
-//   - It does NOT contain access. A process inside a job holds the same token
-//     it would have held outside one, so it reads and writes exactly what the
-//     parent could. The configured AccessTier and NetworkDeny are therefore
-//     reported as unenforced, and Effective stays DegradedHostGuard. See
-//     windowsJobReport for why that is the correct answer and not excessive
+//   - The JOB OBJECT does NOT contain access. A process inside a job holds the
+//     same token it would have held outside one, so it reads and writes exactly
+//     what the parent could. On its own it therefore leaves AccessTier and
+//     NetworkDeny unenforced and Effective at DegradedHostGuard. See
+//     windowsReport for why that is the correct answer and not excessive
 //     modesty.
+//
+//   - The RESTRICTED TOKEN contains writes and nothing else. A WRITE_RESTRICTED
+//     token whose only restricting SID is a capability granted on the workspace
+//     confines the child's writes to that root and the scratch directories,
+//     while leaving reads alone. That is what can move this backend to
+//     Effective=OSIsolated, and restrictedtoken_windows.go is where it lives —
+//     along with the reason there is no matching deny-READ control.
 //
 // # Why AppContainer is not here
 //
@@ -63,9 +71,10 @@ import (
 // failed-cleanup directory for the cases where removal fails. Getting that
 // wrong leaves permission grants scattered across an operator's source tree.
 //
-// So this backend claims what it delivers. The honest consequence is that
-// filesystem and network policy on Windows remain the host guard's job, and the
-// report says so in the field bootstrap logs.
+// So this backend claims what it delivers, and no more. With the restricted
+// token in place that is a WRITE boundary; reads and network egress on Windows
+// remain the host guard's and the managed proxy's job. The report says exactly
+// that in the field bootstrap logs.
 
 // jobProbeTimeout bounds the enforcement self-check.
 //
@@ -105,6 +114,13 @@ type jobobject struct {
 	mu     sync.Mutex
 	handle windows.Handle
 
+	// tokens carries the WRITE_RESTRICTED tokens and the capability grants
+	// written for them, or nil when the restricted-token probe declined or the
+	// configured tier asked for no write restriction. Nil is a working value
+	// throughout: every method on it tolerates a nil receiver, so the
+	// job-object-only shape this backend had before needs no branch of its own.
+	tokens *restrictedTokens
+
 	warnOnce sync.Once
 }
 
@@ -129,9 +145,22 @@ var (
 // When the check fails this returns a backend whose report says so, whose
 // CanKillTree is false, and whose Prepare and PostStart do nothing. It does not
 // claim containment it cannot deliver.
+//
+// The two mechanisms are probed INDEPENDENTLY and neither gates the other. A
+// host can hand out a containing job and refuse a usable restricted token (a
+// workspace on a volume whose filesystem ignores DACLs) or the reverse (a
+// nested job inside a container). Making one a precondition of the other would
+// throw away a working control because an unrelated one was missing, and the
+// report has separate fields precisely so it does not have to.
 func newPlatformSandbox(cfg Config) Sandbox {
 	handle, probe := probeJobObject()
-	sb := &jobobject{cfg: cfg, handle: handle, report: windowsJobReport(cfg, probe)}
+	tokens, tokenProbe := newRestrictedTokens(cfg)
+	sb := &jobobject{
+		cfg:    cfg,
+		handle: handle,
+		tokens: tokens,
+		report: windowsReport(cfg, probe, tokenProbe),
+	}
 	if !probe.enforcing() && handle != 0 {
 		// A job we will not use must not be held: it is a kernel handle, and one
 		// created with kill-on-job-close that we keep but never assign anything
@@ -391,7 +420,7 @@ func processAlive(pid int) bool {
 // darwin: Report() already told the truth, so nothing downstream can read
 // containment into a backend that has none.
 func (s *jobobject) Prepare(_ context.Context, cmd *exec.Cmd, spec CommandSpec) error {
-	if !s.report.CanKillTree {
+	if !s.report.CanKillTree && !s.report.Enforced {
 		s.warnDegraded()
 		return nil
 	}
@@ -401,7 +430,42 @@ func (s *jobobject) Prepare(_ context.Context, cmd *exec.Cmd, spec CommandSpec) 
 	if cmd.Path == "" && spec.Path == "" {
 		return fmt.Errorf("sandbox: windows Prepare received a command with no program")
 	}
+	s.attachToken(cmd, spec.Tier)
 	return nil
+}
+
+// attachToken puts the restricted token for spec.Tier onto the command.
+//
+// # Why this is the one mutation Prepare makes
+//
+// Everything else this backend does happens to a process that already exists,
+// which is why PostStart exists. The token is the exception: it is an argument
+// to process creation, so it has to be in place before Start.
+//
+// # Why SysProcAttr is merged rather than assigned
+//
+// The caller may have set CreationFlags already — the probe children in this
+// package set CREATE_NO_WINDOW, and internal/shell has its own reasons. A
+// wholesale assignment here would silently drop theirs, and the symptom would
+// be a console window flashing on every spawn rather than an error anyone could
+// trace back.
+//
+// # Why a missing token is silent
+//
+// tokenFor returns 0 for FullAccess (the tier that asks for no restriction),
+// for a nil set (the probe declined), and after Close. None of those is an
+// error the caller can act on, and all three are already stated in Report() —
+// failing the spawn instead would turn a degradation into an outage, which is
+// the rule every other path in this package follows.
+func (s *jobobject) attachToken(cmd *exec.Cmd, tier AccessTier) {
+	tok := s.tokens.tokenFor(tier)
+	if tok == 0 {
+		return
+	}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &windows.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Token = syscall.Token(tok)
 }
 
 // PostStart binds a started process into the sandbox-wide job.
@@ -517,12 +581,23 @@ func (s *jobobject) Report() CapabilityReport { return s.report }
 // the reason this mechanism is worth having on a platform where nothing else
 // provides it.
 func (s *jobobject) Close() error {
+	// The token set is torn down BEFORE the job handle, and the order is
+	// load-bearing: closing the job kills every child, and revoking a capability
+	// grant while a child is still using it produces access failures inside a
+	// process that is about to die anyway — noise in the operator's transcript
+	// attributed to whatever command was running. Its own Close is idempotent
+	// and tolerates a nil receiver.
+	tokenErr := s.tokens.Close()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.handle == 0 {
-		return nil
+		return tokenErr
 	}
 	h := s.handle
 	s.handle = 0
-	return windows.CloseHandle(h)
+	if err := windows.CloseHandle(h); err != nil {
+		return err
+	}
+	return tokenErr
 }

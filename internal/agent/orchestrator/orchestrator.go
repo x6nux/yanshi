@@ -57,9 +57,14 @@ type Config struct {
 	// Redactor 是进程级 secrets redactor。绑进每个 turn 的执行 context，
 	// 供 GuardedTool.InvokableRun 在结果交给模型之前收口（W-A-02）。
 	// nil 表示不脱敏，行为与引入前逐字节一致。
-	Redactor        *secrets.Redactor
-	Approvals       *approval.Manager
-	ShellManager    *shell.Manager
+	Redactor     *secrets.Redactor
+	Approvals    *approval.Manager
+	ShellManager *shell.Manager
+	// SecureFactory is the hardened process-launch pipeline. Unlike the other
+	// security fields, leaving it nil does NOT disable anything: every spawn
+	// goes through secproc.Launch, so bindExecutionContext substitutes
+	// shell.UnsandboxedSecureFactory rather than skipping the injection. See that
+	// function for why "nil = unwired" had to stop being representable.
 	SecureFactory   secproc.Factory
 	TaskManager     work.ManagerLike
 	SubagentManager *registry.Manager
@@ -426,9 +431,23 @@ func (o *Orchestrator) bindExecutionContext(ctx context.Context, connectionSessi
 	if o.redactor != nil {
 		ctx = tools.WithRedactor(ctx, o.redactor)
 	}
-	if o.secureFactory != nil {
-		ctx = tools.WithSecureProcessFactory(ctx, o.secureFactory)
-	}
+	// W-B-02: bound UNCONDITIONALLY, unlike every other injection here.
+	//
+	// The nil gate the rest of this function uses means "this subsystem is
+	// absent, downstream degrades". For the process factory that reading was
+	// never available: shell_run used to answer an absent factory by running
+	// the command itself through a raw pipe, so "absent" meant "spawn outside
+	// the launcher's credential scrub, sandbox seam and managed proxy env" —
+	// and nothing distinguished a deployment that meant it from a composition
+	// root that forgot to pass the field. secproc.Launch is now the only spawn
+	// path, so an unbound factory would fail every shell_run closed instead.
+	//
+	// The substitute is not a stub. shell.UnsandboxedSecureFactory spawns for
+	// real; what it omits is the sandbox and the egress policy, which are
+	// exactly the things a caller who passed no factory has not configured.
+	// Authorization is unaffected either way — that happens in secproc.Launch,
+	// above whichever factory answers.
+	ctx = tools.WithSecureProcessFactory(ctx, o.effectiveSecureFactory())
 	if o.shellManager != nil {
 		ctx = tools.WithShellManager(ctx, o.shellManager)
 	}
@@ -444,6 +463,18 @@ func (o *Orchestrator) bindExecutionContext(ctx context.Context, connectionSessi
 		ctx = tools.WithBackgroundManager(ctx, o.background)
 	}
 	return ctx
+}
+
+// effectiveSecureFactory returns the orchestrator's configured process factory,
+// or the unsandboxed default when none was passed. Split out from
+// bindExecutionContext so the substitution is assertable on its own: a test
+// that only inspected the bound context could not tell a substituted factory
+// from a configured one.
+func (o *Orchestrator) effectiveSecureFactory() secproc.Factory {
+	if o.secureFactory != nil {
+		return o.secureFactory
+	}
+	return shell.UnsandboxedSecureFactory()
 }
 
 // BindExecutionContextForTest 暴露 bindExecutionContext 给组合根的接线测试。

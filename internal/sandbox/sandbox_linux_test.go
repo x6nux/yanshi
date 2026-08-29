@@ -21,19 +21,108 @@ import (
 // own way could skip on a host where the backend works (hiding a regression)
 // or run on one where it does not (a flake attributed to the sandbox).
 
+// landlockTestsOptionalEnv lets a host whose kernel advertises Landlock but on
+// which confinement demonstrably does not take effect downgrade the Landlock
+// enforcement tests from a failure to a skip.
+//
+// It must be set EXPLICITLY. See requireEnforcingLandlock.
+const landlockTestsOptionalEnv = "YANSHI_LANDLOCK_TESTS_OPTIONAL"
+
+// requireEnforcingLandlock returns this test binary's path, failing rather than
+// skipping when Landlock is present but not confining (W-B-23).
+//
+// # Why the default is FAILURE
+//
+// The three tests below are the only evidence that Landlock blocks anything;
+// everything else about this backend is an assertion on argv STRINGS. They used
+// to skip on every unavailability, which produces a PASS on a runner where the
+// mechanism silently stopped working — the same defect B3 already fixed for
+// seccomp, and the same one W-B-23's acceptance names the linux CI leg as the
+// place to close. A "pending CI" item whose CI leg can only ever skip never
+// converts, and the board shows green either way.
+//
+// # The discriminator: whose property is the unavailability
+//
+//   - landlockABI() fails. The kernel has no Landlock LSM at all (ENOSYS: not
+//     compiled in) or has it compiled in and switched off at boot (EOPNOTSUPP:
+//     absent from lsm=). Both are properties of THE HOST KERNEL, nothing the
+//     code or the test could change, and both are exactly the state W-B-23's
+//     acceptance describes as "内核不支持时如实降级" — the backend is SUPPOSED to
+//     degrade there, and TestNewPlatformSandboxDegradesHonestly is what checks
+//     that it does. Skip, naming which of the two it was.
+//
+//     ⚠️ A skip here is a NON-VERDICT, not a pass. If the ubuntu leg ever loses
+//     Landlock, W-B-23 reverts to unverified silently. The message says so.
+//
+//   - os.Executable() fails. On linux that reads /proc/self/exe, which is
+//     always readable for the calling process. A failure means /proc is not
+//     mounted — a broken environment, not an unsupported one. FAIL.
+//
+//   - probeLandlockAt() fails while the ABI query succeeded. The kernel says it
+//     has Landlock and confinement did not happen. That is either this
+//     package's helper being broken (the case the tests exist to catch) or a
+//     container whose seccomp profile stubs the landlock syscalls into success.
+//     The two are indistinguishable from here and only one of them is
+//     acceptable, so the default is the loud one. A runner genuinely in the
+//     second category sets landlockTestsOptionalEnv where it is configured,
+//     which records the decision instead of defaulting to it.
+func requireEnforcingLandlock(t *testing.T) string {
+	t.Helper()
+	if _, err := landlockABI(); err != nil {
+		t.Skipf("this kernel does not provide Landlock (%v).\n\n"+
+			"THIS IS A NON-VERDICT, NOT A PASS: W-B-23's enforcement evidence comes from a "+
+			"leg whose kernel has CONFIG_SECURITY_LANDLOCK and lists landlock in lsm=. "+
+			"If this is the linux CI leg, W-B-23 is unverified on this run.", err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("cannot resolve this test binary via /proc/self/exe: %v; the Landlock "+
+			"helper is re-exec'd through it, so this is a broken environment rather than "+
+			"a host without Landlock", err)
+	}
+	if reason, ok := probeLandlockAt(exe); !ok {
+		if os.Getenv(landlockTestsOptionalEnv) != "" {
+			t.Skipf("landlock does not enforce here and %s is set: %s", landlockTestsOptionalEnv, reason)
+		}
+		t.Fatalf("the kernel advertises Landlock but confinement did not take effect: %s\n\n"+
+			"This is a FAILURE rather than a skip on purpose. The kernel answered the ABI "+
+			"query, so this is not an unsupported host; it is either this package's helper "+
+			"being broken — which is the regression these tests exist to catch — or a "+
+			"sandboxed runner that stubs the landlock syscalls. Skipping would make both "+
+			"look identical to a verified run. If this runner genuinely cannot enforce, set "+
+			"%s where the runner is configured.", reason, landlockTestsOptionalEnv)
+	}
+	return exe
+}
+
 // requireEnforcingBwrap skips unless bubblewrap really enforces here.
+//
+// Same non-verdict shape as requireEnforcingLandlock above (W-B fix-b57
+// finding 4): the four TestBwrapReally* tests below are the only evidence
+// that bwrap blocks anything, and a skip here reads exactly like an
+// unrelated "this platform does not apply" skip unless it says otherwise.
+// This one file previously had two skip vocabularies side by side — the
+// Landlock skips said "non-verdict", these three did not — and a reader
+// scanning `go test -v` output has no way to tell them apart.
 func requireEnforcingBwrap(t *testing.T) string {
 	t.Helper()
 	path, err := exec.LookPath(bwrapProgram)
 	if err != nil {
-		t.Skipf("bwrap not on PATH: %v", err)
+		t.Skipf("bwrap not on PATH: %v\n\n"+
+			"THIS IS A NON-VERDICT, NOT A PASS: W-B-23's bwrap enforcement evidence requires "+
+			"bubblewrap installed on this runner. If this is the linux CI leg, that half of "+
+			"W-B-23 is unverified on this run.", err)
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		t.Skipf("bwrap path unusable: %v", err)
+		t.Skipf("bwrap path unusable: %v\n\n"+
+			"THIS IS A NON-VERDICT, NOT A PASS: see the PATH case above.", err)
 	}
 	if reason, ok := probeBwrapAt(abs); !ok {
-		t.Skipf("bwrap does not enforce on this host: %s", reason)
+		t.Skipf("bwrap does not enforce on this host: %s\n\n"+
+			"THIS IS A NON-VERDICT, NOT A PASS: W-B-23's bwrap enforcement evidence comes from "+
+			"a runner where bubblewrap actually confines. If this is the linux CI leg, that "+
+			"half of W-B-23 is unverified on this run.", reason)
 	}
 	return abs
 }
@@ -267,6 +356,55 @@ func TestLandlockPrepareUsesSpecTier(t *testing.T) {
 	}
 }
 
+// TestLandlockPrepareCarriesTheSyscallFilterDecision pins the wiring between
+// the parent's probe result and the token the child reads.
+//
+// This is the seam where a filter that works perfectly still protects nothing:
+// applySeccomp can be correct, the helper can apply it faithfully, and if
+// rulesFor forgets to set the flag then every spawn goes out unfiltered while
+// the capability report says "landlock+seccomp". Both directions are asserted
+// because only the true one is a security property and only the false one
+// catches a hard-coded constant.
+//
+// The tier is varied along with it: the filter is deliberately NOT
+// per-invocation, because nothing it denies — reading another process's memory,
+// an io_uring submission queue — becomes acceptable at a more permissive
+// filesystem tier.
+func TestLandlockPrepareCarriesTheSyscallFilterDecision(t *testing.T) {
+	for _, seccomp := range []bool{true, false} {
+		for _, netDeny := range []bool{true, false} {
+			for _, tier := range []AccessTier{ReadOnly, WorkspaceWrite, FullAccess} {
+				l := &landlockBackend{
+					cfg:     Config{Tier: ReadOnly, NetworkDeny: netDeny},
+					selfExe: "/usr/bin/yanshi",
+					seccomp: seccomp,
+					report:  CapabilityReport{Enforced: true},
+				}
+				cmd := exec.Command("/bin/true")
+				if err := l.Prepare(context.Background(), cmd, CommandSpec{Tier: tier}); err != nil {
+					t.Fatalf("Prepare: %v", err)
+				}
+				token, _, _, err := SplitLandlockHelperArgs(cmd.Args)
+				if err != nil {
+					t.Fatalf("split: %v", err)
+				}
+				rules, err := DecodeLandlockRules(token)
+				if err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				if rules.Seccomp != seccomp {
+					t.Errorf("seccomp=%t tier=%s: token carried Seccomp=%t",
+						seccomp, tier, rules.Seccomp)
+				}
+				if rules.NetDeny != netDeny {
+					t.Errorf("netDeny=%t tier=%s: token carried NetDeny=%t",
+						netDeny, tier, rules.NetDeny)
+				}
+			}
+		}
+	}
+}
+
 // TestLandlockReportIsHonestAboutItsLimits is the anti-over-claim pin, and it
 // is the one that protects a downstream decision rather than a local property.
 //
@@ -277,23 +415,55 @@ func TestLandlockPrepareUsesSpecTier(t *testing.T) {
 // would be classified as a sandbox denial and raise an escalation prompt
 // asking the operator to grant privilege for something privilege cannot fix.
 func TestLandlockReportIsHonestAboutItsLimits(t *testing.T) {
+	// Driven through syscallNote/backendName — the real functions the
+	// constructor calls — rather than a hand-written Reason. A literal here
+	// would keep passing while production emitted something else entirely,
+	// which is exactly what happened once already: this test carried a copy of
+	// a Reason string that the seccomp work replaced wholesale.
+	cases := []struct {
+		name     string
+		seccomp  bool
+		netDeny  bool
+		backend  string
+		mentions []string
+	}{
+		{
+			name: "no filter installed", seccomp: false, netDeny: true, backend: "landlock",
+			// The operator asked for network denial and is NOT getting it. The
+			// note must say so, or internal/tools' escalation path will read a
+			// plain connection refusal as a sandbox denial.
+			mentions: []string{"not installed", "network egress is unrestricted", "ignored"},
+		},
+		{
+			name: "filter installed, egress permitted", seccomp: true, netDeny: false, backend: "landlock+seccomp",
+			mentions: []string{"ptrace", "io_uring", "not restricted"},
+		},
+		{
+			name: "filter installed, egress denied", seccomp: true, netDeny: true, backend: "landlock+seccomp",
+			mentions: []string{"ptrace", "af_unix", "socket(2)"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := &landlockBackend{
+				cfg:           Config{Tier: WorkspaceWrite, NetworkDeny: tc.netDeny},
+				seccomp:       tc.seccomp,
+				seccompReason: "probe said no",
+			}
+			if got := l.backendName(); got != tc.backend {
+				t.Errorf("backendName() = %q, want %q", got, tc.backend)
+			}
+			note := strings.ToLower(l.syscallNote())
+			for _, must := range tc.mentions {
+				if !strings.Contains(note, strings.ToLower(must)) {
+					t.Errorf("syscall note must mention %q, got: %s", must, note)
+				}
+			}
+		})
+	}
+
 	l := &landlockBackend{cfg: Config{Tier: WorkspaceWrite, NetworkDeny: true}}
-	l.report = CapabilityReport{
-		Platform:  "linux",
-		Effective: OSIsolated,
-		Backend:   "landlock",
-		Reason: "landlock ABI 3 enforcing FILESYSTEM access only (tier=workspace-write); " +
-			"NOT enforced by this backend: network egress (Config.NetworkDeny=true is " +
-			"ignored here), process/pid isolation, and resource limits — bubblewrap was unavailable",
-		Enforced: true,
-	}
-	reason := strings.ToLower(l.Report().Reason)
-	for _, must := range []string{"filesystem", "network", "not enforced"} {
-		if !strings.Contains(reason, must) {
-			t.Errorf("the landlock Reason must mention %q so callers do not "+
-				"misclassify non-filesystem failures as sandbox denials: %s", must, reason)
-		}
-	}
+	l.report = CapabilityReport{Platform: "linux", Effective: OSIsolated, Enforced: true}
 	if l.Report().CanKillTree {
 		t.Error("landlock has no pid namespace and must not claim kill-tree")
 	}
@@ -305,24 +475,38 @@ func TestLandlockReportIsHonestAboutItsLimits(t *testing.T) {
 // Skips when Landlock is unavailable, which is the only honest thing to do on
 // a host that cannot construct the backend.
 func TestLandlockConstructedReportMatchesTheHonestyContract(t *testing.T) {
-	if _, err := landlockABI(); err != nil {
-		t.Skipf("landlock unavailable: %v", err)
-	}
+	requireEnforcingLandlock(t)
 	sb, reason := newLandlock(Config{
 		Tier: WorkspaceWrite, WorkspaceRoot: t.TempDir(), NetworkDeny: true,
 	})
 	if sb == nil {
-		t.Skipf("landlock did not construct: %s", reason)
+		// requireEnforcingLandlock just ran the SAME probe newLandlock runs, so
+		// a nil here means the two disagree — a bug in one of them, never a
+		// property of the host. Skipping would hide it.
+		t.Fatalf("the landlock probe passed but newLandlock still declined: %s", reason)
 	}
 	rep := sb.Report()
-	if rep.Effective != OSIsolated || rep.Backend != "landlock" {
+	if rep.Effective != OSIsolated {
 		t.Fatalf("unexpected report: %+v", rep)
+	}
+	// Either shape is legitimate — a host without seccomp genuinely gets the
+	// weaker one — but nothing else is. Accepting any string here would let a
+	// typo'd backend name through, and the Backend field is what a
+	// machine-readable consumer branches on.
+	if rep.Backend != "landlock" && rep.Backend != "landlock+seccomp" {
+		t.Fatalf("unexpected backend name %q: %+v", rep.Backend, rep)
 	}
 	low := strings.ToLower(rep.Reason)
 	for _, must := range []string{"filesystem", "network", "not enforced"} {
 		if !strings.Contains(low, must) {
 			t.Errorf("constructed Reason must mention %q, got: %s", must, rep.Reason)
 		}
+	}
+	// The name and the note must agree. A backend that called itself
+	// landlock+seccomp while the note said the filter was not installed would
+	// be two answers to one question, and the consumers read different halves.
+	if strings.Contains(rep.Backend, "seccomp") != !strings.Contains(low, "not installed") {
+		t.Errorf("Backend=%q disagrees with the Reason: %s", rep.Backend, rep.Reason)
 	}
 	if rep.CanKillTree {
 		t.Error("landlock must not claim kill-tree")
@@ -487,19 +671,7 @@ func TestBwrapReallyDeniesNetwork(t *testing.T) {
 // exercised as one path -- which is what makes it a test of the backend rather
 // than of applyLandlock in isolation.
 func TestLandlockHelperReallyConfines(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("landlock is linux-only")
-	}
-	if _, err := landlockABI(); err != nil {
-		t.Skipf("landlock unavailable: %v", err)
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		t.Skipf("cannot resolve test binary: %v", err)
-	}
-	if reason, ok := probeLandlockAt(exe); !ok {
-		t.Skipf("landlock does not enforce on this host: %s", reason)
-	}
+	exe := requireEnforcingLandlock(t)
 
 	rules := BuildLandlockRules(BwrapInput{Tier: ReadOnly}, func(p string) bool {
 		_, err := os.Stat(p)
@@ -525,19 +697,7 @@ func TestLandlockHelperReallyConfines(t *testing.T) {
 // TestLandlockHelperAllowsGrantedWrite is the counterpart confirming the
 // policy is not simply deny-everything.
 func TestLandlockHelperAllowsGrantedWrite(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("landlock is linux-only")
-	}
-	if _, err := landlockABI(); err != nil {
-		t.Skipf("landlock unavailable: %v", err)
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		t.Skipf("cannot resolve test binary: %v", err)
-	}
-	if reason, ok := probeLandlockAt(exe); !ok {
-		t.Skipf("landlock does not enforce on this host: %s", reason)
-	}
+	exe := requireEnforcingLandlock(t)
 
 	ws := t.TempDir()
 	rules := BuildLandlockRules(BwrapInput{
@@ -561,6 +721,86 @@ func TestLandlockHelperAllowsGrantedWrite(t *testing.T) {
 	if _, err := os.Stat(target); err != nil {
 		t.Fatalf("granted write did not land: %v", err)
 	}
+}
+
+// TestLandlockBackendPrepareReallyConfines is W-B-23's end-to-end assertion:
+// the CONSTRUCTED backend, its own Prepare, and a real run.
+//
+// # Why the two tests above are not this test
+//
+// They build the policy token themselves and hand it to the helper directly.
+// That proves the helper confines. It proves nothing about Prepare, which is
+// the only part of this backend production ever calls — and Prepare is where
+// the policy is chosen (rulesFor), the token is encoded, and the argv is
+// reassembled. A Prepare that dropped the token, encoded cfg.Tier instead of
+// spec.Tier, or lost the `--` separator would leave every assertion in this
+// file green while shipping unconfined children, because the argv tests next to
+// them compare strings against a hand-written expectation rather than against
+// what the kernel does with them.
+//
+// Both directions are asserted from one prepared backend. A deny-only assertion
+// passes against a sandbox that refuses everything, which is useless rather than
+// safe; an allow-only assertion passes against one that confines nothing.
+func TestLandlockBackendPrepareReallyConfines(t *testing.T) {
+	requireEnforcingLandlock(t)
+
+	base := t.TempDir()
+	ws := filepath.Join(base, "ws")
+	if err := mkdirAllForTest(ws); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(base, "outside")
+	if err := mkdirAllForTest(outside); err != nil {
+		t.Fatal(err)
+	}
+
+	sb, reason := newLandlock(Config{Enabled: true, Tier: WorkspaceWrite, WorkspaceRoot: ws})
+	if sb == nil {
+		t.Fatalf("the landlock probe passed but newLandlock still declined: %s", reason)
+	}
+	if !sb.Report().Enforced {
+		t.Fatalf("a constructed landlock backend must claim Enforced: %+v", sb.Report())
+	}
+
+	// runPrepared drives the production seam: build the command the caller
+	// would have built, let the backend rewrite it, run whatever came back.
+	runPrepared := func(t *testing.T, script string) error {
+		t.Helper()
+		cmd := exec.Command("/bin/sh", "-c", script)
+		spec := CommandSpec{Path: "/bin/sh", Args: []string{"-c", script}, Tier: WorkspaceWrite}
+		if err := sb.Prepare(context.Background(), cmd, spec); err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		if cmd.Path == "/bin/sh" {
+			t.Fatal("Prepare left the command unwrapped; the child would run unconfined " +
+				"while Report claims os-isolated")
+		}
+		cmd.Env = []string{}
+		return cmd.Run()
+	}
+
+	t.Run("inside the workspace is writable", func(t *testing.T) {
+		target := filepath.Join(ws, "written")
+		if err := runPrepared(t, "echo ok > "+target); err != nil {
+			t.Fatalf("the prepared command could not write inside its own workspace: %v", err)
+		}
+		if _, err := os.Stat(target); err != nil {
+			t.Fatalf("the granted write did not land: %v", err)
+		}
+	})
+
+	t.Run("a sibling of the workspace is not", func(t *testing.T) {
+		// A SIBLING rather than an arbitrary path: granting the workspace must
+		// not grant its parent. A rule that accidentally targeted base/ would
+		// pass the allow case above and confine nothing that matters.
+		target := filepath.Join(outside, "leaked")
+		if err := runPrepared(t, "echo leaked > "+target); err == nil {
+			t.Fatalf("the prepared command wrote outside its workspace: %s", target)
+		}
+		if _, err := os.Stat(target); err == nil {
+			t.Fatalf("the out-of-workspace write actually landed at %s", target)
+		}
+	})
 }
 
 // TestLandlockHelperRefusesUnappliablePolicyRatherThanExecUnconfined closes

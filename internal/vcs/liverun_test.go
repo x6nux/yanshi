@@ -623,7 +623,20 @@ func TestLiveRun_OrphanScanRecognisesAKilledOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.v.SetProcessAlive(func(pid int) bool {
-		return syscall.Kill(pid, syscall.Signal(0)) == nil
+		// os.FindProcess + Signal rather than syscall.Kill: this file has no
+		// build constraint, so it must COMPILE on windows even though the test
+		// skips there at run time, and syscall.Kill does not exist on windows.
+		// Before this, `GOOS=windows go vet ./...` failed on this one line —
+		// which meant the whole windows CI leg was red, and "the evidence for
+		// this acceptance is the windows leg" could never be cashed in.
+		// internal/lockfile's Alive uses signal 0 the same way behind a build
+		// tag; the tag is not available here because the rest of the file is
+		// portable.
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			return false
+		}
+		return proc.Signal(syscall.Signal(0)) == nil
 	})
 
 	wt, err := r.v.AddWorktree(r.repoID, []string{"subagent"})

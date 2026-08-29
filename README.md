@@ -204,7 +204,7 @@ authoritative set, read the registration calls under `internal/tools` (a built
 - `fs_search` — search file contents with a regexp (skips `.git`, `node_modules`, `vendor`, binary files).
 
 **Shell**
-- `shell_run` — run a single shell command; returns combined output, exit code, and duration. Shell metacharacters (`&&`, `||`, `;`, `|`, backticks, `$()`, `>`, `<`, newlines) are rejected — issue sequential commands instead.
+- `shell_run` — run a single shell command; returns combined output, exit code, and duration. Chains (`&&`, `||`, `;`, `|`) are judged segment by segment and the strictest verdict decides the whole command; redirection targets are checked against the filesystem permissions. Command substitution (`$()`, backticks), process substitution, subshells, here-documents, background `&` and newlines are rejected outright.
 
 **Git** (read-only; see [Prerequisites](#prerequisites) for the per-feature version floors)
 - `git_status` — structured working-tree status. Reads `--porcelain=v2`, so it

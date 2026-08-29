@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/x6nux/yanshi/internal/agent/registry"
+	"github.com/x6nux/yanshi/internal/guard"
 )
 
 type agentSpawnArgs struct {
@@ -109,8 +111,11 @@ func (t *AgentTools) streamAgentSpawn(ctx context.Context, argsJSON string) <-ch
 //
 // Both sides may hold glob patterns ("*" for general, "memory_*" for
 // implementer), so membership is tested in both directions: an entry survives
-// when a pattern on the other side matches it. That is what lets a wildcard
-// behave as the superset it is meant to be.
+// when the other side PROVABLY covers it (guard.GlobCovers). That is what lets
+// a wildcard behave as the superset it is meant to be — and, since W-B-19, what
+// stops one behaving as a superset it is not: a plain match test kept `fs_*`
+// against a role allowing `fs_?`, because the pattern matches the string while
+// granting strictly less than what the string denotes.
 //
 // Two cases are rejected outright rather than degraded:
 //
@@ -136,46 +141,131 @@ func resolveSpawnRole(role string, callerTools []string) (string, []string, erro
 			`tool the caller can use, which is the opposite of a custom restricted role`)
 	}
 
-	switch {
-	case len(def.AllowedTools) == 0:
-		return def.Name, callerTools, nil
-	case len(callerTools) == 0:
-		return def.Name, def.AllowedTools, nil
-	}
-
-	effective := intersectToolSets(def.AllowedTools, callerTools)
-	if len(effective) == 0 {
-		return "", nil, fmt.Errorf("agent_spawn: role %q allows none of the requested tools %v; role tools: %v",
-			def.Name, callerTools, def.AllowedTools)
+	effective, err := narrowRoleTools(def, callerTools)
+	if err != nil {
+		return "", nil, err
 	}
 	return def.Name, effective, nil
 }
 
-// intersectToolSets returns the entries allowed by both sides. Membership is
-// glob-aware in both directions (anyGlobMatch), because either side may hold a
+// narrowRoleTools is the intersection arm of resolveSpawnRole: role ∩ caller,
+// or the reason it could not be taken.
+//
+// Split out from resolveSpawnRole so the algebra can be exercised against a
+// RoleDef that is not in the shipped catalog. The catalog contains no pattern
+// pair that produces an unrepresentable overlap, which is exactly why a test
+// restricted to catalog roles would be pinning "today's catalog happens to be
+// safe" rather than "the algebra is safe" — and the catalog is a list somebody
+// will add to.
+func narrowRoleTools(def RoleDef, callerTools []string) ([]string, error) {
+	switch {
+	case len(def.AllowedTools) == 0:
+		return callerTools, nil
+	case len(callerTools) == 0:
+		return def.AllowedTools, nil
+	}
+
+	effective, unprovable := intersectToolSets(def.AllowedTools, callerTools)
+	if len(effective) > 0 {
+		return effective, nil
+	}
+	// W-B-19: "无法安全求交时显式报错而非静默取宽". Two ways to get here and
+	// they need different sentences, because only one of them is the caller's
+	// mistake:
+	//
+	//   - genuinely disjoint sets. Nothing either side allows is allowed by the
+	//     other, and the answer is "pick different tools".
+	//   - an intersection this code cannot REPRESENT. Both sides carry patterns,
+	//     they overlap, and no single glob denotes the overlap — so the only
+	//     expressible answers are wider or narrower than the truth. Silently
+	//     taking the wider one is a privilege escalation dressed as a
+	//     convenience; taking the narrower one silently would be a sub-agent
+	//     that mysteriously cannot use tools it was granted. Saying so is the
+	//     only answer that is neither.
+	if len(unprovable) > 0 {
+		return nil, fmt.Errorf("agent_spawn: role %q and the requested tools %v overlap "+
+			"only through patterns whose intersection cannot be expressed as a tool list (%v); "+
+			"name the tools explicitly instead of using a wildcard. Role tools: %v",
+			def.Name, callerTools, unprovable, def.AllowedTools)
+	}
+	return nil, fmt.Errorf("agent_spawn: role %q allows none of the requested tools %v; role tools: %v",
+		def.Name, callerTools, def.AllowedTools)
+}
+
+// intersectToolSets returns the entries allowed by both sides, plus the entries
+// it DROPPED because it could not prove they were covered.
+//
+// Membership is glob-aware in both directions, because either side may hold a
 // pattern such as "*" or "memory_*" that stands for a set of concrete tools.
+// The test is guard.GlobCovers, not a plain match, and W-B-19 is the difference:
+// "does a pattern on the other side match this string" is not "is everything
+// this string denotes allowed by the other side". `fs_?` matches the STRING
+// `fs_*`, so the old test kept `fs_*` — a set strictly larger than the role
+// permitted — and did it silently.
+//
+// The second return is not decoration. Dropping an entry narrows, which is the
+// safe direction and needs no announcement while something survives; but when
+// NOTHING survives, "the sets are disjoint" and "the overlap exists and cannot
+// be written down" are different facts about the caller's request, and only the
+// second is fixable by rewording it. resolveSpawnRole uses it to say which.
+//
 // Both input slices are assumed non-empty; the empty-set conventions are
 // handled by resolveSpawnRole.
-func intersectToolSets(roleTools, callerTools []string) []string {
+func intersectToolSets(roleTools, callerTools []string) (kept, unprovable []string) {
 	out := make([]string, 0, len(callerTools))
 	seen := make(map[string]bool, len(callerTools))
-	keep := func(name string) {
+	keepFn := func(name string) {
 		if !seen[name] {
 			seen[name] = true
 			out = append(out, name)
 		}
 	}
+	// An unrepresentable overlap needs a wildcard on BOTH sides.
+	//
+	// Only a wildcard can be one at all — a literal the other side does not
+	// match is plain disjointness, and calling that "cannot be expressed" sends
+	// the caller looking for a spelling that does not exist. But that test alone
+	// is not enough, and the shipped catalog proved it: `implementer` carries
+	// `memory_*`, so ANY literal request it did not cover came back as
+	// "overlap only through patterns whose intersection cannot be expressed
+	// ([memory_*]); name the tools explicitly instead of using a wildcard" — to
+	// a caller who wrote one literal and no wildcard at all, naming a pattern
+	// they never typed.
+	//
+	// It is sound to require both sides. A wildcard on one side meets literals
+	// on the other, and each of those literals either matches (kept above) or is
+	// not in the set at all; so the intersection is exactly the kept ones and
+	// there is nothing left over to be inexpressible.
+	//
+	// Still conservative in the other direction: `fs_*` against `net_*` is
+	// reported as unrepresentable although it is empty. Deciding glob
+	// disjointness in general is a machine this hint does not justify, and the
+	// error is the harmless one — the request is refused either way, and the
+	// wording only affects what the caller tries next.
+	bothSidesGlob := slices.ContainsFunc(roleTools, guard.HasGlobMeta) &&
+		slices.ContainsFunc(callerTools, guard.HasGlobMeta)
+	dropped := map[string]bool{}
+	dropFn := func(name string) {
+		if bothSidesGlob && guard.HasGlobMeta(name) && !dropped[name] {
+			dropped[name] = true
+			unprovable = append(unprovable, name)
+		}
+	}
 	for _, c := range callerTools {
-		if anyGlobMatch(roleTools, c) {
-			keep(c)
+		if guard.GlobCovers(roleTools, c) {
+			keepFn(c)
+		} else {
+			dropFn(c)
 		}
 	}
 	for _, r := range roleTools {
-		if anyGlobMatch(callerTools, r) {
-			keep(r)
+		if guard.GlobCovers(callerTools, r) {
+			keepFn(r)
+		} else {
+			dropFn(r)
 		}
 	}
-	return out
+	return out, unprovable
 }
 
 type agentWaitArgs struct {

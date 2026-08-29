@@ -19,6 +19,18 @@ type Config struct {
 	IdleTimeout    time.Duration
 	Factory        ProcessFactory
 	Logger         *log.Logger // optional; defaults to log.Default()
+	// MaxConcurrent caps how many sessions may hold a live OS process at once.
+	// 0 — the default — means no cap, so a Manager built without thinking
+	// about this behaves exactly as it did before the field existed.
+	//
+	// Over the cap, Start QUEUES; it does not refuse. Exceeding a resource
+	// ceiling is not a security event and the fail-closed reflex is the wrong
+	// one here: a refused background job is a task the model has to notice,
+	// interpret and retry, whereas a queued one is the same task a moment
+	// later. The bound on waiting is the CALLER's context — every tool has a
+	// deadline — so a queue that never drains surfaces as that tool's timeout
+	// rather than as a hang.
+	MaxConcurrent int
 }
 
 // Manager owns the set of live shell sessions and the persisted job table.
@@ -31,6 +43,10 @@ type Manager struct {
 	sessions map[string]*liveSession
 	jobs     map[string]*liveJob
 	persist  PersistStore
+	// slots is the concurrency gate (Config.MaxConcurrent). nil means no cap.
+	// A buffered channel rather than a counter + Cond because the wait has to
+	// be selectable against the caller's ctx, and a Cond cannot be selected on.
+	slots chan struct{}
 }
 
 // liveSession is the Manager's internal per-session state. The mu protects
@@ -51,6 +67,9 @@ type liveSession struct {
 	// session. The reaper collects sessions nobody has touched; output alone
 	// does not count, or a long silent build would look idle.
 	touched time.Time
+	// release returns this session's concurrency slot. Always non-nil (the
+	// uncapped Manager hands back a no-op) so pump does not have to branch.
+	release func()
 }
 
 // liveJob is the Manager's internal per-job state. session is set at
@@ -68,12 +87,46 @@ func NewManager(cfg Config) *Manager {
 	if cfg.MaxOutputBytes == 0 {
 		cfg.MaxOutputBytes = 1 << 20
 	}
-	return &Manager{
+	m := &Manager{
 		cfg:      cfg,
 		sessions: make(map[string]*liveSession),
 		jobs:     make(map[string]*liveJob),
 	}
+	if cfg.MaxConcurrent > 0 {
+		m.slots = make(chan struct{}, cfg.MaxConcurrent)
+	}
+	return m
 }
+
+// acquire takes a concurrency slot, waiting when the cap is reached. It
+// returns the release function, which the caller must arrange to run EXACTLY
+// once — on a failed spawn immediately, and otherwise when pump observes the
+// process exit.
+//
+// ctx is honoured while waiting, so a queued start fails with the caller's own
+// deadline error rather than blocking a tool call forever.
+func (m *Manager) acquire(ctx context.Context) (func(), error) {
+	if m.slots == nil {
+		return func() {}, nil
+	}
+	select {
+	case m.slots <- struct{}{}:
+	case <-ctx.Done():
+		return nil, fmt.Errorf("shell: waiting for one of %d concurrency slots: %w", m.cfg.MaxConcurrent, ctx.Err())
+	}
+	var once sync.Once
+	return func() { once.Do(func() { <-m.slots }) }, nil
+}
+
+// Factory returns the process factory this Manager will spawn through.
+//
+// It exists so a wiring assertion can read the ASSEMBLED manager rather than
+// the struct literal that was handed to NewManager. Those are the same value
+// only if nobody rebuilt the manager in between, and "reading the call site
+// cannot catch it" is the whole reason the assertion exists: the shell v2
+// factory shipped without a proxy URL while the secproc one had it, and every
+// test that substituted its own factory was blind to it.
+func (m *Manager) Factory() ProcessFactory { return m.cfg.Factory }
 
 // WithPersistence attaches a PersistStore so the Manager can flush jobs at
 // shutdown and reload them at boot. Returns m for chaining.
@@ -90,9 +143,23 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Session, error) 
 	if m.cfg.Factory == nil {
 		return nil, fmt.Errorf("shell: no process factory configured")
 	}
+	// The slot is taken BEFORE the spawn and released by pump after the
+	// process exits, so the cap counts live OS processes rather than live
+	// Session records: a session whose process already exited is not occupying
+	// the resource the cap is about.
+	//
+	// The wait uses the CALLER's ctx, not the lifecycle context derived below.
+	// The lifecycle is deliberately WithoutCancel — a session outlives the
+	// tool call that started it — so waiting on it would make an over-cap start
+	// unbounded.
+	release, err := m.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
 	lifecycle, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	proc, console, err := m.cfg.Factory.Start(lifecycle, spec)
 	if err != nil {
+		release()
 		cancel()
 		return nil, err
 	}
@@ -114,6 +181,7 @@ func (m *Manager) Start(ctx context.Context, spec LaunchSpec) (*Session, error) 
 		output:    newRingBuffer(m.cfg.MaxOutputBytes),
 		done:      make(chan struct{}),
 		touched:   time.Now(),
+		release:   release,
 	}
 	// Bind the Session's MarshalJSON lock to liveSession.mu so json.Marshal of
 	// a Session (e.g. /jobs, /sessions rendering) is serialized against pump()
@@ -277,6 +345,30 @@ func (m *Manager) Write(id string, data []byte) (int, error) {
 	}
 	s.touch(time.Now())
 	return s.console.Write(data)
+}
+
+// Resize changes a session's terminal geometry, which the kernel delivers to
+// the child as SIGWINCH.
+//
+// It exists because the Console interface has had a Resize method, implemented
+// against a real TIOCSWINSZ ioctl on unix and ResizePseudoConsole on windows,
+// with NO caller anywhere outside its own unit test. A capability with two
+// platform implementations, a passing test and zero reachable callers is not a
+// shipped feature — this method and shell_resize above it are what make it one.
+//
+// The error from a non-PTY session is deliberately passed through rather than
+// swallowed: a pipe-backed session HAS no geometry, and reporting success would
+// tell a caller its 200-column request took effect on a child that will keep
+// wrapping at 80.
+func (m *Manager) Resize(id string, rows, cols uint16) error {
+	m.mu.Lock()
+	s := m.sessions[id]
+	m.mu.Unlock()
+	if s == nil {
+		return ErrNotFound
+	}
+	s.touch(time.Now())
+	return s.console.Resize(rows, cols)
 }
 
 // Wait blocks until the session exits or ctx is canceled. The ctx-aware path
@@ -445,6 +537,12 @@ var ErrNotFound = errors.New("shell: session/job not found")
 // this is the real fix for the "ring buffer never drains" review bug.
 func (s *liveSession) pump() {
 	defer close(s.done)
+	// The slot is released before done is closed (defers run LIFO), so a
+	// caller that was queued behind this session can proceed the moment Close
+	// or Wait observes the exit. Releasing here rather than in Cancel is what
+	// makes the accounting exact: Cancel is one of several ways a process can
+	// end, and pump is the only place all of them converge.
+	defer s.release()
 	defer s.console.Close()
 	buf := make([]byte, 4096)
 	for {

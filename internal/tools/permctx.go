@@ -76,6 +76,22 @@ type PermissionRequest struct {
 	// callback. Workdir is the project root used as the in-scope boundary.
 	Shell   string
 	Workdir string
+	// AIDeclined marks a request that reached the interactive prompt because
+	// ModeAuto's risk assessment answered ASK (W-B-15). It is set by the mode
+	// gate, not by Authorize, and is SERVER-SIDE ONLY — the reason it conveys
+	// travels to the client inside Reason, which the user reads, while the flag
+	// itself stays where the decisions are made. Same rule as ProfileHardDeny
+	// and for the same reason: a flag on the wire is a flag the server has to
+	// take a client's word for.
+	//
+	// Two consequences, both in the WS callback:
+	//
+	//   - the prompt says the model declined and why, so an approval is an
+	//     informed one rather than a click on an unexplained dialog;
+	//   - a "session"/"persistent" answer is downgraded to a one-shot allow.
+	//     Overriding a verdict is not the same as switching the judge off, and
+	//     a standing rule for a scope the model flagged would do the second.
+	AIDeclined bool
 }
 
 // forcePromptTools 列出"必须每次显式审批、不可被任何 allowlist/always_allow 短路"
@@ -145,6 +161,41 @@ const (
 // cancellation/timeout).
 type permCallbackKey struct{}
 
+type confirmEveryCallKey struct{}
+
+// WithConfirmEveryCall binds the predicate ModeStrict is enforced through
+// (W-B-20): when it reports true, Authorize turns a guard ALLOW into a prompt.
+//
+// # Why a predicate and not a bool
+//
+// The permission mode is live. The reader goroutine writes permModeState the
+// instant a set_mode frame arrives, precisely so a mid-turn switch reaches tool
+// calls already in flight (including a sub-agent's). A bool captured when the
+// turn context was built would freeze the mode at turn start, which is the one
+// property the whole permModeState design exists to avoid — and it would freeze
+// it in the LOOSE direction for anyone who switched INTO strict mid-turn.
+//
+// # Why this is the only widening-shaped seam here that cannot widen
+//
+// The predicate is consulted in exactly one place and its only effect is
+// Allow -> Prompt (guard.ConfirmPrompt). There is no branch in which returning
+// true admits something, and returning false restores the pre-W-B-20 behaviour
+// byte for byte. An unbound predicate — every sub-agent context, every test,
+// the whole SSE path — is false.
+func WithConfirmEveryCall(ctx context.Context, confirm func() bool) context.Context {
+	if confirm == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, confirmEveryCallKey{}, confirm)
+}
+
+// confirmEveryCall reports whether this execution scope confirms even allowed
+// calls. Unbound = false, which is what keeps every non-WS caller unchanged.
+func confirmEveryCall(ctx context.Context) bool {
+	fn, ok := ctx.Value(confirmEveryCallKey{}).(func() bool)
+	return ok && fn != nil && fn()
+}
+
 // approvalContext bundles an approval Manager + the session ID under which
 // approvals should be recorded / matched for this connection. Installed once
 // per WS connection by bootstrap/HTTP server; absent on the SSE/static path.
@@ -193,11 +244,62 @@ func permissionCallback(ctx context.Context) (func(PermissionRequest) Permission
 }
 
 // scopeFromAction converts a guard.Action to the matching approval.Scope. For
-// shell_run, the command is parsed via execpolicy so the scope identifies the
-// exact program + argument prefix; otherwise the action's tool/fs/net fields
-// are mirrored directly. A shell command that fails to parse or contains a
-// control operator cannot become an approval scope (fail-closed — the user
-// cannot pre-approve a chained command).
+// shell_run the command is parsed so the scope identifies the exact program,
+// argument vector and redirections; otherwise the action's tool/fs/net fields
+// are mirrored directly. A shell command that cannot be read, or that carries
+// more than one executable segment, cannot become an approval scope
+// (fail-closed — the user cannot pre-approve a chained command).
+//
+// # Why ParseCommandList and not Parse (W-B-04 / W-B-06)
+//
+// It used the STRICT lexer, and that was wrong in both directions at once.
+//
+// Too strict on word CONTENT: Parse rejects globs and $VAR because the rule
+// engine cannot honestly match a word whose value it cannot see. Correct for
+// rules; here a scope error is a hard DenyErr, so `ls *.go` under a glob
+// profile was refused OUTRIGHT — the guard said Prompt and no prompt was ever
+// shown. That also made the approval cache unreachable for the whole class of
+// commands most likely to be re-run.
+//
+// Too loose on STRUCTURE: Parse's lexer never emits ";", so `ls; rm -rf /`
+// came back as one segment whose program word is `ls;`. Subshell parens and a
+// raw newline got through the same way. This function's own doc claimed to
+// refuse chains, and CLAUDE.md cited that claim as the last line of defence
+// keeping a chain from reaching an interactive approval; it was measured false
+// for three spellings.
+//
+// ParseCommandList is lenient about content and strict about structure, which
+// is exactly the pair a scope needs. Whitespace folding and quote stripping —
+// W-B-06's "same command, same cache entry" — then come for free, because the
+// scope is built from PARSED WORDS. Argument order is deliberately not
+// normalized: the spec's warning is that under-normalization is an annoyance
+// while over-normalization is a security hole, and two orders are two commands.
+//
+// # Why the reader is chosen by action.Interpreter (B-5)
+//
+// It was not, and that was the over-normalization the paragraph above warns
+// about, arriving one commit after the warning was quoted as satisfied. The
+// same batch taught guard.segmentsFor to read a PowerShell command with the
+// PowerShell reader and left this function calling ParseCommandList
+// unconditionally, so the POSIX reader ate the backslashes:
+//
+//	Remove-Item -Recurse C:\temp   ->  Program=remove-item Prefix=[-Recurse C:temp]
+//	Remove-Item -Recurse C:temp    ->  Program=remove-item Prefix=[-Recurse C:temp]
+//
+// Two different directories in PowerShell, one approval scope. Approving the
+// relative one for the session admitted the absolute one with no callback
+// consulted at all — measured end to end.
+//
+// The SECOND half of the same divergence was a silent DENIAL: any PowerShell
+// command ending in `\` (`Get-ChildItem C:\` is the ordinary spelling) made the
+// POSIX reader report a trailing escape, and a scope error here is a hard
+// DenyErr raised BEFORE the callback. The guard said Prompt and the user never
+// saw one — the exact failure this function's reader was changed to fix, on the
+// language the change did not reach. Both disappear with one shared reader.
+//
+// The language ALSO goes into the scope (approval.Scope.Interpreter), because
+// picking the right reader stops two spellings from colliding within a language
+// and does nothing about the same text meaning different things across two.
 func scopeFromAction(action guard.Action) (approval.Scope, error) {
 	scope := approval.Scope{
 		Tool:  action.Tool,
@@ -208,15 +310,19 @@ func scopeFromAction(action guard.Action) (approval.Scope, error) {
 	if action.Shell == "" {
 		return scope, nil
 	}
-	cmd, err := execpolicy.Parse(action.Shell)
+	segs, err := execpolicy.ParseCommandListFor(action.Interpreter, action.Shell)
 	if err != nil {
 		return approval.Scope{}, err
 	}
-	if len(cmd.Segments) != 1 {
+	if len(segs) != 1 {
 		return approval.Scope{}, fmt.Errorf("approval: shell scope requires one executable segment")
 	}
-	scope.Program = cmd.Segments[0].Program
-	scope.Prefix = append([]string(nil), cmd.Segments[0].Args...)
+	scope.Interpreter = execpolicy.CommandLanguage(action.Interpreter)
+	scope.Program = segs[0].Program
+	scope.Prefix = append([]string(nil), segs[0].Args...)
+	for _, r := range segs[0].Redirects {
+		scope.Redirects = append(scope.Redirects, r.Operator+" "+r.Target)
+	}
 	// A command that executes a script file carries the script's content hash
 	// too, so an approval for "run install.sh" stops applying the moment
 	// install.sh changes. See approval.Scope.ScriptHash.
@@ -399,6 +505,26 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 	}
 
 	dec := guard.New().Check(prof, action)
+	// ModeStrict (W-B-20): the only place a guard ALLOW becomes a question.
+	//
+	// Rewriting the verdict here rather than adding a branch to the Allow case
+	// below is what makes the mode work at all: everything the escalation path
+	// already does — the approval-manager short-circuit that stops the same
+	// confirmed command asking twice, allow_session / allow_persistent
+	// recording, the audit source, the force-prompt and plan-mode exits that
+	// ran BEFORE this line — applies unchanged. A parallel prompt branch would
+	// have had to reimplement each of those, and a strict mode with no memory
+	// is a strict mode nobody leaves switched on.
+	//
+	// Placed AFTER guard.Check so it can only ever tighten: a Prompt stays a
+	// Prompt and a HardDeny of either tier is untouched, so strict mode cannot
+	// downgrade the structural floor into something a callback may answer.
+	strictConfirm := false
+	if dec.Verdict == guard.Allow && confirmEveryCall(ctx) {
+		dec = guard.ConfirmPrompt("strict mode: every tool call is confirmed, " +
+			"including ones the permission profile already allows")
+		strictConfirm = true
+	}
 	// profileDenied marks an OVERRIDABLE profile-policy HardDeny routed through
 	// the shared escalation path (approval manager -> callback) so the interactive
 	// mode gate in resolvePermissionMode can decide (YOLO/Auto override; others
@@ -439,12 +565,27 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 	}
 
 	// (3) Approval manager: short-circuit on a prior session/persistent rule.
-	scope, err := scopeFromAction(action)
-	if err != nil {
+	//
+	// A scope that cannot be derived is a hard refusal for a GENUINE prompt —
+	// the shape scopeFromAction's own doc explains at length, where a silent
+	// denial once hid behind it. It must NOT be one for a call strict mode
+	// rewrote: the guard said Allow, and a UX mode whose promise is "you get
+	// asked" turning that into a refusal the user never sees is a regression the
+	// mode introduced, not a policy anyone chose. Multi-segment commands
+	// (`echo a && echo b`, which guard evaluates per segment and allows) landed
+	// there with asked=0 and an internal error string.
+	//
+	// The memory is what is actually lost. Without a scope there is nothing to
+	// look up and nothing to store, so a confirmed call is honoured ONCE and
+	// "always allow" degrades to "allow" — which is the conservative reading of
+	// a button whose scope nobody can write down.
+	scope, scopeErr := scopeFromAction(action)
+	if scopeErr != nil && !strictConfirm {
 		auditPermission(ctx, action, "deny", "approval_scope", "scope_error")
-		return &DenyErr{Reason: "approval scope: " + err.Error()}
+		return &DenyErr{Reason: "approval scope: " + scopeErr.Error()}
 	}
-	if ac, ok := approvalFromContext(ctx); ok {
+	scoped := scopeErr == nil
+	if ac, ok := approvalFromContext(ctx); ok && scoped {
 		if hit, _ := ac.Manager.Match(ac.SessionID, scope, time.Now()); hit {
 			auditPermission(ctx, action, "allow", "approval_manager", "")
 			return nil
@@ -472,6 +613,11 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 		auditPermission(ctx, action, "allow", source, "")
 		return nil
 	case PermissionAlwaysAllow, PermissionAllowSession:
+		if !scoped {
+			// Confirmed, but unstorable — see the scopeErr branch above.
+			auditPermission(ctx, action, "allow", "interactive_once", "unscopable")
+			return nil
+		}
 		if ac, ok := approvalFromContext(ctx); ok {
 			rule := approval.Rule{ID: newApprovalID(), Action: action.Tool, Scope: scope, TTL: approval.TTLSession, Source: approval.SourceUser, ExpiresAt: approvalExpiry(approval.TTLSession, time.Now())}
 			if err := ac.Manager.Record(ac.SessionID, rule); err != nil {
@@ -484,6 +630,10 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 		auditPermission(ctx, action, "deny", "approval_record", "no_manager")
 		return &DenyErr{Reason: "approval manager unavailable"}
 	case PermissionAllowPersistent:
+		if !scoped {
+			auditPermission(ctx, action, "allow", "interactive_once", "unscopable")
+			return nil
+		}
 		if ac, ok := approvalFromContext(ctx); ok {
 			rule := approval.Rule{ID: newApprovalID(), Action: action.Tool, Scope: scope, TTL: approval.TTLPersistent, Source: approval.SourceUser, ExpiresAt: approvalExpiry(approval.TTLPersistent, time.Now())}
 			if err := ac.Manager.Record(ac.SessionID, rule); err != nil {
@@ -577,14 +727,15 @@ func newApprovalID() string {
 // WithSecureProcessFactory binds f to ctx via secproc.WithFactory so any
 // downstream Launch call can find it. A nil f is a no-op (Launch then fails
 // closed).
+//
+// There is deliberately no matching FromContext re-export any more. There was
+// one, and its only consumer was shell_run's "if a factory is bound, use it,
+// otherwise spawn the command myself" branch — the second spawn implementation
+// W-B-02 deleted. Reading the factory back at a call site is the shape of that
+// mistake: callers spawn through LaunchSecureProcess, which reads it once and
+// fails closed when it is absent.
 func WithSecureProcessFactory(ctx context.Context, f secproc.Factory) context.Context {
 	return secproc.WithFactory(ctx, f)
-}
-
-// SecureProcessFactoryFromContext reads back a Factory bound by
-// WithSecureProcessFactory.
-func SecureProcessFactoryFromContext(ctx context.Context) (secproc.Factory, bool) {
-	return secproc.FromContext(ctx)
 }
 
 // LaunchSecureProcess is the canonical spawn entry point. Every call site
@@ -675,12 +826,25 @@ func RequireApproval(ctx context.Context, req PermissionRequest) error {
 // every approval -- including the ones the user was asked to grant "for this
 // session" -- outlived the session and every session after it.
 //
-// A zero return means no deadline, which is what TTLOnce wants: it is
-// consumed at the prompt and never recorded, so a rule carrying it is a bug
-// elsewhere and a deadline would only hide it.
+// TTLOnce used to return zero, on the reasoning that such a rule "is consumed
+// at the prompt and never recorded, so a rule carrying it is a bug elsewhere".
+// W-B-12 made that false in the same batch that wrote it: request_permission
+// records a TTLOnce rule for a call that has not happened yet, and it is the
+// DEFAULT scope. Manager.expireLocked does nothing with a zero ExpiresAt, so an
+// unconsumed pre-emptive grant outlived the eight-hour "session" one — the
+// narrow choice living longer, in wall-clock terms, than the wide one.
+//
+// It gets the same eight-hour bound rather than a shorter one because the
+// question it answers is the same: how long may a decision the operator made
+// keep applying while they are not looking. Consumption still ends it sooner;
+// this only stops "never used" from meaning "never expires".
+//
+// A zero return survives for a TTL class this function does not recognise,
+// which is the fail-safe direction only because Manager.Match still requires an
+// exact scope hit — a rule nothing matches grants nothing.
 func approvalExpiry(ttl approval.TTL, now time.Time) time.Time {
 	switch ttl {
-	case approval.TTLSession:
+	case approval.TTLOnce, approval.TTLSession:
 		// Long enough not to interrupt a working session, short enough that a
 		// forgotten terminal does not keep granting a decision made yesterday.
 		return now.Add(8 * time.Hour)

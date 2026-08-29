@@ -123,11 +123,14 @@ Two paths, both ending with the skill body entering the turn as guidance:
   turn, so only install skills from sources you trust (builtin, your own user
   dir, and vetted plugins).
 - **Scripts run through `shell_run`.** That means they inherit the acting
-  agent's shell profile **and** the guard's shell policy. In particular,
-  `shell_run` rejects shell control metacharacters: `&&`, `||`, `;`, `|`,
-  backticks, `$()`, `>`, `<`, and newlines. Issue commands one per tool call
-  rather than chaining them, and prefer a script file over an inline one-liner
-  when you need sequencing.
+  agent's shell profile **and** the guard's shell policy. Chaining with `&&`,
+  `||`, `;` or `|` is allowed, but each segment is checked separately against
+  that policy and the strictest verdict decides the whole command — so a chain
+  is only as runnable as its least-allowed part. `shell_run` still rejects
+  outright the forms whose real payload is not in the command string: command
+  substitution (`$()`, backticks), process substitution, subshells, here-
+  documents, background `&`, and newlines. Prefer a script file over an inline
+  one-liner when you need any of those.
 - **Reference files are sandboxed** to the skill directory. `Registry.ReadFile`
   rejects absolute paths and any relative path that escapes the skill dir.
 - **Filesystem and network actions** taken by the agent while following a skill

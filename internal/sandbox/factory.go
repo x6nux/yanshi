@@ -40,6 +40,11 @@ func New(cfg Config) Sandbox {
 			Reason:      "sandbox disabled by configuration",
 			Enforced:    false,
 			CanKillTree: false,
+			// A disabled sandbox enforces nothing, so every field the operator
+			// configured under security.sandbox is inert. Saying so is the
+			// point: `enabled: false` next to `network_deny: true` is a
+			// coherent-looking config in which one line does nothing.
+			Unenforced: UnenforcedFields(cfg),
 		}}
 	}
 	return newPlatformSandbox(cfg)
@@ -58,5 +63,6 @@ func phase0(cfg Config, backend, reason string) Sandbox {
 		Reason:      reason,
 		Enforced:    false,
 		CanKillTree: false,
+		Unenforced:  UnenforcedFields(cfg),
 	}}
 }

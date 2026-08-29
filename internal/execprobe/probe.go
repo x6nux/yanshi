@@ -18,6 +18,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/x6nux/yanshi/internal/netpolicy"
 )
 
 // deadline per probe. Generous for any legitimately slow command (dotnet
@@ -45,6 +47,10 @@ func Run(cmd string, args ...string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
 	c := exec.CommandContext(ctx, cmd, args...)
+	// A version probe runs a PATH-resolved third-party binary purely to read
+	// its banner. It has no business seeing the operator's credentials, and
+	// leaving Env nil handed it all of them.
+	c.Env = netpolicy.ScrubbedEnviron()
 
 	type result struct {
 		out []byte

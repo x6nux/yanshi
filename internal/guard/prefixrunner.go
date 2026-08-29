@@ -2,13 +2,17 @@ package guard
 
 import "strings"
 
-// prefixrunner.go closes the third and last way a command's real shape can hide
-// from the destructive gate's token-level inspection.
+// prefixrunner.go handles one of the ways a command's real shape can hide from
+// the destructive gate's token-level inspection. ClassifyDestruction's header
+// lists them all; this file owns
 //
-// ansic.go already handles two of them: ANSI-C quoting ($'\x72\x6d') and shell
-// wrappers (`bash -c "…"`). This file handles the one they left open —
 // COMMAND PREFIX RUNNERS: programs whose trailing argv IS another whole
 // command, with no -c flag and no quoting to mark the boundary.
+//
+// It said "the third and last way" until a re-review measured four more, so
+// the count is gone rather than restated — the authoritative list is the one
+// on ClassifyDestruction, and a second copy of it here is a copy that stops
+// being true.
 //
 //	sudo rm -rf /
 //	timeout 5 rm -rf /
@@ -74,6 +78,16 @@ type prefixRunnerSpec struct {
 	// assignments reports whether VAR=value words may precede the command.
 	// True for env and sudo, both of which accept them.
 	assignments bool
+
+	// suppliesPositional are flags that PROVIDE the operand `positionals`
+	// counts, so it must not be taken from the argv as well. `taskset` has two
+	// mutually exclusive spellings — `taskset MASK CMD` and `taskset -c LIST
+	// CMD` — and counting a positional in the second one ate the command word:
+	// `-c` consumed `0`, the positional consumed `rm`, and the classifier was
+	// handed a program called `-rf`. Measured Allow while /bin/sh ran `rm -rf
+	// /`, with the misreading ALSO standing the fail-closed backstop down,
+	// because a reader that claims a command reports that it read it.
+	suppliesPositional map[string]bool
 }
 
 // prefixRunners is the table of programs that run another command given in
@@ -118,11 +132,22 @@ var prefixRunners = map[string]prefixRunnerSpec{
 	"setsid": {},
 	"daemon": {},
 
+	// Locking, namespacing, fan-out and repetition. Every one of these exists
+	// to run the argv that follows it, and every one was measured passing
+	// `rm -rf /` — `unshare` and `watch` with a real /bin/sh reaching the
+	// recorder, the other two on their documented semantics. `flock` takes the
+	// lock file as a positional before the command.
+	"flock":    {valueFlags: map[string]bool{"-w": true, "--wait": true, "--timeout": true, "-E": true, "--conflict-exit-code": true}, positionals: 1},
+	"unshare":  {valueFlags: map[string]bool{"--map-user": true, "--map-group": true, "-S": true, "--setuid": true, "-G": true, "--setgid": true, "--propagation": true, "-R": true, "--root": true, "-w": true, "--wd": true}},
+	"parallel": {valueFlags: map[string]bool{"-j": true, "--jobs": true, "-a": true, "--arg-file": true, "-S": true, "--sshlogin": true, "-N": true, "-L": true, "-d": true, "--delimiter": true, "--colsep": true, "-C": true}},
+	"watch":    {valueFlags: map[string]bool{"-n": true, "--interval": true}},
+
 	// Scheduling and resource wrappers.
 	"nice":   {valueFlags: map[string]bool{"-n": true, "--adjustment": true}},
 	"ionice": {valueFlags: map[string]bool{"-c": true, "--class": true, "-n": true, "--classdata": true, "-p": true, "--pid": true}},
 	"taskset": {valueFlags: map[string]bool{"-p": true, "--pid": true, "-c": true, "--cpu-list": true},
-		positionals: 1}, // the CPU mask
+		positionals:        1, // the CPU mask, in the `taskset MASK CMD` spelling
+		suppliesPositional: map[string]bool{"-c": true, "--cpu-list": true}},
 
 	// `timeout DURATION CMD` — the duration is a bare positional.
 	"timeout": {valueFlags: map[string]bool{"-s": true, "--signal": true, "-k": true, "--kill-after": true}, positionals: 1},
@@ -163,6 +188,324 @@ var prefixRunners = map[string]prefixRunnerSpec{
 	// their flags use the slash spelling, which the flag test below accepts.
 	"start": {},
 	"runas": {},
+
+	// The multi-call binary. `busybox` was already in shellWrappers, which only
+	// covers its `busybox sh -c "…"` spelling; the APPLET spelling —
+	// `busybox rm -rf /`, which is what the binary is for — matched nothing and
+	// graded DestructionNone while /bin/sh ran the applet.
+	"busybox": {},
+	"toybox":  {},
+
+	// `coproc CMD` runs CMD in a background subshell. It is bash-only, so a
+	// /bin/sh reference reading never executes it and the differential property
+	// cannot see it; the shape is `time`'s exactly, and a shell_run with
+	// `env: "bash"` reaches it.
+	"coproc": {},
+
+	// SHELL RESERVED WORDS AND THE GROUP OPENER. These are not programs at
+	// all, but the position they occupy is the one lexShellLite reports as the
+	// program word, and the word after them IS a command. splitControlSegments
+	// cuts `{ rm -rf /; }` at the semicolon, so the first fragment arrives here
+	// as the program `{` with `rm -rf /` in its argv; `if true; then rm -rf /;
+	// fi` arrives as three fragments, the middle one starting with `then`.
+	// Measured: every one of those graded DestructionNone.
+	//
+	// Only the words a command may FOLLOW are listed. `fi`, `done`, `esac` and
+	// `}` close a construct and have nothing behind them, so an entry for them
+	// would never strip anything. `for` and `case` are followed by a variable
+	// name or a word to match, not a command, and listing them would grade that
+	// operand as a program.
+	//
+	// They are safe to add for the same reason every other entry is: stripping
+	// combines with the MORE SEVERE rule, so `{ rm -rf ./build; }` still grades
+	// None. A program genuinely named `then` would only be reclassified when
+	// what follows it is itself destructive.
+	"{":     {},
+	"!":     {},
+	"then":  {},
+	"else":  {},
+	"elif":  {},
+	"do":    {},
+	"if":    {},
+	"while": {},
+	"until": {},
+}
+
+// nestedCommandUnwrappers is THE list of ways one command carries another as a
+// string. Three places walk it — classifyLexed while it has budget,
+// hasNestedCommand at the bottom of the budget, and nestedPayloads for the
+// redirection targets — and they walk the same slice on purpose.
+//
+// hasNestedCommand's header requires that its cases be exactly the cases
+// classifyLexed performs, because a case performed there but missing here is a
+// hole at depth zero, the only depth an attacker gets to choose. Sharing one
+// list makes that requirement structural instead of a promise somebody has to
+// keep; it was three hand-maintained copies until trap and the Windows wrappers
+// arrived in consecutive commits and had to be added to each of them.
+//
+// stripCommandPrefix is deliberately NOT here: it hands back a program plus an
+// argv rather than a string, which is the whole reason classifyLexed exists as
+// a separate entry point (see its header on re-serialization).
+var nestedCommandUnwrappers = []func(program string, args []string) (string, bool){
+	unwrapShellCommand,
+	unwrapWindowsShellCommand,
+	unwrapSuCommand,
+	unwrapEvalCommand,
+	unwrapArgvCommand,
+	unwrapRemoteCommand,
+}
+
+// unwrapEvalCommand extracts the command `eval` runs.
+//
+// eval joins its argv with single spaces and parses the result, so re-joining
+// here is what the shell itself does — not the lossy re-serialization
+// classifyLexed's header refuses. It covers both spellings with one function:
+// `eval rm -rf /` (three words) and `eval "rm -rf /"` (one), which a prefix-
+// runner entry could not, because the single-word form would hand
+// normalizeProgramWord the whole command and get back the empty string after
+// the last slash.
+//
+// eval is the same shape as `command` and `exec`, which were already prefix
+// runners; it was simply missing, and both spellings graded DestructionNone.
+func unwrapEvalCommand(program string, args []string) (string, bool) {
+	if program != "eval" || len(args) == 0 {
+		return "", false
+	}
+	return strings.Join(args, " "), true
+}
+
+// firstOperandCommands are programs whose FIRST OPERAND is a whole command,
+// with the words after it being something else entirely.
+//
+// `trap 'rm -rf /' EXIT` is the shape: operand one is a command string the
+// shell parses and runs, operands two onward are signal names. That is not a
+// prefix runner (the trailing argv is not the command) and not a shell wrapper
+// (there is no -c), which is why it fitted none of the tables and every
+// spelling of it graded DestructionNone while /bin/sh really ran the payload.
+//
+// It is the stealthier sibling of eval: the payload runs when the shell EXITS,
+// so an operator reading a transcript never sees the moment the deletion
+// happened.
+//
+// `Invoke-Expression` is PowerShell's eval and `iex` is the alias people
+// actually type. Both take the command as their first operand, and both were
+// measured passing the exact command their unwrapped spelling was refused for:
+// `Remove-Item -Recurse C:\` was a structural HardDeny while
+// `iex "Remove-Item -Recurse C:\"` was Allow.
+var firstOperandCommands = map[string]bool{
+	"trap":              true,
+	"invoke-expression": true,
+	"iex":               true,
+}
+
+// unwrapArgvCommand extracts the command a firstOperandCommands program takes
+// as its first operand, skipping the runner's own flags and the `--` separator.
+//
+// `trap - EXIT` (reset a handler) and `trap -p` (print them) yield an operand
+// that is not a command, and that costs nothing: the extracted string is
+// CLASSIFIED, not refused, so a `-` grades DestructionNone exactly as it should.
+func unwrapArgvCommand(program string, args []string) (string, bool) {
+	if !firstOperandCommands[program] {
+		return "", false
+	}
+	for _, a := range args {
+		if a == "--" || isFlagWord(a) {
+			continue
+		}
+		return a, true
+	}
+	return "", false
+}
+
+// nestedPayloads returns the command STRINGS a command carries as quoted
+// operands — a shell wrapper's -c argument, an su -c argument, an eval argv, a
+// trap handler — together with the ones those carry in turn, bounded by depth.
+//
+// It exists for the half of a payload the destructive gate does not answer:
+// WHERE THE PAYLOAD WRITES. classifyLexed already re-classifies these strings
+// for deletion, but a payload's redirections are invisible to every other
+// dimension, because to the outer reader the whole payload is one quoted word.
+// Measured, all reaching Allow while the key landed on disk:
+//
+//	bash -c "echo k > ~/.ssh/authorized_keys"
+//	sh -c 'echo k > ~/.ssh/authorized_keys'
+//	eval "echo k > ~/.ssh/authorized_keys"
+//	trap 'echo k > ~/.ssh/authorized_keys' EXIT
+//
+// while the same redirection written at the top level was refused. checkShell
+// routes these through checkRedirectTargets and NOTHING ELSE — not the profile's
+// command policy — because a payload that also had to satisfy the allowlist
+// would turn `patterns: ["sh -c 'npm test'"]` into a profile that refuses its
+// own entry.
+func nestedPayloads(cmd string, depth int) []string {
+	if depth <= 0 {
+		return nil
+	}
+	var out []string
+	add := func(inner string) {
+		if strings.TrimSpace(inner) == "" {
+			return
+		}
+		out = append(out, inner)
+		out = append(out, nestedPayloads(inner, depth-1)...)
+	}
+	for _, seg := range splitControlSegments(cmd) {
+		program, args, ok := lexShellLite(seg)
+		if !ok {
+			continue
+		}
+		for _, unwrap := range nestedCommandUnwrappers {
+			if inner, isNested := unwrap(program, args); isNested {
+				add(inner)
+			}
+		}
+	}
+	return out
+}
+
+// scriptEmitters are the programs whose operands are written to stdout
+// VERBATIM. They are the left half of `printf 'rm -rf /' | sh`.
+//
+// `cat` is deliberately absent: its operands are FILE NAMES, so `cat script.sh
+// | sh` carries its payload in a file rather than in this string, which is the
+// boundary the corpus already records for stdin payloads.
+var scriptEmitters = map[string]bool{"echo": true, "printf": true}
+
+// posixShellPrograms are the shells that read a script from STDIN when given no
+// -c payload and no script operand.
+var posixShellPrograms = map[string]bool{
+	"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true, "ash": true,
+}
+
+// pipeStage is one stage of a command line, with whether a PIPE (rather than
+// `;`, `&&` or `||`) connected it to the stage before it.
+type pipeStage struct {
+	text  string
+	piped bool
+}
+
+// splitPipeStages breaks cmd at its top-level operators, recording which
+// boundaries were pipes. It is quote-aware for the same reason
+// splitControlSegments is: `grep "a|b" x` contains no pipe.
+//
+// `||` is tracked as a NON-pipe on purpose. Folding it in would have been one
+// character cheaper and would have graded `echo 'rm -rf /' || sh` — where the
+// shell pipes nothing — as a catastrophic, unappealable refusal.
+func splitPipeStages(cmd string) []pipeStage {
+	var stages []pipeStage
+	var cur strings.Builder
+	quote := byte(0)
+	piped := false
+	flush := func(nextPiped bool) {
+		if strings.TrimSpace(cur.String()) != "" {
+			stages = append(stages, pipeStage{text: cur.String(), piped: piped})
+		}
+		cur.Reset()
+		piped = nextPiped
+	}
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			cur.WriteByte(c)
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			quote = c
+			cur.WriteByte(c)
+		case '|':
+			if i+1 < len(cmd) && cmd[i+1] == '|' {
+				flush(false)
+				i++
+				continue
+			}
+			flush(true)
+		case ';', '&', '\n', '\r':
+			flush(false)
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	flush(false)
+	return stages
+}
+
+// classifyScriptOnStdin grades `printf 'rm -rf /' | sh` — a payload that is
+// entirely present in the command string but arrives at the shell through a
+// file descriptor rather than as an operand.
+//
+// The corpus already pins `printf rm | sh -s -- -rf /` to Allow, with the
+// justification that the payload is a PROGRAM NAME on stdin and "is in no
+// reading of this string". That is true of that row and false of this one: here
+// the whole command, operands included, is one quoted word sitting in the text,
+// and the only difference from `sh -c "rm -rf /"` — a structural HardDeny — is
+// which descriptor it enters by. The justification covered a family it had not
+// argued about.
+//
+// The pinned row keeps its verdict for the reason it was pinned: `rm` on its own
+// is a deletion with no target, which grades None. Nothing here is special-cased
+// to keep it that way.
+func classifyScriptOnStdin(cmd, workdir string, depth int) Destruction {
+	if depth <= 0 {
+		return DestructionNone
+	}
+	stages := splitPipeStages(cmd)
+	worst := DestructionNone
+	for i := 1; i < len(stages); i++ {
+		if !stages[i].piped {
+			continue
+		}
+		program, args, ok := lexShellLite(stages[i].text)
+		if !ok || !readsScriptFromStdin(program, args) {
+			continue
+		}
+		emitter, emitted, ok := lexShellLite(stages[i-1].text)
+		if !ok || !scriptEmitters[emitter] {
+			continue
+		}
+		for _, w := range emitted {
+			if isFlagWord(w) {
+				continue
+			}
+			worst = maxDestruction(worst, classifyDestruction(w, workdir, depth-1, false))
+		}
+	}
+	return worst
+}
+
+// readsScriptFromStdin reports whether a shell invocation takes its script from
+// standard input: a POSIX shell with no -c payload and no script-path operand.
+//
+// `-s` is what makes the operands positional parameters rather than a script
+// path, which is why `sh -s -- -rf /` still reads from stdin while `sh
+// script.sh` does not.
+func readsScriptFromStdin(program string, args []string) bool {
+	if !posixShellPrograms[program] {
+		return false
+	}
+	if _, hasPayload := unwrapShellCommand(program, args); hasPayload {
+		return false
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			return true // everything after is a positional parameter
+		}
+		if strings.HasPrefix(a, "-") && a != "-" {
+			if strings.ContainsRune(a, 's') {
+				return true
+			}
+			if shellShortValueFlags[a] || shellLongValueFlags[a] {
+				i++
+			}
+			continue
+		}
+		return false // a script path operand
+	}
+	return true
 }
 
 // suLikeRunners take the command as the argument of a -c flag, but unlike the
@@ -205,7 +548,24 @@ func stripCommandPrefix(program string, args []string) (string, []string, bool) 
 	if !ok {
 		return "", nil, false
 	}
+	i, ok := prefixCommandIndex(spec, args)
+	if !ok {
+		return "", nil, false
+	}
+	return normalizeProgramWord(args[i]), args[i+1:], true
+}
+
+// prefixCommandIndex walks past a runner's own options, assignments and
+// positional operands and returns the index of the command word behind them.
+//
+// It is shared with unwrapRemoteCommand rather than duplicated there: `ssh`
+// needs the same walk (skip ssh's flags, skip the host) and a second copy of a
+// flag walk is a second place for the two to disagree about `-o` — which is
+// precisely how the shell wrapper's own flag scan came to read three standard
+// spellings wrongly.
+func prefixCommandIndex(spec prefixRunnerSpec, args []string) (int, bool) {
 	i := 0
+	positionals := spec.positionals
 	for i < len(args) {
 		w := args[i]
 		if w == "--" {
@@ -219,21 +579,184 @@ func stripCommandPrefix(program string, args []string) (string, []string, bool) 
 		if !isFlagWord(w) {
 			break
 		}
+		if spec.suppliesPositional[w] {
+			positionals = 0
+		}
 		i++
 		if spec.valueFlags[w] {
 			i++ // this flag eats the next word
 		}
 	}
-	for n := 0; n < spec.positionals && i < len(args); n++ {
+	for n := 0; n < positionals && i < len(args); n++ {
 		if isFlagWord(args[i]) {
 			break
 		}
 		i++
 	}
 	if i >= len(args) {
+		return 0, false
+	}
+	return i, true
+}
+
+// remoteShellRunners hand their trailing argv to a shell ON ANOTHER MACHINE,
+// joined with single spaces the way eval joins its own. The spec is the flag
+// walk that reaches past the runner's options to the host operand.
+//
+// # The decision this table records
+//
+// `ssh host rm -rf /` was measured Allow, and the review that measured it set
+// it aside as needing a DESIGN DECISION rather than a table row, because every
+// verdict in this package is relative to a local working directory and the
+// command runs somewhere else. The decision taken here is TO GRADE IT ANYWAY,
+// for two reasons:
+//
+//   - The catastrophic tier is not workdir-relative. `rm -rf /` is a disaster on
+//     whichever machine runs it, and the tier's own definition ("a system root,
+//     a home, a whole drive") names nothing local. The out-of-scope tier IS
+//     workdir-relative, and grading a remote path against a local directory is
+//     wrong — but it is wrong in the direction of one extra prompt, on a command
+//     that deletes something outside the project on a machine the operator is
+//     reaching into.
+//   - Declining to model it is not neutral. `ssh` is what a model reaches for
+//     when a local path is refused, in exactly the way `sudo` is what it reaches
+//     for when a permission is refused, and prefixrunner.go exists because of
+//     the second case.
+//
+// The reading is the JOINED argv rather than the tokens, because that is what
+// ssh does: it concatenates its remaining operands with spaces and hands the
+// result to the remote login shell. A token-level prefix entry alone would have
+// covered `ssh h rm -rf /` and missed `ssh h "rm -rf /"` — the more common
+// spelling — reproducing the wrapped-form-passes inversion this file was
+// written to end.
+var remoteShellRunners = map[string]prefixRunnerSpec{
+	"ssh": {valueFlags: map[string]bool{
+		"-o": true, "-i": true, "-p": true, "-l": true, "-F": true, "-c": true,
+		"-e": true, "-b": true, "-D": true, "-L": true, "-R": true, "-W": true,
+		"-w": true, "-S": true, "-J": true, "-m": true, "-Q": true, "-E": true,
+		"-B": true, "-I": true,
+	}, positionals: 1}, // the [user@]host operand
+}
+
+// unwrapRemoteCommand extracts the command a remoteShellRunners entry hands to
+// a shell on another machine. See that table for why it is graded at all.
+func unwrapRemoteCommand(program string, args []string) (string, bool) {
+	spec, ok := remoteShellRunners[program]
+	if !ok {
+		return "", false
+	}
+	i, ok := prefixCommandIndex(spec, args)
+	if !ok {
+		return "", false // `ssh host` with no command opens an interactive shell
+	}
+	return strings.Join(args[i:], " "), true
+}
+
+// commandPrefixStrippers is the list of ways one command carries another AS
+// TOKENS rather than as a string, the same way nestedCommandUnwrappers is the
+// list for strings. Both are walked by classifyLexed and by hasNestedCommand,
+// and sharing the list is what keeps those two in step.
+var commandPrefixStrippers = []func(program string, args []string) (string, []string, bool){
+	stripCommandPrefix,
+	stripFindExec,
+}
+
+// findExecActions are find's predicates that run a command on each match.
+var findExecActions = map[string]bool{
+	"-exec": true, "-execdir": true, "-ok": true, "-okdir": true,
+}
+
+// stripFindExec extracts the command `find … -exec CMD … ;` runs on every match.
+//
+// find was HALF covered: findDeleteOnCatastrophicTarget reads `-delete`, and
+// nothing read `-exec`, whose operand words up to the `;` or `+` terminator are
+// a whole command. Measured: `find . -exec rm -rf {} +` graded DestructionNone
+// and reached Allow while /bin/sh ran `rm -rf` on every match.
+//
+// `{}` IS SUBSTITUTED WITH FIND'S SEARCH ROOTS rather than left as a literal,
+// and that is the difference between a useful verdict and a useless one. Left
+// alone, `rm -rf {}` has one operand that resolves to a relative path inside the
+// work directory and grades None — the command that deletes the entire project
+// would have been the one that looked safest. With the substitution,
+// `find . -exec rm -rf {} +` grades as `rm -rf .` (catastrophic, and it is:
+// that command removes the project) while `find ./tmp -exec rm -rf {} +` grades
+// as the out-of-workdir or in-workdir deletion it actually is.
+//
+// A find with no path operand searches `.` on GNU find and is an error on BSD
+// find, so `.` is the fail-safe reading of the missing case.
+func stripFindExec(program string, args []string) (string, []string, bool) {
+	if program != "find" {
 		return "", nil, false
 	}
-	return normalizeProgramWord(args[i]), args[i+1:], true
+	for i, a := range args {
+		if !findExecActions[a] || i+1 >= len(args) {
+			continue
+		}
+		inner := args[i+1:]
+		for j, w := range inner {
+			// lexShellLite keeps a backslash literal, so the shell's `\;`
+			// terminator arrives here still wearing it.
+			if w == ";" || w == `\;` || w == "+" {
+				inner = inner[:j]
+				break
+			}
+		}
+		if len(inner) == 0 {
+			return "", nil, false
+		}
+		roots := findSearchRoots(args)
+		var expanded []string
+		for _, w := range inner[1:] {
+			if w == "{}" {
+				expanded = append(expanded, roots...)
+				continue
+			}
+			expanded = append(expanded, w)
+		}
+		return normalizeProgramWord(inner[0]), expanded, true
+	}
+	return "", nil, false
+}
+
+// findSearchRoots returns the path operands that precede find's first predicate,
+// defaulting to "." the way GNU find does.
+func findSearchRoots(args []string) []string {
+	var roots []string
+	for _, a := range args {
+		if a == "" || a[0] == '-' || a == "!" || a == "(" {
+			break
+		}
+		roots = append(roots, a)
+	}
+	if len(roots) == 0 {
+		return []string{"."}
+	}
+	return roots
+}
+
+// hasNestedCommand reports whether program+args still hide another command
+// behind them — a shell wrapper's -c payload, an su -c payload, an eval argv, a
+// firstOperandCommands operand, or a command prefix runner's trailing argv.
+//
+// It is the predicate classifyLexed consults when its unwrap budget is spent.
+// The cases here are exactly the unwrappings classifyLexed performs while it
+// still has budget, and they must stay exactly those: a case listed here but
+// not performed there would refuse a command nothing was going to unwrap
+// anyway, and a case performed there but missing here is a hole at depth zero,
+// which is the only depth an attacker gets to choose. The count is deliberately
+// not written down — it was "four" for one commit before trap made it five.
+func hasNestedCommand(program string, args []string) bool {
+	for _, unwrap := range nestedCommandUnwrappers {
+		if _, ok := unwrap(program, args); ok {
+			return true
+		}
+	}
+	for _, strip := range commandPrefixStrippers {
+		if _, _, ok := strip(program, args); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // unwrapSuCommand extracts the payload of `su -c "…"` / `su - root -c "…"`.

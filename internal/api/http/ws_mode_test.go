@@ -108,7 +108,7 @@ func TestResolvePermissionMode_ProfileHardDeny(t *testing.T) {
 			cs := &connSession{perm: &permModeState{}}
 			cs.perm.set(c.mode)
 			req := tools.PermissionRequest{Tool: "shell_run", ProfileHardDeny: true}
-			d, resolved := resolvePermissionMode(context.Background(), cs, nil, req)
+			d, resolved := resolvePermissionMode(context.Background(), cs, nil, &req)
 			assert.Equal(t, c.wantTool, d, "mode %s", c.mode)
 			assert.Equal(t, c.resolved, resolved, "mode %s", c.mode)
 		})
@@ -141,7 +141,7 @@ func TestResolvePermissionMode_DestructiveGate(t *testing.T) {
 			cs := &connSession{perm: &permModeState{}}
 			cs.perm.set(c.mode)
 			req := tools.PermissionRequest{Tool: "shell_run", Shell: c.shell, Workdir: "/proj"}
-			d, resolved := resolvePermissionMode(context.Background(), cs, nil, req)
+			d, resolved := resolvePermissionMode(context.Background(), cs, nil, &req)
 			assert.Equal(t, c.want, d)
 			assert.Equal(t, c.resolved, resolved)
 		})
