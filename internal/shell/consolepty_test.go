@@ -430,3 +430,83 @@ func ptySelfTestProgram() string {
 	}
 	return "/bin/echo"
 }
+
+// TestManagerResizeReachesTheChildOfAManagedSession is the production path for
+// Resize, and it is here because until shell_resize landed there was no such
+// path at all.
+//
+// Console.Resize had two real platform implementations (TIOCSWINSZ on unix,
+// ResizePseudoConsole on windows), a passing unit test, and NOT ONE caller
+// outside that test. The tool the model can reach is shell_resize ->
+// Manager.Resize -> Console.Resize, and this asserts the two hops that did not
+// exist by reading the size back out of the child's own controlling terminal:
+// `stty size` prints the kernel's TIOCGWINSZ, not this process's idea of it.
+//
+// Going through Manager rather than the console directly is the point. The
+// session lookup, the not-found path and the touch are all in Manager, and a
+// Resize that reached the wrong session would still make the console call.
+func TestManagerResizeReachesTheChildOfAManagedSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stty is not available on windows")
+	}
+	if cap := PlatformPTYCapability(); !cap.Available {
+		t.Skipf("no PTY on this host: %s", cap.Reason)
+	}
+	mgr := NewManager(Config{
+		MaxOutputBytes: 1 << 16,
+		Factory:        NewSecureLaunchFactory(SecureLaunchFactory{}),
+	})
+	t.Cleanup(func() { _ = mgr.Close() })
+
+	sess, err := mgr.Start(context.Background(), LaunchSpec{
+		Program: "/bin/sh",
+		Args:    []string{"-i"},
+		Command: "sh -i",
+		Env:     ptyShellEnv(),
+		PTY:     true,
+	})
+	if err != nil {
+		t.Fatalf("Manager.Start: %v", err)
+	}
+	t.Cleanup(func() { _ = mgr.Cancel(sess.ID) })
+
+	expectInSession(t, mgr, sess.ID, "REPL>")
+	if _, err := mgr.Write(sess.ID, []byte("stty size\n")); err != nil {
+		t.Fatalf("Manager.Write: %v", err)
+	}
+	expectInSession(t, mgr, sess.ID, "24 80")
+
+	if err := mgr.Resize(sess.ID, 40, 120); err != nil {
+		t.Fatalf("Manager.Resize: %v", err)
+	}
+	if _, err := mgr.Write(sess.ID, []byte("stty size\n")); err != nil {
+		t.Fatalf("Manager.Write: %v", err)
+	}
+	expectInSession(t, mgr, sess.ID, "40 120")
+
+	// An unknown id must be an error rather than a silent success: a caller
+	// that resized nothing and was told it worked will keep formatting for a
+	// width the child never had.
+	if err := mgr.Resize("session-that-does-not-exist", 40, 120); err == nil {
+		t.Error("Manager.Resize reported success for an unknown session id")
+	}
+}
+
+// expectInSession polls Manager.Read until want appears in the buffer.
+func expectInSession(t *testing.T, mgr *Manager, id, want string) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		out, err := mgr.Read(id, 1<<16)
+		if err != nil {
+			t.Fatalf("Manager.Read: %v", err)
+		}
+		if strings.Contains(out, want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session never produced %q\n--- output ---\n%s\n--- end ---", want, out)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

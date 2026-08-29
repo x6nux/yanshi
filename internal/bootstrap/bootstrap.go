@@ -767,7 +767,7 @@ func Build(opts Options) (*App, error) {
 	}
 	allTools = append(allTools, shellTools.Run, timeTools.Now)
 
-	// Shell v2 (W1): the nine persistent-session / background-job tools. They
+	// Shell v2 (W1): the ten persistent-session / background-job tools. They
 	// are constructed here — before the toolNames snapshot — even though the
 	// shell.Manager they drive is not built until the security posture below,
 	// because the tools reach the manager through the per-turn context
@@ -776,7 +776,8 @@ func Build(opts Options) (*App, error) {
 	// default profile keeps advertising the names (the GOV5 failure this fixes).
 	shellV2 := tools.NewShellV2Tools(workRoot)
 	allTools = append(allTools, shellV2.Start, shellV2.Read, shellV2.Write, shellV2.Wait,
-		shellV2.Cancel, shellV2.TaskStart, shellV2.TaskWait, shellV2.TaskWrite, shellV2.TaskCancel)
+		shellV2.Cancel, shellV2.Resize, shellV2.TaskStart, shellV2.TaskWait, shellV2.TaskWrite,
+		shellV2.TaskCancel)
 
 	// Agent tools: agent_start, workflow_start, analysis, and summarize for
 	// sub-agent delegation, parallel workflow execution, quick code analysis,

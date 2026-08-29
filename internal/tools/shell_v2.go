@@ -35,6 +35,16 @@ type shellWriteArgs struct {
 	Data string `json:"data"`
 }
 
+// shellResizeArgs is shell_resize's input. Rows and Cols are int rather than
+// uint16 so an out-of-range request arrives as itself and can be REFUSED; a
+// uint16 field would let encoding/json reject it with a message about the wire
+// type instead of about the terminal.
+type shellResizeArgs struct {
+	ID   string `json:"id"`
+	Rows int    `json:"rows"`
+	Cols int    `json:"cols"`
+}
+
 // shellWaitArgs is shell_wait's input. TimeoutS bounds the wait itself; the
 // session is untouched when it expires.
 type shellWaitArgs struct {
@@ -56,7 +66,7 @@ type shellReadArgs struct {
 // real name (e.g. shell_write_stdin, NOT a shell string) so the guard profile
 // gates each action independently.
 type ShellV2Tools struct {
-	Start, Read, Write, Wait, Cancel           *GuardedTool
+	Start, Read, Write, Wait, Cancel, Resize   *GuardedTool
 	TaskStart, TaskWait, TaskWrite, TaskCancel *GuardedTool
 
 	// root is the work root: the destructive-deletion baseline handed to the
@@ -72,7 +82,7 @@ type ShellV2Tools struct {
 // task_shell_cancel spent its whole existence unable to cancel anything.
 const shellV2JobIDNote = "id is the job id returned by task_shell_start"
 
-// NewShellV2Tools builds the nine-tool shell v2 surface, anchored at the work
+// NewShellV2Tools builds the ten-tool shell v2 surface, anchored at the work
 // root. Tools share nothing else at construction time; per-call state (session
 // id, job id) is in args.
 //
@@ -114,6 +124,15 @@ func NewShellV2Tools(root string) *ShellV2Tools {
 			"id": {Type: schema.String, Required: true},
 		}),
 		SyncStream(v.cancel))
+	v.Resize = NewGuardedTool("shell_resize", "Shell",
+		"Change a PTY session's terminal size. Only meaningful for sessions started with pty=true.",
+		30*time.Second,
+		params(map[string]*schema.ParameterInfo{
+			"id":   {Type: schema.String, Required: true},
+			"rows": {Type: schema.Integer, Required: true, Desc: "terminal height in rows (1-65535)"},
+			"cols": {Type: schema.Integer, Required: true, Desc: "terminal width in columns (1-65535)"},
+		}),
+		SyncStream(v.resize))
 	v.TaskStart = NewGuardedTool("task_shell_start", "Shell Job", "Start a background shell job.", 30*time.Second,
 		params(map[string]*schema.ParameterInfo{
 			"command": {Type: schema.String, Required: true},
@@ -347,6 +366,40 @@ func (v *ShellV2Tools) write(ctx context.Context, raw string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf(`{"written":%d}`, n), nil
+}
+
+// resize is shell_resize: the model-facing consumer of Console.Resize.
+//
+// A freshly allocated PTY is 24x80. That is the right default and the wrong
+// size for most of what a model runs in one — a test runner or a compiler wraps
+// its diagnostics at the terminal width, so a wide session is the difference
+// between reading a failure and reading it in fragments.
+//
+// Bounds are checked HERE rather than trusting the conversion. rows and cols
+// reach the kernel as uint16, so an int that does not fit wraps: a request for
+// 65536 columns silently becomes 0, and a zero winsize means "unknown", which
+// makes a child fall back to its own guess. Refusing is the only answer that
+// does not lie about what happened.
+func (v *ShellV2Tools) resize(ctx context.Context, raw string) (string, error) {
+	var a shellResizeArgs
+	if err := json.Unmarshal([]byte(raw), &a); err != nil {
+		return "", err
+	}
+	if err := Authorize(ctx, guard.Action{Tool: "shell_resize"}, raw); err != nil {
+		return "", err
+	}
+	if a.Rows < 1 || a.Rows > 65535 || a.Cols < 1 || a.Cols > 65535 {
+		return "", fmt.Errorf("shell_resize: rows and cols must be between 1 and 65535, got %dx%d",
+			a.Rows, a.Cols)
+	}
+	m, err := v.manager(ctx)
+	if err != nil {
+		return "", err
+	}
+	if err := m.Resize(a.ID, uint16(a.Rows), uint16(a.Cols)); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(`{"rows":%d,"cols":%d}`, a.Rows, a.Cols), nil
 }
 
 func (v *ShellV2Tools) wait(ctx context.Context, raw string) (string, error) {

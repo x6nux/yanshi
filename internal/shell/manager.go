@@ -279,6 +279,30 @@ func (m *Manager) Write(id string, data []byte) (int, error) {
 	return s.console.Write(data)
 }
 
+// Resize changes a session's terminal geometry, which the kernel delivers to
+// the child as SIGWINCH.
+//
+// It exists because the Console interface has had a Resize method, implemented
+// against a real TIOCSWINSZ ioctl on unix and ResizePseudoConsole on windows,
+// with NO caller anywhere outside its own unit test. A capability with two
+// platform implementations, a passing test and zero reachable callers is not a
+// shipped feature — this method and shell_resize above it are what make it one.
+//
+// The error from a non-PTY session is deliberately passed through rather than
+// swallowed: a pipe-backed session HAS no geometry, and reporting success would
+// tell a caller its 200-column request took effect on a child that will keep
+// wrapping at 80.
+func (m *Manager) Resize(id string, rows, cols uint16) error {
+	m.mu.Lock()
+	s := m.sessions[id]
+	m.mu.Unlock()
+	if s == nil {
+		return ErrNotFound
+	}
+	s.touch(time.Now())
+	return s.console.Resize(rows, cols)
+}
+
 // Wait blocks until the session exits or ctx is canceled. The ctx-aware path
 // is the real fix for review C8: Wait no longer holds the session hostage when
 // the caller's deadline passes. Idle timeout (Config.IdleTimeout) is integrated

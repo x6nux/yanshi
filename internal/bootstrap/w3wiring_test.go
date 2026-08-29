@@ -78,6 +78,12 @@ func TestW3ToolsAreRegisteredAndAuthorized(t *testing.T) {
 		{"milestone_set", true, "labels the model's own work for compaction"},
 		{"skill_write", true, "conditional: registered because user_dir is set"},
 		{"acp_delegate", false, "third-party code execution must stay a prompt"},
+		// shell_resize is the newest instance of the exact failure this test was
+		// written for: Console.Resize had two real platform implementations and a
+		// passing unit test, and not one caller outside that test. Asserting it
+		// here rather than only in internal/shell is the point — no test inside
+		// the owning package can tell "implemented" from "reachable".
+		{"shell_resize", true, "changes a terminal's geometry and cannot put a byte in front of the child"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			require.True(t, registered[tc.name],

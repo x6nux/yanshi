@@ -124,6 +124,13 @@ func DefaultOrchestratorProfile() guard.PermissionProfile {
 			// fail-closed while the tool still burned schema tokens.
 			"ast_search",
 			"shell_run", "shell_start", "shell_read", "shell_write_stdin", "shell_wait", "shell_cancel",
+			// shell_resize carries strictly less capability than shell_write_stdin,
+			// which is already allowed: it changes a terminal's geometry and cannot
+			// put a byte in front of the child. Leaving it out while shell_start's
+			// pty parameter is allowed would be the inverted gradient this list has
+			// been corrected for twice — the harmless tool costs a dialog, the one
+			// that types into the session does not.
+			"shell_resize",
 			"task_shell_start", "task_shell_wait", "task_shell_stdin", "task_shell_cancel",
 			// A2 durable tasks. These were registered but never allowed, so the
 			// model saw four tools it could call and the guard refused each one:
