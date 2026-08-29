@@ -287,6 +287,7 @@ export YANSHI_ALLOW_CHILD_ENV=NETRC,npm_config_registry,SSH_AUTH_SOCK
 | security.network.allow_private | bool | |
 | security.shell.max_output_bytes | int | |
 | security.shell.idle_timeout | duration | |
+| security.guardian_prompt_file | string | |
 
 ### subagents
 

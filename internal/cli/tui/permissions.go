@@ -72,6 +72,8 @@ func (m model) permModeText() string {
 		return "auto mode"
 	case guard.ModeYOLO:
 		return "bypass permissions"
+	case guard.ModeStrict:
+		return "strict mode"
 	default:
 		return "manual mode"
 	}

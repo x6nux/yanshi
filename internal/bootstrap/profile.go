@@ -187,6 +187,15 @@ func DefaultOrchestratorProfile() guard.PermissionProfile {
 			"update_plan", "image_describe",
 			"checklist_add", "checklist_list", "checklist_update", "checklist_write",
 			"todo_add", "todo_list", "todo_update", "todo_write",
+			// W-B-12. Grants nothing on its own: every path through it either
+			// refuses without asking or goes through RequireApproval, which
+			// sets req.Force so no permission MODE — yolo included — can answer
+			// for the user. Withholding it would be an inverted gradient of the
+			// worst kind: the tool whose entire purpose is to ASK would be the
+			// one that costs a dialog to reach, and on SSE (no callback) it
+			// would be permanently fail-closed while still burning schema
+			// tokens telling the model to call it.
+			"request_permission",
 			"web_fetch", "web_search", "time_now", "skill_use", "vcs_*",
 			"agent_start", "workflow_start", "analysis", "summarize",
 			// B1 managed sub-agents. Deliberately NOT a widening of what the

@@ -311,6 +311,24 @@ type SecurityConfig struct {
 	Sandbox SandboxConfig      `yaml:"sandbox"`
 	Network NetworkConfig      `yaml:"network"`
 	Shell   ShellRuntimeConfig `yaml:"shell"`
+	// GuardianPromptFile points at a file holding the instruction body the
+	// `auto` permission mode shows the model (W-B-14). Empty = the built-in
+	// policy in guard.AutoApprovalPrompt.
+	//
+	// A FILE rather than an inline string: the body is ~60 lines of prose, and
+	// a YAML block scalar that long turns every edit into a whitespace hazard
+	// in the one document an operator must not get wrong.
+	//
+	// The file is read and validated at load. Both failures — unreadable, or
+	// missing one of guard.RequiredRiskCategories — refuse the start, because
+	// the alternative is a deployment that believes it installed a policy and
+	// is running the built-in one.
+	GuardianPromptFile string `yaml:"guardian_prompt_file"`
+	// GuardianPrompt is the validated contents of GuardianPromptFile, filled in
+	// by Load. It is not a YAML key: writing the prose inline is the shape the
+	// file indirection exists to avoid, and a key that could set it directly
+	// would be a second, unvalidated way in.
+	GuardianPrompt string `yaml:"-"`
 }
 
 // SandboxConfig drives internal/sandbox.New. Enabled is *bool so an unset YAML
@@ -859,7 +877,35 @@ func (c *Config) validate() error {
 	if c.Subagents.Limit != 0 && (c.Subagents.Limit < 1 || c.Subagents.Limit > 20) {
 		return errors.New("subagents.limit must be within 1..20")
 	}
+	if err := c.loadGuardianPrompt(); err != nil {
+		return err
+	}
 	return c.validateProfiles()
+}
+
+// loadGuardianPrompt reads and validates security.guardian_prompt_file (W-B-14).
+//
+// Both failure modes refuse the start, for the same reason validateProfiles
+// refuses an unknown shell policy: the value is not consulted until the first
+// auto-mode call, so a silent fallback would be discovered as "auto mode is
+// using the wrong policy" hours later, if ever. The prompt is the ENTIRE
+// verdict in auto mode — there is no static list beside it — so "we ignored
+// your policy file" is not a warning-level event.
+func (c *Config) loadGuardianPrompt() error {
+	path := strings.TrimSpace(c.Security.GuardianPromptFile)
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(expandHome(path))
+	if err != nil {
+		return fmt.Errorf("security.guardian_prompt_file: %w", err)
+	}
+	body := string(data)
+	if err := guard.ValidateAutoApprovalTemplate(body); err != nil {
+		return fmt.Errorf("security.guardian_prompt_file %q: %w", path, err)
+	}
+	c.Security.GuardianPrompt = body
+	return nil
 }
 
 // validateProfiles rejects profile fields whose illegal values would otherwise

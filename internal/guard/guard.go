@@ -127,6 +127,21 @@ func hardDeny(reason string) Decision {
 	return Decision{Verdict: HardDeny, Reason: reason, Promptable: false}
 }
 
+// ConfirmPrompt is the exported prompt() constructor, for the ONE caller that
+// has to turn an Allow into a question: ModeStrict (W-B-20), which confirms
+// every tool call rather than only the ones a profile declined.
+//
+// It exists as a constructor rather than a Decision literal at the call site
+// for the reason stated above prompt(): Verdict and Promptable are a pair, and
+// a call site that set Verdict=Prompt while leaving Promptable false would
+// produce a decision tools.Authorize refuses outright ("guard returned Prompt
+// without Promptable") — turning the strictest mode into a mode that denies
+// everything with an internal-error message.
+//
+// It can only TIGHTEN. There is no exported way to manufacture an Allow, so no
+// caller can use this seam to admit something the six dimensions refused.
+func ConfirmPrompt(reason string) Decision { return prompt(reason) }
+
 // overridableDeny is a HardDeny that arises from a profile POLICY default
 // (empty allowlist, shell policy="deny", net.allow=false) rather than a
 // structural guard. It stays fail-closed on the SSE path and under

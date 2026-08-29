@@ -767,6 +767,14 @@ func Build(opts Options) (*App, error) {
 	}
 	allTools = append(allTools, shellTools.Run, timeTools.Now)
 
+	// W-B-12: the model asks for a specific permission BEFORE hitting the wall.
+	// Registered unconditionally and with no constructor arguments — everything
+	// it needs (profile, approval manager, permission callback, work root)
+	// rides the turn context. Its grant path fails closed on a transport with
+	// no interactive channel, so registering it on SSE too costs nothing and
+	// keeps the tool schema identical across transports.
+	allTools = append(allTools, tools.NewRequestPermissionTool())
+
 	// Shell v2 (W1): the ten persistent-session / background-job tools. They
 	// are constructed here — before the toolNames snapshot — even though the
 	// shell.Manager they drive is not built until the security posture below,
@@ -1391,6 +1399,10 @@ func Build(opts Options) (*App, error) {
 	// S10: inject the process-wide redactor so the SSE writeSSEFrame and
 	// the WS wsConn.write boundaries redact every outbound frame.
 	httpCfg.Redactor = redactor
+	// W-B-14: the operator's auto-mode risk policy, already read and validated
+	// by config.Load (an unreadable or category-incomplete file refuses the
+	// start there, so reaching this line means it is usable).
+	httpCfg.GuardianPrompt = cfg.Security.GuardianPrompt
 	srv := apihttp.New(httpCfg)
 	srv.Chat(orch, providerModels, registry)
 	srv.ChatWS(orch, providerModels, registry) // WebSocket endpoint (TUI primary transport)

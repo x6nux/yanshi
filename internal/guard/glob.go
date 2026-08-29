@@ -5,6 +5,60 @@ import (
 	"strings"
 )
 
+// GlobCovers reports whether some pattern in patterns PROVABLY grants
+// everything candidate would grant.
+//
+// "Provably" is the operative word and is why this is not a glob match. Three
+// cases are accepted:
+//
+//   - A universal pattern ("*" / "**") grants everything.
+//   - An exact string match: candidate IS one of the patterns.
+//   - A candidate LITERAL (no glob metacharacter) that some pattern matches.
+//
+// A candidate that itself contains wildcards and is not literally present is
+// REJECTED even when it looks narrower, because glob containment is not
+// decidable by matching: `fs_r*` is not matched by `fs_read` yet grants
+// strictly more than it, and — the direction that actually bites —
+// `fs_*` IS matched by the pattern `fs_?` while granting strictly more than it.
+// A plain match test therefore admits a candidate wider than the set it was
+// checked against.
+//
+// Rejecting is the conservative direction: the candidate is dropped, so the
+// intersection loses a permission rather than gaining one.
+//
+// # Why it lives in guard rather than at either call site
+//
+// It had two callers and one implementation. config.coveredByAny (the trusted
+// policy file × local config narrowing) got the criterion right; the sub-agent
+// role narrowing (tools.intersectToolSets) used a bidirectional
+// filepath.Match and silently kept the wider side. The predicate belongs where
+// MatchGlob is, so the two narrowings cannot disagree about what "narrower"
+// means — which is the whole failure W-B-19 names.
+func GlobCovers(patterns []string, candidate string) bool {
+	for _, p := range patterns {
+		if p == "*" || p == "**" || p == candidate {
+			return true
+		}
+	}
+	if HasGlobMeta(candidate) {
+		return false
+	}
+	for _, p := range patterns {
+		if ok, err := MatchGlob(p, candidate); err == nil && ok {
+			return true
+		}
+	}
+	return false
+}
+
+// HasGlobMeta reports whether s contains a glob metacharacter, i.e. whether it
+// denotes a SET of names rather than one name. Exported alongside GlobCovers
+// because callers building an error message need to say which side of that
+// line an entry fell on.
+func HasGlobMeta(s string) bool {
+	return strings.ContainsAny(s, "*?[]")
+}
+
 // MatchGlob reports whether name matches a glob pattern.
 // Supported wildcards:
 //   - "**" matches any sequence including path separators.

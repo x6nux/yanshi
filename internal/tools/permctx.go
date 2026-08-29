@@ -76,6 +76,22 @@ type PermissionRequest struct {
 	// callback. Workdir is the project root used as the in-scope boundary.
 	Shell   string
 	Workdir string
+	// AIDeclined marks a request that reached the interactive prompt because
+	// ModeAuto's risk assessment answered ASK (W-B-15). It is set by the mode
+	// gate, not by Authorize, and is SERVER-SIDE ONLY — the reason it conveys
+	// travels to the client inside Reason, which the user reads, while the flag
+	// itself stays where the decisions are made. Same rule as ProfileHardDeny
+	// and for the same reason: a flag on the wire is a flag the server has to
+	// take a client's word for.
+	//
+	// Two consequences, both in the WS callback:
+	//
+	//   - the prompt says the model declined and why, so an approval is an
+	//     informed one rather than a click on an unexplained dialog;
+	//   - a "session"/"persistent" answer is downgraded to a one-shot allow.
+	//     Overriding a verdict is not the same as switching the judge off, and
+	//     a standing rule for a scope the model flagged would do the second.
+	AIDeclined bool
 }
 
 // forcePromptTools 列出"必须每次显式审批、不可被任何 allowlist/always_allow 短路"
@@ -144,6 +160,41 @@ const (
 // handler installs a fresh one each turn (it captures that turn's context for
 // cancellation/timeout).
 type permCallbackKey struct{}
+
+type confirmEveryCallKey struct{}
+
+// WithConfirmEveryCall binds the predicate ModeStrict is enforced through
+// (W-B-20): when it reports true, Authorize turns a guard ALLOW into a prompt.
+//
+// # Why a predicate and not a bool
+//
+// The permission mode is live. The reader goroutine writes permModeState the
+// instant a set_mode frame arrives, precisely so a mid-turn switch reaches tool
+// calls already in flight (including a sub-agent's). A bool captured when the
+// turn context was built would freeze the mode at turn start, which is the one
+// property the whole permModeState design exists to avoid — and it would freeze
+// it in the LOOSE direction for anyone who switched INTO strict mid-turn.
+//
+// # Why this is the only widening-shaped seam here that cannot widen
+//
+// The predicate is consulted in exactly one place and its only effect is
+// Allow -> Prompt (guard.ConfirmPrompt). There is no branch in which returning
+// true admits something, and returning false restores the pre-W-B-20 behaviour
+// byte for byte. An unbound predicate — every sub-agent context, every test,
+// the whole SSE path — is false.
+func WithConfirmEveryCall(ctx context.Context, confirm func() bool) context.Context {
+	if confirm == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, confirmEveryCallKey{}, confirm)
+}
+
+// confirmEveryCall reports whether this execution scope confirms even allowed
+// calls. Unbound = false, which is what keeps every non-WS caller unchanged.
+func confirmEveryCall(ctx context.Context) bool {
+	fn, ok := ctx.Value(confirmEveryCallKey{}).(func() bool)
+	return ok && fn != nil && fn()
+}
 
 // approvalContext bundles an approval Manager + the session ID under which
 // approvals should be recorded / matched for this connection. Installed once
@@ -454,6 +505,24 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 	}
 
 	dec := guard.New().Check(prof, action)
+	// ModeStrict (W-B-20): the only place a guard ALLOW becomes a question.
+	//
+	// Rewriting the verdict here rather than adding a branch to the Allow case
+	// below is what makes the mode work at all: everything the escalation path
+	// already does — the approval-manager short-circuit that stops the same
+	// confirmed command asking twice, allow_session / allow_persistent
+	// recording, the audit source, the force-prompt and plan-mode exits that
+	// ran BEFORE this line — applies unchanged. A parallel prompt branch would
+	// have had to reimplement each of those, and a strict mode with no memory
+	// is a strict mode nobody leaves switched on.
+	//
+	// Placed AFTER guard.Check so it can only ever tighten: a Prompt stays a
+	// Prompt and a HardDeny of either tier is untouched, so strict mode cannot
+	// downgrade the structural floor into something a callback may answer.
+	if dec.Verdict == guard.Allow && confirmEveryCall(ctx) {
+		dec = guard.ConfirmPrompt("strict mode: every tool call is confirmed, " +
+			"including ones the permission profile already allows")
+	}
 	// profileDenied marks an OVERRIDABLE profile-policy HardDeny routed through
 	// the shared escalation path (approval manager -> callback) so the interactive
 	// mode gate in resolvePermissionMode can decide (YOLO/Auto override; others

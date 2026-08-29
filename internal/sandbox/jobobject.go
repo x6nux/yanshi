@@ -119,6 +119,12 @@ func windowsJobReport(cfg Config, p jobProbe) CapabilityReport {
 		Requested: cfg.Tier,
 		Effective: DegradedHostGuard,
 		Enforced:  false,
+		// Set on BOTH branches (probe passed or not) because neither one
+		// enforces an access field: a job object is a lifetime control. This is
+		// the machine-readable twin of windowsUnenforcedNote's prose, and the
+		// two are held together by
+		// TestWindowsUnenforcedNoteAgreesWithUnenforcedFields.
+		Unenforced: UnenforcedFields(cfg),
 	}
 	if !p.enforcing() {
 		rep.Backend = jobBackendUnavailable

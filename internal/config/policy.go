@@ -197,6 +197,10 @@ func NarrowProfile(trusted, local guard.PermissionProfile) guard.PermissionProfi
 	out.FS = guard.FSPerm{
 		Read:  narrowAllow(trusted.FS.Read, local.FS.Read),
 		Write: narrowAllow(trusted.FS.Write, local.FS.Write),
+		// Protected is a DENY list, so it narrows by union — the same
+		// asymmetry narrowShell applies to denylist patterns, and safe for the
+		// same reason: a local entry can only take a capability away.
+		Protected: unionPatterns(trusted.FS.Protected, local.FS.Protected),
 	}
 	out.Shell = narrowShell(trusted.Shell, local.Shell)
 	out.Net = narrowNet(trusted.Net, local.Net)
@@ -236,34 +240,18 @@ func narrowAllow(trusted, local []string) []string {
 // coveredByAny reports whether some trusted pattern provably grants everything
 // the local pattern would grant.
 //
-// "Provably" is the operative word and is why this is not simply a glob match.
-// Three cases are accepted:
+// The criterion itself moved to guard.GlobCovers (W-B-19) so the sub-agent role
+// narrowing can use the SAME one. It had been reimplemented there as a
+// bidirectional filepath.Match, which is the naive test this function's
+// original comment already explained is wrong — two narrowings with two
+// definitions of "narrower", one of them silently taking the wider side.
 //
-//   - A universal trusted pattern ("*" / "**") grants everything.
-//   - An exact string match: the local pattern IS a trusted pattern.
-//   - A local LITERAL (no glob metacharacter) that a trusted pattern matches.
-//
-// A local pattern that itself contains wildcards and is not literally present
-// in the trusted list is REJECTED even when it looks narrower, because glob
-// containment is not decidable by matching: `fs_r*` is not matched by `fs_read`
-// yet grants strictly more than it. Rejecting is the conservative direction —
-// the entry is dropped, so the effective profile loses a permission rather than
-// gaining one.
+// This wrapper stays because the argument for the choice belongs next to the
+// policy that depends on it: here a rejected entry costs the operator a
+// narrowing that did not apply, which is visible; the alternative would be a
+// widening, which is not.
 func coveredByAny(trusted []string, local string) bool {
-	for _, t := range trusted {
-		if t == "*" || t == "**" || t == local {
-			return true
-		}
-	}
-	if strings.ContainsAny(local, "*?[") {
-		return false
-	}
-	for _, t := range trusted {
-		if ok, err := guard.MatchGlob(t, local); err == nil && ok {
-			return true
-		}
-	}
-	return false
+	return guard.GlobCovers(trusted, local)
 }
 
 // narrowShell restricts the shell dimension.

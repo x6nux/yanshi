@@ -55,7 +55,7 @@ func TestYoloAsksAboutAPayloadNobodyRead(t *testing.T) {
 			cs := &connSession{perm: &permModeState{}}
 			cs.perm.set(guard.ModeYOLO)
 			d, resolved := resolvePermissionMode(context.Background(), cs, nil,
-				tools.PermissionRequest{Tool: "shell_run", Shell: cmd, Workdir: opaqueWorkdir})
+				&tools.PermissionRequest{Tool: "shell_run", Shell: cmd, Workdir: opaqueWorkdir})
 
 			assert.False(t, resolved,
 				"yolo must not auto-resolve a command whose payload nobody read — "+
@@ -75,7 +75,7 @@ func TestYoloStillAutoApprovesAReadableCommand(t *testing.T) {
 		cs := &connSession{perm: &permModeState{}}
 		cs.perm.set(guard.ModeYOLO)
 		d, resolved := resolvePermissionMode(context.Background(), cs, nil,
-			tools.PermissionRequest{Tool: "shell_run", Shell: cmd, Workdir: opaqueWorkdir})
+			&tools.PermissionRequest{Tool: "shell_run", Shell: cmd, Workdir: opaqueWorkdir})
 		assert.True(t, resolved, "yolo still auto-approves %q", cmd)
 		assert.Equal(t, tools.PermissionAllow, d)
 	}

@@ -463,7 +463,7 @@ func TestResolvePermissionRequest_ForceNeverAutoResolves(t *testing.T) {
 			cs.perm.set(mode)
 			decision, resolved := resolvePermissionRequest(
 				context.Background(), &cs, nil,
-				tools.PermissionRequest{Tool: "fs_write", Force: true},
+				&tools.PermissionRequest{Tool: "fs_write", Force: true},
 			)
 			if resolved {
 				t.Fatalf("Force request auto-resolved in mode %q with decision %v", mode, decision)

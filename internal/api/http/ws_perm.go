@@ -11,6 +11,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -200,6 +201,9 @@ func (cs *connSession) applySetMode(cf proto.ClientFrame) (oldMode, newMode guar
 //     is blocked structurally in guard and fail-safely here.
 //   - allow-edits / default: prompt for ordinary denies; deny silently for
 //     profile-policy denies (policy="deny" means block, not ask).
+//   - strict: identical to default HERE. The difference is that under strict
+//     tools.Authorize also sends the calls the profile ALLOWED down this path
+//     (W-B-20), so "prompt for ordinary denies" covers every call.
 //   - plan:  deny (read-only).
 //
 // Plan 模式（已决策约束 §4、§6）：
@@ -213,7 +217,7 @@ func (cs *connSession) applySetMode(cf proto.ClientFrame) (oldMode, newMode guar
 // fail-safe: any error or timeout in the auto-mode risk assessment falls
 // through to prompting (returns not-resolved) rather than guessing.
 func resolvePermissionMode(ctx context.Context, cs *connSession,
-	models map[string]model.BaseChatModel, req tools.PermissionRequest) (tools.PermissionDecision, bool) {
+	models map[string]model.BaseChatModel, req *tools.PermissionRequest) (tools.PermissionDecision, bool) {
 
 	// force-prompt 工具永远不走 YOLO/Auto auto-resolve（已决策约束 §5）。
 	// 返回 (deny, false)：让 Authorize 的 force-prompt 分支继续走 callback
@@ -289,6 +293,24 @@ func resolvePermissionMode(ctx context.Context, cs *connSession,
 	}
 
 	switch mode {
+	case guard.ModeStrict:
+		// W-B-20's fourth execution level. At the callback it behaves exactly
+		// like ModeDefault — auto-resolve nothing, deny a profile policy
+		// silently — because there is nothing STRICTER available to a mode
+		// gate that only ever runs on a denied call. Its extra strictness is
+		// upstream, in tools.Authorize, where a guard ALLOW is rewritten into a
+		// prompt (tools.WithConfirmEveryCall); the prompt then arrives here and
+		// has to reach the user, which is what the fallthrough to (deny, false)
+		// below does.
+		//
+		// The ProfileHardDeny arm is NOT relaxed into a prompt. Turning
+		// policy="deny" into a question would make the strictest mode the only
+		// one in which a profile refusal is appealable, which is the opposite
+		// of what the name promises.
+		if req.ProfileHardDeny {
+			return tools.PermissionDeny, true
+		}
+		return tools.PermissionDeny, false
 	case guard.ModePlan:
 		// Plan 是只读模式：任何到达 callback 的写操作一律 deny+resolved。
 		// 这条与 tools.Authorize 的 PlanToolAllowed 是两层独立防线。
@@ -315,7 +337,15 @@ func resolvePermissionMode(ctx context.Context, cs *connSession,
 		// catastrophic mass deletion and shell metacharacters are structural
 		// HardDenies, and out-of-workdir deletion was already graded above. A
 		// delete reaching this point is one inside the workdir.
-		if !askAutoApproval(ctx, models, cs, req) {
+		if !askAutoApproval(ctx, models, cs, *req) {
+			// W-B-15. The user could already override this — an unresolved
+			// verdict has always reached the prompt — but the prompt did not
+			// say WHO refused, so "the profile does not allow this" and "a
+			// model judged this risky" arrived as the same dialog. Naming the
+			// source is what makes the override an informed one; the callback
+			// additionally keeps it one-shot and records it.
+			req.AIDeclined = true
+			req.Reason = autoDeclinedReason(req.Reason)
 			return tools.PermissionDeny, false
 		}
 		// A script the model just cleared is worth remembering: the same
@@ -348,12 +378,81 @@ func resolvePermissionMode(ctx context.Context, cs *connSession,
 // D3 gate that keeps yolo / allow-edits / auto from silently admitting a
 // destructive revert_turn.
 func resolvePermissionRequest(ctx context.Context, cs *connSession,
-	models map[string]model.BaseChatModel, req tools.PermissionRequest,
+	models map[string]model.BaseChatModel, req *tools.PermissionRequest,
 ) (tools.PermissionDecision, bool) {
 	if req.Force {
 		return tools.PermissionDeny, false
 	}
 	return resolvePermissionMode(ctx, cs, models, req)
+}
+
+// autoDeclinedReason prefixes the guard's own reason with the fact that the
+// model refused (W-B-15).
+//
+// Prefix rather than replace: the static reason is still the more actionable
+// half when there is one ("shell command not on allowlist" tells the operator
+// which line of their profile to look at), and a Prompt that reached auto mode
+// with no reason at all is common — the FS and tool dimensions produce plenty.
+func autoDeclinedReason(reason string) string {
+	const lead = "the automatic risk assessment declined to approve this " +
+		"unattended and asked for a human decision"
+	if strings.TrimSpace(reason) == "" {
+		return lead
+	}
+	return lead + "; the static policy also said: " + reason
+}
+
+// oneShotIfAIDeclined downgrades a sticky approval to a single-call one when
+// the model had declined (W-B-15).
+//
+// Overriding a verdict is not switching the judge off. "allow for this session"
+// on an AI-declined call would record an approval rule for that scope, and
+// Authorize's approval-manager short-circuit runs BEFORE the mode gate — so
+// every later call in that scope would skip the risk assessment entirely,
+// silently, for the rest of the session. One yes, one call.
+//
+// Everything else passes through untouched, including a deny.
+func oneShotIfAIDeclined(req tools.PermissionRequest, d tools.PermissionDecision) tools.PermissionDecision {
+	if !req.AIDeclined {
+		return d
+	}
+	switch d {
+	case tools.PermissionAlwaysAllow, tools.PermissionAllowSession, tools.PermissionAllowPersistent:
+		return tools.PermissionAllow
+	}
+	return d
+}
+
+// auditAIOverride records a human overriding ModeAuto's ASK verdict (W-B-15).
+//
+// Written here rather than left to Authorize because Authorize cannot see it:
+// the flag lives on the callback's own copy of the request, and by the time
+// Authorize logs "allow / interactive_once" the fact that a model refused first
+// is gone. A refusal that a human reversed is the row an audit is FOR.
+//
+// Only an approval is recorded as an override. A human agreeing with the model
+// is the ordinary outcome and Authorize already logs the denial.
+func auditAIOverride(ctx context.Context, req tools.PermissionRequest, d tools.PermissionDecision) {
+	if !req.AIDeclined {
+		return
+	}
+	switch d {
+	case tools.PermissionAllow, tools.PermissionAlwaysAllow,
+		tools.PermissionAllowSession, tools.PermissionAllowPersistent:
+	default:
+		return
+	}
+	digest := req.Shell
+	if digest != "" {
+		digest = "shell: " + digest
+	}
+	tools.RecordPermissionAudit(ctx, tools.PermissionAuditRecord{
+		Tool:       req.Tool,
+		Decision:   "allow",
+		Source:     "auto_approval_override",
+		ReasonCode: "human_overrode_model_refusal",
+		CmdDigest:  digest,
+	})
 }
 
 // forcePromptFlag reports whether a request may NOT be auto-approved or
@@ -417,7 +516,7 @@ func askAutoApproval(ctx context.Context, models map[string]model.BaseChatModel,
 // and a field silently dropped on the way in is indistinguishable from one
 // that was never collected.
 func autoApprovalPromptFor(cs *connSession, req tools.PermissionRequest) string {
-	return guard.AutoApprovalPrompt(guard.AutoApprovalRequest{
+	return guard.AutoApprovalPromptWith(cs.guardianPrompt, guard.AutoApprovalRequest{
 		Tool:     req.Tool,
 		Args:     req.Args,
 		Shell:    req.Shell,
@@ -487,6 +586,13 @@ type sessionRuleRecorder interface {
 func recordSessionApproval(rec sessionRuleRecorder, connectionSessionID string,
 	req tools.PermissionRequest, decision tools.PermissionDecision) {
 	if rec == nil || connectionSessionID == "" || req.Shell == "" {
+		return
+	}
+	// W-B-15: a command the model refused and a human waved through once must
+	// not widen a rule family. The caller already downgraded the DECISION to a
+	// one-shot allow, which stops Authorize recording an approval rule — this
+	// is the second store, and it has its own recording path.
+	if req.AIDeclined {
 		return
 	}
 	// A force-prompt or approval-required tool must ask EVERY time; recording

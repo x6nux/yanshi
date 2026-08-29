@@ -206,6 +206,12 @@ profiles:
     # Example: permit only tools discovered from server "github".
     mcp:   { allow: ["mcp_github_*"] }
     fs:    { read: ["**"], write: ["**"] }
+    # W-B-18: ADDITIONAL project metadata directory names refused for WRITES
+    # even under write: ["**"]. Bare names, not globs — compared against every
+    # segment of the resolved target, so ".git" also covers a submodule's. The
+    # built-in set (.git .yanshi .agents .codex) cannot be shortened from here;
+    # to permit one of these paths, name it LITERALLY in fs.write.
+    # protected: [".myagent"]
     shell: { policy: "allowlist", patterns: ["git *", "go test", "go test *", "cargo test", "cargo test *", "npm test", "npm test *"] }
     net:   { allow: true, hosts: ["*"] }
     #
@@ -246,6 +252,14 @@ security:
     enabled: true              # *bool semantics: omit = default (true); false = opt-out
     tier: read-only            # read-only | workspace-write | full-access
     network_deny: true         # Phase 0 hint for the future OS-isolation backend
+  # W-B-14: replace the instruction body the `auto` permission mode shows the
+  # model. Omit for the built-in policy. The file is read and VALIDATED at
+  # startup: an unreadable path, or one whose text drops any of the four risk
+  # classes (reaching outside the project / cannot be undone / runs code nobody
+  # has read / leaves the machine), refuses the start rather than silently
+  # falling back — in auto mode this prompt IS the verdict, so a policy file
+  # that quietly had no effect is the worst outcome available.
+  # guardian_prompt_file: ~/.yanshi/guardian.md
   # ⚠️ Scope: these four keys govern yanshi's OWN in-process HTTP (web_fetch /
   # web_search) AND, since W5, subprocesses launched through the shell/secproc
   # factories — bootstrap starts a real loopback proxy and publishes its

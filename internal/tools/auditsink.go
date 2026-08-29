@@ -174,6 +174,23 @@ func recordPermissionAudit(ctx context.Context, rec PermissionAuditRecord) {
 	h.sink.Record(ctx, rec)
 }
 
+// RecordPermissionAudit writes one decision to the installed durable sink from
+// OUTSIDE this package.
+//
+// It exists for the transport layer, which makes exactly one authorization
+// decision Authorize never sees: a human overriding ModeAuto's ASK verdict
+// (W-B-15). That override happens inside the permission callback, so by the
+// time Authorize records its own "allow / interactive_once" line the fact that
+// a model had refused first is gone — and "the model said no and a human said
+// yes anyway" is the single most interesting row in the archive.
+//
+// Deliberately not a general-purpose logging hook: everything else that
+// authorizes goes through Authorize, which audits on every exit. A second
+// writer for decisions Authorize already records would double-count them.
+func RecordPermissionAudit(ctx context.Context, rec PermissionAuditRecord) {
+	recordPermissionAudit(ctx, rec)
+}
+
 // StoreAuditSink adapts a durable store to PermissionAuditSink.
 //
 // The Append function is injected rather than the *store.Store itself so this

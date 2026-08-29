@@ -86,6 +86,20 @@ var ErrOverrideDenied = errors.New("subagent override denied")
 type FSPerm struct {
 	Read  []string `yaml:"read"`
 	Write []string `yaml:"write"`
+	// Protected names ADDITIONAL project metadata directories the write
+	// dimension refuses to write into without an explicit literal grant
+	// (W-B-18). Entries are bare directory NAMES, not globs or paths: they are
+	// compared against every segment of the resolved target, so ".git" covers a
+	// submodule's control directory at any depth.
+	//
+	// Additive only. The built-in set (guard.protectedMetadataSegments) cannot
+	// be shortened from configuration, because a key that could empty it would
+	// let a config file inside the agent's own write scope reopen the hole this
+	// gate closes — and config.yaml IS inside that scope by default (see
+	// internal/config/policy.go's header). The way to permit one of these paths
+	// is to name it literally in fs.write, which is the same escape hatch the
+	// credential denylist uses and the same thing a reviewer can see in a diff.
+	Protected []string `yaml:"protected"`
 }
 
 // ToolsPerm lists allowed tool names (glob patterns, e.g. "fs.*", "*").

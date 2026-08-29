@@ -171,10 +171,11 @@ var sensitiveAbsolutePaths = []string{
 //   - /etc/passwd and /etc/group. Writing them creates an ACCOUNT, which is a
 //     different harm with a different rule, and admitting it would restart the
 //     defect this split exists to fix: one table, two questions.
-//   - .git/hooks. It is the purest instance of the rule — a shell script git
-//     runs on the next commit — and it is PROJECT-relative, so neither a
-//     home-relative suffix nor an absolute prefix can name it. Recorded here
-//     rather than omitted silently.
+//   - .git/hooks. CLOSED by W-B-18: it is PROJECT-relative, so neither a
+//     home-relative suffix nor an absolute prefix could name it, and the third
+//     matcher (protectedMetadataSegments, below) was added for exactly that
+//     shape. The note stays because the REASON it was missing — this file had
+//     two matchers and the path needed a third — is the maintainable part.
 //
 // Failure direction, same as the read table's: a path missing from here costs a
 // silent write, a path wrongly in it costs one prompt. So the list errs toward
@@ -214,6 +215,97 @@ var executedOnWriteAbsolutePaths = []string{
 	"/etc/ld.so.preload", "/etc/ld.so.conf", "/etc/ld.so.conf.d",
 	// Directories on the default PATH.
 	"/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/local/bin", "/usr/local/sbin",
+}
+
+// protectedMetadataSegments is the THIRD matcher (W-B-18): directory names that
+// are protected wherever they appear, rather than at a fixed absolute prefix or
+// under the home directory.
+//
+// # Why a third shape and not another entry in the two tables above
+//
+// The two existing tables are anchored — one to the home directory, one to the
+// filesystem root — and both anchors are wrong for the thing this protects. A
+// repository's `.git` lives at whatever path the operator checked it out to,
+// which is INSIDE the tree the agent is jailed to and is the one place the
+// write globs are guaranteed to say yes. The shipped example profile writes
+// "**"; `.git/hooks/pre-commit` matches it, and a shell script dropped there
+// runs on the next commit with no prompt anywhere. That is the same rule
+// executedOnWriteSuffixes states ("the write IS the execution, deferred") on a
+// path shape neither anchor can express, which is why that table's header
+// recorded it as a known omission rather than pretending it was covered.
+//
+// Membership rule: writing into this directory changes what a TOOL does with
+// the project — hooks that run, config that redirects a remote, agent
+// instructions a later session obeys — rather than changing the project's own
+// source. Reading is not covered: `cat .git/config` is ordinary.
+//
+// Matching is on a whole path SEGMENT, folded, so `.github` (a different
+// directory that holds ordinary reviewable YAML) does not match `.git`, and a
+// submodule's or vendored checkout's `.git` at any depth does.
+//
+// Failure direction, as elsewhere in this file: a name missing here costs a
+// silent write, a name wrongly here costs one prompt.
+var protectedMetadataSegments = []string{
+	// git's own control directory: hooks execute, config names remotes and can
+	// point core.fsmonitor / core.editor at an arbitrary program.
+	".git",
+	// yanshi's per-project state.
+	".yanshi",
+	// Agent control directories. Instructions and settings inside them are
+	// obeyed by a LATER session, which is the deferred-execution rule again
+	// with a model in the interpreter's place.
+	".agents",
+	".codex",
+}
+
+// IsProtectedMetadataPath reports whether p writes into a protected project
+// metadata directory, returning the matched segment so the denial can name it.
+//
+// extra carries the operator's additions (FSPerm.Protected). They are ADDED to
+// the built-in set and can never remove from it: a config that could empty this
+// list would be a config that silently reopens the hole, and the supported way
+// to permit one of these paths is the literal grant every other gate in this
+// file uses (profileGrantsExplicitly).
+//
+// workdir participates only so a relative path can be resolved at all, exactly
+// as in IsSensitivePath — and, as there, a path that resolves INSIDE the
+// working directory is still matched. That is the entire point of this matcher:
+// the hole is that `.git` is inside the writable root.
+func IsProtectedMetadataPath(p, workdir string, extra []string) (string, bool) {
+	if entry, hit := protectedMetadataHitOnce(p, workdir, extra); hit {
+		return entry, true
+	}
+	// The elided second reading, for the same reason denylistHit has one:
+	// `> .g${x}it/hooks/pre-commit` lands in .git while breaking a literal
+	// segment comparison.
+	if elided, changed := elideExpansions(p); changed {
+		return protectedMetadataHitOnce(elided, workdir, extra)
+	}
+	return "", false
+}
+
+// protectedMetadataHitOnce is IsProtectedMetadataPath for ONE spelling.
+func protectedMetadataHitOnce(p, workdir string, extra []string) (string, bool) {
+	norm, ok := normalizePath(p, workdir)
+	if !ok {
+		return "", false
+	}
+	for _, seg := range strings.Split(foldForDeny(norm), "/") {
+		if seg == "" {
+			continue
+		}
+		for _, name := range protectedMetadataSegments {
+			if seg == foldForDeny(name) {
+				return name, true
+			}
+		}
+		for _, name := range extra {
+			if name != "" && seg == foldForDeny(name) {
+				return name, true
+			}
+		}
+	}
+	return "", false
 }
 
 // IsExecutedOnWritePath reports whether writing p schedules an execution nobody
@@ -362,6 +454,12 @@ func (g *Guard) checkSensitiveFS(p PermissionProfile, a Action) Decision {
 			// names does not exist in that direction. See its header.
 			entry, hit = IsExecutedOnWritePath(raw, a.Workdir)
 			what = "location whose contents are executed later without being read"
+		}
+		if !hit && writing {
+			// W-B-18, and write-only for the same reason: reading .git/config
+			// is what every git command does.
+			entry, hit = IsProtectedMetadataPath(raw, a.Workdir, p.FS.Protected)
+			what = "protected project metadata directory"
 		}
 		if !hit {
 			continue

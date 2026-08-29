@@ -139,6 +139,15 @@ func newLandlock(cfg Config) (Sandbox, string) {
 		// No PID namespace, no cgroup: this backend cannot enumerate or
 		// terminate a process tree. Killing trees stays the shell layer's job.
 		CanKillTree: false,
+		// THE per-field case W-B-13 exists for. Landlock confines the
+		// filesystem unconditionally, so tier/workspace_root are enforced and
+		// Effective is honestly OSIsolated — but NetworkDeny is carried by the
+		// seccomp filter alone, and probeSeccompAt can decline (old kernel,
+		// blocked prctl, unsupported arch). Without it `network_deny: true` is
+		// inert under a report that says "os-isolated", which is precisely the
+		// backend-granularity blind spot: syscallNote() already says so in
+		// prose, and prose is not something a doctor check can branch on.
+		Unenforced: UnenforcedFields(cfg, landlockEnforcedFields(sb.seccomp)...),
 	}
 	return sb, ""
 }

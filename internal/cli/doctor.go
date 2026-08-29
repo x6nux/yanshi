@@ -581,12 +581,26 @@ func checkSandbox(cfg *config.Config, cfgErr error, workRoot string) CheckResult
 	if rep.Reason != "" {
 		msg += " (" + rep.Reason + ")"
 	}
+	// W-B-13: the per-field warnings come BEFORE the Enforced branch, because
+	// the case they exist for is the one where Enforced is TRUE. A Landlock
+	// backend without seccomp reports os-isolated and enforced, and
+	// `network_deny: true` does nothing on it; folding the warning into the
+	// !Enforced arm would hide it in exactly that configuration.
+	if len(rep.Unenforced) > 0 {
+		msg += fmt.Sprintf("; WARNING: configured but NOT enforced by this backend: %s",
+			strings.Join(rep.Unenforced, ", "))
+	}
 	if !rep.Enforced {
 		// Warn rather than fail: this is the documented Phase-0 posture, not a
 		// broken install. Saying OK here is what would be wrong -- the guard
 		// layer is the containment boundary and the operator needs to know it.
 		return CheckResult{Name: "sandbox", Status: StatusWarn,
 			Message: msg + "; OS/network isolation NOT enforced — guard is the boundary"}
+	}
+	if len(rep.Unenforced) > 0 {
+		// Enforced, but not all of it. StatusOK here would be the report saying
+		// the configuration is fine while naming the part of it that is inert.
+		return CheckResult{Name: "sandbox", Status: StatusWarn, Message: msg}
 	}
 	return CheckResult{Name: "sandbox", Status: StatusOK, Message: msg}
 }
