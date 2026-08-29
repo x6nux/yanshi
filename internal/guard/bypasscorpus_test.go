@@ -602,6 +602,26 @@ $X -rf /`, want: wantFloor},
 		tableOnly: "the stand-in commits nothing; the row pins the accepted over-strictness — a " +
 			"message that begins with a destructive command now costs one prompt"},
 
+	// ---- The boundary ADR-0020 stops at: the payload is in a FILE -----------
+	//
+	// The assignment-prefix reading asks whether the VALUE is a command. These
+	// values are PATHS, so it does not see them, and that is the same boundary
+	// already recorded for `bash script.sh`, `python3 script.py` and
+	// `awk -f prog.awk` — reached through the environment instead of through
+	// argv. Closing it is a different work package and not a wider version of
+	// this one: it means READING THE FILE, which moves the guard from "read the
+	// command string" to "read the filesystem", and the bytes it would grade
+	// can change between the check and the exec. The fs dimension is what gates
+	// the write that puts them there.
+	{cmd: `BASH_ENV=./payload.sh bash -c :`, want: wantAllow, tableOnly: noShellShim,
+		why: "the value is a PATH, not a command; the payload is in the file. Same boundary as " +
+			"`bash script.sh`, carried by an environment variable"},
+	{cmd: `LD_PRELOAD=./evil.so ls`, want: wantAllow, tableOnly: noUtilityShim,
+		why: "same: a path to an object the loader maps. Nothing in this string is a command"},
+	{cmd: `PYTHONSTARTUP=./evil.py python3`, want: wantAllow, tableOnly: noInterpreterShim,
+		why: "same, one interpreter over — and `python3 script.py` two groups up is the argv " +
+			"spelling of the identical boundary"},
+
 	// ---- Storage destroyers reached through their own operands --------------
 	{cmd: `truncate -s 0 /dev/disk0`, want: wantFloor, tableOnly: noDeviceWitness},
 	{cmd: `tar -cf /dev/disk0 .`, want: wantFloor, tableOnly: noDeviceWitness},
@@ -958,11 +978,12 @@ const tableOnlyRowCount = 43
 // the package stay green. Folding the two into one number would let a growing
 // pile of the second kind hide behind a shrinking pile of the first.
 //
-// It moved by +3/-1 with ADR-0020: three ordinary commands added as the reverse
-// samples for the new readings name utilities with no stand-in, and
-// `git -c user.name=x commit` LOST its note, because git is now on the shim
-// PATH and the reference shell does constrain it.
-const unwitnessedAllowRowCount = 20
+// It moved by +6/-1 with ADR-0020: three ordinary commands added as the reverse
+// samples for the new readings name utilities with no stand-in, three more
+// record the FILE boundary the reading stops at, and `git -c user.name=x
+// commit` LOST its note, because git is now on the shim PATH and the reference
+// shell does constrain it.
+const unwitnessedAllowRowCount = 23
 
 // TestTableOnlyRowsHaveNotGrown is the half of the bookkeeping that does not
 // need a shell, so it runs on the Windows leg too — where the differential
