@@ -53,8 +53,16 @@ var spawnEnvCensus = map[string]string{
 		"managed proxy variables published. The reference posture.",
 	"internal/shell/console_unix.go": "same LaunchSpec.Env as the pipe path; the PTY " +
 		"backend differs in the console, not the environment.",
-	"internal/tools/shell.go": "goes through secproc.Launch → shell.DefaultSecureFactory, " +
-		"so the posture above applies. shell_run declares no AllowEnv: no credentials at all.",
+	// The exec.Command in this file is NOT shell_run's — shell_run reaches the
+	// kernel through secproc.Launch and never lands here. The one call site is
+	// shellCommand, whose sole caller is task_gate_run. The first version of
+	// this entry described shell_run anyway and so answered for a spawn point
+	// that does not exist in the file, while the one that does inherited every
+	// credential. A census that answers about the wrong call site is worse than
+	// no entry: it reads as coverage.
+	"internal/tools/shell.go": "shellCommand sets netpolicy.ScrubbedEnviron() with no " +
+		"allowlist. Its only caller is task_gate_run, whose command string comes from the " +
+		"model and whose output is fed back to the model as evidence.",
 	"internal/mcp/manager.go": "netpolicy.ScrubbedEnviron() plus the server's own " +
 		"mcp.servers.<name>.env layered on top, so an operator-declared token survives and " +
 		"an inherited one does not.",

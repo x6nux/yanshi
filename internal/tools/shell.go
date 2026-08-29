@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/schema"
+	"github.com/x6nux/yanshi/internal/netpolicy"
 	"github.com/x6nux/yanshi/internal/secproc"
 	"github.com/x6nux/yanshi/internal/shell"
 )
@@ -293,6 +294,25 @@ type shellRunArgs struct {
 // runs an operator-declared gate command with its own argv contract
 // (ADR-0012), not a model-authored one.
 //
+// # The child's environment is scrubbed HERE, not at the call site
+//
+// W-B-11 stripped credentials from nine spawn sites and missed this one, which
+// is the worst one to miss: task_gate_run is in the default profile's allow
+// list, the command string comes from the MODEL, and its combined output is
+// written into work.Evidence.Summary — which the model reads back on the next
+// turn. A gate command of `go test ./...` needs no dialog, and any test in the
+// tree can print os.Environ(). Leaving cmd.Env nil, which is what this returned
+// for its whole existence, means "inherit the parent whole" — OPENAI_API_KEY
+// included.
+//
+// The scrub takes no allowlist, matching shell_run's posture rather than
+// goalloop's evaluator: that evaluator inherits deliberately because its
+// command comes from the operator's config, and this one does not.
+//
+// It is set here rather than in runGate because a second caller would have to
+// remember, and the last two-line exec.Command written in this repository is
+// exactly how this leak got here.
+//
 // Supported env values (mirrors shell.ShellArgv):
 //
 //	"" / "auto"  — auto-detected: cmd /c (Windows), sh -c (Unix)
@@ -314,7 +334,9 @@ func shellCommand(ctx context.Context, env, command string) *exec.Cmd {
 			prog, args = "sh", []string{"-c", command}
 		}
 	}
-	return exec.CommandContext(ctx, prog, args...)
+	cmd := exec.CommandContext(ctx, prog, args...)
+	cmd.Env = netpolicy.ScrubbedEnviron()
+	return cmd
 }
 
 // streamFromReader is shell_run's output pump (Task 21): it scans r
