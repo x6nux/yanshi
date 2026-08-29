@@ -1056,3 +1056,69 @@ func TestResilientModel_StreamPerProviderMaxRetriesCapsMidStreamRetries(t *testi
 	require.Error(t, recvErr, "budget exhausted, the mid-stream error must surface")
 	assert.Equal(t, int32(2), atomic.LoadInt32(&calls), "override (1) means 1 initial open + 1 retried open, then give up")
 }
+
+// openFailsAfterFirstModel opens fine and errors mid-stream on its FIRST
+// call, then fails at OPEN time (Stream itself returns an error, no reader)
+// on every subsequent call — the fixture for driving openStreamChain's
+// within-round failover on the SECOND round of runStream's retry loop
+// (round 1 opens this provider and consumes its mid-stream error; round 2's
+// openStreamChain call fails to reopen it and moves on to the next provider
+// in chain order).
+type openFailsAfterFirstModel struct {
+	calls *int32
+}
+
+func (m *openFailsAfterFirstModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	return schema.AssistantMessage("ok", nil), nil
+}
+
+func (m *openFailsAfterFirstModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	n := atomic.AddInt32(m.calls, 1)
+	if n == 1 {
+		return streamReaderFrom([]*schema.Message{schema.AssistantMessage("partial", nil)}, io.ErrUnexpectedEOF), nil
+	}
+	return nil, errors.New("dial failed")
+}
+
+var _ model.BaseChatModel = (*openFailsAfterFirstModel)(nil)
+
+// TestResilientModel_StreamFailoverResetsPerProviderBudget proves the
+// curIdx-tracked reset in runStream (resilient.go: "if openIdx != curIdx {
+// curIdx = openIdx; errAttempts = 0 }") actually fires: provider A is
+// configured for 1 retry, exhausts it against ITS OWN mid-stream error, then
+// starts failing at open time — forcing openStreamChain to fail over to
+// provider B (configured for 1 retry of its own) within the SAME round.
+// Without the reset, provider B would inherit provider A's already-spent
+// errAttempts=1 and its own maxRetriesFor(1)=1 budget would read as already
+// exhausted, so its first mid-stream error would surface immediately instead
+// of being retried — the stream would fail with only 1 call to B, not
+// succeed after 2.
+func TestResilientModel_StreamFailoverResetsPerProviderBudget(t *testing.T) {
+	var aCalls, bCalls int32
+	a := &openFailsAfterFirstModel{calls: &aCalls}
+	b := &flakyStreamModel{calls: &bCalls} // call 1: mid-stream fail; call 2+: full success
+	r, err := NewResilientModel([]model.BaseChatModel{a, b}, ResilientConfig{
+		MaxRetries:            5, // deliberately higher than either override, so a bug that
+		PerProviderMaxRetries: []int{1, 1},
+		BaseDelay:             time.Millisecond,
+		MaxDelay:              time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	sr, err := r.Stream(context.Background(), []*schema.Message{schema.UserMessage("x")})
+	require.NoError(t, err)
+	defer sr.Close()
+
+	var got string
+	for {
+		msg, e := sr.Recv()
+		if errors.Is(e, io.EOF) {
+			break
+		}
+		require.NoError(t, e, "provider B's budget must be its own 1, freshly reset — not provider A's already-spent 1")
+		got += msg.Content
+	}
+	assert.Contains(t, got, "hello world")
+	assert.Equal(t, int32(3), atomic.LoadInt32(&aCalls), "call1 mid-stream fail + retry(call2 dial-fail) + round-3 retry(call3 dial-fail)")
+	assert.Equal(t, int32(2), atomic.LoadInt32(&bCalls), "call1 mid-stream fail (fresh budget lets it retry) + call2 succeeds")
+}
