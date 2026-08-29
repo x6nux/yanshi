@@ -34,6 +34,10 @@ storage:
   # memory_quota: 2000
 token: "change-me"
 llm:
+  # max_retries (W-C-07) is the global per-attempt retry ceiling for a
+  # provider that does not set its own max_retries below. Omit it (or leave
+  # 0) to keep the resilient layer's own built-in default (10).
+  # max_retries: 5
   providers:
     # context_window is OPTIONAL. Omit it and yanshi resolves the window from a
     # built-in model catalog (routing prefixes like "openrouter/anthropic/...",
@@ -73,6 +77,16 @@ llm:
       api_key: "${ANTHROPIC_API_KEY}"
       context_window: 200000
       multimodal: true            # native image input (Tier G)
+      # max_retries: 3             # W-C-07: overrides llm.max_retries for just this provider
+      # headers:                   # W-C-02: extra HTTP headers sent on every request to this
+      #   X-Corp-Gateway-Token: "${CORP_GATEWAY_TOKEN}"  # provider; ${VAR} expands like api_key.
+      #                             # Values are as sensitive as api_key — registered with the
+      #                             # redactor at boot, never logged in the clear.
+      # auth:                      # W-C-12: command-based token auth, instead of a static api_key.
+      #   command: ["aws", "sso-token", "print"]  # stdout (trimmed) becomes the credential.
+      #   refresh_interval: 15m    # re-run the command at most this often; also re-run once after
+      #                             # any 401. Omit to default to 15m. Runs through secproc.Launch
+      #                             # (Authorized + credential-scrubbed), same as shell_run/ACP.
     # Local runtimes (Ollama / LM Studio / vLLM / llama.cpp) are auto-detected
     # from base_url (loopback, RFC1918, *.local) or from kind, and are NEVER
     # given a cloud model's window: a local serve truncates at its own num_ctx

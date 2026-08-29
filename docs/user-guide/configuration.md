@@ -5,6 +5,8 @@ yanshi 从 `config.yaml` 加载配置（已被 gitignore；从被跟踪的 `conf
 > `llm.providers[].api_key` 只接受两种写法：**明文字面量**，或 **`${VAR}`**（加载时由 `os.ExpandEnv` 展开，展开结果同样是明文）。两者都原样交给 provider SDK，不经任何凭据解析或加密存储。写 `secret://…` / `env://…` 不再有特殊含义 —— 那串字符会被当成 key 本身发出去。
 >
 > 明文 key 仍会注册进进程 Redactor，因此不会出现在日志、WS/SSE 帧或 SQLite 里。但 `config.yaml` 本身是明文文件（已被 gitignore），请自行控制它的读权限。
+>
+> `llm.providers[].headers`（map，W-C-02）是附加在每个请求上的自定义 HTTP 头（企业网关 token、Azure 网关 key 之类）。值同样接受 `${VAR}` 展开，且同样注册进 Redactor —— 只有值被注册，头名不算凭据。三种 provider kind 都支持：`openai` kind 由 `retryafter.go` 的传输层注入，`anthropic`/`openai-responses` 由各自的 `setHeaders` 注入；三者都在**内置头之后**应用，因此一条 `headers` 条目可以覆盖内置头名（例如自定义 `Authorization`、`anthropic-version`）而不是被静默盖掉。
 
 ## server
 
@@ -20,7 +22,11 @@ SQLite 持久化（`sqlite_path`）。F1 的 WAL 相关项：`wal_max_open_conns
 
 ## llm
 
-`providers` 是 provider 列表，每项有 `name`/`kind`（`openai`|`openai-responses`|`anthropic`）/`model`/`api_key`/`base_url`/`context_window`/`cost_class`/`multimodal`/`auto_compact_threshold`。`context_window` 是该模型的 token 窗口；compaction 按它而非全局值估算。`auto_compact_threshold` 是该模型自己的压缩触发比例，覆盖 `compaction.threshold`（同一梯子：显式字段 > 模型目录命中 > 全局回退，W-C-01/ADR-0024）；取值必须是 `context_window` 的**分数**（`<= 1`，否则加载期拒绝启动——像绝对 token 数的值会静默错配压缩门），**负值**是显式信号，会为这一个 provider 单独关闭压缩，即使全局开关是开着的。`multimodal: true` 声明原生图像输入（Tier G）；当主模型非多模态时，bootstrap 自动选第一个 `multimodal==true` 的 provider 作为视觉辅助。`llm.providers` 为空时 `--fake-model` 自动接入确定性 fake model。
+`providers` 是 provider 列表，每项有 `name`/`kind`（`openai`|`openai-responses`|`anthropic`）/`model`/`api_key`/`base_url`/`context_window`/`cost_class`/`multimodal`/`auto_compact_threshold`/`headers`/`max_retries`/`auth`。`context_window` 是该模型的 token 窗口；compaction 按它而非全局值估算。`auto_compact_threshold` 是该模型自己的压缩触发比例，覆盖 `compaction.threshold`（同一梯子：显式字段 > 模型目录命中 > 全局回退，W-C-01/ADR-0024）；取值必须是 `context_window` 的**分数**（`<= 1`，否则加载期拒绝启动——像绝对 token 数的值会静默错配压缩门），**负值**是显式信号，会为这一个 provider 单独关闭压缩，即使全局开关是开着的。`multimodal: true` 声明原生图像输入（Tier G）；当主模型非多模态时，bootstrap 自动选第一个 `multimodal==true` 的 provider 作为视觉辅助。`llm.providers` 为空时 `--fake-model` 自动接入确定性 fake model。
+
+`max_retries`（int，W-C-07）是这个 provider 自己的重试上限，覆盖 `llm.max_retries` 这个全局回退值；不设置（省略）时用全局值，设置为 `0` 是显式的"这个 provider 一次都不重试"，两者的区别由指针类型钉住（config.go 的 M4 nil-means-omit 惯例）。`ResilientChatModel` 是重试的唯一权威，per-provider 预算在 failover 换到别的 provider 时会重置，不会带着上一个 provider 已经花掉的次数。负值在加载期直接拒绝启动（`llm.max_retries` 或某个 provider 的 `max_retries` < 0）。
+
+`auth`（W-C-12）配置**命令产出型**凭据：`auth.command`（`[]string`，argv 形式，不经 shell 解析）是产出 token 的命令，`auth.refresh_interval`（duration，默认 `15m`）是刷新周期。配了 `auth` 时 `api_key` 可以留空。命令执行必须走 `secproc`（W-B-02 收敛后的唯一子进程入口），401 会触发一次命令重跑再重试。`auth.command` 为空、或 `refresh_interval` 为负值，都在加载期直接拒绝启动。
 
 ## agents
 
@@ -203,6 +209,7 @@ export YANSHI_ALLOW_CHILD_ENV=NETRC,npm_config_registry,SSH_AUTH_SOCK
 | llm.preflight | *bool | |
 | llm.stream_first_chunk_timeout | duration | |
 | llm.stream_idle_timeout | duration | |
+| llm.max_retries | int | |
 
 ### agents
 
