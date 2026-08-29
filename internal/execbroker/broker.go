@@ -57,12 +57,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 // SocketEnv names the environment variable carrying the broker's unix socket
@@ -125,9 +127,71 @@ type Server struct {
 	token    string
 	decide   Decider
 	ctx      context.Context
+	// slots, readTimeout and maxRequest are this server's copies of the three
+	// bounds below, snapshotted at Listen.
+	//
+	// Copied rather than read from the package vars at use time so the handler
+	// goroutines only ever read immutable fields: the tests that shrink the
+	// bounds would otherwise be writing a variable a live handler is reading,
+	// which `go test -race` reports — correctly, since a running broker whose
+	// limits change underneath it is not a thing production should be able to
+	// express either.
+	slots       chan struct{}
+	readTimeout time.Duration
+	maxRequest  int64
 
 	closeOnce sync.Once
 }
+
+// The three bounds below exist because this socket is reachable by every
+// untrusted child yanshi starts — that is the design, the shim has to be able
+// to ask — and the process on the other end of it is the one holding the
+// operator's provider keys. Before them, a child could park the parent's
+// goroutines and grow its heap without going through a single guard decision:
+// connecting and writing bytes was enough.
+//
+// They are vars rather than consts so the tests can shrink them; nothing in
+// production writes them.
+var (
+	// requestReadTimeout bounds how long the parent waits for a shim to finish
+	// sending its request.
+	//
+	// This is the READ OF THE REQUEST only. The shim's own doc explains why the
+	// other direction — the child waiting for a verdict — has no deadline: the
+	// parent may be waiting on a human, and a timeout there turns "the operator
+	// went to get coffee" into a denial. That reasoning is about the child
+	// waiting for a person. Nobody is waiting for a person here: the shim
+	// writes its request immediately after dialling, so a connection that has
+	// not produced a newline in this long is not a slow operator, it is a
+	// connection doing nothing. Before this, a child that dialled and wrote
+	// nothing parked a parent goroutine forever, and Close did not reclaim it
+	// because Close only closes the listener.
+	requestReadTimeout = 10 * time.Second
+
+	// maxRequestBytes caps one request.
+	//
+	// A Request is a token, a program name, an argv and a directory: a few
+	// kilobytes at the outside. bufio.Reader.ReadBytes grows its buffer to hold
+	// whatever arrives before the delimiter, so without a cap the parent
+	// allocates whatever the child sends — one connection, no newline, heap
+	// proportional to the write.
+	maxRequestBytes int64 = 64 << 10
+
+	// maxConcurrentRequests caps in-flight adjudications.
+	//
+	// Over the limit the connection is REFUSED with a verdict rather than
+	// queued. Queueing would be worse than the flood: the shim has no read
+	// deadline by design, so a queued child hangs until a slot frees, and a
+	// child that hangs on an elevation is indistinguishable from one whose
+	// operator has not answered yet. A refusal is a denial, which is the safe
+	// direction, and it is what the shim already knows how to print.
+	//
+	// 32 is far above any real concurrency — legitimate demand is the number of
+	// children invoking sudo at the same instant, and each one blocks on a
+	// human — and far below the parent's fd budget, which also serves the HTTP
+	// listener, the WebSocket connections and SQLite.
+	maxConcurrentRequests = 32
+)
 
 // ErrUnsupported is returned by Listen on a platform where the shims cannot be
 // installed. Callers treat it as "no interception here" and carry on: it is a
@@ -187,7 +251,12 @@ func Listen(ctx context.Context, exe string, decide Decider) (*Server, error) {
 		_ = os.RemoveAll(dir)
 		return nil, err
 	}
-	s := &Server{listener: ln, shimDir: dir, token: token, decide: decide, ctx: ctx}
+	s := &Server{
+		listener: ln, shimDir: dir, token: token, decide: decide, ctx: ctx,
+		slots:       make(chan struct{}, maxConcurrentRequests),
+		readTimeout: requestReadTimeout,
+		maxRequest:  maxRequestBytes,
+	}
 	go s.serve()
 	go func() {
 		<-ctx.Done()
@@ -251,13 +320,27 @@ func (s *Server) Close() error {
 }
 
 // serve accepts until the listener closes.
+//
+// The slot is taken HERE rather than inside handle, because a goroutine that
+// starts and then waits for a slot is the resource the limit is supposed to
+// bound. Acquisition is non-blocking: over the limit the connection is answered
+// with a refusal on the accepting goroutine and closed.
 func (s *Server) serve() {
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
 			return
 		}
-		go s.handle(conn)
+		select {
+		case s.slots <- struct{}{}:
+			go func() {
+				defer func() { <-s.slots }()
+				s.handle(conn)
+			}()
+		default:
+			writeResponse(conn, Response{Reason: "too many elevation requests in flight"})
+			_ = conn.Close()
+		}
 	}
 }
 
@@ -268,8 +351,21 @@ func (s *Server) serve() {
 // open would only be a handle for something else to reuse.
 func (s *Server) handle(conn net.Conn) {
 	defer conn.Close()
-	line, err := bufio.NewReader(conn).ReadBytes('\n')
+	// The deadline covers reading the request and nothing else. It is not
+	// cleared afterwards because nothing else is read; the verdict write and the
+	// decide call, which may block on a human, are unaffected by a READ
+	// deadline.
+	_ = conn.SetReadDeadline(time.Now().Add(s.readTimeout))
+	line, err := bufio.NewReader(io.LimitReader(conn, s.maxRequest)).ReadBytes('\n')
 	if err != nil && len(line) == 0 {
+		return
+	}
+	// A LimitReader reports EOF at the cap, so a request with no newline inside
+	// maxRequestBytes arrives here as a non-empty line that will not parse. Say
+	// so instead of letting it read as malformed JSON: the two have different
+	// operator actions.
+	if int64(len(line)) >= s.maxRequest {
+		writeResponse(conn, Response{Reason: "elevation request too large"})
 		return
 	}
 	var req Request

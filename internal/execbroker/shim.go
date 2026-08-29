@@ -130,18 +130,40 @@ func ask(sock string, req Request) (Response, error) {
 // forks until the process table fills.
 //
 // Every entry is compared after filepath.Clean so that "/tmp/x" and "/tmp/x/"
-// are the same directory. An entry that is the shim dir under a different
-// symlinked path would slip through — the loop guard is the child's own
-// PATH, and there is no defence here against a caller that deliberately aims
-// the shim at itself.
+// are the same directory.
+//
+// # Two guards, and why the directory one is not enough
+//
+// The directory comparison is a STRING match, so it holds only while the shim
+// directory is spelled the way this process was told it is spelled. Four
+// spellings defeat it, all reachable by a child editing its own environment:
+// the shim directory on PATH under a symlinked alias; ShimDirEnv naming the
+// alias while PATH has the real one; two shim directories on PATH with only one
+// named; and ShimDirEnv set to "." with the process already in the shim
+// directory. Each returns the shim, and syscall.Exec on the shim re-enters
+// RunShim, forever.
+//
+// The second guard is the invariant the first one was approximating: skip any
+// candidate that IS this executable. os.Stat follows symlinks, so a shim
+// symlink and the yanshi binary it points at have the same inode, and
+// os.SameFile answers for all four spellings at once. This is the fix; the
+// directory match stays because it is cheaper and because skipping the shim
+// directory wholesale is still the right thing when it works.
 //
 // An EMPTY shimDir is refused rather than treated as "no directory to skip".
 // filepath.Clean("") is ".", which matches no PATH entry, so the loop guard
-// silently disappears and the first entry found is the shim — which execs
-// itself, forever. This was not hypothetical: a mutation probe that removed
+// silently disappears. This was not hypothetical: a mutation probe that removed
 // RunShim's early return for a missing broker turned the whole package's tests
-// into a fork bomb, and the only reason production never reached it is a check
-// in a different function.
+// into a fork bomb. The self-identity guard below now also catches that case,
+// but the explicit refusal is kept because it names what is actually wrong —
+// "YANSHI_EXEC_SHIM_DIR is unset" sends an operator somewhere, "no real sudo
+// was found on PATH" does not.
+//
+// What is still NOT defended: a child that puts a DIFFERENT program on PATH
+// ahead of the real one. That is the ordinary PATH-interposition exposure the
+// package header describes, it predates the shim, and the mechanisms for it are
+// the sandbox tier and the seccomp filter because those are enforced by the
+// kernel.
 func resolveOutsideShimDir(name, path, shimDir string) (string, error) {
 	if strings.TrimSpace(shimDir) == "" {
 		return "", fmt.Errorf(
@@ -149,14 +171,27 @@ func resolveOutsideShimDir(name, path, shimDir string) (string, error) {
 				"lives in (%s is unset)", name, ShimDirEnv)
 	}
 	shimDir = filepath.Clean(shimDir)
+	// A failure to identify this executable is not fatal: it only costs the
+	// second guard, and the first one still applies. Refusing outright would
+	// turn an unreadable /proc into "no elevation works at all".
+	var self os.FileInfo
+	if exe, err := os.Executable(); err == nil {
+		self, _ = os.Stat(exe)
+	}
 	for _, entry := range strings.Split(path, string(os.PathListSeparator)) {
 		if entry == "" || filepath.Clean(entry) == shimDir {
 			continue
 		}
 		candidate := filepath.Join(entry, name)
-		if isExecutableFile(candidate) {
-			return candidate, nil
+		if !isExecutableFile(candidate) {
+			continue
 		}
+		if self != nil {
+			if info, err := os.Stat(candidate); err == nil && os.SameFile(self, info) {
+				continue
+			}
+		}
+		return candidate, nil
 	}
 	return "", fmt.Errorf(
 		"%s: approved, but no real %s was found on PATH outside yanshi's shim directory", name, name)
