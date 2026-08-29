@@ -71,8 +71,13 @@ func (f DefaultSecureFactory) Start(ctx context.Context, spec secproc.SecureProc
 	if err != nil {
 		return nil, err
 	}
+	// Step 1b: install the elevation shims. After prepare because it edits the
+	// PATH prepare built; before the spawn because the child reads that PATH at
+	// exec. See childLaunchPosture.interceptElevation.
+	launch, stopBroker := posture.interceptElevation(ctx, launch, spec.Workdir)
 	proc, console, err := f.OS.Start(ctx, launch)
 	if err != nil {
+		stopBroker()
 		return nil, err
 	}
 	// Step 2b: the post-spawn half of the sandbox seam, for backends whose
@@ -85,6 +90,7 @@ func (f DefaultSecureFactory) Start(ctx context.Context, spec secproc.SecureProc
 	// rather than handing back a StartedProcess the capability report claims is
 	// inside a container. See childLaunchPosture.postStart.
 	if err := posture.postStart(proc.PID()); err != nil {
+		stopBroker()
 		if console != nil {
 			_ = console.Close()
 		}
@@ -101,8 +107,14 @@ func (f DefaultSecureFactory) Start(ctx context.Context, spec secproc.SecureProc
 	// half-closing stdin; secproc.StartedProcess.Stdin documents that as a
 	// factory-defined property, and the one caller that writes to it (the ACP
 	// delegation path) only closes at teardown.
+	// The broker outlives the spawn and dies with the reap. Tying it to Wait
+	// rather than to ctx alone is what bounds the temp directory and the
+	// listener goroutine: on the shell v2 path the launch context is
+	// deliberately detached from the turn (context.WithoutCancel in
+	// Manager.Start), so a ctx-only teardown would keep one of each alive per
+	// session until the whole manager shut down.
 	return &secproc.StartedProcess{
-		Wait:   proc.Wait,
+		Wait:   func() error { defer stopBroker(); return proc.Wait() },
 		PID:    proc.PID(),
 		Stdout: consoleReader{console},
 		Stderr: separatedStderr(console),

@@ -153,6 +153,21 @@ var destructiveReadingCensus = map[string]destructiveReadingSite{
 			"entry SAID the two were the same shape until a verification checked it — see the " +
 			"file header on what this table is and is not.",
 	},
+	"internal/shell/childlaunch.go::elevationDecider": {
+		Workdir: "the OUTER launch's workdir — secproc spec.Workdir on the secproc path, " +
+			"and the empty string on the shell v2 path, which LaunchSpec has no field for",
+		Interpreter: "not set: the intercepted argv is a program and its arguments, not a " +
+			"shell command in some language, so the default POSIX segmenter is the right " +
+			"reader for the string CommandLine builds out of it",
+		Note: "wired (W-B-10). This is the nested-exec broker: a `sudo` reached from INSIDE " +
+			"a running child, intercepted by a PATH shim and adjudicated on its own. The " +
+			"shim reports its own working directory and that value is deliberately NOT used " +
+			"as the boundary — it is the child's cwd and the child can move it, so feeding " +
+			"it here would let a script `cd /` and turn an out-of-scope deletion into an " +
+			"in-scope one. The empty shell v2 boundary is the fail-safe direction: unknown " +
+			"means every absolute target is out of scope, which is a Prompt in every mode " +
+			"rather than a pass. Giving LaunchSpec a project root is the work package.",
+	},
 	"internal/tools/permctx.go::Authorize": {
 		Workdir:     "action.Workdir — mirrored verbatim into PermissionRequest",
 		Interpreter: "not carried on PermissionRequest",

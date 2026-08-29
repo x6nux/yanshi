@@ -266,6 +266,26 @@ func SwapAuthorizer(a Authorizer) Authorizer {
 	return prev
 }
 
+// Authorize runs the registered Authorizer for an action that is NOT a process
+// launch of its own.
+//
+// It exists for exactly one caller: internal/execbroker's decider, which has to
+// adjudicate a program a running child is about to exec through the shim. That
+// is not a Launch — there is no spec, no factory, and no environment to scrub,
+// because the child is doing the exec — but it must go through the same guard
+// pipeline, the same profile and the same approval callback, or a nested `sudo`
+// would be judged by rules other than the ones the operator wrote.
+//
+// It fails closed on an unregistered Authorizer for the same reason Launch
+// does: the zero value is nil, and a process that never ran tools' init must
+// not silently approve.
+func Authorize(ctx context.Context, action guard.Action, argsJSON string) error {
+	if currentAuthorizer == nil {
+		return ErrNoAuthorizer
+	}
+	return currentAuthorizer(ctx, action, argsJSON)
+}
+
 // Launch is the single entry point for any subprocess spawn in yanshi.
 // Pipeline (each step is a fail-closed check):
 //  1. Authorize via the registered Authorizer — HardDeny never reaches the

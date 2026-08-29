@@ -2,11 +2,19 @@ package shell
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sync"
 
+	"github.com/x6nux/yanshi/internal/execbroker"
+	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/netpolicy"
 	"github.com/x6nux/yanshi/internal/sandbox"
+	"github.com/x6nux/yanshi/internal/secproc"
 )
 
 // childLaunchPosture is the security posture the two production factories
@@ -155,6 +163,97 @@ func (p childLaunchPosture) prepare(ctx context.Context, spec LaunchSpec, tier s
 		spec.Args = cmd.Args[1:]
 	}
 	return spec, nil
+}
+
+// interceptElevation installs the elevation shims for one launch and returns
+// the spec pointed at them, plus the closer that tears the broker down.
+//
+// # Why the two production factories both call it here
+//
+// The shim only works if it is on the child's PATH, and PATH is decided by
+// prepare() — so this has to run after it and before the spawn. Putting it in
+// prepare() itself would have been tidier and is wrong: prepare has no teardown
+// and this owns a listener, a goroutine and a temp directory. The closer is
+// therefore returned, and both Start methods wire it into the reaper.
+//
+// # workdir is the outer launch's, not the shim's
+//
+// The shim reports its own working directory, which is where the script line
+// ran. That travels into the approval dialog because it is what an operator
+// wants to see. It deliberately does NOT become guard.Action.Workdir: that
+// field is the project boundary the destructive classifier measures deletions
+// against, and letting a child move it by cd'ing first would turn
+// `sudo rm -rf /x` into an in-scope deletion. An empty workdir — which is what
+// the shell v2 path has, since LaunchSpec carries no equivalent — means
+// "unknown", and the classifier treats every absolute target as out of scope.
+// That is the fail-safe direction.
+//
+// # Failure is not fatal
+//
+// A platform without symlinks, a temp dir that cannot be created, a socket that
+// will not bind: none of those are reasons to refuse to run the command the
+// operator approved. The launch proceeds with no shims, which is exactly the
+// behaviour that existed before this control, and the reason goes to stderr
+// once rather than into an error the caller would have to classify.
+func (p childLaunchPosture) interceptElevation(
+	ctx context.Context, spec LaunchSpec, workdir string,
+) (LaunchSpec, func()) {
+
+	noop := func() {}
+	exe, err := os.Executable()
+	if err != nil {
+		return spec, noop
+	}
+	exe, err = filepath.Abs(exe)
+	if err != nil {
+		return spec, noop
+	}
+	server, err := execbroker.Listen(ctx, exe, elevationDecider(workdir))
+	if err != nil {
+		if !errors.Is(err, execbroker.ErrUnsupported) {
+			warnElevationOnce.Do(func() {
+				fmt.Fprintf(os.Stderr,
+					"yanshi: nested privilege elevation is NOT being intercepted: %v\n", err)
+			})
+		}
+		return spec, noop
+	}
+	spec.Env = execbroker.PrependShimDir(append(spec.Env, server.Env()...), server.ShimDir())
+	return spec, func() { _ = server.Close() }
+}
+
+// warnElevationOnce keeps a host that simply cannot host the shims from
+// printing a line per spawn.
+var warnElevationOnce sync.Once
+
+// elevationDecider adjudicates one intercepted elevation through the same
+// authorizer a top-level tool call goes through.
+//
+// It calls secproc.Authorize rather than reimplementing a check, so the nested
+// `sudo` is judged by the operator's profile, reaches the same approval
+// callback, and is classified by the same destructive-deletion rules. A second
+// decision path here would be a second, quieter policy.
+//
+// The error is returned verbatim to the child, which prints it: an operator
+// reading a script's output sees why line 3 failed rather than a bare 126.
+func elevationDecider(workdir string) execbroker.Decider {
+	return func(ctx context.Context, req execbroker.Request) error {
+		display, err := json.Marshal(struct {
+			Program string   `json:"program"`
+			Args    []string `json:"args"`
+			Dir     string   `json:"dir"`
+			Nested  bool     `json:"nested_elevation"`
+		}{req.Program, req.Args, req.Dir, true})
+		if err != nil {
+			// The dialog loses its detail; the decision must still be made.
+			display = []byte("{}")
+		}
+		return secproc.Authorize(ctx, guard.Action{
+			Tool:    "shell_run",
+			Shell:   execbroker.CommandLine(req.Program, req.Args),
+			Workdir: workdir,
+		}, string(display))
+	}
 }
 
 // postStart runs the sandbox's optional post-spawn step for a process that has

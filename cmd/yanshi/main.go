@@ -30,6 +30,7 @@ import (
 	"github.com/x6nux/yanshi/internal/cli"
 	"github.com/x6nux/yanshi/internal/cli/tui"
 	"github.com/x6nux/yanshi/internal/config"
+	"github.com/x6nux/yanshi/internal/execbroker"
 	"github.com/x6nux/yanshi/internal/harden"
 	"github.com/x6nux/yanshi/internal/lockfile"
 	"github.com/x6nux/yanshi/internal/sandbox"
@@ -159,6 +160,27 @@ func main() {
 // logic (version flag, managed-invocation gating, subcommand dispatch, unknown
 // subcommand usage error) is unit-testable. argv includes argv[0].
 func dispatch(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	// The elevation shim, before everything: this process was invoked through a
+	// symlink named `sudo` (or doas/su/pkexec) that yanshi itself put on a
+	// child's PATH, so argv[1] is the intercepted program's arguments and none
+	// of the routing below applies to it.
+	//
+	// Dispatching on argv[0]'s basename is the only signal available — the
+	// shims are symlinks to this same binary — and it is safe because this path
+	// is fail-closed: RunShim returns an error on every branch that does not
+	// exec, including "no broker in the environment", so a yanshi binary
+	// someone happened to name `sudo` refuses to act as one.
+	//
+	// On approval RunShim does not return; it has replaced this process with
+	// the real program. Any return is a refusal or a failure, and both must be
+	// a non-zero exit that does NOT fall through to the router.
+	if name, ok := execbroker.IsShimInvocation(argv[0]); ok {
+		cwd, _ := os.Getwd()
+		if err := execbroker.RunShim(name, argv, cwd); err != nil {
+			fmt.Fprintf(stderr, "%v\n", err)
+		}
+		return execbroker.ShimExitCode
+	}
 	// The Landlock re-exec helper, FIRST — before --version, before -h, before
 	// isManagedInvocation. This process was spawned by yanshi's own Linux
 	// sandbox as /proc/self/exe: it must apply the ruleset to itself and then
