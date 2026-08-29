@@ -134,7 +134,20 @@ func ask(sock string, req Request) (Response, error) {
 // symlinked path would slip through — the loop guard is the child's own
 // PATH, and there is no defence here against a caller that deliberately aims
 // the shim at itself.
+//
+// An EMPTY shimDir is refused rather than treated as "no directory to skip".
+// filepath.Clean("") is ".", which matches no PATH entry, so the loop guard
+// silently disappears and the first entry found is the shim — which execs
+// itself, forever. This was not hypothetical: a mutation probe that removed
+// RunShim's early return for a missing broker turned the whole package's tests
+// into a fork bomb, and the only reason production never reached it is a check
+// in a different function.
 func resolveOutsideShimDir(name, path, shimDir string) (string, error) {
+	if strings.TrimSpace(shimDir) == "" {
+		return "", fmt.Errorf(
+			"%s: cannot resolve the real program without knowing which directory the shim "+
+				"lives in (%s is unset)", name, ShimDirEnv)
+	}
 	shimDir = filepath.Clean(shimDir)
 	for _, entry := range strings.Split(path, string(os.PathListSeparator)) {
 		if entry == "" || filepath.Clean(entry) == shimDir {

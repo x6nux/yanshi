@@ -389,3 +389,33 @@ func TestListenRefusesANilDecider(t *testing.T) {
 		t.Fatal("Listen accepted a relative exe path, which decides which binary answers as sudo")
 	}
 }
+
+// TestResolveRefusesAnEmptyShimDir pins the loop guard.
+//
+// filepath.Clean("") is ".", which equals no PATH entry, so an empty shimDir
+// silently turns "skip the directory I live in" into "skip nothing" — and the
+// first match is then the shim itself, which execs itself. Production never
+// reaches it because RunShim returns early when the broker environment is
+// incomplete, and that is exactly the problem: the guard lives in a different
+// function from the loop.
+//
+// Found by a mutation probe, not by reading. Removing RunShim's early return
+// turned this package's suite into a fork bomb that had to be killed by hand.
+func TestResolveRefusesAnEmptyShimDir(t *testing.T) {
+	dir := fakeSudoDir(t)
+	if _, err := resolveOutsideShimDir("sudo", dir, ""); err == nil {
+		t.Fatal("an empty shim directory was accepted; the self-exec guard is gone")
+	}
+	if _, err := resolveOutsideShimDir("sudo", dir, "   "); err == nil {
+		t.Fatal("a blank shim directory was accepted")
+	}
+	// The normal case still resolves, so the guard is not simply refusing
+	// everything: the fake directory is not the shim directory here.
+	got, err := resolveOutsideShimDir("sudo", dir, "/nonexistent-shim-dir")
+	if err != nil {
+		t.Fatalf("a legitimate resolution failed: %v", err)
+	}
+	if filepath.Dir(got) != dir {
+		t.Fatalf("resolved %q, want something under %q", got, dir)
+	}
+}
