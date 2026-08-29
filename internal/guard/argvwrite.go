@@ -41,6 +41,43 @@ import "strings"
 // redirection targets over, so `~` and `$HOME` expansion and the built-in
 // credential denylist all happen in the one place that already knows how.
 
+// # The half of this file that is NOT a table
+//
+// argvWriters is a PROGRAM NAME TABLE, and opaque.go's header already says what
+// happens to those: they are unbounded, so the default for an unrecognised
+// spelling is a pass. The deletion dimension answered that with two readings
+// that consult no name at all (classifyTrailingArgv reads every argv SUFFIX,
+// classifyWordAsCommand reads every WORD). The write dimension had neither, and
+// a close-out verification measured the consequence: checkSegmentWrites looked
+// up the segment's FIRST program word and nothing else, so ONE prefix runner in
+// front of a writer removed the entire FS write dimension.
+//
+//	tee -a ~/.ssh/authorized_keys              Prompt
+//	sudo tee -a ~/.ssh/authorized_keys         Allow      ← and 16 more prefixes
+//	zzrunner-nobody-knows tee -a ~/.ssh/…      Allow      ← an INVENTED name
+//
+// Under a profile that only permits writes inside the project tree the same
+// prefix erased the profile's own answer: `sudo tee -a /etc/zz.conf` was Allow.
+// Four of the spellings were witnessed by a real /bin/sh actually creating the
+// credential file.
+//
+// segmentWriteTargets and outputFlagTargets below are the two name-independent
+// readings, and they are deliberately the same two shapes the deletion side
+// already uses:
+//
+//   - EVERY ARGV SUFFIX is read as a command in its own right, so a wrapper
+//     table can be wrong, incomplete, or absent and the write is still seen.
+//     This is classifyTrailingArgv's criterion, applied to the other dimension.
+//   - A FLAG THAT MEANS "OUTPUT PATH" is read whatever program carries it, the
+//     way codePayloadFlags reads "-c means the next word is code" for every
+//     program. `curl -o`, `wget -O`, `gcc -o` and `sort -o` all name a file
+//     they create, and none of them is (or should have to be) in the table.
+//
+// The failure directions differ and both are acceptable. A suffix or flag read
+// WRONGLY yields one FS check on a path the command does not write, which is
+// nothing under a permissive profile and one prompt under a narrow one. A suffix
+// or flag NOT read yields a silent write, which is what this file exists to stop.
+
 // argvWriteSpec describes where in a program's argv the path it WRITES is.
 type argvWriteSpec struct {
 	// valueFlags are options whose following word is a value, not an operand.
@@ -61,6 +98,15 @@ type argvWriteSpec struct {
 	// prefixedValues are `name=value` operands whose value is the written path.
 	// dd's `of=` is the only one.
 	prefixedValues []string
+	// pathFlags are the program's own options whose FOLLOWING word is the path
+	// it writes, as opposed to valueFlags, which only says "skip the next word".
+	// A spec listing a flag here must also list it in valueFlags, or the
+	// operand would be counted twice.
+	//
+	// It is the generic form of what used to be a hard-coded powerShellPathFlags
+	// lookup. Generalizing it is what lets `ssh-keygen -f ~/.ssh/authorized_keys`
+	// be one row instead of a second mechanism.
+	pathFlags map[string]bool
 }
 
 // argvWriters is the table. Entries are normalized program words (base-named,
@@ -94,17 +140,52 @@ var argvWriters = map[string]argvWriteSpec{
 	// dd names its destination with a prefixed value.
 	"dd": {prefixedValues: []string{"of="}},
 
+	// LANDING SOMEBODY ELSE'S BYTES ON A PATH YOU CHOSE. The generic
+	// outputFlagTargets reading covers the `-o`/`-O` half of this family
+	// (`curl -o`, `wget -O`, `base64 -o`); these three name their destination
+	// positionally instead, so they need the row. All three satisfy the
+	// membership rule above without argument: creating the named path is what
+	// `touch` IS, and a copy's destination is a copy's destination whether the
+	// source is local (cp, already here), remote (scp) or synced (rsync).
+	"touch": {valueFlags: map[string]bool{"-d": true, "--date": true, "-r": true, "--reference": true, "-t": true}},
+	"rsync": {lastOperandOnly: true, valueFlags: map[string]bool{
+		"-e": true, "--rsh": true, "-T": true, "--temp-dir": true,
+		"--exclude": true, "--include": true, "--filter": true, "-f": true,
+		"--files-from": true, "--compare-dest": true, "--link-dest": true,
+	}},
+	"scp": {lastOperandOnly: true, valueFlags: map[string]bool{
+		"-i": true, "-l": true, "-o": true, "-P": true, "-c": true, "-F": true, "-S": true, "-J": true,
+	}},
+	// `-f` names the key file ssh-keygen CREATES. It is a per-program row and
+	// not an outputPathFlags member on purpose: `-f` is "the file to read" in
+	// most programs that spell it.
+	"ssh-keygen": {
+		requireFlags: map[string]bool{"-f": true},
+		valueFlags:   map[string]bool{"-f": true, "-N": true, "-C": true, "-t": true, "-b": true, "-P": true, "-m": true},
+		pathFlags:    map[string]bool{"-f": true},
+	},
+
+	// DELIBERATELY ABSENT, so the next reader does not have to re-derive it:
+	// `tar -C DIR`, `unzip -d DIR` and `git clone URL DIR` all write into a
+	// DIRECTORY named by a flag or a trailing operand whose spelling is shared
+	// with the read direction — `tar -C` is also how you extract FROM a
+	// directory, `make -C` and `git -C` change directory and write nothing
+	// there. Reading them would prompt on ordinary work, and what they place in
+	// the directory comes out of an archive or a remote repository, which is the
+	// boundary this package already records for payloads that are not in the
+	// command string (see ADR-0020's Consequences).
+
 	// PowerShell. The cmdlet spelling is the ordinary one, so this is not a
 	// corner of the language the way `tee` is a corner of sh.
-	"set-content":   {valueFlags: powerShellPathFlags, firstOperandOnly: true},
-	"add-content":   {valueFlags: powerShellPathFlags, firstOperandOnly: true},
-	"out-file":      {valueFlags: powerShellPathFlags, firstOperandOnly: true},
-	"export-csv":    {valueFlags: powerShellPathFlags, firstOperandOnly: true},
-	"export-clixml": {valueFlags: powerShellPathFlags, firstOperandOnly: true},
-	"tee-object":    {valueFlags: powerShellPathFlags, firstOperandOnly: true},
-	"new-item":      {valueFlags: powerShellPathFlags, firstOperandOnly: true},
-	"sc":            {valueFlags: powerShellPathFlags, firstOperandOnly: true}, // Set-Content's alias
-	"ac":            {valueFlags: powerShellPathFlags, firstOperandOnly: true}, // Add-Content's alias
+	"set-content":   {valueFlags: powerShellPathFlags, pathFlags: powerShellPathFlags, firstOperandOnly: true},
+	"add-content":   {valueFlags: powerShellPathFlags, pathFlags: powerShellPathFlags, firstOperandOnly: true},
+	"out-file":      {valueFlags: powerShellPathFlags, pathFlags: powerShellPathFlags, firstOperandOnly: true},
+	"export-csv":    {valueFlags: powerShellPathFlags, pathFlags: powerShellPathFlags, firstOperandOnly: true},
+	"export-clixml": {valueFlags: powerShellPathFlags, pathFlags: powerShellPathFlags, firstOperandOnly: true},
+	"tee-object":    {valueFlags: powerShellPathFlags, pathFlags: powerShellPathFlags, firstOperandOnly: true},
+	"new-item":      {valueFlags: powerShellPathFlags, pathFlags: powerShellPathFlags, firstOperandOnly: true},
+	"sc":            {valueFlags: powerShellPathFlags, pathFlags: powerShellPathFlags, firstOperandOnly: true}, // Set-Content's alias
+	"ac":            {valueFlags: powerShellPathFlags, pathFlags: powerShellPathFlags, firstOperandOnly: true}, // Add-Content's alias
 }
 
 // powerShellPathFlags are the parameter names whose value is the file a cmdlet
@@ -114,6 +195,150 @@ var argvWriters = map[string]argvWriteSpec{
 var powerShellPathFlags = map[string]bool{
 	"-path": true, "-filepath": true, "-literalpath": true, "-pspath": true,
 	"-outfile": true, "-destination": true,
+}
+
+// segmentWriteTargets is the write dimension's name-INDEPENDENT reading of one
+// segment: the paths written by the program in front, by every argv suffix
+// behind it, and by any generic output flag anywhere in the argv.
+//
+// The suffix walk is classifyTrailingArgv's, deliberately: SUFFIXES rather than
+// "the first non-flag word", because `chroot / tee -a ~/.ssh/authorized_keys`
+// and `bwrap --dev-bind / / tee …` put bare operands where a generic flag walk
+// expects the command, and a walk that stopped at the first one would look up a
+// program called `/`.
+//
+// It costs nothing on the ordinary case: a suffix only produces a target when
+// its own head word is a writer or carries an output flag, so `ls -la` and
+// `git status` walk their argv and return nil.
+//
+// scriptEmitters are exempt exactly as they are in classifyTrailingArgv:
+// `echo tee /etc/passwd` writes six words to stdout. The relief is that existing
+// table rather than a new one.
+//
+// # The suffix reading is a WEAKER reading, and is scoped to say so
+//
+// The head word IS the program; a suffix word only MIGHT be, and program names
+// collide with subcommand words. `apt-get install vim` puts coreutils' `install`
+// — a real argvWriters entry, whose destination is its last operand — in a
+// position where the last operand is a package name. Measured: it turned every
+// `<tool> install <thing>` into a write of `<thing>` and, under a profile with
+// no fs.write list at all, into a refusal.
+//
+// So a SUFFIX-derived target is taken only when its spelling LEAVES THE WORKING
+// TREE (leavesWorkingTree). That is the range where the reading can change any
+// answer: under every profile that permits writing in the project at all, a
+// relative target is permitted anyway, so keeping it buys nothing and costs a
+// false refusal on ordinary work. Head-derived and output-flag-derived targets
+// are NOT scoped this way — `go build -o yanshi` really does write `yanshi`.
+//
+// The boundary that leaves behind, written down rather than argued away: under
+// a profile whose fs.write is EMPTY, `sudo tee -a build/out.txt` is Allow where
+// the unprefixed spelling is a refusal. Every measured member of the family this
+// function exists for names an absolute or home path.
+func segmentWriteTargets(program string, args []string) []string {
+	if scriptEmitters[program] {
+		return nil
+	}
+	out := append(argvWriteTargets(program, args), outputFlagTargets(args)...)
+	for i, a := range args {
+		if a == "--" || isFlagWord(a) {
+			continue
+		}
+		w := normalizeProgramWord(a)
+		if w == "" || scriptEmitters[w] {
+			continue
+		}
+		// outputFlagTargets is NOT re-run per suffix: a suffix's flags are a
+		// subset of the full argv's, so the single scan above already saw them.
+		for _, t := range argvWriteTargets(w, args[i+1:]) {
+			if leavesWorkingTree(t) {
+				out = append(out, t)
+			}
+		}
+	}
+	return out
+}
+
+// leavesWorkingTree reports whether a path's SPELLING names somewhere other than
+// a location under the directory the command runs in: an absolute path, a home
+// reference, an unresolved expansion (which could be either, so it counts), a
+// Windows drive-qualified path, or a `..` escape.
+//
+// It is deliberately lexical. checkFS owns normalization — pre-normalizing here
+// would rewrite a relative target into an absolute one and stop a profile
+// written as `write: ["src/**"]` from matching, which is the tightening-by-
+// accident checkRedirectTargets' header refuses.
+func leavesWorkingTree(p string) bool {
+	if p == "" {
+		return false
+	}
+	switch p[0] {
+	case '/', '\\', '~', '$':
+		return true
+	}
+	if len(p) >= 2 && p[1] == ':' { // C:\Users\…, and UNC's \\ is covered above
+		return true
+	}
+	return p == ".." || strings.HasPrefix(p, "../") || strings.HasPrefix(p, `..\`) ||
+		strings.Contains(p, "/../") || strings.Contains(p, `\..\`)
+}
+
+// outputPathFlags are the option spellings that mean "write your output to this
+// path", in every program that has the notion.
+//
+// This is the write dimension's codePayloadFlags, and it is short for the same
+// reason that set is: the value is that the reading consults NO PROGRAM NAME, so
+// `curl -o ~/.ssh/authorized_keys url` — the standard way to land remote content
+// on a chosen path, and the shape the guard's own risk prompt calls
+// "download and run" — is judged without curl being in any table.
+//
+// Entries earn a place when the flag's operand is a path the invocation CREATES
+// in essentially every program that spells the flag that way. `-C` is absent
+// although `tar -C` and `unzip -d` really do write there: it means "change
+// directory" for `make`, `git` and `find` too, so reading it would prompt on
+// ordinary work whose write lands nowhere near the named directory. `-f` is
+// absent because it is the archive tar READS as often as the one it writes.
+func outputPathFlags(f string) bool {
+	switch f {
+	case "-o", "-O", "--output", "--output-document", "--output-file":
+		return true
+	}
+	return false
+}
+
+// outputFlagTargets returns the paths an argv names with a generic output flag.
+//
+// Three operand shapes are skipped, and each one is a measured false positive
+// rather than a precaution:
+//
+//   - a URL. `curl -O https://x/k` spells a SWITCH the same way wget spells its
+//     output flag, and the operand after it is the URL.
+//   - a `key=value` word. `ssh -o StrictHostKeyChecking=no` and `mount -o` put
+//     settings there; opaque.go's admission rule names the same shape as the
+//     general-purpose key/value channel it refuses to read as one type.
+//   - a bare `-`, which is stdout by convention.
+func outputFlagTargets(args []string) []string {
+	var out []string
+	keep := func(v string) {
+		if v == "" || v == "-" || isFlagWord(v) ||
+			strings.Contains(v, "=") || strings.Contains(v, "://") {
+			return
+		}
+		out = append(out, v)
+	}
+	for i, a := range args {
+		if a == "--" {
+			break
+		}
+		if base, attached, found := strings.Cut(a, "="); found && outputPathFlags(base) {
+			keep(attached)
+			continue
+		}
+		if outputPathFlags(a) && i+1 < len(args) {
+			keep(args[i+1])
+		}
+	}
+	return out
 }
 
 // argvWriteTargets returns the paths a command writes that are named as
@@ -232,7 +457,7 @@ func argvWriteOperands(spec argvWriteSpec, args []string) []string {
 			key := strings.ToLower(a)
 			if spec.valueFlags[a] || spec.valueFlags[key] {
 				sawValueFlag = true
-				if powerShellPathFlags[key] && i+1 < len(args) {
+				if (spec.pathFlags[a] || spec.pathFlags[key]) && i+1 < len(args) {
 					named = append(named, args[i+1])
 				}
 				i++

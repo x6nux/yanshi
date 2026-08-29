@@ -755,6 +755,68 @@ $X -rf /`, want: wantFloor},
 		why: "gzip replaces its operand, which is a write — of a path inside the work directory " +
 			"that FS write `**` permits"},
 
+	// ---- the write dimension behind a prefix runner -------------------------
+	//
+	// The group above reads the SEGMENT'S FIRST program word, and a close-out
+	// verification measured what that costs: one prefix in front of any of those
+	// programs removed the FS write dimension entirely. 17 of 19 prefixes
+	// worked, and so did an invented name. Four of them were witnessed by a real
+	// /bin/sh actually creating the key file.
+	//
+	// The reading that closes it is classifyTrailingArgv's — every argv SUFFIX —
+	// applied to the other dimension; see segmentWriteTargets. `pkexec` is the
+	// row that shows the name is not what decided: it is in NO table of this
+	// package, and the invented-name rows live in argvwrite_test.go where the
+	// premise can be asserted beside them.
+	{cmd: `sudo tee -a ~/.ssh/authorized_keys`, want: wantPrompt},
+	{cmd: `env tee -a ~/.ssh/authorized_keys`, want: wantPrompt},
+	{cmd: `nohup tee -a ~/.ssh/authorized_keys`, want: wantPrompt},
+	{cmd: `setsid tee -a ~/.ssh/authorized_keys`, want: wantPrompt},
+	{cmd: `command tee -a ~/.ssh/authorized_keys`, want: wantPrompt},
+	{cmd: `xargs tee -a ~/.ssh/authorized_keys`, want: wantPrompt},
+	{cmd: `timeout 5 tee -a ~/.ssh/authorized_keys`, want: wantPrompt},
+	{cmd: `flock /tmp/lk tee -a ~/.ssh/authorized_keys`, want: wantPrompt},
+	{cmd: `taskset -c 0 tee -a ~/.ssh/authorized_keys`, want: wantPrompt},
+	{cmd: `chroot / tee -a ~/.ssh/authorized_keys`, want: wantPrompt},
+	{cmd: `pkexec tee -a ~/.ssh/authorized_keys`, want: wantPrompt},
+	{cmd: `sudo cp /dev/null ~/.ssh/authorized_keys`, want: wantPrompt},
+	{cmd: `sudo sed -i s/x/y/ ~/.ssh/authorized_keys`, want: wantPrompt},
+	{cmd: `sudo install -m 600 /dev/stdin ~/.ssh/authorized_keys`, want: wantPrompt},
+	{cmd: `sh -c "sudo tee -a ~/.ssh/authorized_keys"`, want: wantPrompt},
+	{cmd: `sudo apt-get install vim`, want: wantAllow, tableOnly: noUtilityShim,
+		why: "the reverse sample the suffix reading is SCOPED for: coreutils' `install` is a real " +
+			"argvWriters entry, and every `<tool> install <thing>` puts it in a position where the " +
+			"last operand is a package name. leavesWorkingTree is what keeps that from becoming a " +
+			"write of `vim` — and, under a profile with no fs.write list, a refusal"},
+	{cmd: `sudo tee -a out12`, want: wantAllow,
+		why: "the boundary that scoping leaves behind, recorded rather than argued away: a " +
+			"suffix-derived RELATIVE target is not taken. Under FS write `**` this is Allow either " +
+			"way; under a profile whose fs.write is empty it is the one spelling the reading misses"},
+
+	// ---- landing somebody else's bytes on a path you chose ------------------
+	//
+	// `curl -o` is the standard spelling of "put the network's answer here", and
+	// the guard's own risk prompt calls download-and-run a top risk category —
+	// yet no table had it, and `curl` was already known to this package (it is in
+	// the relief table for `-d`). outputFlagTargets reads the FLAG instead, so
+	// the program does not have to be known at all.
+	{cmd: `curl -o ~/.ssh/authorized_keys http://x/k`, want: wantPrompt},
+	{cmd: `curl -sSfL http://x/k -o ~/.ssh/authorized_keys`, want: wantPrompt},
+	{cmd: `curl --output ~/.ssh/authorized_keys http://x/k`, want: wantPrompt},
+	{cmd: `wget -O ~/.ssh/authorized_keys http://x/k`, want: wantPrompt},
+	{cmd: `sudo curl -o ~/.ssh/authorized_keys http://x/k`, want: wantPrompt},
+	{cmd: `touch ~/.ssh/authorized_keys`, want: wantPrompt},
+	{cmd: `curl -O http://x/k`, want: wantAllow,
+		why: "curl's `-O` is a SWITCH (use the remote name) where wget's is an output path, so the " +
+			"word after it is the URL. outputFlagTargets skips URL-shaped operands; without that " +
+			"every `curl -O` would be judged as a write to its own URL"},
+	{cmd: `curl -sS http://x/health`, want: wantAllow,
+		why: "an ordinary fetch with no output flag; the reverse sample that stops the rows above " +
+			"from being satisfied by refusing every curl"},
+	{cmd: `curl -o out13 http://x/k`, want: wantAllow,
+		why: "the output flag IS read here — of a path inside the work directory that FS write " +
+			"`**` permits. Unlike the suffix reading, the flag reading takes relative targets too"},
+
 	// ---- PowerShell ---------------------------------------------------------
 	//
 	// This front-end is the newest attack surface in the package, and its first
@@ -983,7 +1045,13 @@ const tableOnlyRowCount = 43
 // record the FILE boundary the reading stops at, and `git -c user.name=x
 // commit` LOST its note, because git is now on the shim PATH and the reference
 // shell does constrain it.
-const unwitnessedAllowRowCount = 23
+//
+// It moved by +1 net with the write dimension's suffix reading: `sudo apt-get
+// install vim` is the reverse sample for the scoping and `apt-get` has no
+// stand-in, while `curl -O` and `curl -sS` GAINED one — curl joined
+// credentialWriterShims for the output-flag rows, so the reference shell now
+// constrains those two as well.
+const unwitnessedAllowRowCount = 24
 
 // TestTableOnlyRowsHaveNotGrown is the half of the bookkeeping that does not
 // need a shell, so it runs on the Windows leg too — where the differential

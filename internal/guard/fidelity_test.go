@@ -304,7 +304,15 @@ func itoa(n int) string { return string(rune('0' + n)) }
 // The shell has already done the part that matters by the time these run — `~`
 // expansion, quoting, word splitting — so what is emulated is only "this
 // program creates the file you named".
-var credentialWriterShims = []string{"tee", "cp", "mv", "ln", "install", "sed", "gzip", "truncate"}
+//
+// `curl`, `wget` and `touch` joined the list with the output-flag reading: all
+// three create the path their argv names (curl/wget behind -o/-O, touch as its
+// operand), so the same stand-in witnesses them. The URL operand they also carry
+// is not a creatable path and the script's `|| true` absorbs it.
+var credentialWriterShims = []string{
+	"tee", "cp", "mv", "ln", "install", "sed", "gzip", "truncate",
+	"curl", "wget", "touch",
+}
 
 // credentialWriterScript creates every operand that is not an option. Touching
 // an operand that the real program would only READ (cp's source, sed's script)

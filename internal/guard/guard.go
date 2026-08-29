@@ -554,15 +554,19 @@ func (g *Guard) checkShellSegment(p PermissionProfile, a Action, seg execpolicy.
 // places a shell command can name one: a redirection target and an operand.
 //
 // The second half arrived late and the corpus recorded the gap as a
-// single-program boundary (`tee`) while it was a family of at least ten. See
-// argvwrite.go.
+// single-program boundary (`tee`) while it was a family of at least ten. It then
+// read the SEGMENT'S FIRST PROGRAM WORD and nothing else, which made one prefix
+// runner — or one invented program name — erase the whole FS write dimension.
+// segmentWriteTargets is the name-independent reading that replaces it; see
+// argvwrite.go for the criterion and for why it is the same one the deletion
+// dimension already uses.
 func (g *Guard) checkSegmentWrites(p PermissionProfile, a Action, seg execpolicy.Segment) Decision {
 	worst := g.checkRedirectTargets(p, a, seg)
 	program, args, ok := lexShellLite(seg.Text)
 	if !ok {
 		return worst
 	}
-	targets := argvWriteTargets(program, args)
+	targets := segmentWriteTargets(program, args)
 	if len(targets) == 0 {
 		return worst
 	}
