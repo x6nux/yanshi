@@ -14,6 +14,7 @@ import (
 
 	"github.com/x6nux/yanshi/internal/acp"
 	"github.com/x6nux/yanshi/internal/guard"
+	"github.com/x6nux/yanshi/internal/netpolicy"
 	"github.com/x6nux/yanshi/internal/vcs"
 )
 
@@ -95,7 +96,7 @@ func (h *WorktreeHelper) Add(name string) (string, error) {
 	}
 
 	branch := "goalloop/" + name
-	cmd := exec.Command("git", "-C", h.RepoDir, "worktree", "add", "-b", branch, tmpDir)
+	cmd := gitWorktreeCommand(h.RepoDir, "worktree", "add", "-b", branch, tmpDir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("worktree: git worktree add: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -107,9 +108,22 @@ func (h *WorktreeHelper) Add(name string) (string, error) {
 	return tmpDir, nil
 }
 
+// gitWorktreeCommand builds one `git worktree` invocation.
+//
+// A single constructor so the credential scrub cannot be applied to two of the
+// three call sites. These are purely local repository operations — add, remove,
+// list — with no network leg, so git needs no credential; leaving Env nil, as
+// all three did, handed the operator's provider keys and tokens to git and to
+// every hook it runs.
+func gitWorktreeCommand(repoDir string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", append([]string{"-C", repoDir}, args...)...)
+	cmd.Env = netpolicy.ScrubbedEnviron()
+	return cmd
+}
+
 // Remove removes a git worktree at the given path.
 func (h *WorktreeHelper) Remove(path string) error {
-	cmd := exec.Command("git", "-C", h.RepoDir, "worktree", "remove", "--force", path)
+	cmd := gitWorktreeCommand(h.RepoDir, "worktree", "remove", "--force", path)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("worktree: git worktree remove: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -118,7 +132,7 @@ func (h *WorktreeHelper) Remove(path string) error {
 
 // List returns the paths of all git worktrees for the repository.
 func (h *WorktreeHelper) List() ([]string, error) {
-	cmd := exec.Command("git", "-C", h.RepoDir, "worktree", "list", "--porcelain")
+	cmd := gitWorktreeCommand(h.RepoDir, "worktree", "list", "--porcelain")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("worktree: git worktree list: %w: %s", err, strings.TrimSpace(string(out)))

@@ -70,6 +70,55 @@ func ManagedEnvWithPolicy(proxyURL string, policy CredentialPolicy) []string {
 	return PrepareEnvWithPolicy(os.Environ(), proxyURL, policy)
 }
 
+// ScrubbedEnviron is this process's environment with every credential removed
+// except the names in allow.
+//
+// It exists because a spawn site that writes `cmd.Env = os.Environ()` — or that
+// simply omits cmd.Env, which means the same thing — hands the child every
+// provider API key, cloud credential and VCS token the operator exported. Four
+// production sites did exactly that: stdio MCP servers, language servers, the
+// `gh` invocations behind `yanshi pr`, and the skills installer's git clone.
+// None of them goes through secproc or shell.Factory, so none of them inherited
+// the scrub those two apply.
+//
+// It publishes NO proxy variables, which is what makes it different from
+// ManagedEnvWithPolicy and is deliberate: the callers above are not the
+// untrusted-program launch path, and pointing a language server at the managed
+// proxy would change its egress behaviour as a side effect of a credential fix.
+// This function does one thing.
+//
+// The allowlist is by NAME and variadic so the common case reads as
+// ScrubbedEnviron() with nothing to explain. A caller passing names is making an
+// authorization statement about a specific program — `gh` cannot authenticate
+// without GH_TOKEN no matter how restrictive the posture — and those lists
+// belong in a named variable next to the caller, not inline.
+func ScrubbedEnviron(allow ...string) []string {
+	kept, dropped := ScrubCredentials(os.Environ(), CredentialPolicy{AllowEnv: allow})
+	if len(dropped) > 0 {
+		slog.Debug("netpolicy inherited-environment scrub",
+			"dropped_count", len(dropped),
+			"dropped_names", dropped,
+			"allowed", allow)
+	}
+	return kept
+}
+
+// GitHubCLICredentialEnv is the exact credential set the `gh` CLI is allowed to
+// inherit, wherever it is spawned from.
+//
+// It lives here rather than beside either caller because there are two — the
+// model-facing github_* tools and the operator-facing `yanshi pr` — and a
+// second copy would drift into two different answers to "what may gh read".
+// Widening it is an authorization change.
+//
+// GH_CONFIG_DIR is in the list even though it holds a PATH rather than a
+// secret: gh's other authentication route is the token in its config
+// directory, which it locates through this variable when the operator has
+// relocated it. The name ends in a word the scrub treats as credential
+// material, so without naming it here gh would silently look in the wrong
+// place.
+var GitHubCLICredentialEnv = []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR"}
+
 // ScrubCredentials removes credential-bearing entries from env without touching
 // proxy variables, for callers that build their child environment themselves
 // and only want the credential half of the posture.

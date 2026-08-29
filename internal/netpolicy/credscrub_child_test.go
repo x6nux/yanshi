@@ -167,3 +167,63 @@ func TestAllowEnvReachesTheChildProcess(t *testing.T) {
 		}
 	}
 }
+
+// TestScrubbedEnvironKeepsAChildRunnableWithoutCredentials covers the helper the
+// four non-secproc spawn sites use.
+//
+// It is a separate test from the ManagedEnvWithPolicy one above because the two
+// answer different questions and only one of them is about a proxy:
+// ScrubbedEnviron publishes NO proxy variables, and a caller that reached for
+// ManagedEnvWithPolicy instead would silently change a language server's egress
+// behaviour as a side effect of a credential fix. Asserting the absence is what
+// stops a future simplification from folding the two together.
+func TestScrubbedEnvironKeepsAChildRunnableWithoutCredentials(t *testing.T) {
+	plantProbeCredentials(t)
+
+	got := dumpChildEnv(t, netpolicy.ScrubbedEnviron())
+
+	for _, kv := range probeCredentials {
+		if strings.Contains(got, kv[1]) {
+			t.Errorf("child can read %s: an MCP server, a language server, gh or git "+
+				"would receive it", kv[0])
+		}
+	}
+	for _, name := range structuralVars {
+		if !strings.Contains(got, name+"=") {
+			t.Errorf("child has no %s: the scrub broke the child rather than containing it", name)
+		}
+	}
+	if !strings.Contains(got, "yanshiprobe-ordinary-value") {
+		t.Error("an ordinary variable was dropped; the scrub is truncating rather than filtering")
+	}
+	for _, proxyVar := range []string{"HTTP_PROXY=", "http_proxy=", "NO_PROXY="} {
+		if strings.Contains(got, proxyVar) {
+			t.Errorf("ScrubbedEnviron published %s; it must not touch the child's egress "+
+				"configuration — that is ManagedEnvWithPolicy's job", proxyVar)
+		}
+	}
+}
+
+// TestScrubbedEnvironAllowlistIsByNameOnly pins the escape hatch the `gh`
+// callers depend on, in both directions.
+//
+// One-sided is not enough: an allowlist that accidentally disabled the scrub
+// would satisfy "GH_TOKEN arrives" perfectly.
+func TestScrubbedEnvironAllowlistIsByNameOnly(t *testing.T) {
+	plantProbeCredentials(t)
+
+	got := dumpChildEnv(t, netpolicy.ScrubbedEnviron(netpolicy.GitHubCLICredentialEnv...))
+
+	if !strings.Contains(got, "ghp_yanshiprobeAAAAAAAAAAAAAAAAAAAAAAAA") {
+		t.Error("GH_TOKEN is in GitHubCLICredentialEnv but did not reach the child; " +
+			"`yanshi pr` would report gh as not logged in on a machine where it is")
+	}
+	for _, kv := range probeCredentials {
+		if kv[0] == "GH_TOKEN" {
+			continue
+		}
+		if strings.Contains(got, kv[1]) {
+			t.Errorf("the gh allowlist also let %s through", kv[0])
+		}
+	}
+}

@@ -2,13 +2,10 @@
 
 package tools
 
-import (
-	"context"
-	"os/exec"
-)
+import "context"
 
 func platformCapture(ctx context.Context) ([]byte, string, error) {
-	out, err := exec.CommandContext(ctx, "screencapture", "-x", "-").Output()
+	out, err := captureCommand(ctx, "screencapture", "-x", "-").Output()
 	if err != nil {
 		return nil, "", err
 	}

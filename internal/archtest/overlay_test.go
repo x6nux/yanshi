@@ -59,6 +59,7 @@ var overlayImmuneGateFiles = []string{
 	"removal_test.go",
 	"sdkci_test.go",
 	"slashcmd_test.go",
+	"spawnenv_test.go",
 	"status_evidence_test.go",
 	"status_test.go",
 	"toolcontract_test.go",

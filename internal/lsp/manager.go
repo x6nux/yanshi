@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/x6nux/yanshi/internal/netpolicy"
 )
 
 // Config 配置 Manager。WorkRoot 是工作区根(server 的 rootUri);Languages 把
@@ -282,6 +284,21 @@ func (m *Manager) clientFor(lang string) (*Client, error) {
 // spawnLocked 在已持锁前提下构造 Client(不经 initialize)。返回 Client + 一个
 // cleanup(失败/Close 时调:exec 路径关 stdin+Kill+Wait;Dial 路径调 closer)。
 // 成功路径下 exec 的 cmd 记入 m.cmds 供 Manager.Close 批量清理。
+// languageServerEnv is the environment a language server is started with: this
+// process's, minus every credential.
+//
+// Leaving cmd.Env nil — which is what this code did — means the child inherits
+// the parent's environment WHOLE, so every provider API key, cloud credential
+// and VCS token yanshi holds was handed to gopls, tsserver, pyright and
+// whatever else DefaultLanguages resolves on the host. A language server has no
+// use for any of it: it reads source files and answers questions about them.
+//
+// There is deliberately no allowlist parameter. Unlike `gh`, no language server
+// authenticates to anything, so an escape hatch here would only ever be used to
+// undo the fix. A server that turns out to need a specific variable gets it
+// named in DefaultLanguages, where the decision is visible.
+func languageServerEnv() []string { return netpolicy.ScrubbedEnviron() }
+
 func (m *Manager) spawnLocked(lang string, ls LanguageServer) (*Client, func(), error) {
 	if m.cfg.Dial != nil {
 		r, w, closer, err := m.cfg.Dial(lang)
@@ -294,6 +311,7 @@ func (m *Manager) spawnLocked(lang string, ls LanguageServer) (*Client, func(), 
 	}
 
 	cmd := exec.Command(ls.Command, ls.Args...)
+	cmd.Env = languageServerEnv()
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, nil, err

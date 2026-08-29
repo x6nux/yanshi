@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
 	"os/exec"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/x6nux/yanshi/internal/netpolicy"
 )
 
 // Manager 管理 MCP server 的连接生命周期。
@@ -178,6 +179,32 @@ func (m *Manager) StartAll(ctx context.Context) []ServerStatus {
 	return m.Snapshot(ctx)
 }
 
+// stdioServerEnv builds the environment for a stdio MCP server.
+//
+// The inherited half is CREDENTIAL-SCRUBBED. It used to be a raw os.Environ(),
+// which handed every provider API key, cloud credential and VCS token in
+// yanshi's own environment to a program named by a config file — the same class
+// of program the guard's MCP dimension exists to gate, launched before any of
+// that gating applies. An MCP server is a third-party binary; nothing about
+// speaking that protocol implies a claim on the operator's OpenAI key.
+//
+// cfg.Env is layered AFTER the scrub and therefore always wins. That is the
+// escape hatch and it is the right shape: a server that genuinely needs a token
+// gets it because an operator wrote it down in mcp.servers.<name>.env, which is
+// a decision with a name attached, rather than because it happened to be
+// exported in the shell that started yanshi.
+//
+// Extracted from startOne so this is assertable without spawning a server —
+// startOne's other job is the handshake, and a test that had to complete one
+// could not check the environment of a server that failed to start.
+func stdioServerEnv(cfg *ServerConfig) []string {
+	env := netpolicy.ScrubbedEnviron()
+	for k, v := range cfg.Env {
+		env = append(env, k+"="+v)
+	}
+	return env
+}
+
 func (m *Manager) startOne(ctx context.Context, cfg *ServerConfig) (Client, error) {
 	var cli Client
 	switch cfg.Transport {
@@ -187,11 +214,7 @@ func (m *Manager) startOne(ctx context.Context, cfg *ServerConfig) (Client, erro
 		cli = h
 	case TransportStdio:
 		cmd := exec.Command(cfg.Command, cfg.Args...)
-		env := os.Environ()
-		for k, v := range cfg.Env {
-			env = append(env, k+"="+v)
-		}
-		cmd.Env = env
+		cmd.Env = stdioServerEnv(cfg)
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
 			return nil, fmt.Errorf("stdin pipe: %w", err)
