@@ -54,6 +54,23 @@ Option B 只约束**协作型子进程**。一个无视 `HTTP_PROXY` 环境变�
 acceptance 相应带一条作用域限定（「经受管代理通道的连接」），它不是措辞润色，
 是这条残留风险在验收标准上的投影 —— 去掉限定词，验收标准就开始撒谎。
 
+**残留风险的一半已被消化（W-B-09，补记）：** 上面点名的内核层强制，在 Linux 的
+landlock 后端上已经落地 —— 再执行助手在 `execve` 之前给自己装一道 seccomp-BPF
+过滤器，`socket(2)`/`socketpair(2)` 只放行 `AF_UNIX`，`ptrace`/`process_vm_readv`/
+`io_uring` 恒拦。**这不改变本 ADR 的决策，只把「哪里仍然不覆盖」讲精确了**，
+边界现在是三条而不是一条：
+
+1. **只有 landlock 后端**。bubblewrap 是首选后端，它靠 network namespace 达到
+   同一效果（更强），但 `io_uring` 不在它的拦截面内；darwin 的 Seatbelt 与
+   Windows 后端不受本条影响。
+2. **粒度是地址族，不是主机**。seccomp 读不到 `connect(2)` 的 sockaddr（指针），
+   所以判定点在套接字创建。「允许出网但只准连某台主机」仍然只有代理能做。
+3. **`NetworkDeny` 为 false 时不装网络那半**。操作员没要求禁网时，过滤器只保留
+   那三条恒拦项。
+
+判断当前处于哪一档，读 `CapabilityReport.Backend`（`landlock` 还是
+`landlock+seccomp`）与 `Reason`，**不要**从平台推断。
+
 **已知代价：**
 
 - 一次代理启动失败会让子进程完全无策略出网。bootstrap 为此在 stderr 上打

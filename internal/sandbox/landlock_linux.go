@@ -280,5 +280,20 @@ func RunLandlockHelper(argv []string) error {
 	if err := applyLandlock(rules); err != nil {
 		return fmt.Errorf("sandbox: refusing to exec %q unconfined: %w", program, err)
 	}
+	// The syscall filter goes on AFTER the filesystem ruleset and before the
+	// exec. Order between the two is not load-bearing — neither restricts what
+	// the other needs — but "after" keeps the failure attributable: a landlock
+	// error names landlock, and anything reported here is the filter.
+	//
+	// A failure returns without exec'ing, exactly as applyLandlock's does. The
+	// parent asked for this filter because its probe said the host could
+	// install one, so a failure at this point means the capability report is
+	// already wrong; running the target with the report claiming otherwise is
+	// the over-claim this whole layer exists to prevent.
+	if rules.Seccomp {
+		if err := applySeccomp(rules.NetDeny); err != nil {
+			return fmt.Errorf("sandbox: refusing to exec %q without the syscall filter: %w", program, err)
+		}
+	}
 	return syscall.Exec(program, args, os.Environ())
 }

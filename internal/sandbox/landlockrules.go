@@ -69,12 +69,19 @@ const landlockHelperArg = "__landlock_exec"
 // backend degrades for a reason nobody can find.
 func LandlockHelperArg() string { return landlockHelperArg }
 
-// LandlockRules is the complete filesystem policy handed to one confined
-// process. Paths are absolute and already symlink-resolved by the caller.
+// LandlockRules is the complete confinement policy handed to one process
+// through the re-exec helper. Paths are absolute and already symlink-resolved
+// by the caller.
 //
-// The two lists are not a hierarchy: WritePaths entries are granted read
+// The three path lists are not a hierarchy: WritePaths entries are granted read
 // rights too, because a directory a process can write but not read is not a
 // usable workspace. ReadPaths therefore only needs to name what is read-only.
+//
+// It keeps its name after growing the two seccomp fields because Landlock is
+// what the helper is FOR — the syscall filter is a second layer the same helper
+// installs in the same window, not a separate mechanism with a separate
+// delivery path. Splitting the token in two would mean a second argv operand,
+// a second grammar, and two ways for the parent and the child to disagree.
 type LandlockRules struct {
 	// ReadPaths get execute + read-file + read-dir.
 	ReadPaths []string `json:"r,omitempty"`
@@ -83,6 +90,21 @@ type LandlockRules struct {
 	// DevWritePaths get write-file only, without the directory-mutation and
 	// removal rights WritePaths carries. See BuildLandlockRules.
 	DevWritePaths []string `json:"d,omitempty"`
+
+	// Seccomp asks the helper to install the syscall filter before exec'ing the
+	// target, and to REFUSE the exec if it cannot.
+	//
+	// The parent decides, because the parent is where the availability probe
+	// ran and where the capability report was written. A child that decided for
+	// itself could silently answer "seccomp is not available here" and exec
+	// anyway, while the report the operator reads says the filter is in force.
+	Seccomp bool `json:"s,omitempty"`
+
+	// NetDeny selects the network half of that filter: socket(2) and
+	// socketpair(2) are refused for every address family except AF_UNIX. It is
+	// separate from Seccomp because the unconditional denials (ptrace,
+	// process_vm_*, io_uring) apply whether or not egress is restricted.
+	NetDeny bool `json:"n,omitempty"`
 }
 
 // landlockDevWritePaths are the character devices a confined process must be

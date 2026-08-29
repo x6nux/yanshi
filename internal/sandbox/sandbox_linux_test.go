@@ -267,6 +267,55 @@ func TestLandlockPrepareUsesSpecTier(t *testing.T) {
 	}
 }
 
+// TestLandlockPrepareCarriesTheSyscallFilterDecision pins the wiring between
+// the parent's probe result and the token the child reads.
+//
+// This is the seam where a filter that works perfectly still protects nothing:
+// applySeccomp can be correct, the helper can apply it faithfully, and if
+// rulesFor forgets to set the flag then every spawn goes out unfiltered while
+// the capability report says "landlock+seccomp". Both directions are asserted
+// because only the true one is a security property and only the false one
+// catches a hard-coded constant.
+//
+// The tier is varied along with it: the filter is deliberately NOT
+// per-invocation, because nothing it denies — reading another process's memory,
+// an io_uring submission queue — becomes acceptable at a more permissive
+// filesystem tier.
+func TestLandlockPrepareCarriesTheSyscallFilterDecision(t *testing.T) {
+	for _, seccomp := range []bool{true, false} {
+		for _, netDeny := range []bool{true, false} {
+			for _, tier := range []AccessTier{ReadOnly, WorkspaceWrite, FullAccess} {
+				l := &landlockBackend{
+					cfg:     Config{Tier: ReadOnly, NetworkDeny: netDeny},
+					selfExe: "/usr/bin/yanshi",
+					seccomp: seccomp,
+					report:  CapabilityReport{Enforced: true},
+				}
+				cmd := exec.Command("/bin/true")
+				if err := l.Prepare(context.Background(), cmd, CommandSpec{Tier: tier}); err != nil {
+					t.Fatalf("Prepare: %v", err)
+				}
+				token, _, _, err := SplitLandlockHelperArgs(cmd.Args)
+				if err != nil {
+					t.Fatalf("split: %v", err)
+				}
+				rules, err := DecodeLandlockRules(token)
+				if err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				if rules.Seccomp != seccomp {
+					t.Errorf("seccomp=%t tier=%s: token carried Seccomp=%t",
+						seccomp, tier, rules.Seccomp)
+				}
+				if rules.NetDeny != netDeny {
+					t.Errorf("netDeny=%t tier=%s: token carried NetDeny=%t",
+						netDeny, tier, rules.NetDeny)
+				}
+			}
+		}
+	}
+}
+
 // TestLandlockReportIsHonestAboutItsLimits is the anti-over-claim pin, and it
 // is the one that protects a downstream decision rather than a local property.
 //
@@ -277,23 +326,55 @@ func TestLandlockPrepareUsesSpecTier(t *testing.T) {
 // would be classified as a sandbox denial and raise an escalation prompt
 // asking the operator to grant privilege for something privilege cannot fix.
 func TestLandlockReportIsHonestAboutItsLimits(t *testing.T) {
+	// Driven through syscallNote/backendName — the real functions the
+	// constructor calls — rather than a hand-written Reason. A literal here
+	// would keep passing while production emitted something else entirely,
+	// which is exactly what happened once already: this test carried a copy of
+	// a Reason string that the seccomp work replaced wholesale.
+	cases := []struct {
+		name     string
+		seccomp  bool
+		netDeny  bool
+		backend  string
+		mentions []string
+	}{
+		{
+			name: "no filter installed", seccomp: false, netDeny: true, backend: "landlock",
+			// The operator asked for network denial and is NOT getting it. The
+			// note must say so, or internal/tools' escalation path will read a
+			// plain connection refusal as a sandbox denial.
+			mentions: []string{"not installed", "network egress is unrestricted", "ignored"},
+		},
+		{
+			name: "filter installed, egress permitted", seccomp: true, netDeny: false, backend: "landlock+seccomp",
+			mentions: []string{"ptrace", "io_uring", "not restricted"},
+		},
+		{
+			name: "filter installed, egress denied", seccomp: true, netDeny: true, backend: "landlock+seccomp",
+			mentions: []string{"ptrace", "af_unix", "socket(2)"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := &landlockBackend{
+				cfg:           Config{Tier: WorkspaceWrite, NetworkDeny: tc.netDeny},
+				seccomp:       tc.seccomp,
+				seccompReason: "probe said no",
+			}
+			if got := l.backendName(); got != tc.backend {
+				t.Errorf("backendName() = %q, want %q", got, tc.backend)
+			}
+			note := strings.ToLower(l.syscallNote())
+			for _, must := range tc.mentions {
+				if !strings.Contains(note, strings.ToLower(must)) {
+					t.Errorf("syscall note must mention %q, got: %s", must, note)
+				}
+			}
+		})
+	}
+
 	l := &landlockBackend{cfg: Config{Tier: WorkspaceWrite, NetworkDeny: true}}
-	l.report = CapabilityReport{
-		Platform:  "linux",
-		Effective: OSIsolated,
-		Backend:   "landlock",
-		Reason: "landlock ABI 3 enforcing FILESYSTEM access only (tier=workspace-write); " +
-			"NOT enforced by this backend: network egress (Config.NetworkDeny=true is " +
-			"ignored here), process/pid isolation, and resource limits — bubblewrap was unavailable",
-		Enforced: true,
-	}
-	reason := strings.ToLower(l.Report().Reason)
-	for _, must := range []string{"filesystem", "network", "not enforced"} {
-		if !strings.Contains(reason, must) {
-			t.Errorf("the landlock Reason must mention %q so callers do not "+
-				"misclassify non-filesystem failures as sandbox denials: %s", must, reason)
-		}
-	}
+	l.report = CapabilityReport{Platform: "linux", Effective: OSIsolated, Enforced: true}
 	if l.Report().CanKillTree {
 		t.Error("landlock has no pid namespace and must not claim kill-tree")
 	}
@@ -315,14 +396,27 @@ func TestLandlockConstructedReportMatchesTheHonestyContract(t *testing.T) {
 		t.Skipf("landlock did not construct: %s", reason)
 	}
 	rep := sb.Report()
-	if rep.Effective != OSIsolated || rep.Backend != "landlock" {
+	if rep.Effective != OSIsolated {
 		t.Fatalf("unexpected report: %+v", rep)
+	}
+	// Either shape is legitimate — a host without seccomp genuinely gets the
+	// weaker one — but nothing else is. Accepting any string here would let a
+	// typo'd backend name through, and the Backend field is what a
+	// machine-readable consumer branches on.
+	if rep.Backend != "landlock" && rep.Backend != "landlock+seccomp" {
+		t.Fatalf("unexpected backend name %q: %+v", rep.Backend, rep)
 	}
 	low := strings.ToLower(rep.Reason)
 	for _, must := range []string{"filesystem", "network", "not enforced"} {
 		if !strings.Contains(low, must) {
 			t.Errorf("constructed Reason must mention %q, got: %s", must, rep.Reason)
 		}
+	}
+	// The name and the note must agree. A backend that called itself
+	// landlock+seccomp while the note said the filter was not installed would
+	// be two answers to one question, and the consumers read different halves.
+	if strings.Contains(rep.Backend, "seccomp") != !strings.Contains(low, "not installed") {
+		t.Errorf("Backend=%q disagrees with the Reason: %s", rep.Backend, rep.Reason)
 	}
 	if rep.CanKillTree {
 		t.Error("landlock must not claim kill-tree")
