@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/x6nux/yanshi/internal/approval"
 	"github.com/x6nux/yanshi/internal/guard"
+	"github.com/x6nux/yanshi/internal/netpolicy"
 	"github.com/x6nux/yanshi/internal/toolreg"
 )
 
@@ -300,7 +303,14 @@ func TestStructuralFloorIsUnreachableFromTheSupportedDimensions(t *testing.T) {
 		Shell: guard.ShellPerm{Policy: "bogus-policy"}, // structural HardDeny for any shell action
 	}
 	for _, dim := range []PermissionRequestDimension{DimensionFSRead, DimensionFSWrite, DimensionNet} {
-		action, err := permissionActionFor(dim, "probe_tool", "target", t.TempDir())
+		// A real consumer name per dimension: permissionActionFor refuses a net
+		// request for a tool that would never read the grant.
+		probeTool := "fs_read"
+		target := "target"
+		if dim == DimensionNet {
+			probeTool, target = "web_fetch", "api.example.test"
+		}
+		action, err := permissionActionFor(dim, probeTool, target, t.TempDir())
 		if err != nil {
 			t.Fatalf("dimension %q: %v", dim, err)
 		}
@@ -430,5 +440,123 @@ func TestRequestPermissionRefusesAnUnregisteredTool(t *testing.T) {
 	}
 	if *asked2 != 1 {
 		t.Fatalf("a registered tool asked %d times, want 1", *asked2)
+	}
+}
+
+// TestNetGrantAdmitsTheLaterFetch is the net dimension's half of
+// TestGrantedPermissionAdmitsTheLaterCall, and it exists because that half was
+// missing: guard.Action.NetHost had exactly one producer in the whole tree —
+// request_permission itself — and nothing on the calling side ever looked for a
+// net grant. The operator approved, the model read granted=true, and web_fetch
+// returned the identical refusal (review b4 Blocking-2).
+//
+// It drives the REAL tool for the reason the fs half does. The factory test it
+// replaces handed Authorize a hand-built guard.Action{Tool:"web_fetch",
+// NetHost:...} — a shape production does not construct, since web_fetch has not
+// consulted the guard for a host since Task 11.
+//
+// Deleting either grantedNetworkPolicy call in web.go turns the matching
+// subtest red, which is what makes the consumer a consumer.
+func TestNetGrantAdmitsTheLaterFetch(t *testing.T) {
+	for _, tc := range []struct {
+		tool string
+		call func(t *testing.T, ctx context.Context, base string) error
+	}{
+		{"web_fetch", func(t *testing.T, ctx context.Context, base string) error {
+			_, err := NewWebTools(1024*32, 0).runFetch(ctx, `{"url":"`+base+`"}`)
+			return err
+		}},
+		{"web_search", func(t *testing.T, ctx context.Context, base string) error {
+			w := NewWebTools(1024*32, 0)
+			w.searchBase = base
+			_, err := w.runSearch(ctx, `{"query":"x"}`)
+			return err
+		}},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte("<html></html>"))
+			}))
+			defer srv.Close()
+			host := netpolicy.NormalizeHost(strings.TrimPrefix(srv.URL, "http://"))
+
+			// Default-deny with AllowPrivate so the loopback address the test
+			// server binds is refused by the HOST rules and nothing else — the
+			// one thing a grant is supposed to move.
+			policy := &netpolicy.Policy{Default: "deny", AllowPrivate: true}
+			ctx, _, asked := requestCtx(t, PermissionAllow)
+			ctx = WithProfile(ctx, guard.PermissionProfile{Tools: guard.ToolsPerm{Allow: []string{"web_*"}}})
+			ctx = WithNetworkPolicy(ctx, policy)
+
+			// Before the grant: refused.
+			if err := tc.call(t, ctx, srv.URL); err == nil {
+				t.Fatal("the fixture host was already reachable; the test proves nothing")
+			}
+
+			res := runRequest(t, ctx, `{"dimension":"net","tool":"`+tc.tool+
+				`","target":"`+host+`","scope":"session","reason":"the fixture lives there"}`)
+			if !res.Granted {
+				t.Fatalf("an approved net request was not granted: %+v", res)
+			}
+			if *asked != 1 {
+				t.Fatalf("the user was asked %d times, want 1", *asked)
+			}
+
+			// After the grant: the same call goes through, with no second prompt.
+			if err := tc.call(t, ctx, srv.URL); err != nil {
+				t.Fatalf("the granted host is still refused: %v", err)
+			}
+			if *asked != 1 {
+				t.Fatalf("the granted call prompted again (asked=%d)", *asked)
+			}
+		})
+	}
+}
+
+// TestNetGrantRefusesWhatItCannotDeliver covers the two net requests that must
+// never become a rule, both for the same reason: nothing would ever read them.
+//
+//   - a tool that does not consult net grants. The dimension is enforced by
+//     netpolicy, which only two tools consult; a grant for any other name is a
+//     row in the approval store that no code path looks at.
+//   - a host named by an explicit security.network deny rule. The allow list
+//     and the default say "not permitted yet"; a deny entry is the operator
+//     having named this host and said no, and GrantHost refuses to undo it — so
+//     recording the rule would produce a grant the very next CheckHost ignores.
+func TestNetGrantRefusesWhatItCannotDeliver(t *testing.T) {
+	for _, tc := range []struct {
+		name, args, wantIn string
+		policy             *netpolicy.Policy
+	}{
+		{
+			"tool with no consumer",
+			`{"dimension":"net","tool":"fs_read","target":"api.example.test","scope":"session","reason":"r"}`,
+			"does not consult network grants",
+			&netpolicy.Policy{Default: "deny"},
+		},
+		{
+			"explicitly denied host",
+			`{"dimension":"net","tool":"web_fetch","target":"blocked.example.test","scope":"session","reason":"r"}`,
+			"deny rule",
+			&netpolicy.Policy{Default: "allow", Deny: []string{"blocked.example.test"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, mgr, asked := requestCtx(t, PermissionAllow)
+			ctx = WithNetworkPolicy(ctx, tc.policy)
+			res := runRequest(t, ctx, tc.args)
+			if res.Granted {
+				t.Fatalf("a request nothing could consume was granted: %+v", res)
+			}
+			if *asked != 0 {
+				t.Fatalf("the operator was asked %d times about a grant nothing reads", *asked)
+			}
+			if len(mgr.List("sess-1", time.Now())) != 0 {
+				t.Fatal("a rule was recorded that no code path reads")
+			}
+			if !strings.Contains(res.Detail, tc.wantIn) {
+				t.Fatalf("the refusal does not say why: %q", res.Detail)
+			}
+		})
 	}
 }

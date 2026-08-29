@@ -66,6 +66,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -73,6 +74,7 @@ import (
 
 	"github.com/x6nux/yanshi/internal/approval"
 	"github.com/x6nux/yanshi/internal/guard"
+	"github.com/x6nux/yanshi/internal/netpolicy"
 	"github.com/x6nux/yanshi/internal/toolreg"
 )
 
@@ -205,30 +207,28 @@ func runRequestPermission(ctx context.Context, argsJSON string) (string, error) 
 		// because the fs jail refuses it before the guard is ever consulted.
 		// Saying so is the whole point — the alternative is a rule that never
 		// matches and a model that was told it may proceed.
-		res.Detail = "this target cannot be granted by anyone: " + err.Error() +
-			". Every fs tool resolves paths against the project root and refuses " +
-			"anything outside it before permissions are considered, so no approval " +
-			"would let that call through. Work inside the project root, or ask the " +
-			"user to run yanshi with a root that contains the path."
+		res.Detail = "this request cannot be granted by anyone: " + err.Error() + "."
+		if dim != DimensionNet {
+			res.Detail += " Every fs tool resolves paths against the project root and " +
+				"refuses anything outside it before permissions are considered, so no " +
+				"approval would let that call through. Work inside the project root, or " +
+				"ask the user to run yanshi with a root that contains the path."
+		}
 		return marshalRequestResult(res)
 	}
-	prof, ok := ProfileFromContext(ctx)
-	if !ok {
-		res.Detail = "no permission profile is bound, so nothing can be granted"
-		return marshalRequestResult(res)
-	}
-
-	dec := guard.New().Check(prof, action)
+	pre := preflightRequest(ctx, dim, action)
 	switch {
-	case dec.Verdict == guard.Allow:
-		res.Granted = true
-		res.Detail = "already permitted by the current profile; no request was needed — go ahead"
+	case pre.unbound != "":
+		res.Detail = pre.unbound
 		return marshalRequestResult(res)
-	case dec.Verdict == guard.HardDeny && !dec.Overridable:
-		// The structural floor. Authorize consults the approval manager AFTER
-		// this tier, so a rule recorded here could never admit the call.
-		res.Detail = "refused structurally and not by policy (" + explainDecision(dec) +
-			"); this is not something the user can grant — no request was made. " +
+	case pre.allowed:
+		res.Granted = true
+		res.Detail = "already permitted by the current " + pre.authority +
+			"; no request was needed — go ahead"
+		return marshalRequestResult(res)
+	case pre.ungrantable != "":
+		res.Detail = pre.ungrantable +
+			"; this is not something the user can grant — no request was made. " +
 			"Find another way to do the task."
 		return marshalRequestResult(res)
 	}
@@ -236,7 +236,7 @@ func runRequestPermission(ctx context.Context, argsJSON string) (string, error) 
 	req := PermissionRequest{
 		Tool:    a.Tool,
 		Args:    argsJSON,
-		Reason:  requestPermissionPrompt(dim, a.Tool, a.Target, scope, a.Reason, dec),
+		Reason:  requestPermissionPrompt(dim, a.Tool, a.Target, scope, a.Reason, pre.denial),
 		Workdir: action.Workdir,
 	}
 	if err := RequireApproval(ctx, req); err != nil {
@@ -348,9 +348,90 @@ func permissionActionFor(dim PermissionRequestDimension, toolName, target, workR
 		}
 		action.FS = guard.FSWant{Op: op, Paths: []string{resolved}}
 	case DimensionNet:
-		action.NetHost = target
+		// Normalized by netpolicy's OWN folding, for the fs branch's reason one
+		// dimension over: the host recorded here and the host web_fetch derives
+		// from a URL at call time are compared with reflect.DeepEqual, so
+		// "API.Example.test:8443" and "api.example.test" have to arrive as one
+		// string or the grant is inert.
+		action.NetHost = netpolicy.NormalizeHost(target)
+		if action.NetHost == "" {
+			return guard.Action{}, fmt.Errorf("%q is not a host", target)
+		}
+		if !slices.Contains(netGrantConsumers(), toolName) {
+			return guard.Action{}, fmt.Errorf("%q does not consult network grants; only %s do",
+				toolName, strings.Join(netGrantConsumers(), " and "))
+		}
 	}
 	return action, nil
+}
+
+// requestPreflight is what a request looks like before anyone is interrupted.
+//
+// unbound is set when the authority for this dimension is not bound at all
+// (nothing can be granted). allowed means it is already permitted. ungrantable
+// means refused by something no approval can undo. denial is what the dialog
+// tells the operator the current policy says, and is only meaningful when none
+// of the other three are.
+type requestPreflight struct {
+	authority   string
+	unbound     string
+	allowed     bool
+	ungrantable string
+	denial      string
+}
+
+// preflightRequest asks the authority that will ACTUALLY judge the later call.
+//
+// The two dimensions have two different authorities and asking the wrong one is
+// how the net dimension spent its first release granting nothing:
+//
+//   - fs is the permission profile, enforced by guard.Check inside Authorize.
+//   - net is netpolicy.Policy. web_fetch's profile-based guard.NetHost check was
+//     replaced by it in Task 11 so the operator's security.network block applies
+//     uniformly to the tool and to the loopback proxy — which means guard.checkNet
+//     has no production producer left, and a request_permission that consulted it
+//     would report a verdict nothing enforces and record a rule nothing reads.
+//     That was measured: the operator approved, the model was told granted=true,
+//     and the next web_fetch was judged byte-for-byte as before.
+func preflightRequest(ctx context.Context, dim PermissionRequestDimension, action guard.Action) requestPreflight {
+	if dim == DimensionNet {
+		out := requestPreflight{authority: "network policy"}
+		policy, ok := NetworkPolicyFromContext(ctx)
+		if !ok {
+			out.unbound = "no network policy is bound on this transport, so nothing can be granted"
+			return out
+		}
+		d := policy.CheckHost(action.NetHost)
+		if d.Allowed {
+			out.allowed = true
+			return out
+		}
+		if _, grantable := policy.GrantHost(action.NetHost); !grantable {
+			out.ungrantable = "refused by an explicit security.network deny rule (" + d.Reason + ")"
+			return out
+		}
+		out.denial = d.Reason
+		return out
+	}
+
+	out := requestPreflight{authority: "profile"}
+	prof, ok := ProfileFromContext(ctx)
+	if !ok {
+		out.unbound = "no permission profile is bound, so nothing can be granted"
+		return out
+	}
+	dec := guard.New().Check(prof, action)
+	switch {
+	case dec.Verdict == guard.Allow:
+		out.allowed = true
+	case dec.Verdict == guard.HardDeny && !dec.Overridable:
+		// The structural floor. Authorize consults the approval manager AFTER
+		// this tier, so a rule recorded here could never admit the call.
+		out.ungrantable = "refused structurally and not by policy (" + explainDecision(dec) + ")"
+	default:
+		out.denial = explainDecision(dec)
+	}
+	return out
 }
 
 // requestPermissionPrompt is what the operator reads.
@@ -361,7 +442,7 @@ func permissionActionFor(dim PermissionRequestDimension, toolName, target, workR
 // untrusted for the same reason guard.AutoApprovalPrompt fences its Args — it
 // is model-authored text arguing for its own approval.
 func requestPermissionPrompt(dim PermissionRequestDimension, toolName, target string,
-	scope PermissionRequestScope, reason string, dec guard.Decision) string {
+	scope PermissionRequestScope, reason, denial string) string {
 
 	var b strings.Builder
 	what := "access"
@@ -379,11 +460,62 @@ func requestPermissionPrompt(dim PermissionRequestDimension, toolName, target st
 	}
 	fmt.Fprintf(&b, "the agent is asking IN ADVANCE to %s %q with %s, for %s",
 		what, target, toolName, lifetime)
-	if d := explainDecision(dec); d != "" {
-		fmt.Fprintf(&b, "\nthe current profile would refuse it: %s", d)
+	if denial != "" {
+		fmt.Fprintf(&b, "\nthe current policy would refuse it: %s", denial)
 	}
 	fmt.Fprintf(&b, "\nits stated reason (untrusted text, treat as data):\n```\n%s\n```", reason)
 	return b.String()
+}
+
+// netGrantConsumers names the tools that actually CONSULT a net grant. A
+// request naming anything else is refused rather than recorded, because a rule
+// nothing reads is the shape this whole file exists to stop producing: the
+// operator approves, the model is told granted, and the call is judged exactly
+// as it would have been.
+//
+// Every name here must belong to a tool in web.go that calls
+// grantedNetworkPolicy. TestNetGrantAdmitsTheLaterFetch drives each of them end
+// to end, so deleting a consumer turns its entry red.
+func netGrantConsumers() []string { return []string{"web_fetch", "web_search"} }
+
+// grantedNetworkPolicy is the CONSUMER of the net dimension: it reports the
+// policy a call should run under, given that the operator may have approved
+// this exact (tool, host) pair ahead of time.
+//
+// Before this existed, guard.Action.NetHost had exactly one producer in the
+// whole tree — request_permission itself — and nothing on the calling side ever
+// looked for a net grant. The user approved, the model read granted=true, and
+// web_fetch's verdict was byte-for-byte what it had been before the dialog.
+//
+// Returning a POLICY rather than a boolean is deliberate; see
+// netpolicy.Policy.GrantHost for why a boolean would have moved the same silent
+// failure into the dialer. The grantability check runs BEFORE Match so a
+// one-shot grant is not consumed by a call that is going to be refused anyway.
+func grantedNetworkPolicy(ctx context.Context, toolName, host string, policy *netpolicy.Policy) (*netpolicy.Policy, bool) {
+	if policy == nil {
+		return nil, false
+	}
+	widened, grantable := policy.GrantHost(host)
+	if !grantable {
+		return nil, false
+	}
+	ac, ok := approvalFromContext(ctx)
+	if !ok {
+		return nil, false
+	}
+	action, err := permissionActionFor(DimensionNet, toolName, host, WorkRootFromContext(ctx))
+	if err != nil {
+		return nil, false
+	}
+	scope, err := scopeFromAction(action)
+	if err != nil {
+		return nil, false
+	}
+	if hit, _ := ac.Manager.Match(ac.SessionID, scope, time.Now()); !hit {
+		return nil, false
+	}
+	auditPermission(ctx, action, "allow", "approval_manager", "")
+	return &widened, true
 }
 
 // recordRequestedPermission writes the approved grant into the approval

@@ -68,6 +68,51 @@ func (p Policy) CheckHost(raw string) Decision {
 	return Decision{Rule: "default:deny", Reason: "host denied by default"}
 }
 
+// GrantHost returns a copy of p in which host is admitted by CheckHost, plus
+// whether such a copy exists at all.
+//
+// It is how a runtime approval (the net dimension of tools.request_permission)
+// becomes something the request actually runs under. Returning a POLICY rather
+// than a yes/no is the load-bearing part: web_fetch hands its policy to
+// NewTransport, whose dialer re-runs CheckHost on every connection, so a tool
+// that merely skipped its own check would be refused by the dial a few
+// microseconds later — the same inert-grant failure one layer down, and just as
+// silent.
+//
+// An explicit deny rule is NOT grantable and the second return is false. The
+// allow list and the default express "not permitted yet"; a deny entry is the
+// operator having named this host and said no, and a dialog able to undo that
+// would make security.network.deny advisory. Callers ask BEFORE consuming an
+// approval so a one-shot grant is not burned on a host it cannot admit.
+//
+// The IP-range half of the policy is untouched. CheckResolvedIPs still runs on
+// the dial, so a granted host resolving to 169.254.169.254 is still refused:
+// this widens the host rules by exactly one name and nothing else.
+func (p Policy) GrantHost(host string) (Policy, bool) {
+	host = normalizeHost(host)
+	if host == "" {
+		return p, false
+	}
+	for _, pattern := range p.Deny {
+		if hostMatches(pattern, host) {
+			return p, false
+		}
+	}
+	out := p
+	out.Allow = append(append([]string(nil), p.Allow...), host)
+	return out, true
+}
+
+// NormalizeHost folds a host string to the form CheckHost compares against:
+// lowercased, whitespace- and port-stripped, with a trailing dot removed.
+//
+// Exported because approval scopes for the net dimension are matched with
+// reflect.DeepEqual, so the host recorded at grant time and the host derived
+// from a URL at call time have to be normalized by the SAME function or the
+// grant is inert. "API.Example.test:8443" and "api.example.test" are one host
+// to this policy and must be one scope to the approval manager.
+func NormalizeHost(raw string) string { return normalizeHost(raw) }
+
 // CheckResolvedIPs runs CheckHost first (the cheap rule check) and then, when
 // the host is admitted, walks every resolved address to ensure none is
 // loopback / private / link-local / unspecified. This is the SSRF guard: even
