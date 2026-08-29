@@ -30,6 +30,7 @@ import (
 	"github.com/x6nux/yanshi/internal/cli"
 	"github.com/x6nux/yanshi/internal/cli/tui"
 	"github.com/x6nux/yanshi/internal/config"
+	"github.com/x6nux/yanshi/internal/harden"
 	"github.com/x6nux/yanshi/internal/lockfile"
 	"github.com/x6nux/yanshi/internal/sandbox"
 	"github.com/x6nux/yanshi/internal/secrets"
@@ -135,6 +136,21 @@ Subcommands:
 `
 
 func main() {
+	// Hardening runs before anything else this process does: before the config
+	// is read, before any subsystem starts, and — the part that decides where
+	// this line goes — before any child can be spawned, because clearing the
+	// loader-injection variables only helps the children that inherit the
+	// cleared environment.
+	//
+	// It is here in main rather than inside dispatch on purpose. dispatch is
+	// unit-tested, and PT_DENY_ATTACH inside a `go test` binary would make the
+	// whole package undebuggable for anyone who ran it. main is the one entry
+	// point no test calls.
+	//
+	// Failures are printed and ignored: a container that forbids setrlimit is a
+	// reduced posture, not a reason to refuse to run an agent server. See
+	// internal/harden for what each measure does and does not buy.
+	harden.Apply().WriteFailures(os.Stderr)
 	os.Exit(dispatch(os.Args, os.Stdin, os.Stdout, os.Stderr))
 }
 
