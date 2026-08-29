@@ -19,7 +19,12 @@
 // watch, because approval.Manager matches with reflect.DeepEqual: a grant whose
 // scope does not reproduce the later action's byte for byte is silently inert.
 // TestGrantedPermissionAdmitsTheLaterCall is the only thing standing between
-// this file and being a dialog that grants nothing.
+// this file and being a dialog that grants nothing — and it only counts because
+// it drives the REAL tool afterwards. The first version of it built the later
+// guard.Action by hand, which is a shape production never produces: it asserted
+// that the approval manager matches what this file records, not that the tool
+// records what a real call produces. Both halves were right and the middle was
+// not connected, and three of the four ways to spell an fs target were inert.
 //
 // # The four refusals, and why two of them never ask
 //
@@ -72,9 +77,10 @@ import (
 )
 
 // PermissionRequestDimension names the access dimension a request is about.
-// fs and net are kept apart because they are separate dimensions in the guard
-// and because a grant for one says nothing about the other: "you may read
-// ../shared/schema.json" is not "you may reach schema.example.com".
+// fs and net are kept apart because they are enforced by two different
+// authorities — the permission profile for fs, netpolicy.Policy for net — and
+// because a grant for one says nothing about the other: "you may read
+// vendor/schema.json" is not "you may reach schema.example.com".
 type PermissionRequestDimension string
 
 // The dimensions a model may request.
@@ -133,9 +139,11 @@ func NewRequestPermissionTool() *GuardedTool {
 	return NewGuardedTool("request_permission", "Request permission",
 		"Ask the user for a specific permission BEFORE attempting an action that "+
 			"would be refused. Use it when you already know a step needs to read or write "+
-			"a path outside the project, or to reach a host the profile does not allow — "+
-			"rather than attempting it, being denied, and retrying. The user is always "+
-			"asked; there is no mode in which this is granted automatically.",
+			"a path inside the project that the current profile does not cover, or to reach "+
+			"a host the network policy does not allow — rather than attempting it, being "+
+			"denied, and retrying. Paths OUTSIDE the project root cannot be granted here "+
+			"or anywhere else: the fs tools refuse them before permissions are consulted. "+
+			"The user is always asked; there is no mode in which this is granted automatically.",
 		2*time.Minute,
 		params(map[string]*schema.ParameterInfo{
 			"dimension": {Type: schema.String, Required: true,
@@ -191,7 +199,19 @@ func runRequestPermission(ctx context.Context, argsJSON string) (string, error) 
 		res.Detail = "no such tool: " + err.Error()
 		return marshalRequestResult(res)
 	}
-	action := permissionActionFor(dim, a.Tool, a.Target, WorkRootFromContext(ctx))
+	action, err := permissionActionFor(dim, a.Tool, a.Target, WorkRootFromContext(ctx))
+	if err != nil {
+		// Not a policy refusal: the target is one no approval could admit,
+		// because the fs jail refuses it before the guard is ever consulted.
+		// Saying so is the whole point — the alternative is a rule that never
+		// matches and a model that was told it may proceed.
+		res.Detail = "this target cannot be granted by anyone: " + err.Error() +
+			". Every fs tool resolves paths against the project root and refuses " +
+			"anything outside it before permissions are considered, so no approval " +
+			"would let that call through. Work inside the project root, or ask the " +
+			"user to run yanshi with a root that contains the path."
+		return marshalRequestResult(res)
+	}
 	prof, ok := ProfileFromContext(ctx)
 	if !ok {
 		res.Detail = "no permission profile is bound, so nothing can be granted"
@@ -288,20 +308,49 @@ func normalizeRequestScope(s string) (PermissionRequestScope, error) {
 // scopes with reflect.DeepEqual, so an Action that differs from the real one in
 // any field produces a grant that is inert and says nothing about being inert.
 //
+// # The fs path goes through the fs tools' own jail, and that is the whole fix
+//
+// It used to record the model's raw string. Every real fs tool resolves its
+// paths through FSTools.abs FIRST and hands Authorize the resolved absolute
+// path, so a grant for "outside/x.json" and a call that produced
+// "<root>/outside/x.json" were two different scopes and DeepEqual said no —
+// silently, which is the failure mode this file's header warns about. Sharing
+// resolveWithinRoot removes the second spelling.
+//
+// The refusal it also inherits is the more important half. The jail runs BEFORE
+// Authorize, so a path outside the project root is not a permission question:
+// no rule recorded here could admit that call, because the call never reaches
+// the guard. Returning the jail's error lets runRequestPermission tell the model
+// that instead of minting a rule and reporting granted for a wall that has not
+// moved. This is why the ORDER (jail, then authorize) does not need changing —
+// and must not change: moving the jail after Authorize would turn a structural
+// boundary into a policy question an approval could answer, which would let one
+// dialog grant reads anywhere on the machine.
+//
 // Workdir is taken from the CONTEXT, never from the arguments, for the reason
 // guard.Action.Workdir's own doc gives at length: a model that could set the
 // boundary could move the line that decides whether its request crosses one.
-func permissionActionFor(dim PermissionRequestDimension, toolName, target, workRoot string) guard.Action {
+func permissionActionFor(dim PermissionRequestDimension, toolName, target, workRoot string) (guard.Action, error) {
 	action := guard.Action{Tool: toolName, Workdir: workRoot}
 	switch dim {
-	case DimensionFSRead:
-		action.FS = guard.FSWant{Op: "read", Paths: []string{target}}
-	case DimensionFSWrite:
-		action.FS = guard.FSWant{Op: "write", Paths: []string{target}}
+	case DimensionFSRead, DimensionFSWrite:
+		if workRoot == "" {
+			return guard.Action{}, fmt.Errorf("no project root is bound on this turn, so the path " +
+				"a later fs call would resolve to cannot be predicted")
+		}
+		resolved, err := resolveWithinRoot(workRoot, target)
+		if err != nil {
+			return guard.Action{}, err
+		}
+		op := "read"
+		if dim == DimensionFSWrite {
+			op = "write"
+		}
+		action.FS = guard.FSWant{Op: op, Paths: []string{resolved}}
 	case DimensionNet:
 		action.NetHost = target
 	}
-	return action
+	return action, nil
 }
 
 // requestPermissionPrompt is what the operator reads.
