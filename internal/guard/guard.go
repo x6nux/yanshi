@@ -154,6 +154,15 @@ func hardDeny(reason string) Decision {
 // this", which still covers command substitution, process substitution,
 // subshells, here-documents, background & and unterminated quotes.
 //
+// THE FLOOR IS NOT THE ONLY THING YOLO STOPS AT, and reading this comment as
+// "everything else is auto-approved under yolo" is what made DestructionOpaque
+// a yolo bypass for two rounds. Opaque is a PROMPT — it is not on the floor and
+// it is not a HardDeny at all — but resolvePermissionMode now declines to
+// auto-resolve it, so yolo ASKS instead of answering. The two statements are
+// about different things: this comment is about which refusals a mode can
+// override, and that one is about which verdicts a mode may answer for. See
+// ADR-0020.
+//
 // Enumerate the floor with `grep -n 'hardDeny(' internal/guard/guard.go` plus
 // the two inline HardDenies in checkShellPolicy rather than trusting this list.
 func overridableDeny(reason string) Decision {

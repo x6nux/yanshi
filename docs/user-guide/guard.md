@@ -86,7 +86,7 @@ shell 维度先拆段（见下一节），再对**每一段**过下面两层，�
 
 **已知的边界**（写下来而不是绕过去）：两者只占其一的语句看不见 —— `gdb -ex 'shell rm -rf /'`（只有空格）、`deno eval "Deno.removeSync('/')"`（只有标点）。
 
-`yolo` 会直接放行这一档（它只对 Catastrophic 与 Unreadable 停手），`auto` 交给模型判，`default` / `allow-edits` 弹窗。理由与四条不可违反的约束见 [../adr/0018-an-unread-payload-is-a-refusal-not-a-pass.md](../adr/0018-an-unread-payload-is-a-refusal-not-a-pass.md)。
+**没有任何模式会替你批准这一档。** `default` / `allow-edits` 弹窗，`auto` 交给模型判，**`yolo` 也弹窗** —— 它走的是 `task_cancel` 那条路（不自动放行、交回显式审批），而不是 Catastrophic 那条（直接拦）。差别在这一档自己的说法：越界删除知道删的东西在项目外面，Opaque 只知道**没人读过这段 payload**，而不可申诉的拒绝要求理由能被陈述。SSE 没有 callback，这一档在那条路上一律 fail-closed。曾经 `yolo` 是直接放行的，那让 `pkexec rm -rf /` 与 `GIT_SSH_COMMAND='rm -rf /' git fetch` 在最常用的自动模式下无声通过；见 [../adr/0020-a-command-in-a-word-nobody-read.md](../adr/0020-a-command-in-a-word-nobody-read.md)。理由与四条不可违反的约束见 [../adr/0018-an-unread-payload-is-a-refusal-not-a-pass.md](../adr/0018-an-unread-payload-is-a-refusal-not-a-pass.md)。
 
 > ⚠️ **档位是从 payload 读出来的，不是从程序名读出来的。** 上面那句「yolo 直接放行」只在 payload **读不出灾难性读法**时成立。如果那段操作数本身能被读成一条 shell 命令、而且读出来是灾难档（`fish -c "rm -rf /"`、`nu -c "rm -rf /"`、你自己写的那个带 `-c` 的小工具收到 `rm -rf /`），判决就是 **Catastrophic** —— 结构性 HardDeny，`yolo` 也拦。
 >
@@ -101,7 +101,7 @@ shell 维度先拆段（见下一节），再对**每一段**过下面两层，�
 两档，差别在"这个程序会不会执行它的 argv"是不是已知的：
 
 - **表里的前缀执行器**（`sudo` `timeout` `taskset` `ssh` …）按定义就是跑 argv 的，所以判**全档**：`taskset -c 0 rm -rf /` 是结构性 HardDeny。
-- **表外的程序**封顶在 **Opaque（弹窗）**：`pkexec rm -rf /` 会问你一次。它可能真的执行，也可能只是把这些词当数据 —— 这正是不知道的那件事，而 `echo rm -rf /` 只是打印六个词，把它变成不可申诉的拒绝就太过了。`echo` / `printf` 整个豁免。
+- **表外的程序**封顶在 **Opaque（弹窗）**：`pkexec rm -rf /` 会问你一次，**在 `yolo` 下也会问**（ADR-0020 之前不会 —— 那一档整个被 yolo 自动放行，于是这行「会问你一次」在最常用的自动模式下是假的）。它可能真的执行，也可能只是把这些词当数据 —— 这正是不知道的那件事，而 `echo rm -rf /` 只是打印六个词，把它变成不可申诉的拒绝就太过了。`echo` / `printf` 整个豁免。
 
 **这道检查不管前面那层有没有"读懂"过这条命令。** `taskset -c 0 rm -rf /` 曾经是 Allow，因为表项把 `-c` 同时当成取值 flag 和 CPU 掩码位置参数，把 `rm` 吃掉了 —— 而"被某个读法认领过"这件事本身会把兜底关掉。**"我读错了"拿到的判决比"我读不动"还弱**，这道检查就是为了不再有这种倒置。
 

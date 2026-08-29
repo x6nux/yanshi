@@ -191,7 +191,9 @@ func (cs *connSession) applySetMode(cf proto.ClientFrame) (oldMode, newMode guar
 //
 // Mode rules (after the destructive-deletion gate, which is profile-independent):
 //   - yolo:  allow everything EXCEPT catastrophic mass deletion (blocked
-//     structurally in guard) and out-of-workdir deletion (blocked here).
+//     structurally in guard), out-of-workdir deletion (blocked here), and an
+//     UNREAD PAYLOAD (DestructionOpaque), which is not blocked but is asked
+//     about — see the case below and ADR-0020.
 //     Bypasses profile-policy denies (PolicyHardDeny).
 //   - auto:  AI risk-assesses everything (including profile denies and
 //     out-of-workdir deletion) except catastrophic mass deletion, which
@@ -246,6 +248,30 @@ func resolvePermissionMode(ctx context.Context, cs *connSession,
 			// yolo auto-resolve a command whose real program the guard was
 			// never able to identify.
 			return tools.PermissionDeny, true
+		case guard.DestructionOpaque:
+			// "I could not read this command" followed by "approved
+			// automatically" denies the tier its entire reason for existing.
+			// DestructionOpaque was absent from this switch, so yolo passed the
+			// whole tier — including the family V-2 had just closed
+			// (`pkexec rm -rf /`) and the one ADR-0020 closes
+			// (`GIT_SSH_COMMAND='rm -rf /' git fetch`).
+			//
+			// It takes the ForcePrompt route — (deny, FALSE), "not resolved,
+			// hand it back for an explicit answer" — rather than the
+			// OutOfScope-under-yolo route one case down, which is (deny, true),
+			// a refusal. The difference is the tier's own claim: OutOfScope
+			// knows the deletion leaves the project, while Opaque knows only
+			// that nobody read the payload, and a refusal nobody can appeal is
+			// defensible only when the reason can be stated (ADR-0018). So yolo
+			// still ASKS here; it just no longer answers for the user.
+			//
+			// auto is deliberately not special-cased: it falls through to the
+			// model, which reads the full command text and can see the payload
+			// this package could not. Its error policy is already one-way
+			// (no model, timeout, unreadable reply -> prompt).
+			if mode == guard.ModeYOLO {
+				return tools.PermissionDeny, false
+			}
 		case guard.DestructionOutOfScope:
 			if mode == guard.ModeYOLO {
 				return tools.PermissionDeny, true
