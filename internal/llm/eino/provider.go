@@ -3,6 +3,7 @@ package eino
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -34,20 +35,30 @@ import (
 // retry to do usefully. http.DefaultTransport still provides connection reuse
 // and proper protocol-level behavior.
 //
-// Returns (models, chain, windows, err): models keys each entry by the
-// provider's REAL model id (with fallbacks — see chooseKey); chain is the same
-// models in config order (for NewResilientModel); windows maps the SAME
-// registry key → p.ContextWindow for every provider that sets one, so the http
-// layer's per-model window lookup (contextWindowFor) hits when the session
-// queries it with the registry key (cs.model / req.Model — the model id, not
-// the config name). Bootstrap forwards `windows` directly; do NOT rebuild it
-// from cfg.LLM.Providers by p.Name (the historical bug — keys did not match
-// the registry's model-id keys, so the per-model window was dead).
-func BuildProviders(cfg *config.Config) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, error) {
+// Returns (models, chain, windows, thresholds, err): models keys each entry
+// by the provider's REAL model id (with fallbacks — see chooseKey); chain is
+// the same models in config order (for NewResilientModel); windows maps the
+// SAME registry key → p.ContextWindow for every provider that sets one, so
+// the http layer's per-model window lookup (contextWindowFor) hits when the
+// session queries it with the registry key (cs.model / req.Model — the model
+// id, not the config name). Bootstrap forwards `windows` directly; do NOT
+// rebuild it from cfg.LLM.Providers by p.Name (the historical bug — keys did
+// not match the registry's model-id keys, so the per-model window was dead).
+//
+// W-C-01 (INF2): thresholds mirrors windows for the auto-compact threshold —
+// same registry key, same "only present when something resolved a value"
+// shape — so the pre-turn (contextWindowFor's sibling, thresholdFor) and
+// mid-turn (CompactionConfig.ProviderThresholds) paths both key off it the
+// same way they already key off windows. A model with neither an explicit
+// config override nor a catalog row is simply absent from this map; the
+// caller's own CompactionConfig.Threshold applies unchanged (see
+// ResolveAutoCompactThreshold, modelcatalog.go).
+func BuildProviders(cfg *config.Config) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, error) {
 	ctx := context.Background()
 	chain := make([]model.BaseChatModel, 0, len(cfg.LLM.Providers))
 	models := make(map[string]model.BaseChatModel, len(cfg.LLM.Providers))
 	windows := make(map[string]int, len(cfg.LLM.Providers))
+	thresholds := make(map[string]float64, len(cfg.LLM.Providers))
 	// The registry is keyed by the provider's REAL model id (config `model`),
 	// so /model lists and switches on the concrete model name (e.g.
 	// "claude-opus-4-8") rather than the config label (e.g. "claude"). When the
@@ -66,7 +77,7 @@ func BuildProviders(cfg *config.Config) (map[string]model.BaseChatModel, []model
 	for i, p := range cfg.LLM.Providers {
 		m, err := buildOne(ctx, p)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("eino: build provider %q (kind=%q): %w", p.Name, p.Kind, err)
+			return nil, nil, nil, nil, fmt.Errorf("eino: build provider %q (kind=%q): %w", p.Name, p.Kind, err)
 		}
 		chain = append(chain, m)
 		key := chooseKey(p, i)
@@ -84,11 +95,24 @@ func BuildProviders(cfg *config.Config) (map[string]model.BaseChatModel, []model
 		// config first, then the static catalog (skipped for local runtimes),
 		// then a conservative default — so the map is now total and the
 		// fallback only applies to models nothing recognises.
-		if w, _ := ResolveContextWindow(providerShape(p), 0); w > 0 {
+		//
+		// A model neither the catalog nor the operator recognises is NOT a
+		// startup error (INF2 acceptance #2: an unlisted model must degrade,
+		// not block boot) — it is logged so the degradation is observable,
+		// same as discover.go's "configured model not advertised" warning.
+		w, src := ResolveContextWindow(providerShape(p), 0)
+		if w > 0 {
 			windows[key] = w
 		}
+		if src == WindowFromDefault {
+			slog.Warn("model not in context-window catalog; using conservative default",
+				"model", p.Model, "provider", p.Name, "default_tokens", w)
+		}
+		if t, ok := ResolveAutoCompactThreshold(providerShape(p)); ok {
+			thresholds[key] = t
+		}
 	}
-	return models, chain, windows, nil
+	return models, chain, windows, thresholds, nil
 }
 
 // providerShape projects a config.ProviderConfig onto the minimal shape
@@ -97,11 +121,12 @@ func BuildProviders(cfg *config.Config) (map[string]model.BaseChatModel, []model
 // duplicated at each call site.
 func providerShape(p config.ProviderConfig) ProviderShape {
 	return ProviderShape{
-		Kind:          p.Kind,
-		Model:         p.Model,
-		BaseURL:       p.BaseURL,
-		ContextWindow: p.ContextWindow,
-		Local:         p.Local,
+		Kind:                 p.Kind,
+		Model:                p.Model,
+		BaseURL:              p.BaseURL,
+		ContextWindow:        p.ContextWindow,
+		Local:                p.Local,
+		AutoCompactThreshold: p.AutoCompactThreshold,
 	}
 }
 

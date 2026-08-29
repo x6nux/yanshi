@@ -130,6 +130,14 @@ type CompactionConfig struct {
 	// HTTP layer; it is passed here rather than resolved locally so the
 	// orchestrator never has to import internal/api/http, which GOV1 forbids.
 	ProviderWindows map[string]int
+	// ProviderThresholds maps a registry model name to that model's
+	// auto-compact threshold (a fraction of its context window, e.g. 0.8),
+	// keyed exactly as TurnOpts.ModelID — the mid-turn sibling of
+	// ProviderWindows (W-C-01 / INF2). A turn whose model is absent falls
+	// back to Threshold. Sourced (by bootstrap) from
+	// config.ProviderConfig.AutoCompactThreshold first, then the embedded
+	// model catalog — see einollm.ResolveAutoCompactThreshold.
+	ProviderThresholds map[string]float64
 	// Redactor strips registered secrets from the history handed to the summary
 	// model on the MID-TURN compaction path, and from the summary it returns
 	// (C11). nil disables redaction.
@@ -150,6 +158,16 @@ func (cc CompactionConfig) windowFor(modelID string) int {
 		return 0
 	}
 	return cc.ProviderWindows[modelID]
+}
+
+// thresholdFor returns the auto-compact threshold to size a turn's
+// compaction gates against, or 0 when the model is unknown and the caller
+// should fall back to Threshold. Mirrors windowFor exactly (W-C-01 / INF2).
+func (cc CompactionConfig) thresholdFor(modelID string) float64 {
+	if modelID == "" || cc.ProviderThresholds == nil {
+		return 0
+	}
+	return cc.ProviderThresholds[modelID]
 }
 
 // Orchestrator wraps an Eino ChatModelAgent + Runner.
@@ -308,7 +326,7 @@ func New(cfg Config) (*Orchestrator, error) {
 	rawModel := cfg.Model
 
 	return &Orchestrator{
-		model:              wrapCompaction(cfg.Model, cfg.Compaction, 0),
+		model:              wrapCompaction(cfg.Model, cfg.Compaction, 0, 0),
 		rawModel:           rawModel,
 		profile:            profile,
 		vcsScope:           cfg.VCSScope,
@@ -344,20 +362,31 @@ func New(cfg Config) (*Orchestrator, error) {
 // is enabled, else m unchanged.
 //
 // window is the context window resolved for the model m will run against;
-// pass 0 to fall back to cc.ContextWindow. Every gate -- threshold, hard
-// force, and the token cooldown -- is sized from that single number, so a
-// provider with a smaller window than the global default cannot end up with
-// a threshold it can never reach.
-func wrapCompaction(m model.BaseChatModel, cc CompactionConfig, window int) model.BaseChatModel {
+// pass 0 to fall back to cc.ContextWindow. threshold is the auto-compact
+// threshold resolved for that same model (W-C-01 / INF2, e.g. from
+// ProviderConfig.AutoCompactThreshold or the model catalog); pass 0 to fall
+// back to cc.Threshold. Every gate -- threshold, hard force, and the token
+// cooldown -- is sized from window, so a provider with a smaller window than
+// the global default cannot end up with a threshold it can never reach.
+//
+// The on/off switch stays cc.Threshold alone: a per-model threshold only
+// resizes an ALREADY-enabled gate, it never re-enables a feature the
+// operator turned off by setting the global Threshold to 0. Letting a
+// catalog row silently override an explicit "compaction: threshold: 0" would
+// surprise exactly the operator who set it.
+func wrapCompaction(m model.BaseChatModel, cc CompactionConfig, window int, threshold float64) model.BaseChatModel {
 	if cc.Threshold <= 0 {
 		return m
 	}
 	if window <= 0 {
 		window = cc.ContextWindow
 	}
+	if threshold <= 0 {
+		threshold = cc.Threshold
+	}
 	return &einollm.CompactingModel{
 		Inner:             m,
-		Threshold:         cc.Threshold,
+		Threshold:         threshold,
 		ContextWindow:     window,
 		KeepRecent:        cc.KeepRecent,
 		CooldownTokens:    int(cc.CooldownFraction * float64(window)),
@@ -642,7 +671,7 @@ func (o *Orchestrator) runnerFor(chatModel model.BaseChatModel, plan bool, model
 	names := collectToolNames(registered)
 
 	agent, err := adk.NewChatModelAgent(context.Background(), &adk.ChatModelAgentConfig{
-		Model:         wrapCompaction(chatModel, o.compaction, o.compaction.windowFor(modelID)),
+		Model:         wrapCompaction(chatModel, o.compaction, o.compaction.windowFor(modelID), o.compaction.thresholdFor(modelID)),
 		Instruction:   o.instruction,
 		MaxIterations: o.maxIters,
 		ToolsConfig: adk.ToolsConfig{

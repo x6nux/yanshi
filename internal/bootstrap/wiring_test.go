@@ -798,10 +798,38 @@ func TestProviderWindowsReachTheOrchestrator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read bootstrap.go: %v", err)
 	}
-	if !strings.Contains(string(src), "ProviderWindows:   providerWindows,") {
+	if !strings.Contains(string(src), "ProviderWindows:    providerWindows,") {
 		t.Error("the orchestrator's CompactionConfig no longer receives providerWindows: " +
 			"every model would fall back to the global context window, so a provider " +
 			"with a smaller one gets a compaction threshold it can never reach")
+	}
+}
+
+// TestProviderThresholdsReachBothCompactionConfigs pins the composition
+// root's half of the W-C-01 (INF2) per-model auto-compact threshold — the
+// mid-turn/pre-turn sibling of TestProviderWindowsReachTheOrchestrator above.
+//
+// Unlike the windows assignment, this one has TWO independent literals to
+// keep wired: orchestrator.CompactionConfig (mid-turn, consumed by
+// wrapCompaction via CompactionConfig.thresholdFor) and
+// apihttp.CompactionConfig (pre-turn, consumed by ws_compaction.go's and
+// chat.go's thresholdFor). Both assignments must survive independently — a
+// future edit could easily fix one call site and miss the other, exactly the
+// asymmetry the CLAUDE.md architecture section warns the two window paths
+// already have. Counting occurrences (rather than Contains, which is
+// satisfied by either alone) is what makes this test fail on a
+// single-site regression instead of passing as long as one survives.
+func TestProviderThresholdsReachBothCompactionConfigs(t *testing.T) {
+	src, err := os.ReadFile("bootstrap.go")
+	if err != nil {
+		t.Fatalf("read bootstrap.go: %v", err)
+	}
+	got := strings.Count(string(src), "ProviderThresholds: providerThresholds,")
+	if got != 2 {
+		t.Errorf("expected providerThresholds to reach exactly 2 CompactionConfig literals "+
+			"(orchestrator's mid-turn and http's pre-turn), found %d: a provider with a "+
+			"catalog- or config-resolved auto-compact threshold would silently share the "+
+			"global one on whichever path lost its assignment", got)
 	}
 }
 

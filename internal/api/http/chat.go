@@ -167,7 +167,7 @@ func (s *Server) handleSSEInternal(w http.ResponseWriter, r *http.Request,
 	compacted := false
 	if sumModel != nil {
 		newMsgs, tb, ta, compacted = ctxcompact.MaybeCompactWithOptions(r.Context(), msgs,
-			s.compaction.Threshold, cw, kr, sumModel,
+			thresholdFor(req.Model, s.compaction), cw, kr, sumModel,
 			func(chunk string) { writeSSEFrame(w, fl, proto.NewCompactChunk(chunk), s.redactor) },
 			s.compactionOptions())
 	}

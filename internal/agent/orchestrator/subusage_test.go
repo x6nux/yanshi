@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cloudwego/eino/components/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -136,7 +137,7 @@ func TestCompactionGatesUseTheResolvedWindow(t *testing.T) {
 		HardForceFraction: 0.9,
 	}
 
-	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 128000)
+	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 128000, 0)
 	cm, ok := wrapped.(*einollm.CompactingModel)
 	require.True(t, ok, "compaction must be enabled")
 
@@ -166,11 +167,91 @@ func TestRunnerForSizesGatesToTheTurnsModel(t *testing.T) {
 	assert.Equal(t, 0, cc.windowFor(""), "an unset ModelID defers to the fallback")
 
 	// And the fallback really is the global one, not zero.
-	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, cc.windowFor("unknown"))
+	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, cc.windowFor("unknown"), cc.thresholdFor("unknown"))
 	cm, ok := wrapped.(*einollm.CompactingModel)
 	require.True(t, ok)
 	require.Equal(t, 256000, cm.ContextWindow,
 		"an unknown model must fall back to the configured window, not to a zero that disables every gate")
+}
+
+// TestCompactionConfig_thresholdFor mirrors TestRunnerForSizesGatesToTheTurnsModel
+// for the W-C-01 (INF2) threshold sibling of windowFor: a known model uses its
+// own resolved threshold, and an unknown or empty model id defers to the
+// caller (0 tells wrapCompaction to keep the global cc.Threshold).
+func TestCompactionConfig_thresholdFor(t *testing.T) {
+	cc := CompactionConfig{
+		Threshold:          0.8,
+		ProviderThresholds: map[string]float64{"small": 0.55},
+	}
+
+	assert.Equal(t, 0.55, cc.thresholdFor("small"), "a known model uses its own resolved threshold")
+	assert.Equal(t, float64(0), cc.thresholdFor("unknown"), "an unknown model defers to the global threshold")
+	assert.Equal(t, float64(0), cc.thresholdFor(""), "an unset ModelID defers to the global threshold")
+
+	// A nil map must not panic (the zero-value CompactionConfig, e.g. compaction
+	// disabled entirely, has no ProviderThresholds at all).
+	var zero CompactionConfig
+	assert.Equal(t, float64(0), zero.thresholdFor("small"))
+}
+
+// TestCompactionThresholdGatesUseTheResolvedThreshold pins the mid-turn half
+// of W-C-01 (INF2) acceptance clause 4: a per-model auto-compact threshold —
+// sourced from config override or the embedded catalog by bootstrap, reduced
+// here to a plain map — must reach the CompactingModel that actually gates
+// compaction, distinctly from the global fallback Threshold.
+//
+// Mirrors TestCompactionGatesUseTheResolvedWindow's shape: without this, a
+// provider with a catalog-sourced 0.6 threshold would silently share the
+// operator's global 0.8, exactly the "wrong number, still compiles" failure
+// class the window test above already guards for ContextWindow.
+func TestCompactionThresholdGatesUseTheResolvedThreshold(t *testing.T) {
+	cc := CompactionConfig{
+		Threshold:          0.8, // global fallback
+		ContextWindow:      256000,
+		KeepRecent:         4,
+		ProviderThresholds: map[string]float64{"small": 0.6},
+	}
+
+	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 128000, cc.thresholdFor("small"))
+	cm, ok := wrapped.(*einollm.CompactingModel)
+	require.True(t, ok, "compaction must be enabled")
+
+	require.Equal(t, 0.6, cm.Threshold,
+		"the gate must use the model's resolved threshold, not the global fallback")
+	require.NotEqual(t, cc.Threshold, cm.Threshold,
+		"this test is only meaningful if the resolved value actually differs from the global one")
+}
+
+// TestWrapCompaction_ZeroResolvedThresholdKeepsTheGlobalOne pins the other
+// half of the same ladder: a model absent from ProviderThresholds (0 from
+// thresholdFor) must NOT disable or zero out compaction — it must fall back
+// to cc.Threshold exactly like an absent window falls back to
+// cc.ContextWindow.
+func TestWrapCompaction_ZeroResolvedThresholdKeepsTheGlobalOne(t *testing.T) {
+	cc := CompactionConfig{Threshold: 0.8, ContextWindow: 128000, KeepRecent: 4}
+
+	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 0, cc.thresholdFor("unknown-model"))
+	cm, ok := wrapped.(*einollm.CompactingModel)
+	require.True(t, ok)
+	assert.Equal(t, 0.8, cm.Threshold, "an unresolved per-model threshold must fall back to the global one")
+}
+
+// TestWrapCompaction_GlobalThresholdZeroStaysOffEvenWithACatalogHit pins the
+// design decision documented on wrapCompaction: the enable/disable switch is
+// keyed SOLELY on the global cc.Threshold. A catalog-resolved per-model
+// threshold only resizes an ALREADY-enabled gate — it must never be able to
+// silently re-enable compaction an operator (or a test constructing
+// CompactionConfig directly, bypassing config.Load's applyDefaults) turned
+// off with Threshold: 0.
+func TestWrapCompaction_GlobalThresholdZeroStaysOffEvenWithACatalogHit(t *testing.T) {
+	cc := CompactionConfig{Threshold: 0, ProviderThresholds: map[string]float64{"small": 0.6}}
+
+	fm := einollm.NewFakeModel(nil, nil)
+	wrapped := wrapCompaction(fm, cc, 128000, cc.thresholdFor("small"))
+	assert.Same(t, model.BaseChatModel(fm), wrapped,
+		"Threshold<=0 must return the model unwrapped regardless of a per-model catalog hit")
+	_, stillWrapped := wrapped.(*einollm.CompactingModel)
+	assert.False(t, stillWrapped, "a catalog hit must not silently re-enable compaction the operator turned off")
 }
 
 // TestRunnerForPassesTheModelIDThrough guards the wiring that

@@ -1,6 +1,8 @@
 package eino
 
 import (
+	"bytes"
+	"log/slog"
 	"testing"
 
 	"github.com/cloudwego/eino/components/model"
@@ -17,7 +19,7 @@ func TestBuildProviders_BuildsPerConfig(t *testing.T) {
 			{Name: "ollama", Model: "gpt-4o-mini", APIKey: "k", BaseURL: "http://localhost:11434/v1"},
 		}},
 	}
-	models, chain, _, err := BuildProviders(cfg)
+	models, chain, _, _, err := BuildProviders(cfg)
 	// If version-compat (Task 1) failed, skip with a clear reason rather than
 	// failing the suite. Task 1 confirmed compat, so we expect a real chain.
 	if err != nil {
@@ -46,7 +48,7 @@ func TestBuildProviders_FallsBackToNameOnDuplicateModel(t *testing.T) {
 			{Name: "openai", Model: "auto", APIKey: "k2"},
 		}},
 	}
-	models, _, _, err := BuildProviders(cfg)
+	models, _, _, _, err := BuildProviders(cfg)
 	if err != nil {
 		t.Skipf("eino-ext openai provider unavailable in this eino version: %v", err)
 	}
@@ -59,7 +61,7 @@ func TestBuildProviders_EmptyProviders(t *testing.T) {
 	cfg := &config.Config{
 		LLM: config.LLMConfig{Providers: nil},
 	}
-	models, chain, _, err := BuildProviders(cfg)
+	models, chain, _, _, err := BuildProviders(cfg)
 	require.NoError(t, err)
 	assert.Empty(t, chain)
 	assert.Empty(t, models)
@@ -74,7 +76,7 @@ func TestBuildProvidersKindDispatch(t *testing.T) {
 		{Name: "oa", Kind: "openai", Model: "gpt-4o", APIKey: "k"},
 		{Name: "cl", Kind: "anthropic", Model: "claude-opus-4-8", APIKey: "k"},
 	}}}
-	models, chain, _, err := BuildProviders(cfg)
+	models, chain, _, _, err := BuildProviders(cfg)
 	// eino-ext openai provider may be unavailable in the pinned eino version;
 	// skip rather than fail in that case (same pattern as the tests above).
 	if err != nil {
@@ -100,7 +102,7 @@ func TestBuildProvidersKindResponses(t *testing.T) {
 	cfg := &config.Config{LLM: config.LLMConfig{Providers: []config.ProviderConfig{
 		{Name: "r", Kind: "openai-responses", Model: "gpt-4o", APIKey: "k"},
 	}}}
-	models, chain, _, err := BuildProviders(cfg)
+	models, chain, _, _, err := BuildProviders(cfg)
 	if err != nil {
 		t.Fatalf("期望成功，实际 err=%v", err)
 	}
@@ -146,7 +148,7 @@ func TestBuildProviders_WindowsKeyedByRegistryId(t *testing.T) {
 		{Name: "openai", Model: "gpt-4o", APIKey: "k", ContextWindow: 128000},
 		{Name: "claude", Model: "claude-opus-4-8", APIKey: "k", ContextWindow: 200000},
 	}}}
-	models, _, windows, err := BuildProviders(cfg)
+	models, _, windows, _, err := BuildProviders(cfg)
 	if err != nil {
 		t.Skipf("eino-ext openai provider unavailable in this eino version: %v", err)
 	}
@@ -164,6 +166,39 @@ func TestBuildProviders_WindowsKeyedByRegistryId(t *testing.T) {
 	_, hasNameKey2 := windows["claude"]
 	assert.False(t, hasNameKey2,
 		"p.Name MUST NOT be a key — contextWindowFor queries with the model id")
+}
+
+// TestBuildProviders_UnknownModelLogsDegradationWarningAndDoesNotError pins
+// INF2 acceptance #2 (a model the catalog cannot find must degrade to a safe
+// default and must not block startup) all the way through the real
+// composition path a provider walks — not just the pure-function level
+// covered by TestAcceptance2_UnknownModelResolvesToSafeDefaults in
+// modelcatalog_test.go.
+//
+// Kind is "anthropic" rather than "openai" so this test does not depend on
+// eino-ext's OpenAI adapter availability (see the t.Skip pattern the other
+// tests in this file use) — anthropic.go's adapter has no such compat gate.
+func TestBuildProviders_UnknownModelLogsDegradationWarningAndDoesNotError(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	const unknown = "totally-unknown-anywhere-vendor-xyz"
+	cfg := &config.Config{LLM: config.LLMConfig{Providers: []config.ProviderConfig{
+		{Name: "cl", Kind: "anthropic", Model: unknown, APIKey: "k"},
+	}}}
+	models, chain, windows, _, err := BuildProviders(cfg)
+	require.NoError(t, err, "an unrecognised model must not block startup")
+	require.Len(t, chain, 1)
+	assert.Contains(t, models, unknown)
+	assert.Greater(t, windows[unknown], 0,
+		"an unlisted model must still resolve to a positive conservative default window, not 0")
+
+	logged := buf.String()
+	assert.Contains(t, logged, "model not in context-window catalog",
+		"the degradation must be observable, not silent")
+	assert.Contains(t, logged, unknown)
 }
 
 // keysOf returns the map keys (for assertion error messages only).

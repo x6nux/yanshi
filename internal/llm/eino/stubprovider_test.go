@@ -320,7 +320,7 @@ func buildStubModel(t *testing.T, s *stubProvider, mutate func(*config.ProviderC
 	model.BaseChatModel, map[string]int) {
 	t.Helper()
 	cfg := stubProviderConfig(s, mutate)
-	_, chain, windows, err := BuildProviders(cfg)
+	_, chain, windows, _, err := BuildProviders(cfg)
 	if err != nil {
 		t.Fatalf("BuildProviders: %v", err)
 	}

@@ -798,7 +798,7 @@ func maybeAutoCompact(ctx context.Context, s *Server,
 		return
 	}
 	newHist, tb, ta, did := ctxcompact.MaybeCompactWithOptions(ctx, cs.history,
-		s.compaction.Threshold, cw, kr, sumModel,
+		thresholdFor(cs.model, s.compaction), cw, kr, sumModel,
 		func(chunk string) { conn.write(proto.NewCompactChunk(chunk)) },
 		s.compactionOptions())
 	if !did {
@@ -940,6 +940,17 @@ func contextWindowFor(model string, cc CompactionConfig) int {
 		return w
 	}
 	return cc.ContextWindow
+}
+
+// thresholdFor returns the auto-compact threshold budget for model: the
+// per-provider/catalog override if set, else the configured global fallback.
+// Mirrors contextWindowFor exactly (W-C-01 / INF2) — this is the PRE-TURN
+// sibling of orchestrator.CompactionConfig.thresholdFor, the mid-turn path.
+func thresholdFor(model string, cc CompactionConfig) float64 {
+	if t, ok := cc.ProviderThresholds[model]; ok && t > 0 {
+		return t
+	}
+	return cc.Threshold
 }
 
 // keepRecentOrDefault applies the conventional default (4) when the configured

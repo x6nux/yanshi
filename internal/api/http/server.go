@@ -130,6 +130,14 @@ type CompactionConfig struct {
 	// size against the ACTUAL model's window instead of one global value.
 	// Populated by bootstrap from config.LLM.Providers[].ContextWindow.
 	ProviderWindows map[string]int
+	// ProviderThresholds maps provider name -> auto-compact threshold (a
+	// fraction of that model's window), the pre-turn sibling of
+	// orchestrator.CompactionConfig.ProviderThresholds (W-C-01 / INF2).
+	// Populated by bootstrap from config.ProviderConfig.AutoCompactThreshold
+	// first, then the embedded model catalog. A model absent from this map
+	// falls back to Threshold, same as ProviderWindows falls back to
+	// ContextWindow.
+	ProviderThresholds map[string]float64
 }
 
 // Server holds the mux and auth token. Use HandleFunc to register routes

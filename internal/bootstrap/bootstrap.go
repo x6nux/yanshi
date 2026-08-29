@@ -346,12 +346,14 @@ type Options struct {
 
 // ProviderBuilder is the production BuildProviders signature. Returns the
 // per-name model map, the chain passed to NewResilientModel, the per-model
-// context windows, and an error. bootstrap calls it AFTER credential
-// resolution so cfg.LLM.Providers[i].APIKey holds plaintext.
+// context windows, the per-model auto-compact thresholds (W-C-01 / INF2),
+// and an error. bootstrap calls it AFTER credential resolution so
+// cfg.LLM.Providers[i].APIKey holds plaintext.
 type ProviderBuilder func(*config.Config) (
 	map[string]model.BaseChatModel,
 	[]model.BaseChatModel,
 	map[string]int,
+	map[string]float64,
 	error,
 )
 
@@ -651,6 +653,12 @@ func Build(opts Options) (*App, error) {
 	// contextWindowFor(cs.model / req.Model, ...) hits the per-model window
 	// instead of silently falling back to the global ContextWindow.
 	var providerWindows map[string]int
+	// providerThresholds mirrors providerWindows for the auto-compact
+	// threshold (W-C-01 / INF2) — same registry key, forwarded to both the
+	// orchestrator's mid-turn CompactionConfig and the http layer's pre-turn
+	// one so a per-model catalog/config threshold reaches both compaction
+	// paths (see CLAUDE.md's compaction section on why both must be wired).
+	var providerThresholds map[string]float64
 	// fakeChatModel stays nil on the production path ON PURPOSE: SelectRLMModel
 	// treats a non-nil fake as "rlm_query may fall back to it", so handing it a
 	// real model here would silently defeat the cheap-provider requirement and
@@ -675,7 +683,7 @@ func Build(opts Options) (*App, error) {
 		if providerBuilder == nil {
 			providerBuilder = einollm.BuildProviders
 		}
-		named, chain, windows, err := providerBuilder(cfg)
+		named, chain, windows, thresholds, err := providerBuilder(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap: build providers: %w", err)
 		}
@@ -694,6 +702,7 @@ func Build(opts Options) (*App, error) {
 		chatModel = rm
 		providerModels = named
 		providerWindows = windows
+		providerThresholds = thresholds
 		// M9: warn about a model name the provider does not list, naming the
 		// nearest matches. Non-blocking by construction — see RunPreflight.
 		// It takes context.Background() rather than the app's root context
@@ -1378,13 +1387,14 @@ func Build(opts Options) (*App, error) {
 		ImageStore:         imageStore,
 		VisionAuxAvailable: visionAux != nil,
 		Compaction: orchestrator.CompactionConfig{
-			Threshold:         cfg.Compaction.Threshold,
-			ContextWindow:     cfg.Compaction.ContextWindow,
-			KeepRecent:        cfg.Compaction.KeepRecent,
-			CooldownFraction:  cfg.Compaction.CooldownFraction,
-			CooldownDuration:  parseCooldownDuration(cfg.Compaction.CooldownDuration),
-			HardForceFraction: cfg.Compaction.HardForceFraction,
-			ProviderWindows:   providerWindows,
+			Threshold:          cfg.Compaction.Threshold,
+			ContextWindow:      cfg.Compaction.ContextWindow,
+			KeepRecent:         cfg.Compaction.KeepRecent,
+			CooldownFraction:   cfg.Compaction.CooldownFraction,
+			CooldownDuration:   parseCooldownDuration(cfg.Compaction.CooldownDuration),
+			HardForceFraction:  cfg.Compaction.HardForceFraction,
+			ProviderWindows:    providerWindows,
+			ProviderThresholds: providerThresholds,
 			// C11: mid-turn compaction redacts its summarizer input. The
 			// pre-turn/SSE path is wired separately via httpCfg.Redactor;
 			// without this line only that half would be covered and secrets
@@ -1449,11 +1459,12 @@ func Build(opts Options) (*App, error) {
 	httpCfg := apihttp.Config{
 		Token: cfg.Token,
 		Compaction: apihttp.CompactionConfig{
-			Threshold:       cfg.Compaction.Threshold,
-			KeepRecent:      cfg.Compaction.KeepRecent,
-			ContextWindow:   cfg.Compaction.ContextWindow,
-			Model:           cfg.Compaction.Model,
-			ProviderWindows: providerWindows,
+			Threshold:          cfg.Compaction.Threshold,
+			KeepRecent:         cfg.Compaction.KeepRecent,
+			ContextWindow:      cfg.Compaction.ContextWindow,
+			Model:              cfg.Compaction.Model,
+			ProviderWindows:    providerWindows,
+			ProviderThresholds: providerThresholds,
 		},
 		Store:         st,
 		VCS:           vcsInstance,

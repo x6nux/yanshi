@@ -73,9 +73,9 @@ profiles:
 	app, err := bootstrap.Build(bootstrap.Options{
 		ConfigPath: cfgPath,
 		WorkRoot:   workRoot,
-		ProviderBuilder: func(*config.Config) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, error) {
+		ProviderBuilder: func(*config.Config) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, error) {
 			return map[string]model.BaseChatModel{"probe-model": mdl},
-				[]model.BaseChatModel{mdl}, nil, nil
+				[]model.BaseChatModel{mdl}, nil, nil, nil
 		},
 	})
 	require.NoError(t, err)

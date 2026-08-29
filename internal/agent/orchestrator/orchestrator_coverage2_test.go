@@ -266,14 +266,14 @@ func TestFinalOutputAccumulator_EdgeCases(t *testing.T) {
 // TestWrapCompaction_ZeroThreshold returns original model unwrapped.
 func TestWrapCompaction_ZeroThreshold(t *testing.T) {
 	fm := einollm.NewFakeModel([]string{"ok"}, nil)
-	wrapped := wrapCompaction(fm, CompactionConfig{Threshold: 0}, 0)
+	wrapped := wrapCompaction(fm, CompactionConfig{Threshold: 0}, 0, 0)
 	assert.Equal(t, fm, wrapped)
 }
 
 // TestWrapCompaction_NegativeThreshold returns original model unwrapped.
 func TestWrapCompaction_NegativeThreshold(t *testing.T) {
 	fm := einollm.NewFakeModel([]string{"ok"}, nil)
-	wrapped := wrapCompaction(fm, CompactionConfig{Threshold: -1}, 0)
+	wrapped := wrapCompaction(fm, CompactionConfig{Threshold: -1}, 0, 0)
 	assert.Equal(t, fm, wrapped)
 }
 

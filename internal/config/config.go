@@ -670,6 +670,16 @@ type ProviderConfig struct {
 	// into the cloud catalog. *bool so "unset" (heuristic decides) stays
 	// distinguishable from an explicit false. See einollm.IsLocalProvider.
 	Local *bool `yaml:"local"`
+	// AutoCompactThreshold overrides the auto-compact trigger point for THIS
+	// provider's model, as a FRACTION of the resolved context window (e.g.
+	// 0.8), never an absolute token count (ADR-0013's dimensional
+	// constraint — mixing the two units silently mis-sizes the compaction
+	// gate). 0 (the zero value) means "unset": unlike CompactionConfig.
+	// Threshold, applyDefaults never coerces this field, so 0 reliably means
+	// "no explicit override" and resolution falls through to the model
+	// catalog, then to the operator's global CompactionConfig.Threshold. See
+	// einollm.ResolveAutoCompactThreshold (W-C-01 / INF2).
+	AutoCompactThreshold float64 `yaml:"auto_compact_threshold"`
 
 	// --- Generation parameters (M4) ----------------------------------------
 	//

@@ -1,0 +1,204 @@
+# models.yaml is the embedded, data-driven model capability catalog for
+# W-C-01 (INF2). Adding a model or a price is an edit to THIS file — no Go
+# code change (see modelcatalog.go, which parses it; contextwindow.go and
+# pricing.go, which are BUILT from it at package init).
+#
+# Schema (docs/superpowers/specs/2026-08-27-capability-roadmap-design.md
+# §1.2 INF2), one row per model or model family:
+#
+#   id                      canonical id, or a bare family fragment for a
+#                           catch-all row (see "Two kinds of row" below).
+#                           Required, must be unique within this file.
+#   aliases                 optional list of extra ids/fragments that answer
+#                           for this same row (gateway-prefixed spellings,
+#                           legacy names). Matched the same way `id` is.
+#   context_window          optional input-token window. Absent/0 = this row
+#                           has no opinion on window size — resolution falls
+#                           through to the next-longest matching row, then
+#                           the conservative default (see
+#                           ResolveContextWindow in contextwindow.go).
+#   auto_compact_threshold  optional override for CompactionConfig.Threshold.
+#                           It is a FRACTION of context_window (e.g. 0.8),
+#                           never an absolute token count — mixing the two
+#                           units silently mis-sizes the compaction gate
+#                           (ADR-0013's dimensional constraint). Absent =
+#                           the operator's configured/global default applies
+#                           unchanged.
+#   pricing                 optional input_per_m / cache_hit_per_m /
+#                           output_per_m in USD per million tokens. Absent =
+#                           CostOK/Ledger.Cost report the model unknown
+#                           ("N/A"), never $0.00.
+#   max_output              reserved for a future W-C ticket (max output
+#                           tokens). Parsed but not consumed yet.
+#   modalities              reserved for a future W-C ticket (multimodal
+#                           capability probing, B47). Parsed but not
+#                           consumed yet.
+#   reasoning_efforts       reserved for a future W-C ticket (valid
+#                           reasoning-effort values per model). Parsed but
+#                           not consumed yet.
+#   truncation_policy       reserved for a future W-C ticket (B32). Parsed
+#                           but not consumed yet.
+#   priority                reserved for a future W-C ticket (provider
+#                           selection ordering). Parsed but not consumed yet.
+#
+# TWO KINDS OF ROW, both matched by the SAME boundary-anchored substring
+# algorithm with longest-match-wins (matchesAtBoundary in contextwindow.go;
+# see that file's header for why boundary-anchored substring matching exists
+# — it is what lets one row answer for every gateway/region prefix an
+# operator might type):
+#
+#   - FAMILY rows (id is a bare fragment like "claude", "gpt-4") record the
+#     safe LOWER documented bound for every snapshot in that family that has
+#     no more specific row of its own.
+#   - SPECIFIC rows (id is an exact shipped model id like "claude-opus-4-8")
+#     win over the family row for that one id, and are the only rows this
+#     file gives pricing to: dollar amounts genuinely differ per snapshot
+#     while the context window usually does not.
+#
+# Pricing and auto_compact_threshold resolution is EXACT-match against
+# id/aliases (see catalogAliases in modelcatalog.go) — NOT boundary-substring
+# like context_window. A price quietly applying to every gateway-prefixed
+# variant of a model id would be a bigger behavior change than this ticket's
+# job of transcribing two existing Go literal tables into data.
+#
+# Values below are transcribed unchanged from the two Go literal tables this
+# file replaces (contextwindow.go's former contextWindowCatalog var,
+# pricing.go's former DefaultPricing body) — see git history on either file
+# for provenance notes on individual numbers.
+
+models:
+  # --- Anthropic -----------------------------------------------------------
+  # 200K standard across the modern families; the 1M Sonnet variant is a
+  # beta-header opt-in, so it is NOT assumed by the family row.
+  - id: claude-instant
+    context_window: 100000 # legacy, still served by some gateways
+  - id: claude-2
+    context_window: 100000 # legacy, still served by Bedrock
+  - id: claude
+    context_window: 200000
+  - id: claude-fable-5
+    pricing: { input_per_m: 10, cache_hit_per_m: 1, output_per_m: 50 }
+  - id: claude-mythos-5
+    pricing: { input_per_m: 10, cache_hit_per_m: 1, output_per_m: 50 }
+  - id: claude-opus-4-8
+    pricing: { input_per_m: 5, cache_hit_per_m: 0.5, output_per_m: 25 }
+  - id: claude-opus-4-7
+    pricing: { input_per_m: 5, cache_hit_per_m: 0.5, output_per_m: 25 }
+  - id: claude-opus-4-6
+    pricing: { input_per_m: 5, cache_hit_per_m: 0.5, output_per_m: 25 }
+  - id: claude-sonnet-5
+    pricing: { input_per_m: 3, cache_hit_per_m: 0.3, output_per_m: 15 }
+  - id: claude-sonnet-4-6
+    pricing: { input_per_m: 3, cache_hit_per_m: 0.3, output_per_m: 15 }
+  - id: claude-haiku-4-5
+    pricing: { input_per_m: 1, cache_hit_per_m: 0.1, output_per_m: 5 }
+
+  # --- OpenAI ----------------------------------------------------------------
+  - id: gpt-4.1
+    context_window: 1047576
+  - id: gpt-5
+    context_window: 272000
+  - id: gpt-4o
+    context_window: 128000
+  - id: gpt-4-turbo
+    context_window: 128000
+  - id: gpt-4
+    context_window: 8192 # the original non-turbo gpt-4; catch-all for the family
+  - id: gpt-3.5-turbo
+    context_window: 16385
+  - id: o4-mini
+    context_window: 200000
+  - id: o3
+    context_window: 200000
+  - id: o1
+    context_window: 200000
+
+  # --- Google ------------------------------------------------------------------
+  - id: gemini-1.5-pro
+    context_window: 2097152
+  - id: gemini-1.5-flash
+    context_window: 1048576
+  - id: gemini
+    context_window: 1048576
+
+  # --- Qwen / DashScope --------------------------------------------------------
+  - id: qwen-long
+    context_window: 10000000
+  - id: qwen-flash
+    context_window: 1000000
+  - id: qwen-turbo-latest
+    context_window: 1000000
+  - id: qwen-turbo
+    context_window: 131072 # stable alias: snapshot windows vary
+  - id: qwen3.7-max
+    context_window: 1000000
+  - id: qwen3.7-plus
+    context_window: 1000000
+  - id: qwen3.6-plus
+    context_window: 1000000
+  - id: qwen-plus-latest
+    context_window: 1000000
+  - id: qwen-plus
+    context_window: 131072 # stable alias: snapshot windows vary
+  - id: qwen3-coder-plus
+    context_window: 1000000
+  - id: qwen3-coder
+    context_window: 262144
+  - id: qwen3-max
+    context_window: 262144
+  - id: qwen-max
+    context_window: 131072
+  - id: qwq
+    context_window: 131072
+
+  # --- DeepSeek ------------------------------------------------------------------
+  - id: deepseek-reasoner
+    context_window: 131072
+  - id: deepseek-chat
+    context_window: 131072
+  - id: deepseek-v3
+    context_window: 131072
+  - id: deepseek-r1
+    context_window: 131072
+
+  # --- Moonshot / Zhipu / MiniMax -----------------------------------------------
+  - id: kimi-k2
+    context_window: 262144
+  - id: moonshot-v1-128k
+    context_window: 131072
+  - id: glm-5.2
+    context_window: 1000000
+  - id: glm-4.6
+    context_window: 200000
+  - id: glm-4
+    context_window: 131072
+  - id: minimax-m3
+    context_window: 1000000
+  - id: minimax-m2.7
+    context_window: 204800
+
+  # --- xAI -----------------------------------------------------------------------
+  - id: grok-4-fast
+    context_window: 2000000
+  - id: grok-4
+    context_window: 256000
+  - id: grok-3
+    context_window: 131072
+
+  # --- Mistral / Cohere / Meta ---------------------------------------------------
+  - id: mistral-large
+    context_window: 131072
+  - id: mistral-small
+    context_window: 131072
+  - id: codestral
+    context_window: 262144
+  - id: command-r-plus
+    context_window: 128000
+  - id: command-r
+    context_window: 128000
+  - id: llama-4
+    context_window: 131072
+  - id: llama-3.3
+    context_window: 131072
+  - id: llama-3.1
+    context_window: 131072

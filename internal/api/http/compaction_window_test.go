@@ -50,3 +50,44 @@ func TestContextWindowFor_ZeroEntryIgnored(t *testing.T) {
 	assert.Equal(t, 1000, contextWindowFor("bad", cc),
 		"a zero ProviderWindows entry must NOT shadow the fallback")
 }
+
+// TestThresholdFor_UsesRegistryKey mirrors TestContextWindowFor_UsesRegistryKey
+// for the W-C-01 (INF2) per-model auto-compact threshold: ProviderThresholds is
+// keyed by the registry key (cs.model / req.Model), exactly like ProviderWindows,
+// so the two ladders cannot silently diverge on which key they read.
+func TestThresholdFor_UsesRegistryKey(t *testing.T) {
+	cc := CompactionConfig{
+		Threshold:          0.8,                                // fallback — must NOT be returned for keyed models
+		ProviderThresholds: map[string]float64{"gpt-4o": 0.55}, // keyed by Model id
+	}
+	assert.Equal(t, 0.55, thresholdFor("gpt-4o", cc),
+		"registry key (Model id) hits the per-model threshold")
+	assert.Equal(t, 0.8, thresholdFor("openai", cc),
+		"provider Name does NOT hit (keyed by Model)")
+	assert.Equal(t, 0.8, thresholdFor("unknown", cc),
+		"unknown model falls back to the global Threshold")
+}
+
+// TestThresholdFor_EmptyMapFallback locks the fallback behavior so the
+// FakeModel / no-providers path (ProviderThresholds == nil) keeps compaction
+// working with the global Threshold.
+func TestThresholdFor_EmptyMapFallback(t *testing.T) {
+	cc := CompactionConfig{
+		Threshold:          0.9,
+		ProviderThresholds: nil,
+	}
+	assert.Equal(t, 0.9, thresholdFor("gpt-4o", cc))
+	assert.Equal(t, 0.9, thresholdFor("anything", cc))
+}
+
+// TestThresholdFor_ZeroEntryIgnored ensures a zero (mis-configured, or a
+// catalog row that never populated auto_compact_threshold) entry does not
+// shadow the fallback — thresholdFor must skip it and fall through.
+func TestThresholdFor_ZeroEntryIgnored(t *testing.T) {
+	cc := CompactionConfig{
+		Threshold:          0.7,
+		ProviderThresholds: map[string]float64{"bad": 0},
+	}
+	assert.Equal(t, 0.7, thresholdFor("bad", cc),
+		"a zero ProviderThresholds entry must NOT shadow the fallback")
+}

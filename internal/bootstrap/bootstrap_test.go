@@ -1185,7 +1185,7 @@ func TestOutputLanguageInstructionIndependentOfUILocale(t *testing.T) {
 	}
 }
 
-func fakeProviderBuilder(cfg *config.Config) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, error) {
+func fakeProviderBuilder(cfg *config.Config) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, error) {
 	named := make(map[string]model.BaseChatModel)
 	var chain []model.BaseChatModel
 	for _, p := range cfg.LLM.Providers {
@@ -1193,7 +1193,7 @@ func fakeProviderBuilder(cfg *config.Config) (map[string]model.BaseChatModel, []
 		named[p.Model] = fm
 		chain = append(chain, fm)
 	}
-	return named, chain, nil, nil
+	return named, chain, nil, nil, nil
 }
 
 func TestBuildSelectsFirstMultimodalProviderAsAux(t *testing.T) {

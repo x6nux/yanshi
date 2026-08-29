@@ -43,6 +43,15 @@ llm:
     # CONSERVATIVE default: guessing the window too high means compaction never
     # fires and the request dies, guessing low only costs one extra compaction.
     #
+    # auto_compact_threshold is OPTIONAL and mirrors context_window's role for
+    # W-C-01's data-driven model catalog: it is a FRACTION of the resolved
+    # context_window (e.g. 0.75), not an absolute token count. Omit it and
+    # yanshi resolves the threshold from the same built-in catalog (falls back
+    # to compaction.threshold below when the catalog has no opinion either).
+    # Set it to give one noisy model (heavy tool output, frequent repetition)
+    # its own earlier trigger point without lowering the global default for
+    # every other provider.
+    #
     # max_tokens / temperature / top_p are OPTIONAL generation parameters.
     # Omitting a key leaves the provider's own default in force; setting one to
     # 0 is a real setting (temperature: 0 for deterministic judge calls) and is
@@ -53,6 +62,7 @@ llm:
       model: "gpt-4o"
       api_key: "${OPENAI_API_KEY}"
       context_window: 128000      # this model's token window; compaction sizes against it
+      # auto_compact_threshold: 0.75  # fraction of context_window; omit to use the catalog/global default
       # max_tokens: 32000         # cap per response; omit to keep the 4096 default
       # temperature: 0.2          # omit to keep the provider default; 0 is a valid setting
       # top_p: 0.95               # tune this OR temperature, not both
