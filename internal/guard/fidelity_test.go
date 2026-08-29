@@ -229,7 +229,24 @@ func envDispatchScript(vars ...string) string {
 func relayPreamble(positionals int, assignments bool) string {
 	assign := ""
 	if assignments {
-		assign = "    *=*) shift ;;\n"
+		// EXPORT rather than merely skip. `env VAR=v cmd` and `sudo VAR=v cmd`
+		// put the assignment in the CHILD's environment, and a stand-in that
+		// only shifted it past was claiming to be env while dropping the one
+		// thing env is for: the row `env GIT_SSH_COMMAND='tee …' git fetch` ran
+		// a git stand-in that then found the variable unset, so the shell did
+		// nothing and the row could not be witnessed.
+		//
+		// The name is validated first because export is a POSIX SPECIAL
+		// builtin: on an invalid name the shell is permitted to exit, which
+		// would abort the harness rather than skip one word. A word like
+		// `--opt=x` reaching this arm is shifted exactly as before.
+		assign = "    *=*)\n" +
+			"      zzn=${1%%=*}\n" +
+			"      case \"$zzn\" in\n" +
+			"        ''|*[!A-Za-z0-9_]*|[0-9]*) ;;\n" +
+			"        *) export \"$1\" ;;\n" +
+			"      esac\n" +
+			"      shift ;;\n"
 	}
 	return "while [ $# -gt 0 ]; do\n" +
 		"  case \"$1\" in\n" +

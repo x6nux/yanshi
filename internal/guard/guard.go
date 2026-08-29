@@ -570,13 +570,20 @@ func (g *Guard) checkShellSegment(p PermissionProfile, a Action, seg execpolicy.
 // segmentWriteTargets is the name-independent reading that replaces it; see
 // argvwrite.go for the criterion and for why it is the same one the deletion
 // dimension already uses.
+//
+// wordWriteTargets is the THIRD reading, and it closes the symmetric half of the
+// same hole: a writer written into ONE WORD is invisible to a program-word
+// reading and to a suffix walk alike, and `VAR='tee ~/.ssh/authorized_keys' prog`
+// is the ordinary way to write one. The deletion dimension had this reading
+// since ADR-0020 (classifyAssignmentPrefix, classifyWordAsCommand) and the write
+// dimension did not, which is the same asymmetry W-1 fixed one reading earlier.
 func (g *Guard) checkSegmentWrites(p PermissionProfile, a Action, seg execpolicy.Segment) Decision {
 	worst := g.checkRedirectTargets(p, a, seg)
 	program, args, ok := lexShellLite(seg.Text)
 	if !ok {
 		return worst
 	}
-	targets := segmentWriteTargets(program, args)
+	targets := append(segmentWriteTargets(program, args), wordWriteTargets(seg.Text)...)
 	if len(targets) == 0 {
 		return worst
 	}

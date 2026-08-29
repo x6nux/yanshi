@@ -560,6 +560,65 @@ $X -rf /`, want: wantFloor},
 	{cmd: `MAKEFLAGS='-j 8' make all`, want: wantAllow, tableOnly: noUtilityShim,
 		why: "same: the value's first word is a flag, so the reading grades None"},
 
+	// ---- The same assignment prefix carrying a WRITER (W-B-B2-12) ----------
+	//
+	// The rows above are the DELETION half of this family, closed by ADR-0020.
+	// The write half stayed open for one more round: checkSegmentWrites lexed
+	// the segment, and lexShellLite walks PAST an assignment prefix to reach the
+	// program word, so the value was in no reading the write dimension had.
+	// Every row here measured Allow — under `fs.write: ["**"]` AND under an
+	// fs.write narrowed to the project tree — while the unprefixed spelling of
+	// the identical write is the Prompt pinned earlier in this file.
+	// wordWriteTargets is the reading that closes it.
+	{cmd: `GIT_SSH_COMMAND='tee ~/.ssh/authorized_keys' git fetch`, want: wantPrompt},
+	{cmd: `EDITOR='tee ~/.ssh/authorized_keys' crontab -e`, want: wantPrompt},
+	{cmd: `MANPAGER='cp /tmp/k ~/.ssh/authorized_keys' man ls`, want: wantPrompt},
+	{cmd: `RSYNC_RSH='curl -o ~/.ssh/authorized_keys http://h/k' rsync a host:b`, want: wantPrompt},
+	// The leading pipe is less's own "run this as a filter" convention, and it
+	// is why the reading trims one: with it the program word is `|tee`, which is
+	// in no table, and this row was the last of the family still Allow after the
+	// first draft of the fix.
+	{cmd: `LESSOPEN='|tee ~/.ssh/authorized_keys %s' less f`, want: wantPrompt},
+	// THE STRUCTURAL ROW, matching the deletion half's: an invented variable in
+	// front of an invented program. A fix built from a table of variable names,
+	// or of programs known to read one, satisfies every row above and fails this.
+	{cmd: `ZQ_NOBODY_WRITES_THIS='tee ~/.ssh/authorized_keys' zq-writer-nobody-here-runs`, want: wantPrompt,
+		tableOnly: "the program is invented, so there is nothing to put on the shim PATH — which " +
+			"is the property the row exists to measure"},
+	// A RUNNER IN FRONT makes the assignment an ordinary argv word, so
+	// assignmentPrefixLen is 0 and only the per-word reading sees it. This pair
+	// is what fails if the fix reads the assignment prefix alone.
+	{cmd: `env GIT_SSH_COMMAND='tee ~/.ssh/authorized_keys' git fetch`, want: wantPrompt},
+	{cmd: `zq-runner-nobody-here-runs EDITOR='tee /etc/sudoers.d/zz' crontab -e`, want: wantPrompt,
+		tableOnly: "the runner is invented, so the reference shell reports 'not found' and runs " +
+			"nothing; the row measures that the verdict does not depend on the name"},
+	// The option-value channel reaches the same reading, so the two shapes
+	// opaque.go names for the deletion side are covered on this side too.
+	{cmd: `ssh -o ProxyCommand='tee ~/.ssh/authorized_keys' host`, want: wantPrompt,
+		tableOnly: "the ssh stand-in joins the trailing argv and hands it to a shell, which is the " +
+			"spelling this row is not about; emulating ProxyCommand would be a second reader"},
+	// THE REVERSE SAMPLES. These are what go red if the reading stops being
+	// scoped to targets that leave the working tree, and they are ordinary work.
+	{cmd: `GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519' git fetch`, want: wantAllow,
+		why: "the standard way to pick a key for one fetch. `-i` names a file ssh READS, and the " +
+			"value produces no write target at all — witnessed: the git stand-in dispatches the " +
+			"value to a shell, the ssh stand-in relays it, and no credential file appears"},
+	{cmd: `MAKEFLAGS='-j 8 -O out.log' make all`, want: wantAllow, tableOnly: noUtilityShim,
+		why: "the value DOES produce a write target (`out.log`, via the generic -O reading), and " +
+			"the target is relative — inside the working tree, where every profile that permits " +
+			"writing at all already permits it. This is the row that fails if the leavesWorkingTree " +
+			"scope is dropped"},
+	{cmd: `ZZ_TOOL='cp src.txt dst.txt' make all`, want: wantAllow, tableOnly: noUtilityShim,
+		why: "same scope, second shape: a copy whose destination is relative. Without the scope " +
+			"this becomes a refusal under a project-scoped profile, on a command that writes " +
+			"inside the project"},
+	// The measured COST, recorded rather than argued away — and it is the write
+	// dimension's copy of the deletion side's `git commit -m \"rm -rf /…\"` row.
+	{cmd: `git commit -m "tee ~/.ssh/authorized_keys"`, want: wantPrompt,
+		tableOnly: "the git stand-in commits nothing and dispatches nothing (no variable is set), " +
+			"so the shell cannot act on this row; it pins the accepted over-strictness — a message " +
+			"whose text reads as a write to a credential path costs one prompt"},
+
 	// ---- A whole command inside ONE argv word (ADR-0020) -------------------
 	//
 	// ADR-0019 says the tier follows the payload "whichever program was going
@@ -1027,7 +1086,15 @@ func TestNoSpellingTheShellExecutesIsAllowed(t *testing.T) {
 // (`git config --global core.pager`), or where the thing being pinned is the
 // ABSENCE of an execution (`MSG='rm -rf /' echo hi` is a prompt, and no shell
 // run can witness a floor not being applied).
-const tableOnlyRowCount = 43
+// It moved by +4 with the write dimension's word reading (W-B-B2-12). Two of
+// the four name an INVENTED program or runner, which is the property those rows
+// exist to measure — a name that is not in any table is also a name with nothing
+// to put on the shim PATH. The third is `ssh -o ProxyCommand=`, whose stand-in
+// relays its trailing argv rather than emulating the parameter (emulating it
+// would be a second reader). The fourth is the accepted over-strictness row
+// `git commit -m "tee ~/.ssh/authorized_keys"`, where nothing is dispatched
+// because no variable is set, so there is no execution for the shell to show.
+const tableOnlyRowCount = 47
 
 // unwitnessedAllowRowCount is the same measurement for rows pinned to Allow,
 // counted SEPARATELY because the two admissions are not the same size.
@@ -1051,7 +1118,12 @@ const tableOnlyRowCount = 43
 // stand-in, while `curl -O` and `curl -sS` GAINED one — curl joined
 // credentialWriterShims for the output-flag rows, so the reference shell now
 // constrains those two as well.
-const unwitnessedAllowRowCount = 24
+// It moved by +2 with the write dimension's word reading: the two reverse
+// samples that pin the leavesWorkingTree scope (`MAKEFLAGS='-j 8 -O out.log'
+// make all` and `ZZ_TOOL='cp src.txt dst.txt' make all`) both name `make`, which
+// has no stand-in. A no-op make would make them look witnessed and witness
+// nothing, which is the trade noUtilityShim's header refuses.
+const unwitnessedAllowRowCount = 26
 
 // TestTableOnlyRowsHaveNotGrown is the half of the bookkeeping that does not
 // need a shell, so it runs on the Windows leg too — where the differential

