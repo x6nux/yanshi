@@ -674,11 +674,16 @@ type ProviderConfig struct {
 	// provider's model, as a FRACTION of the resolved context window (e.g.
 	// 0.8), never an absolute token count (ADR-0013's dimensional
 	// constraint — mixing the two units silently mis-sizes the compaction
-	// gate). 0 (the zero value) means "unset": unlike CompactionConfig.
-	// Threshold, applyDefaults never coerces this field, so 0 reliably means
-	// "no explicit override" and resolution falls through to the model
-	// catalog, then to the operator's global CompactionConfig.Threshold. See
-	// einollm.ResolveAutoCompactThreshold (W-C-01 / INF2).
+	// gate; validate() rejects a value > 1 at load time precisely because
+	// that shape — an operator writing an absolute token budget like 8000 —
+	// silently disables compaction instead of erroring, since the downstream
+	// gate is `tokens < threshold*window`). 0 (the zero value) means "unset":
+	// unlike CompactionConfig.Threshold, applyDefaults never coerces this
+	// field, so 0 reliably means "no explicit override" and resolution falls
+	// through to the model catalog, then to the operator's global
+	// CompactionConfig.Threshold. A NEGATIVE value is a different signal —
+	// an explicit per-provider DISABLE (W-C-04), independent of the global
+	// switch. See einollm.ResolveAutoCompactThreshold (W-C-01 / INF2).
 	AutoCompactThreshold float64 `yaml:"auto_compact_threshold"`
 
 	// --- Generation parameters (M4) ----------------------------------------
@@ -941,6 +946,9 @@ func (c *Config) validate() error {
 	if c.Subagents.Limit != 0 && (c.Subagents.Limit < 1 || c.Subagents.Limit > 20) {
 		return errors.New("subagents.limit must be within 1..20")
 	}
+	if err := c.validateProviderThresholds(); err != nil {
+		return err
+	}
 	if err := c.loadGuardianPrompt(); err != nil {
 		return err
 	}
@@ -948,6 +956,32 @@ func (c *Config) validate() error {
 		return err
 	}
 	return c.validateProfiles()
+}
+
+// validateProviderThresholds rejects a per-provider auto_compact_threshold
+// (F-3) greater than 1. The field is a FRACTION of the resolved context
+// window, never an absolute token count (ADR-0024 C3); a value above 1 is
+// the tell-tale shape of an operator who wrote an absolute token budget
+// instead (e.g. 8000, meant as "8000 tokens"). That mistake used to be
+// silent: the value published straight through to ResolveAutoCompactThreshold
+// / thresholdFor and permanently failed the downstream gate
+// (tokens < threshold*window, e.g. 8000*context_window), which reads as
+// "compaction never fires" with no diagnostic anywhere — the same failure
+// shape ADR-0013 fixed once already for the global threshold, recurring here
+// on the new per-model knob.
+//
+// 0 (unset, falls through to the catalog/global default) and any negative
+// value (an explicit per-provider DISABLE, W-C-04/F-10 — see
+// ProviderConfig.AutoCompactThreshold's doc) are both valid and intentionally
+// NOT rejected here: only the positive-override lane has an upper bound,
+// because only that lane is a ratio someone could mistake for a token count.
+func (c *Config) validateProviderThresholds() error {
+	for i, p := range c.LLM.Providers {
+		if p.AutoCompactThreshold > 1 {
+			return fmt.Errorf("llm.providers[%d] (name=%q): auto_compact_threshold must be a fraction of the context window (<= 1), got %v — this looks like an absolute token count, not a ratio", i, p.Name, p.AutoCompactThreshold)
+		}
+	}
+	return nil
 }
 
 // validateNetworkMethods rejects a method rule whose verdict or subject is

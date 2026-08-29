@@ -3,6 +3,7 @@ package bootstrap_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/require"
 
@@ -777,6 +779,66 @@ func TestShellV2TaskJobIsControllableWithTheIDItReturns(t *testing.T) {
 		"the underlying session was not canceled")
 }
 
+// providerLadderBuilder is a bootstrap.ProviderBuilder fixture for
+// TestProviderWindowsReachTheOrchestrator / TestProviderThresholdsReachBothCompactionConfigs
+// (F-2 / W-C-05). Unlike the package's fakeProviderBuilder (which always
+// returns nil windows/thresholds — deliberately, so it does not accidentally
+// pin this ladder), it returns KNOWN, non-zero, non-default per-model values
+// keyed by the registry key (p.Model), mirroring what einollm.BuildProviders
+// really does when a config override or a models.yaml catalog hit resolves
+// one.
+func providerLadderBuilder(cfg *config.Config) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, error) {
+	named := make(map[string]model.BaseChatModel)
+	var chain []model.BaseChatModel
+	windows := make(map[string]int)
+	thresholds := make(map[string]float64)
+	for _, p := range cfg.LLM.Providers {
+		fm := einollm.NewFakeModel([]string{"reply"}, nil)
+		named[p.Model] = fm
+		chain = append(chain, fm)
+	}
+	// Only "small-model" gets a resolved entry — deliberately, so the tests
+	// below can also assert the OTHER provider still falls back to the
+	// global Compaction.* values instead of every provider sharing one map
+	// entry by accident.
+	windows["small-model"] = 42000
+	thresholds["small-model"] = 0.55
+	return named, chain, windows, thresholds, nil
+}
+
+// buildAppWithProviderLadder builds a real App with two providers — one
+// ("small-model") that providerLadderBuilder resolves a per-model window and
+// threshold for, one ("big-model") that it deliberately leaves unresolved —
+// so tests can assert both the per-model hit AND the fallback in the same
+// build. compaction.threshold/context_window are left unset in the YAML so
+// config.applyDefaults fills the conventional 0.8/256000, giving a value the
+// per-model entries above are required to differ from (otherwise a test
+// asserting equality to the per-model value would pass even if bootstrap
+// wired the global fallback into every model instead).
+func buildAppWithProviderLadder(t *testing.T) *bootstrap.App {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	yamlBytes := fmt.Appendf(nil, `
+llm:
+  providers:
+    - name: small
+      model: small-model
+    - name: big
+      model: big-model
+storage:
+  sqlite_path: %q
+`, filepath.Join(dir, "test.db"))
+	require.NoError(t, os.WriteFile(cfgPath, yamlBytes, 0644))
+	app, err := bootstrap.Build(bootstrap.Options{
+		ConfigPath:      cfgPath,
+		ProviderBuilder: providerLadderBuilder,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { app.Shutdown(context.Background()) })
+	return app
+}
+
 // TestProviderWindowsReachTheOrchestrator pins the composition root's half of
 // the per-model compaction window.
 //
@@ -785,52 +847,69 @@ func TestShellV2TaskJobIsControllableWithTheIDItReturns(t *testing.T) {
 // side notices if bootstrap stops filling the map: windowFor returns 0 for
 // every model, wrapCompaction reads 0 as "use the configured window", and every
 // provider silently shares the global fallback again -- which is exactly the
-// defect W4 removed, restored without a single test going red. Measured: with
-// this assignment set to nil, bootstrap, orchestrator and archtest all stay
-// green.
+// defect W4 removed, restored without a single test going red.
 //
-// Checked at the source because the map is not reachable from App: it goes
-// into orchestrator.Config, which Build consumes and does not retain. A test
-// that reconstructed the whole Build to observe it would be pinning the
-// assembly harness rather than this line.
+// F-2 rewrite: this used to read bootstrap.go as text (strings.Contains on
+// the assignment literal), which stays green even when the RHS is reassigned
+// to something that compiles but is wrong (nil, an empty map, the wrong
+// variable) — a text match on the assignment site cannot see what value
+// actually reaches a built App. It now asserts on Orchestrator.CompactionForTest()
+// (added alongside this fix) against a really-built App, the same landing
+// pattern internal/bootstrap/w3wiring_test.go uses for GOV5/GOV7.
 func TestProviderWindowsReachTheOrchestrator(t *testing.T) {
-	src, err := os.ReadFile("bootstrap.go")
-	if err != nil {
-		t.Fatalf("read bootstrap.go: %v", err)
-	}
-	if !strings.Contains(string(src), "ProviderWindows:    providerWindows,") {
-		t.Error("the orchestrator's CompactionConfig no longer receives providerWindows: " +
-			"every model would fall back to the global context window, so a provider " +
-			"with a smaller one gets a compaction threshold it can never reach")
-	}
+	app := buildAppWithProviderLadder(t)
+	cc := app.Orch.CompactionForTest()
+	require.Equal(t, 42000, cc.ProviderWindows["small-model"],
+		"a provider with a catalog/config-resolved window must reach the orchestrator's mid-turn CompactionConfig")
+	require.NotEqual(t, cc.ContextWindow, cc.ProviderWindows["small-model"],
+		"this test is only meaningful if the resolved value actually differs from the global fallback")
+	require.Zero(t, cc.ProviderWindows["big-model"],
+		"a provider the builder left unresolved must not spuriously acquire an entry")
 }
 
 // TestProviderThresholdsReachBothCompactionConfigs pins the composition
 // root's half of the W-C-01 (INF2) per-model auto-compact threshold — the
 // mid-turn/pre-turn sibling of TestProviderWindowsReachTheOrchestrator above.
 //
-// Unlike the windows assignment, this one has TWO independent literals to
+// Unlike the windows assignment, this one has TWO independent consumers to
 // keep wired: orchestrator.CompactionConfig (mid-turn, consumed by
-// wrapCompaction via CompactionConfig.thresholdFor) and
-// apihttp.CompactionConfig (pre-turn, consumed by ws_compaction.go's and
-// chat.go's thresholdFor). Both assignments must survive independently — a
-// future edit could easily fix one call site and miss the other, exactly the
-// asymmetry the CLAUDE.md architecture section warns the two window paths
-// already have. Counting occurrences (rather than Contains, which is
-// satisfied by either alone) is what makes this test fail on a
-// single-site regression instead of passing as long as one survives.
+// wrapCompaction via CompactionConfig.thresholdFor) and apihttp.CompactionConfig
+// (pre-turn, consumed by ws_compaction.go's and chat.go's thresholdFor). Both
+// assignments must survive independently — a future edit could easily fix one
+// call site and miss the other, exactly the asymmetry the CLAUDE.md
+// architecture section warns the two window paths already have. Asserting on
+// BOTH App.Orch.CompactionForTest() and App.ServerCompaction (rather than
+// either alone) is what makes this test fail on a single-site regression
+// instead of passing as long as one survives. The http side is read off
+// App.ServerCompaction rather than a Server accessor because App.Server is
+// *net/http.Server, not *apihttp.Server (see ServerCompaction's doc comment
+// on the App struct for why).
+//
+// F-2 rewrite: this used to strings.Count "ProviderThresholds: providerThresholds,"
+// occurrences in bootstrap.go's source text and require exactly 2 — a count
+// that stays exactly 2 across a huge range of wrong edits (e.g. swapping
+// which local variable each literal receives, since both are still named
+// "providerThresholds" at their call sites) and goes stale the moment either
+// literal is reformatted across lines. It now builds a real App and reads the
+// value that actually reached each consumer.
 func TestProviderThresholdsReachBothCompactionConfigs(t *testing.T) {
-	src, err := os.ReadFile("bootstrap.go")
-	if err != nil {
-		t.Fatalf("read bootstrap.go: %v", err)
-	}
-	got := strings.Count(string(src), "ProviderThresholds: providerThresholds,")
-	if got != 2 {
-		t.Errorf("expected providerThresholds to reach exactly 2 CompactionConfig literals "+
-			"(orchestrator's mid-turn and http's pre-turn), found %d: a provider with a "+
-			"catalog- or config-resolved auto-compact threshold would silently share the "+
-			"global one on whichever path lost its assignment", got)
-	}
+	app := buildAppWithProviderLadder(t)
+
+	occ := app.Orch.CompactionForTest()
+	require.Equal(t, 0.55, occ.ProviderThresholds["small-model"],
+		"a provider with a catalog/config-resolved threshold must reach the orchestrator's mid-turn CompactionConfig")
+	require.NotEqual(t, occ.Threshold, occ.ProviderThresholds["small-model"],
+		"this test is only meaningful if the resolved value actually differs from the global fallback")
+	require.Zero(t, occ.ProviderThresholds["big-model"],
+		"a provider the builder left unresolved must not spuriously acquire an entry")
+
+	svc := app.ServerCompaction
+	require.Equal(t, 0.55, svc.ProviderThresholds["small-model"],
+		"a provider with a catalog/config-resolved threshold must ALSO reach the http server's pre-turn CompactionConfig, independently of the orchestrator's copy")
+	require.NotEqual(t, svc.Threshold, svc.ProviderThresholds["small-model"],
+		"this test is only meaningful if the resolved value actually differs from the global fallback")
+	require.Zero(t, svc.ProviderThresholds["big-model"],
+		"a provider the builder left unresolved must not spuriously acquire an entry")
 }
 
 // TestUnregisteredCompactionModelIsReported pins the warning for a

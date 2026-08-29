@@ -369,13 +369,27 @@ func New(cfg Config) (*Orchestrator, error) {
 // cooldown -- is sized from window, so a provider with a smaller window than
 // the global default cannot end up with a threshold it can never reach.
 //
-// The on/off switch stays cc.Threshold alone: a per-model threshold only
-// resizes an ALREADY-enabled gate, it never re-enables a feature the
+// The GLOBAL on/off switch stays cc.Threshold alone: a per-model threshold
+// only resizes an ALREADY-enabled gate, it never re-enables a feature the
 // operator turned off by setting the global Threshold to 0. Letting a
 // catalog row silently override an explicit "compaction: threshold: 0" would
-// surprise exactly the operator who set it.
+// surprise exactly the operator who set it. (This is ADR-0024 C2's pre-turn
+// twin: internal/api/http/ws_compaction.go's thresholdFor gates the same way,
+// checked first, before ProviderThresholds is even consulted — ADR-0024 C1
+// requires the two to stay literally the same check.)
+//
+// A NEGATIVE threshold is a different signal: an explicit PER-PROVIDER
+// disable (W-C-04 / F-10, e.g. ResolveAutoCompactThreshold's negative-sentinel
+// branch). It is checked separately from, and before, the `threshold <= 0`
+// fill-in below — a resolved 0 still means "no per-model opinion, use
+// cc.Threshold" unchanged; only a negative resolved value opts this one
+// provider out, mirroring the global switch one layer down without touching
+// cc.Threshold itself.
 func wrapCompaction(m model.BaseChatModel, cc CompactionConfig, window int, threshold float64) model.BaseChatModel {
 	if cc.Threshold <= 0 {
+		return m
+	}
+	if threshold < 0 {
 		return m
 	}
 	if window <= 0 {
@@ -429,6 +443,13 @@ func (o *Orchestrator) WorkRoot() string { return o.workRoot }
 
 // ProfileForTest exposes the resolved profile for tests.
 func (o *Orchestrator) ProfileForTest() guard.PermissionProfile { return o.profile }
+
+// CompactionForTest exposes the mid-turn CompactionConfig — including the
+// per-provider ProviderWindows/ProviderThresholds maps bootstrap resolved
+// from config + the embedded model catalog (W-C-01/INF2) — so composition-root
+// wiring tests can assert against a really-built App instead of re-parsing
+// bootstrap.go as text (F-2; see internal/bootstrap/wiring_test.go).
+func (o *Orchestrator) CompactionForTest() CompactionConfig { return o.compaction }
 
 // bindExecutionContext threads every orchestrator-owned security value into ctx.
 func (o *Orchestrator) bindExecutionContext(ctx context.Context, connectionSessionID string) context.Context {

@@ -165,6 +165,46 @@ models:
 	assert.Equal(t, 0.7, th)
 }
 
+// TestRealShippedCatalogReachesPublicEntryPoints closes the gap
+// TestAcceptance1_NewModelIsADataFileEditOnly leaves open (F-6): that test
+// only calls the internal build* functions against an in-test-only fixture
+// string, never the three public functions callers actually use, and never
+// touches the real embedded models.yaml. This test calls KnownContextWindow,
+// DefaultPricing and KnownAutoCompactThreshold — the real, exported,
+// package-init-wired entry points — against real ids that ship in
+// models.yaml today, proving the embed -> parse -> package-init -> public-API
+// chain genuinely works end to end for the shipped file.
+func TestRealShippedCatalogReachesPublicEntryPoints(t *testing.T) {
+	// gpt-4.1 carries its own context_window row.
+	window, ok := KnownContextWindow("gpt-4.1")
+	require.True(t, ok, "gpt-4.1 must resolve in the real shipped models.yaml")
+	assert.Equal(t, 1047576, window)
+
+	// claude-opus-4-8 has its own pricing row but no context_window row of
+	// its own (see models.yaml) — it must fall through to the "claude"
+	// family row (200000), proving family-row fallthrough works against the
+	// real shipped file, not just a synthetic fixture.
+	claudeWindow, ok := KnownContextWindow("claude-opus-4-8")
+	require.True(t, ok, "claude-opus-4-8 must resolve via the claude family row")
+	assert.Equal(t, 200000, claudeWindow)
+
+	prices := DefaultPricing()
+	price, ok := prices["claude-opus-4-8"]
+	require.True(t, ok, "claude-opus-4-8 must resolve in DefaultPricing() built from the real shipped file")
+	assert.Equal(t, 5.0, price.InputPerM)
+	assert.Equal(t, 0.5, price.CacheHitPerM)
+	assert.Equal(t, 25.0, price.OutputPerM)
+
+	// F-4/W-C-03: the shipped file currently has ZERO auto_compact_threshold
+	// rows. KnownAutoCompactThreshold must honestly report "no opinion"
+	// (0, false) for a real model — a true here would mean either the
+	// shipped data changed (update this test to match) or resolution is
+	// reading something it should not.
+	threshold, ok := KnownAutoCompactThreshold("claude-opus-4-8")
+	assert.False(t, ok, "the shipped catalog has zero auto_compact_threshold rows (W-C-03)")
+	assert.Equal(t, float64(0), threshold)
+}
+
 // ---------------------------------------------------------------------------
 // Acceptance #2 — unlisted models degrade to a safe default, never block startup
 // ---------------------------------------------------------------------------
@@ -204,10 +244,13 @@ func TestAcceptance2_UnknownModelResolvesToSafeDefaults(t *testing.T) {
 
 // withAutoCompactThresholds swaps the package-level catalog-derived table for
 // the duration of one test and restores the original afterwards. The shipped
-// models.yaml currently populates zero auto_compact_threshold rows (see
-// buildAutoCompactThresholds' doc comment), so this is the only way to
-// exercise ResolveAutoCompactThreshold's catalog-hit branch against a known
-// value instead of always taking the "nothing had an opinion" branch.
+// models.yaml currently populates zero auto_compact_threshold rows — no
+// per-model value has a documented real-world basis to ship with yet
+// (F-4/W-C-03; see KnownAutoCompactThreshold's doc comment and models.yaml's
+// own header for the explanation, both updated alongside this one) — so this
+// is the only way to exercise ResolveAutoCompactThreshold's catalog-hit
+// branch against a known value instead of always taking the "nothing had an
+// opinion" branch.
 //
 // Precedented by internal/llm/eino/m5m6_adaptive_wire_test.go's
 // slog.SetDefault save/restore/t.Cleanup idiom for the same reason: the thing
@@ -252,6 +295,21 @@ func TestAcceptance3_ConfigOverrideOutranksCatalog(t *testing.T) {
 	assert.Equal(t, 0.5, v, "a non-positive config value must defer to the catalog, not be treated as an explicit 0 threshold")
 }
 
+// TestAcceptance3_NegativeConfigValueIsAnExplicitDisable pins F-10/W-C-04: a
+// NEGATIVE ProviderShape.AutoCompactThreshold is NOT "unset" (unlike 0, which
+// TestAcceptance3_ConfigOverrideOutranksCatalog pins as falling through to the
+// catalog) — it is an explicit per-provider disable that outranks a catalog
+// hit exactly like a positive override does, and is reported with ok=true so
+// the caller (thresholdFor / wrapCompaction) can turn it into "off" for that
+// one provider without touching the operator's global CompactionConfig.Threshold.
+func TestAcceptance3_NegativeConfigValueIsAnExplicitDisable(t *testing.T) {
+	withAutoCompactThresholds(t, map[string]float64{"catalog-model": 0.5})
+
+	v, ok := ResolveAutoCompactThreshold(ProviderShape{Model: "catalog-model", AutoCompactThreshold: -1})
+	require.True(t, ok, "a negative config value must be reported as an opinion (ok=true), not treated as unset")
+	assert.Equal(t, -1.0, v, "the negative sentinel must pass through unchanged so the caller can gate on its sign")
+}
+
 // ---------------------------------------------------------------------------
 // Acceptance #4 — the threshold is a window RATIO, sourced from the table
 // ---------------------------------------------------------------------------
@@ -276,8 +334,15 @@ models:
 	require.True(t, ok)
 	assert.Equal(t, 0.85, th, "the table must carry the raw fraction from the file, not context_window * threshold "+
 		"or any other pre-multiplied absolute token count")
-	assert.LessOrEqual(t, th, 1.0, "a ratio for a plausible operator input must stay in [0,1]; a value > 1 here "+
-		"would mean something upstream started treating this as an absolute count")
+	// F-8: this used to also assert assert.LessOrEqual(t, th, 1.0) against
+	// the hardcoded 0.85 fixture above — tautological, since 0.85 <= 1.0
+	// regardless of what buildAutoCompactThresholds does, and it passed for
+	// every implementation including a broken one. The catalog layer this
+	// test covers never enforces the >1 bound at all (buildAutoCompactThresholds
+	// only excludes <= 0, see TestAcceptance4_NonPositiveThresholdExcludedNotZero
+	// below); the bound belongs to, and is pinned by, the CONFIG layer's
+	// validate() — see internal/config's
+	// TestValidate_AutoCompactThresholdAboveOneIsRejected (F-3).
 }
 
 // TestAcceptance4_NonPositiveThresholdExcludedNotZero proves a row with

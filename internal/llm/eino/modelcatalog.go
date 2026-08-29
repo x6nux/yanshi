@@ -180,10 +180,17 @@ var autoCompactThresholds = buildAutoCompactThresholds(modelCatalog)
 
 // KnownAutoCompactThreshold returns the cataloged auto-compact threshold for
 // modelID and whether the catalog knew it. A false second return means "not
-// in the table" (the shipped models.yaml currently populates none — see its
-// header comment on why the field is schema-only for now) — the caller
-// keeps its own configured/global threshold unchanged, exactly like
-// KnownContextWindow's false case.
+// in the table" — the caller keeps its own configured/global threshold
+// unchanged, exactly like KnownContextWindow's false case.
+//
+// The shipped models.yaml currently populates ZERO auto_compact_threshold
+// rows (F-4/W-C-03): the field is live and consumed (unlike the five
+// genuinely schema-only fields models.yaml's header comment names), it just
+// has no data yet — no per-model threshold has a documented real-world basis
+// to ship with. Until a future W-C ticket adds rows, this function always
+// returns (0, false) and the only way to reach a non-zero auto-compact
+// threshold is ProviderConfig.AutoCompactThreshold (the config-file rung of
+// the ladder, one level above this one).
 //
 // Matching is EXACT against id/aliases (see catalogAliases), not the
 // boundary-substring matching KnownContextWindow uses.
@@ -203,9 +210,23 @@ func KnownAutoCompactThreshold(modelID string) (float64, bool) {
 //
 // Precedence mirrors ResolveContextWindow: p.AutoCompactThreshold (explicit
 // operator override, config.ProviderConfig.AutoCompactThreshold projected
-// through ProviderShape) wins outright when > 0, then the catalog.
+// through ProviderShape) wins outright when non-zero, then the catalog.
+//
+// A NEGATIVE p.AutoCompactThreshold is an explicit per-provider DISABLE
+// (W-C-04 / F-10), not "unset" — it is returned as-is with ok=true, mirroring
+// the global CompactionConfig.Threshold convention ("<= 0 disables") at the
+// per-provider layer. Before this, 0 and any negative value both meant
+// "unset" (ContextWindow's own "<=0 means unset" convention, deliberately —
+// see TestAcceptance3_ConfigOverrideOutranksCatalog), which left an operator
+// with a catalog/global auto-compact opinion but no way to opt ONE provider
+// out of it. Only the sign is special-cased; the caller (thresholdFor /
+// wrapCompaction) is what turns a negative resolved value into "off" for
+// that provider, exactly like it already does for the global Threshold.
 func ResolveAutoCompactThreshold(p ProviderShape) (float64, bool) {
 	if p.AutoCompactThreshold > 0 {
+		return p.AutoCompactThreshold, true
+	}
+	if p.AutoCompactThreshold < 0 {
 		return p.AutoCompactThreshold, true
 	}
 	return KnownAutoCompactThreshold(p.Model)

@@ -100,6 +100,18 @@ type App struct {
 	// profile allowing nine shell tools that were never registered.
 	ToolNames []string
 
+	// ServerCompaction is the apihttp.CompactionConfig actually handed to
+	// apihttp.New — the pre-turn (WS/SSE) half of the W-C-01 (INF2)
+	// per-model window/threshold ladder, the sibling of Orch's own copy
+	// (Orchestrator.CompactionForTest, the mid-turn half). Captured here,
+	// at the point Build already computes it, rather than read back off
+	// Server: Server is *net/http.Server (net/http, not apihttp), and
+	// constraint 13 of the C4 plan forbids type-asserting its Handler back
+	// to *apihttp.Server to refill fields that only exist to be read by
+	// tests — the same reason ToolNames/ToolTimeouts above are captured at
+	// the source rather than reconstructed from the assembled object.
+	ServerCompaction apihttp.CompactionConfig
+
 	// Background owns tool calls moved to the background when they hit their
 	// foreground deadline (T3). Closed by Shutdown; a wedged subprocess would
 	// otherwise outlive the process that spawned it.
@@ -1608,50 +1620,51 @@ func Build(opts Options) (*App, error) {
 	closeStoreOnError = false
 	cancelOnError = false
 	return &App{
-		Server:          httpServer,
-		Store:           st,
-		Orch:            orch,
-		Broker:          broker,
-		Addr:            addr,
-		Model:           chatModel,
-		Models:          providerModels,
-		VisionAux:       visionAux,
-		MultimodalMap:   multimodalMap,
-		ImageStore:      imageStore,
-		VisionUsage:     &visionUsageSink,
-		AgentAPI:        agentAPI,
-		Skills:          registry,
-		ToolNames:       toolNames,
-		LaunchProxyURLs: launchProxyURLs(secureFactory, shellManager),
-		NetProxy:        netProxy,
-		mcpHealthCancel: mcpHealthCancel,
-		ToolTimeouts:    toolTimeouts,
-		VCS:             vcsInstance,
-		VCSRepoID:       vcsRepoID,
-		VCSDBPath:       cfg.Storage.SQLitePath,
-		WorktreeDir:     worktreeDir,
-		Sandbox:         sb,
-		NetworkPolicy:   networkPolicy,
-		SubagentManager: subagentManager,
-		AgentTools:      agentTools,
-		ToolBatch:       batchTool,
-		Automation:      c1Manager,
-		BootConfig:      cfg,
-		LSP:             lspMgr,
-		MCP:             mcpManager,
-		C1Scheduler:     c1Scheduler,
-		Upkeep:          upkeepWorker,
-		Approvals:       approvalMgr,
-		ShellManager:    shellManager,
-		SecureFactory:   secureFactory,
-		Features:        featureReg,
-		Pricing:         priceTab,
-		OTel:            otelRT,
-		Redactor:        redactor,
-		Auth:            authMgr,
-		LogPath:         logPath,
-		Background:      backgroundMgr,
-		cancel:          cancel,
+		Server:           httpServer,
+		Store:            st,
+		Orch:             orch,
+		Broker:           broker,
+		Addr:             addr,
+		Model:            chatModel,
+		Models:           providerModels,
+		VisionAux:        visionAux,
+		MultimodalMap:    multimodalMap,
+		ImageStore:       imageStore,
+		VisionUsage:      &visionUsageSink,
+		AgentAPI:         agentAPI,
+		Skills:           registry,
+		ToolNames:        toolNames,
+		ServerCompaction: httpCfg.Compaction,
+		LaunchProxyURLs:  launchProxyURLs(secureFactory, shellManager),
+		NetProxy:         netProxy,
+		mcpHealthCancel:  mcpHealthCancel,
+		ToolTimeouts:     toolTimeouts,
+		VCS:              vcsInstance,
+		VCSRepoID:        vcsRepoID,
+		VCSDBPath:        cfg.Storage.SQLitePath,
+		WorktreeDir:      worktreeDir,
+		Sandbox:          sb,
+		NetworkPolicy:    networkPolicy,
+		SubagentManager:  subagentManager,
+		AgentTools:       agentTools,
+		ToolBatch:        batchTool,
+		Automation:       c1Manager,
+		BootConfig:       cfg,
+		LSP:              lspMgr,
+		MCP:              mcpManager,
+		C1Scheduler:      c1Scheduler,
+		Upkeep:           upkeepWorker,
+		Approvals:        approvalMgr,
+		ShellManager:     shellManager,
+		SecureFactory:    secureFactory,
+		Features:         featureReg,
+		Pricing:          priceTab,
+		OTel:             otelRT,
+		Redactor:         redactor,
+		Auth:             authMgr,
+		LogPath:          logPath,
+		Background:       backgroundMgr,
+		cancel:           cancel,
 	}, nil
 }
 

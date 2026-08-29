@@ -20,7 +20,7 @@ SQLite 持久化（`sqlite_path`）。F1 的 WAL 相关项：`wal_max_open_conns
 
 ## llm
 
-`providers` 是 provider 列表，每项有 `name`/`kind`（`openai`|`openai-responses`|`anthropic`）/`model`/`api_key`/`base_url`/`context_window`/`cost_class`/`multimodal`。`context_window` 是该模型的 token 窗口；compaction 按它而非全局值估算。`multimodal: true` 声明原生图像输入（Tier G）；当主模型非多模态时，bootstrap 自动选第一个 `multimodal==true` 的 provider 作为视觉辅助。`llm.providers` 为空时 `--fake-model` 自动接入确定性 fake model。
+`providers` 是 provider 列表，每项有 `name`/`kind`（`openai`|`openai-responses`|`anthropic`）/`model`/`api_key`/`base_url`/`context_window`/`cost_class`/`multimodal`/`auto_compact_threshold`。`context_window` 是该模型的 token 窗口；compaction 按它而非全局值估算。`auto_compact_threshold` 是该模型自己的压缩触发比例，覆盖 `compaction.threshold`（同一梯子：显式字段 > 模型目录命中 > 全局回退，W-C-01/ADR-0024）；取值必须是 `context_window` 的**分数**（`<= 1`，否则加载期拒绝启动——像绝对 token 数的值会静默错配压缩门），**负值**是显式信号，会为这一个 provider 单独关闭压缩，即使全局开关是开着的。`multimodal: true` 声明原生图像输入（Tier G）；当主模型非多模态时，bootstrap 自动选第一个 `multimodal==true` 的 provider 作为视觉辅助。`llm.providers` 为空时 `--fake-model` 自动接入确定性 fake model。
 
 ## agents
 

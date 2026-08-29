@@ -225,10 +225,15 @@ type ProviderShape struct {
 	// Local overrides the local/cloud heuristic; nil means "heuristic decides".
 	Local *bool
 	// AutoCompactThreshold is the explicitly configured per-provider
-	// auto-compact threshold (config.ProviderConfig.AutoCompactThreshold);
-	// <= 0 means unset. See ResolveAutoCompactThreshold (modelcatalog.go) for
-	// the resolution ladder this field participates in — it is the config
-	// layer that outranks the catalog, mirroring ContextWindow's role here.
+	// auto-compact threshold (config.ProviderConfig.AutoCompactThreshold).
+	// Tri-state, unlike ContextWindow's plain "<=0 means unset": 0 means
+	// unset (falls through to the catalog, then the operator's global
+	// fallback); > 0 is an override value; < 0 is an explicit per-provider
+	// DISABLE (W-C-04 / F-10) — see ResolveAutoCompactThreshold
+	// (modelcatalog.go) for the resolution ladder this field participates
+	// in, and wrapCompaction/thresholdFor for how the negative sentinel
+	// turns into "off" for that one provider without touching the global
+	// switch.
 	AutoCompactThreshold float64
 }
 

@@ -405,6 +405,56 @@ func TestMaybeAutoCompact_UsesPerModelThreshold(t *testing.T) {
 		"the per-model threshold (0.05), not the global one (0.95), must have driven this decision")
 }
 
+// TestMaybeAutoCompact_UsesPerModelWindow is TestMaybeAutoCompact_UsesPerModelThreshold's
+// window-dimension twin (F-12): ADR-0024 makes the window and threshold
+// ladders literally symmetric (explicit config > catalog/ProviderWindows hit
+// > global fallback), and until this test existed only the threshold
+// dimension had a behavior-level (not just pure-function) test on this path
+// — ProviderWindows itself was only pinned at the contextWindowFor
+// pure-function level (TestContextWindowFor_*).
+//
+// The global ContextWindow is set absurdly high (4,000,000) so that on this
+// fixture compaction would NOT fire if contextWindowFor ever fell back to
+// it (threshold * window would dwarf the handful of short messages here).
+// Only the per-model entry, keyed by cs.model, is small enough (4000, same
+// as the fixture that reliably fires in
+// TestMaybeAutoCompact_EvictsWhenPersistSucceeds) to trigger. A regression
+// that drops the ProviderWindows lookup (e.g. contextWindowFor always
+// returning cc.ContextWindow) would leave cs.history unchanged and fail this
+// test.
+func TestMaybeAutoCompact_UsesPerModelWindow(t *testing.T) {
+	st := persistStore(t)
+	sid, err := st.CreateSession("s")
+	require.NoError(t, err)
+	fm := einollm.NewFakeModel([]string{"SUMMARY"}, nil)
+	srv := &Server{
+		store: st,
+		compaction: CompactionConfig{
+			Model:           "fm",
+			Threshold:       0.05,
+			ContextWindow:   4000000, // deliberately too large to ever fire on this fixture
+			KeepRecent:      1,
+			ProviderWindows: map[string]int{"session-model": 4000},
+		},
+	}
+	cs := &connSession{perm: &permModeState{}, sessionID: sid, model: "session-model"}
+	cs.history = append(evictableHistory(8),
+		&schema.Message{Role: schema.Assistant,
+			ToolCalls: []schema.ToolCall{toolCall("c1", "shell_run", `{"cmd":"go build ./..."}`)}},
+		&schema.Message{Role: schema.Tool, ToolCallID: "c1", ToolName: "shell_run",
+			Content: "build finished in 3s"})
+	before := len(cs.history)
+
+	wc, client, cleanup := newWSPair(t)
+	defer cleanup()
+	_ = client
+	maybeAutoCompact(context.Background(), srv,
+		map[string]model.BaseChatModel{"fm": fm}, wc, cs)
+
+	assert.Less(t, len(cs.history), before,
+		"the per-model window (4000), not the global one (4000000), must have driven this decision")
+}
+
 // TestCompactNow_DoesNotEvictWhenPersistFails: the manual /compact path obeys
 // the same rule. A user asking to shrink the window is not authorising the loss
 // of what has not been written down — and it must SAY so, because a bare status

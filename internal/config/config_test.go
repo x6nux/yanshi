@@ -293,6 +293,49 @@ func TestLoadBytesRejectsInvalidSubagentLimit(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestValidate_AutoCompactThresholdAboveOneIsRejected pins F-3: an operator
+// who writes auto_compact_threshold as an absolute token count instead of a
+// window fraction (ADR-0024 C3) — the failure scenario the finding reproduced
+// was auto_compact_threshold: 8000 — must have the mistake refused at load
+// time, not published silently into a threshold that can never fire.
+func TestValidate_AutoCompactThresholdAboveOneIsRejected(t *testing.T) {
+	yaml := []byte(`
+llm:
+  providers:
+    - name: broken
+      kind: anthropic
+      model: claude-opus
+      auto_compact_threshold: 8000
+`)
+	_, err := LoadBytes(yaml)
+	require.Error(t, err, "a threshold > 1 (an absolute token count, not a window fraction) must be rejected at load time")
+	assert.Contains(t, err.Error(), "auto_compact_threshold")
+}
+
+// TestValidate_AutoCompactThresholdBoundaryAndNegativeAreAccepted pins the
+// two values validateProviderThresholds must NOT reject: exactly 1.0 (the
+// inclusive upper bound of a fraction) and a negative value (F-10/W-C-04's
+// explicit per-provider disable sentinel, not a malformed ratio).
+func TestValidate_AutoCompactThresholdBoundaryAndNegativeAreAccepted(t *testing.T) {
+	yaml := []byte(`
+llm:
+  providers:
+    - name: at-the-boundary
+      kind: anthropic
+      model: claude-opus
+      auto_compact_threshold: 1
+    - name: explicitly-disabled
+      kind: anthropic
+      model: claude-haiku
+      auto_compact_threshold: -1
+`)
+	cfg, err := LoadBytes(yaml)
+	require.NoError(t, err)
+	require.Len(t, cfg.LLM.Providers, 2)
+	assert.Equal(t, 1.0, cfg.LLM.Providers[0].AutoCompactThreshold)
+	assert.Equal(t, -1.0, cfg.LLM.Providers[1].AutoCompactThreshold)
+}
+
 func TestLoadBytesDefaultsSubagents(t *testing.T) {
 	yaml := []byte("{}")
 	cfg, err := LoadBytes(yaml)

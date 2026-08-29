@@ -254,6 +254,32 @@ func TestWrapCompaction_GlobalThresholdZeroStaysOffEvenWithACatalogHit(t *testin
 	assert.False(t, stillWrapped, "a catalog hit must not silently re-enable compaction the operator turned off")
 }
 
+// TestWrapCompaction_NegativeResolvedThresholdDisablesJustThisModel pins
+// F-10 / W-C-04's mid-turn half: a per-provider threshold that resolves
+// negative (config.ProviderConfig.AutoCompactThreshold < 0, or a future
+// catalog row with the same sentinel) is an explicit disable for THIS
+// model only — distinct from TestWrapCompaction_NegativeThreshold, which
+// exercises a negative GLOBAL cc.Threshold and never reaches the new
+// branch because the existing cc.Threshold<=0 check already short-circuits
+// first. Here the global switch stays ON (cc.Threshold=0.8) so the only
+// thing turning this model off is the resolved threshold argument itself,
+// exactly mirroring ws_compaction.go's thresholdFor sign convention
+// (internal/api/http/compaction_window_test.go::TestThresholdFor_NegativePerModelValueDisablesJustThatProvider).
+func TestWrapCompaction_NegativeResolvedThresholdDisablesJustThisModel(t *testing.T) {
+	cc := CompactionConfig{Threshold: 0.8, ContextWindow: 128000, KeepRecent: 4}
+
+	fm := einollm.NewFakeModel(nil, nil)
+	wrapped := wrapCompaction(fm, cc, 128000, -1)
+	assert.Same(t, model.BaseChatModel(fm), wrapped,
+		"a negative resolved threshold must disable compaction for this model even though the global switch is on")
+
+	// The global fallback must stay untouched for every other model.
+	otherWrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 128000, cc.thresholdFor("other-model"))
+	cm, ok := otherWrapped.(*einollm.CompactingModel)
+	require.True(t, ok, "the negative per-model disable must not leak into other models")
+	assert.Equal(t, 0.8, cm.Threshold)
+}
+
 // TestRunnerForPassesTheModelIDThrough guards the wiring that
 // TestRunnerForSizesGatesToTheTurnsModel does not reach.
 //

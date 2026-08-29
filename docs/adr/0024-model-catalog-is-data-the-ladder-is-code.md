@@ -17,7 +17,12 @@ Go 代码改动 + 重新构建 —— 对一个新模型发布周期以周计的
 2. 表中查不到的模型走安全默认，不阻止启动。
 3. `ProviderConfig` 的同名字段覆盖表值。
 4. 压缩阈值按窗口**比例**而非绝对值，且**取自表**（此前 `CompactionConfig.Threshold`
-   是全局唯一值，没有任何按模型覆盖的路径）。
+   是全局唯一值，没有任何按模型覆盖的路径）。**Ruling W-C-03（评审 review-c1.md
+   F-4）：这一条验收的是机制——解析器、派生索引、覆盖梯子——而不是数据本身。
+   `models.yaml` 这一轮交付时 `auto_compact_threshold` 字段有零行填充**（见
+   `models.yaml` 文件头「Values below」段落之后的说明）；伪造一批看起来合理的
+   比例数字来让这条验收"看起来更完整"，会把「未经调研」冒充成「已调研」，比留白
+   更糟。数据由后续 W-C 工作项按型号逐条调研补齐。
 
 被否决的替代方案：
 
@@ -68,10 +73,27 @@ Go 代码改动 + 重新构建 —— 对一个新模型发布周期以周计的
 5. **压缩总开关只认全局 `CompactionConfig.Threshold`，按模型解出来的阈值只能在开关
    已经打开之后调整数值，不能把它重新打开。** `wrapCompaction` 的 `cc.Threshold <= 0`
    判据在按模型阈值参数被引入之前就是压缩的唯一开关；这次改动新增了第四个参数
-   `threshold float64`，语义是「已解出的、可能来自目录/配置覆盖的值」，其判据是
-   `if threshold <= 0 { threshold = cc.Threshold }`——**只用于填充**，从不参与决定
-   是否启用。理由：操作员显式把全局阈值设成 0（关闭压缩）是一个意图明确的操作决定；
-   一个模型恰好在目录里有一条 `auto_compact_threshold` 数据不应该悄悄推翻它。
+   `threshold float64`，语义是「已解出的、可能来自目录/配置覆盖的值」——**只用于
+   填充，从不参与决定是否启用**。理由：操作员显式把全局阈值设成 0（关闭压缩）是一个
+   意图明确的操作决定；一个模型恰好在目录里有一条 `auto_compact_threshold` 数据不
+   应该悄悄推翻它。同一约束在 pre-turn 一侧由 `ws_compaction.go` 的 `thresholdFor`
+   实现：先判 `cc.Threshold <= 0` 直接返回（不看 `ProviderThresholds`），未命中才查
+   per-model 表——次序颠倒会让评审 F-1 描述的那个洞重新出现：操作员关闭的全局压缩
+   被一条目录/配置命中悄悄重新打开。
+
+5b. **`threshold` 参数本身还携带第二种、与「填充数值」正交的语义（Ruling W-C-04，
+   评审 F-10）：为负是一个 provider 级别的显式关闭指令，与「没有意见」（`0`，落回
+   全局）和「调整数值」（正数）都不同。** 三层必须用同一套判据，且都是在各自那条
+   `cc.Threshold <= 0` 全局短路检查**之后**才检查的一个独立分支——不是同一个
+   if：`ResolveAutoCompactThreshold`（`modelcatalog.go`，供给层，
+   `p.AutoCompactThreshold < 0` 时原样返回 `(负值, true)`）、`thresholdFor`
+   （`ws_compaction.go`，pre-turn 消费层，先判全局开关，再判
+   `ProviderThresholds[model]` 存在且非零则原样返回，负值不被特殊拦截，直接
+   传给调用方，调用方把 `<=0` 都当「关」）、`wrapCompaction`（`orchestrator.go`，
+   mid-turn 消费层，`cc.Threshold <= 0` 之后新增 `if threshold < 0 { return m }`）。
+   这不是对上一条「全局开关判据只能是 `cc.Threshold <= 0`」的违反：全局开关自己的
+   判据字面未变，`threshold < 0` 管辖的始终只是「这一个已解析出的 provider」，且
+   永远读不到、也写不回 `cc.Threshold`——两者必须保持互相独立，见后果段落的新约束。
 6. **五个当前不消费的字段（`max_output`/`modalities`/`reasoning_efforts`/
    `truncation_policy`/`priority`）照样解析进结构体，只是没有 Go 代码读它们。**
    这是为后续 W-C-* 工作项（capability-roadmap 的其余 14 项，多数要读这些字段）
@@ -88,9 +110,19 @@ Go 代码改动 + 重新构建 —— 对一个新模型发布周期以周计的
   加一层新的中间来源（例如「组织级默认」），另一侧必须同一提交里跟进，否则
   pre-turn 与 mid-turn 会在同一个模型上给出不同判决——这正是本 ADR 背景段落里
   「两条路径必须一起改」那句 CLAUDE.md 承重注释的数据层版本。
-- **不可违反的约束**：**`wrapCompaction` 的开关判据只能是 `cc.Threshold <= 0`。**
+- **不可违反的约束**：**`wrapCompaction` 的全局开关判据只能是 `cc.Threshold <= 0`。**
   `TestWrapCompaction_GlobalThresholdZeroStaysOffEvenWithACatalogHit` 钉住这条——
-  谁把按模型解出的阈值接入开关判据，等于让一条目录数据能重新打开操作员关掉的功能。
+  谁把按模型解出的阈值接入这一判据，等于让一条目录数据能重新打开操作员关掉的功能。
+  `ws_compaction.go` 的 `thresholdFor` 有同一约束的 pre-turn 版本，由
+  `TestThresholdFor_GlobalOffStaysOffEvenWithACatalogHit` 钉住（F-1）。
+- **不可违反的约束（W-C-04）**：**per-provider 的负值关闭（决策点 5b）与全局开关
+  必须是两个永远不合并的独立判据。** `wrapCompaction` 的 `threshold < 0` 分支、
+  `thresholdFor` 对负值的原样透传，都不得改写成读取或影响 `cc.Threshold` 本身——
+  合并两者会让「全局开关只能是 `cc.Threshold <= 0`」这条约束失去意义（一个足够
+  「负」的 per-provider 值就可能被复用来间接判断或改变全局开关的可达性）。
+  `TestWrapCompaction_NegativeResolvedThresholdDisablesJustThisModel` 与
+  `TestThresholdFor_NegativePerModelValueDisablesJustThatProvider` 分别在 mid-turn
+  与 pre-turn 两侧钉住「全局开关仍为 ON、只有这一个 provider 被关闭」。
 - **不可违反的约束**：**`auto_compact_threshold` 是窗口的分数（0~1 区间的比例），
   从不是绝对 token 数。** `buildAutoCompactThresholds` 原样传递该值，不做任何与
   窗口大小相关的换算；下游（`ctxcompact`）拿到分数后自己乘以已解出的窗口。把这两步

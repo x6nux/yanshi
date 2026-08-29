@@ -91,3 +91,47 @@ func TestThresholdFor_ZeroEntryIgnored(t *testing.T) {
 	assert.Equal(t, 0.7, thresholdFor("bad", cc),
 		"a zero ProviderThresholds entry must NOT shadow the fallback")
 }
+
+// TestThresholdFor_GlobalOffStaysOffEvenWithACatalogHit pins F-1: the
+// operator's global CompactionConfig.Threshold<=0 must win outright, before
+// ProviderThresholds is even consulted. Before this fix, thresholdFor only
+// asked "does ProviderThresholds[model] exist and exceed 0" — it never
+// looked at cc.Threshold at all, so a catalog/config per-model entry could
+// silently reopen a gate the operator explicitly closed (ADR-0024 C1/C2).
+// Both spellings of "off" (a negative value, and an in-memory literal 0 —
+// applyDefaults only coerces 0 on a Load()ed config) are covered, mirroring
+// orchestrator's TestWrapCompaction_GlobalThresholdZeroStaysOffEvenWithACatalogHit.
+func TestThresholdFor_GlobalOffStaysOffEvenWithACatalogHit(t *testing.T) {
+	negative := CompactionConfig{
+		Threshold:          -1,
+		ProviderThresholds: map[string]float64{"gpt-4o": 0.05},
+	}
+	assert.Equal(t, -1.0, thresholdFor("gpt-4o", negative),
+		"a per-model threshold must not reopen compaction the operator turned off with a negative Threshold")
+
+	literalZero := CompactionConfig{
+		Threshold:          0,
+		ProviderThresholds: map[string]float64{"gpt-4o": 0.05},
+	}
+	assert.Equal(t, float64(0), thresholdFor("gpt-4o", literalZero),
+		"a per-model threshold must not reopen compaction the operator turned off with a literal 0 Threshold")
+}
+
+// TestThresholdFor_NegativePerModelValueDisablesJustThatProvider pins F-10 /
+// W-C-04: a NEGATIVE per-provider threshold is an explicit disable for that
+// one provider, distinct from "unset" (0, which TestThresholdFor_ZeroEntryIgnored
+// pins as falling through to the global fallback). It is returned as-is —
+// callers (ctxcompact.MaybeCompactWithOptions) already treat any
+// threshold<=0 as "off" — so this is the mirror image of the global sentinel
+// above, one layer down, and must not be confused with the global Threshold
+// itself: the fallback stays untouched for every OTHER model.
+func TestThresholdFor_NegativePerModelValueDisablesJustThatProvider(t *testing.T) {
+	cc := CompactionConfig{
+		Threshold:          0.8, // globally ON
+		ProviderThresholds: map[string]float64{"quiet-model": -1},
+	}
+	assert.Equal(t, -1.0, thresholdFor("quiet-model", cc),
+		"a negative per-provider entry must disable compaction for that provider even though the global switch is on")
+	assert.Equal(t, 0.8, thresholdFor("other-model", cc),
+		"the negative per-provider disable must not leak into other models' resolution")
+}
