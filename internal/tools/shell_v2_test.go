@@ -3,6 +3,9 @@ package tools
 import (
 	"context"
 	"io"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -148,4 +151,156 @@ func TestShellV2WriteAuthorizesAsWriteToolNotShellString(t *testing.T) {
 		t.Fatalf("write must Authorize as shell_write_stdin, got %q", out)
 	}
 	_ = manager.Close()
+}
+
+// TestShellV2WorkdirArgCannotWidenTheDestructiveBoundary is W-2.
+//
+// "workdir" is a shellStartArgs field and it is in the tool schema, so the model
+// writes it — and v2 handed it straight to guard.Action.Workdir, which is the
+// line the destructive-deletion dimension measures "inside vs outside" against.
+// Measured with the real root at /work/project:
+//
+//	{"workdir":"/","command":"rm -rf /home/user"}   Prompt              -> Allow
+//	{"workdir":"/","command":"rm -rf /work"}        structural HardDeny -> Allow
+//
+// The second is the gate itself: an ancestor of the work root is catastrophic
+// until the request declares the root to be `/`. No name has to be guessed.
+//
+// The assertion is on the ACTION rather than only on a callback, because the
+// widening spellings include ones that never reach a callback at all (a
+// catastrophic verdict is refused before the callback is consulted), and a test
+// that could only observe the ones that do would be blind to exactly the tier
+// that matters most.
+func TestShellV2WorkdirArgCannotWidenTheDestructiveBoundary(t *testing.T) {
+	root := t.TempDir()
+	v := NewShellV2Tools(root)
+	for _, arg := range []string{
+		"/",
+		filepath.Dir(root),
+		filepath.Join(root, "..", ".."),
+		"/etc",
+		"relative-nonsense",
+		"",
+	} {
+		act, _, err := v.launchAction("shell_start", shellStartArgs{Command: "rm -rf /home/user", Workdir: arg})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if act.Workdir != root {
+			t.Errorf("launchAction(workdir=%q).Workdir = %q, want the server's root %q — the model "+
+				"moved the boundary its own deletion is judged against", arg, act.Workdir, root)
+		}
+	}
+	// The verdict this protects, end to end: deleting an ancestor of the work
+	// root is the structural floor whatever the request says the root is.
+	g := guard.New()
+	prof := guard.PermissionProfile{
+		Tools: guard.ToolsPerm{Allow: []string{"*"}},
+		FS:    guard.FSPerm{Read: []string{"**"}, Write: []string{"**"}},
+		Shell: guard.ShellPerm{Policy: "denylist"},
+	}
+	act, _, err := v.launchAction("shell_start", shellStartArgs{
+		Command: "rm -rf " + filepath.Dir(root), Workdir: "/",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := g.Check(prof, act); d.Verdict != guard.HardDeny || d.Overridable {
+		t.Fatalf("Check(rm -rf <parent of root>, workdir arg=/) = %+v, want a structural HardDeny", d)
+	}
+}
+
+// TestShellV2WorkdirArgMayNarrowTheDestructiveBoundary is the other half of the
+// rule, and it is not decoration: a boundary that always snapped back to the
+// root would make "the model cannot widen it" true by making the field inert,
+// and a reader could not tell the two apart.
+//
+// Moving the boundary INWARDS can only tighten. Every deletion the outer root
+// graded in-scope is still in-scope or becomes out-of-scope (a Prompt), and the
+// subdirectory itself joins the catastrophic set as its own root.
+func TestShellV2WorkdirArgMayNarrowTheDestructiveBoundary(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "pkg")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	v := NewShellV2Tools(root)
+	act, _, err := v.launchAction("shell_start", shellStartArgs{Command: "rm -rf " + sub, Workdir: sub})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// EvalSymlinks may rewrite the temp dir prefix (/var -> /private/var on
+	// macOS), so compare the classification rather than the string.
+	if guard.ClassifyDestruction("rm -rf "+sub, act.Workdir) != guard.DestructionCatastrophic {
+		t.Errorf("workdir=%q was not honoured: deleting the declared working directory itself "+
+			"must be catastrophic, and act.Workdir = %q", sub, act.Workdir)
+	}
+	// Control: at the root, the same deletion is an ordinary in-scope one.
+	if guard.ClassifyDestruction("rm -rf "+sub, root) == guard.DestructionCatastrophic {
+		t.Error("the control is wrong: deleting a subdirectory of the root is already catastrophic, " +
+			"so this test proves nothing about narrowing")
+	}
+}
+
+// TestShellV2LaunchRunsWhereTheCallerAskedEvenThoughTheGuardDoesNot separates the
+// two uses of "workdir" that W-2 collapsed. Where the process RUNS is still the
+// caller's choice; only the line the guard judges against is the server's.
+func TestShellV2LaunchRunsWhereTheCallerAskedEvenThoughTheGuardDoesNot(t *testing.T) {
+	root := t.TempDir()
+	elsewhere := t.TempDir()
+	factory := &recordingShellFactory{}
+	manager := shell.NewManager(shell.Config{Root: root, MaxOutputBytes: 256, Factory: factory})
+	defer func() { _ = manager.Close() }()
+	var got PermissionRequest
+	ctx := WithProfile(context.Background(), guard.PermissionProfile{
+		Tools: guard.ToolsPerm{Allow: []string{"shell_start"}},
+		Shell: guard.ShellPerm{Policy: "allowlist", Patterns: []string{"echo *"}},
+	})
+	ctx = WithPermissionCallback(ctx, func(req PermissionRequest) PermissionDecision {
+		got = req
+		return PermissionAllow
+	})
+	ctx = WithShellManager(ctx, manager)
+	v := NewShellV2Tools(root)
+	if _, err := runTool(ctx, v.Start, `{"command":"echo hi","workdir":`+strconv.Quote(elsewhere)+`}`); err != nil {
+		t.Fatal(err)
+	}
+	if len(factory.specs) != 1 || factory.specs[0].Dir != elsewhere {
+		t.Fatalf("launch Dir = %+v, want %q", factory.specs, elsewhere)
+	}
+	if got.Tool != "" && got.Workdir != root {
+		t.Fatalf("the callback saw Workdir %q; the guard boundary must stay at the root %q", got.Workdir, root)
+	}
+}
+
+// TestShellV2HandsTheResolvedInterpreterToGuard is D-2.
+//
+// internal/tools/shell.go has set guard.Action.Interpreter since W-B-05, and it
+// was the ONLY non-test caller that did. shell_v2.go resolved the very same
+// `prog` from shell.ShellArgv for its own LaunchSpec and then did not hand it
+// over, so guard read a cmd/PowerShell command with the POSIX reader — which is
+// the situation W-B-05 exists to prevent.
+//
+// On a POSIX host both spellings select the same reader, so this asserts the
+// FIELD rather than a verdict; the platform where the two differ is the one
+// where the field was added.
+func TestShellV2HandsTheResolvedInterpreterToGuard(t *testing.T) {
+	v := NewShellV2Tools(t.TempDir())
+	for _, tool := range []string{"shell_start", "task_shell_start"} {
+		act, _, err := v.launchAction(tool, shellStartArgs{Command: "echo hi"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, _, err := shell.ShellArgv("", "echo hi")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if act.Interpreter != want {
+			t.Errorf("%s: Action.Interpreter = %q, want the interpreter ShellArgv resolved (%q); "+
+				"guard picks its reader from this field", tool, act.Interpreter, want)
+		}
+		if act.Tool != tool {
+			t.Errorf("Action.Tool = %q, want %q", act.Tool, tool)
+		}
+	}
 }

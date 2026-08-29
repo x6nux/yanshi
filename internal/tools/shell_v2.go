@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/cloudwego/eino/schema"
@@ -149,13 +150,11 @@ func (v *ShellV2Tools) manager(ctx context.Context) (*shell.Manager, error) {
 // caller's "workdir" arg when given, otherwise the work root (legacy shell_run
 // parity — an omitted workdir must NOT inherit the server process's cwd).
 //
-// The same value is handed to guard.Action.Workdir, because the destructive
-// deletion dimension classifies "inside vs outside the working directory"
-// against it: with an empty Workdir the guard fails safe and treats EVERY
-// absolute path as out-of-scope (prompting on each one) while losing the
-// "deleting the work root itself" judgement entirely. Keeping the guard's
-// baseline identical to the launch directory is what makes that classification
-// mean what it says.
+// This value used to go to guard.Action.Workdir as well, and that was W-2: it
+// let the model's own JSON move the line its deletions are judged against. The
+// guard's baseline now comes from guardWorkdir, which is a different question —
+// see its header. The two are equal whenever the caller omits "workdir" or names
+// a directory inside the root, which is every ordinary call.
 func (v *ShellV2Tools) effectiveWorkdir(argWorkdir string) string {
 	if argWorkdir != "" {
 		return argWorkdir
@@ -163,20 +162,114 @@ func (v *ShellV2Tools) effectiveWorkdir(argWorkdir string) string {
 	return v.root
 }
 
+// guardWorkdir is the boundary the destructive-deletion dimension classifies
+// "inside vs outside the working directory" against, and it is deliberately NOT
+// effectiveWorkdir.
+//
+// # What the model could do with the other one
+//
+// "workdir" is a field of shellStartArgs and it is in the tool schema, so the
+// model writes it. Handing it to guard.Action.Workdir let the model choose the
+// line that decides whether its own command crosses one. Measured, with the real
+// project root at /work/project:
+//
+//	{"workdir":"/","command":"rm -rf /home/user"}   Prompt              -> Allow
+//	{"workdir":"/","command":"rm -rf /work"}        structural HardDeny -> Allow
+//
+// The second one is the whole gate: `/work` is an ancestor of the project root,
+// which is what isCatastrophicTarget grades as a disaster — until the request
+// says the root is `/`, at which point nothing is an ancestor of anything. No
+// name has to be guessed; one JSON field is the entire escalation. The same
+// value reaches internal/api/http.resolvePermissionMode's fail-safe, so the mode
+// layer was reading the model's answer too.
+//
+// shell v1 has carried a comment naming this exact bug since W-B-02 and passes
+// s.root; v2 shipped without it.
+//
+// # Narrowing is allowed, widening is not
+//
+// A model-supplied workdir INSIDE the root is honoured, because moving the
+// boundary inwards can only tighten: every deletion the outer root graded
+// in-scope is either still in-scope or becomes out-of-scope (a Prompt), and the
+// subdirectory itself and its ancestors join the catastrophic set. Anything else
+// — outside the root, unresolvable, a symlink escape — falls back to the root.
+// withinRootAbs is the canonical containment check (it evaluates symlinks)
+// rather than a second prefix comparison, but its RESULT is deliberately not
+// what is returned: it hands back the canonical spelling, and on macOS that
+// rewrites /var into /private/var while the command's own paths still say /var.
+// A boundary spelled differently from the paths measured against it stops
+// recognising them. So containment is decided canonically and the boundary is
+// the caller's own cleaned spelling.
+//
+// A relative or non-existent workdir falls back to the root as well — the first
+// because "relative to what" has no answer the guard can trust, the second
+// because withinRootAbs stats the path. Both directions are safe: the fallback
+// is never WIDER than the root, which is the only property this function
+// promises.
+func (v *ShellV2Tools) guardWorkdir(argWorkdir string) string {
+	if argWorkdir == "" || v.root == "" || !filepath.IsAbs(argWorkdir) {
+		return v.root
+	}
+	if _, err := withinRootAbs(v.root, argWorkdir); err != nil {
+		return v.root
+	}
+	return filepath.Clean(argWorkdir)
+}
+
+// authorizeLaunch is the shared front half of shell_start and task_shell_start:
+// resolve the interpreter, then Authorize under the tool's own name with the
+// SERVER's boundary. Both launches need the same three answers and the pair had
+// already drifted once — v1's Interpreter and Workdir decisions were made in
+// W-B-02/W-B-05 and neither reached either v2 entry point.
+func (v *ShellV2Tools) authorizeLaunch(ctx context.Context, tool string, a shellStartArgs, raw string) (prog string, args []string, err error) {
+	act, args, err := v.launchAction(tool, a)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := Authorize(ctx, act, raw); err != nil {
+		return "", nil, err
+	}
+	return act.Interpreter, args, nil
+}
+
+// launchAction builds the guard.Action for a v2 launch. It is split out from
+// authorizeLaunch because it is the only place either field can be OBSERVED:
+// PermissionRequest mirrors Action.Workdir but has no Interpreter field, so an
+// end-to-end callback test can witness one half and not the other — and on a
+// POSIX host the Interpreter half has no visible effect at all (ShellArgv
+// resolves "sh", which CommandLanguage maps to the same reader an empty field
+// selects). Asserting the action directly is what makes that half checkable on
+// every platform instead of only on the Windows CI leg.
+func (v *ShellV2Tools) launchAction(tool string, a shellStartArgs) (guard.Action, []string, error) {
+	// The interpreter ShellArgv resolves is the answer to "which shell language
+	// is this command written in", and the guard picks its segmenter from it
+	// (W-B-05). Without it a cmd/PowerShell command is read by the POSIX reader,
+	// which dissolves every backslash path separator it contains —
+	// `Remove-Item -Recurse C:\temp` was measured reaching the FS dimension as
+	// `C:temp`. shell.go has set this since W-B-05; shell_v2.go resolved the
+	// very same `prog` and then did not hand it over.
+	prog, args, err := shell.ShellArgv("", a.Command)
+	if err != nil {
+		return guard.Action{}, nil, err
+	}
+	return guard.Action{
+		Tool:        tool,
+		Shell:       a.Command,
+		Interpreter: prog,
+		Workdir:     v.guardWorkdir(a.Workdir),
+	}, args, nil
+}
+
 func (v *ShellV2Tools) start(ctx context.Context, raw string) (string, error) {
 	var a shellStartArgs
 	if err := json.Unmarshal([]byte(raw), &a); err != nil {
 		return "", err
 	}
-	wd := v.effectiveWorkdir(a.Workdir)
-	if err := Authorize(ctx, guard.Action{Tool: "shell_start", Shell: a.Command, Workdir: wd}, raw); err != nil {
-		return "", err
-	}
-	m, err := v.manager(ctx)
+	prog, args, err := v.authorizeLaunch(ctx, "shell_start", a, raw)
 	if err != nil {
 		return "", err
 	}
-	prog, args, err := shell.ShellArgv("", a.Command)
+	m, err := v.manager(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -185,8 +278,11 @@ func (v *ShellV2Tools) start(ctx context.Context, raw string) (string, error) {
 		Command:   a.Command,
 		Program:   prog,
 		Args:      args,
-		Dir:       wd,
-		PTY:       a.PTY,
+		// effectiveWorkdir, not guardWorkdir: where the process RUNS is still
+		// the caller's choice. Only the boundary the guard judges against is
+		// the server's.
+		Dir: v.effectiveWorkdir(a.Workdir),
+		PTY: a.PTY,
 	})
 	if err != nil {
 		return "", err
@@ -299,15 +395,11 @@ func (v *ShellV2Tools) taskStart(ctx context.Context, raw string) (string, error
 	if err := json.Unmarshal([]byte(raw), &a); err != nil {
 		return "", err
 	}
-	wd := v.effectiveWorkdir(a.Workdir)
-	if err := Authorize(ctx, guard.Action{Tool: "task_shell_start", Shell: a.Command, Workdir: wd}, raw); err != nil {
-		return "", err
-	}
-	m, err := v.manager(ctx)
+	prog, args, err := v.authorizeLaunch(ctx, "task_shell_start", a, raw)
 	if err != nil {
 		return "", err
 	}
-	prog, args, err := shell.ShellArgv("", a.Command)
+	m, err := v.manager(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -315,7 +407,7 @@ func (v *ShellV2Tools) taskStart(ctx context.Context, raw string) (string, error
 		Command: a.Command,
 		Program: prog,
 		Args:    args,
-		Dir:     wd,
+		Dir:     v.effectiveWorkdir(a.Workdir),
 	})
 	if err != nil {
 		return "", err
