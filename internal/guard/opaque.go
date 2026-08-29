@@ -307,6 +307,136 @@ func gradeUnreadPayload(payload string, marked bool, workdir string, depth int) 
 	return DestructionOpaque
 }
 
+// classifyWordAsCommand grades the possibility that ONE WORD of a command line
+// is itself a command something is going to execute.
+//
+// # The fourth way in
+//
+// Three ways a command carries another one had readers: a flag-marked payload
+// (`prog -c '…'`, opaquePayload), a trailing argv (`pkexec rm -rf /`,
+// classifyTrailingArgv), and a positional operand that looks like a statement
+// (`awk 'BEGIN{…}'`, looksLikeStatement). A fourth had none, and it is MORE
+// BASIC than the other three: every one of those requires the attacker to guess
+// a NAME — a program name the tables model, or one of six flag spellings. This
+// one requires no name at all, because it is POSIX shell SYNTAX:
+//
+//	GIT_SSH_COMMAND='rm -rf /' git fetch origin      Allow, /bin/sh ran rm -rf /
+//	PAGER='rm -rf /' git log                         Allow, /bin/sh ran rm -rf /
+//	LESSOPEN='|rm -rf /' less foo.txt                Allow, /bin/sh ran rm -rf /
+//	RSYNC_RSH='rm -rf /' rsync a host:b              Allow, /bin/sh ran rm -rf /
+//
+// lexShellLite WALKS PAST an assignment prefix to reach the real program word
+// (assignmentPrefixLen) and expansion.go only resolves an assignment a `$VAR`
+// actually uses, so the VALUE of an assignment was in no reading of the string.
+// The same blindness covers option values that name a program —
+// `ssh -o ProxyCommand='rm -rf /' host`, `tar -I 'rm -rf /' …`,
+// `nu --commands "rm -rf /"` — where the command sits inside ONE argv word and
+// the suffix scan, which reads argv words as separate tokens, sees a single
+// word whose normalizeProgramWord is the empty string.
+//
+// # The criterion, and why it is not a table of variable names
+//
+// A denylist of dangerous variables (GIT_SSH_COMMAND, LESSOPEN, PYTHONSTARTUP,
+// BASH_ENV, whatever the next program invents) is unbounded in both directions
+// at once: the names are unbounded AND the receiving programs are. So the
+// question asked here is about the VALUE and nothing else — IF THIS WORD IS
+// READ AS A SHELL COMMAND, IS THAT READING DESTRUCTIVE? A made-up variable name
+// in front of a made-up program (`ZZ_MADE_UP='rm -rf /' zzprogram-nobody-knows`)
+// gets the same verdict as GIT_SSH_COMMAND in front of git, which is what makes
+// this structural rather than a list.
+//
+// # The cap, and what it costs
+//
+// CAPPED AT DestructionOpaque, for exactly the reason classifyTrailingArgv caps
+// an unknown program: whether the receiving program will ever EXECUTE this
+// string is precisely what is not known, and no property of the string can
+// answer it. `MSG='rm -rf /' echo hi` runs nothing, and there is nothing in the
+// text that distinguishes it from the GIT_SSH_COMMAND line above — only the
+// name does, and names are what this rule refuses to consult. So the whole
+// family lands on a prompt: one click for the harmless spelling, and no silent
+// pass for the harmful one. Under ADR-0020 that prompt is asked in yolo too.
+//
+// The measured cost is a prompt on a word that merely CONTAINS a destructive
+// command at the head of a segment — `git commit -m "rm -rf / considered
+// harmful"`. That is the mistake opaque.go's header says this file is allowed
+// to make, and it is strictly milder than the one gradeUnreadPayload already
+// makes for the flag-marked half (`zzsend -c "rm -rf / is dangerous"` is a
+// floor).
+func classifyWordAsCommand(w, workdir string, depth int) Destruction {
+	if depth <= 0 {
+		return DestructionNone
+	}
+	worst := DestructionNone
+	for _, reading := range commandReadingsOfWord(w) {
+		d := classifyDestruction(reading, workdir, depth-1, false)
+		if d > DestructionOpaque {
+			d = DestructionOpaque
+		}
+		worst = maxDestruction(worst, d)
+	}
+	return worst
+}
+
+// commandReadingsOfWord returns the substrings of a single argv word that could
+// be a command line: the word itself when it is an operand, and the VALUE half
+// when the word is `NAME=VALUE`.
+//
+// The value half is needed on its own because a `NAME=` prefix defeats every
+// reader downstream: fed back through the lexer, `core.pager=rm -rf /` and
+// `GIT_SSH_COMMAND=rm -rf /` produce the program words `core.pager=rm` and
+// `-rf` respectively — one is in no table, the other is a flag. Measured:
+// `docker run -e "CMD=rm -rf /" img` reached gradeUnreadPayload with the whole
+// `CMD=rm -rf /` string and graded None, because the assignment walk consumed
+// the `rm`.
+//
+// The NAME half is only required to be non-empty and free of whitespace, rather
+// than to be a POSIX variable name. Option values carry keys POSIX would reject
+// — `core.pager`, `ProxyCommand`, `APT::Update::Pre-Invoke::`,
+// `--use-compress-program` — and the strict spelling is what isAssignmentWord
+// is for, where it decides which words the SHELL treats as a prefix. Here the
+// question is only "is there a value half at all".
+//
+// Only readings containing whitespace are returned. This is an economy rather
+// than a rule about danger: every verdict this package produces needs a program
+// word plus at least one more word, so a single token can only ever grade None.
+func commandReadingsOfWord(w string) []string {
+	var out []string
+	if w != "--" && !isFlagWord(w) && strings.ContainsAny(w, " \t\n") {
+		out = append(out, w)
+	}
+	if i := strings.IndexByte(w, '='); i > 0 && !strings.ContainsAny(w[:i], " \t\n") {
+		if v := w[i+1:]; strings.ContainsAny(v, " \t\n") {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// classifyAssignmentPrefix grades the VALUES of the assignment words
+// lexShellLite walks past on its way to the program word. See
+// classifyWordAsCommand for the family and the criterion.
+//
+// It re-lexes rather than taking the tokens from the caller because
+// classifyDestruction reaches the lexer down two different paths (the plain one
+// and the POSIX-escape one) and threading a fourth return value through both
+// would put the prefix in the same place twice.
+//
+// The relief table is deliberately NOT consulted here. That table means "the
+// OPERAND of this program's code flag is data"; an environment value is not an
+// operand of anything, and nothing about `grep` says a variable in its
+// environment is inert.
+func classifyAssignmentPrefix(cmd, workdir string, depth int) Destruction {
+	tokens, ok := lexShellLiteTokens(cmd, false)
+	if !ok {
+		return DestructionNone
+	}
+	worst := DestructionNone
+	for _, t := range tokens[:assignmentPrefixLen(tokens)] {
+		worst = maxDestruction(worst, classifyWordAsCommand(t, workdir, depth))
+	}
+	return worst
+}
+
 // classifyTrailingArgv grades the possibility that a program EXECUTES THE ARGV
 // WRITTEN AFTER IT, for programs this package has no reader for.
 //
@@ -372,7 +502,23 @@ func classifyTrailingArgv(program string, args []string, workdir string, depth i
 		_, runsItsArgv = remoteShellRunners[program]
 	}
 	worst := DestructionNone
+	readWords := !nonInterpreterPrograms[program]
 	for i, a := range args {
+		// ONE WORD CAN BE A WHOLE COMMAND. The suffix reading below treats each
+		// argv word as a program word followed by the words after it, which is
+		// blind to a command quoted into a single word: `nu --commands "rm -rf
+		// /"` hands normalizeProgramWord a three-word string whose base name
+		// after the last `/` is empty. See classifyWordAsCommand.
+		//
+		// The relief table gates THIS reading and not the suffix one, which is
+		// the narrowest scope that keeps `grep -e 'rm -rf /' f` from prompting:
+		// that table's members are programs whose operands are documented data,
+		// and this is the reading that asks whether an operand is a command.
+		// The suffix reading keeps running for them, so `git rm -r .` is
+		// unaffected.
+		if readWords {
+			worst = maxDestruction(worst, classifyWordAsCommand(a, workdir, depth))
+		}
 		if a == "--" || isFlagWord(a) {
 			continue
 		}

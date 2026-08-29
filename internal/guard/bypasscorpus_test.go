@@ -509,16 +509,98 @@ $X -rf /`, want: wantFloor},
 	// takes a CONFIG KEY, and `core.pager`, `alias.*`, `diff.external` and
 	// `core.editor` are all keys whose value git hands to a shell. The entry's
 	// justification named one innocuous value (`core.pager="less -R"`) instead
-	// of the value space. Both spellings below were measured Allow with a real
-	// /bin/sh handing `rm -rf /` to the recorder.
-	{cmd: `git -c core.pager='rm -rf /' log`, want: wantPrompt},
-	{cmd: `git -c alias.zz='!rm -rf /' zz`, want: wantPrompt},
-	// This row is what the entry was buying, and it is still Allow WITHOUT it:
-	// `user.name=x` carries no whitespace, so looksLikeCode never fired on it
-	// and the relief was never load-bearing here.
+	// of the value space. This row is what the entry was buying, and it is
+	// still Allow WITHOUT the entry: `user.name=x` carries no whitespace, so
+	// looksLikeCode never fired on it and the relief was never load-bearing here.
 	{cmd: `git -c user.name=x commit -m "hi there"`, want: wantAllow,
 		why: "the -c operand has no whitespace and no structural punctuation, so no reading takes " +
 			"it for a command. git is no longer in the relief table and this row did not move"},
+
+	// ---- A command in an assignment prefix's VALUE (ADR-0020) ---------------
+	//
+	// The fourth way one command carries another, and the most basic of the
+	// four: the other three make the attacker guess a NAME (a program the
+	// tables model, one of six flag spellings), and this one needs no name at
+	// all, because an assignment prefix is POSIX shell syntax. lexShellLite
+	// walks past it to reach the program word and expansion.go only resolves an
+	// assignment some `$VAR` uses, so the value was in no reading of the string.
+	//
+	// Every row here was measured Allow with a real /bin/sh handing `rm -rf /`
+	// to the recorder, and the ones below are witnessed by the env-dispatch
+	// stand-ins in fidelity_test.go rather than held by this table.
+	{cmd: `GIT_SSH_COMMAND='rm -rf /' git fetch origin`, want: wantPrompt},
+	{cmd: `GIT_PAGER='rm -rf /' git log`, want: wantPrompt},
+	{cmd: `PAGER='rm -rf /' git log`, want: wantPrompt},
+	{cmd: `GIT_EDITOR='rm -rf /' git commit`, want: wantPrompt},
+	{cmd: `GIT_EXTERNAL_DIFF='rm -rf /' git diff HEAD`, want: wantPrompt},
+	{cmd: `VISUAL='rm -rf /' crontab -e`, want: wantPrompt},
+	{cmd: `EDITOR='rm -rf /' crontab -e`, want: wantPrompt},
+	{cmd: `LESSOPEN='|rm -rf /' less foo.txt`, want: wantPrompt},
+	{cmd: `MANPAGER='rm -rf /' man git`, want: wantPrompt},
+	{cmd: `RSYNC_RSH='rm -rf /' rsync a host:b`, want: wantPrompt},
+	// THE STRUCTURAL ROW: an invented variable in front of an invented program.
+	// A fix built from a table of dangerous variable names, or of programs
+	// known to read one, satisfies every row above and fails this one.
+	{cmd: `ZQ_NOBODY_READS_THIS_VAR='rm -rf /' zq-program-nobody-here-runs`, want: wantPrompt,
+		tableOnly: "the program is invented, so there is nothing to put on the shim PATH — which " +
+			"is the property the row exists to measure"},
+	// THE CAP, and the reverse sample for it. Whether the receiving program
+	// ever executes the value is exactly what is not known, so the tier is a
+	// prompt: this command runs nothing and nothing in its text distinguishes
+	// it from the ten above.
+	{cmd: `MSG='rm -rf /' echo hi`, want: wantPrompt,
+		tableOnly: "the shell runs `echo hi` and the recorder sees nothing, which is the point — " +
+			"the row pins that the verdict is a PROMPT rather than a floor, and a floor is not " +
+			"something the shell can witness the absence of"},
+	// Ordinary assignment prefixes, which is why this reading costs nothing.
+	{cmd: `CGO_ENABLED=0 go build ./...`, want: wantAllow, tableOnly: noUtilityShim,
+		why: "the value is not a command under any reading; the whole family stays Allow"},
+	{cmd: `GIT_COMMITTER_NAME='Jane Doe' git commit -m x`, want: wantAllow,
+		why: "a two-word value whose first word is not a program this package grades"},
+	{cmd: `MAKEFLAGS='-j 8' make all`, want: wantAllow, tableOnly: noUtilityShim,
+		why: "same: the value's first word is a flag, so the reading grades None"},
+
+	// ---- A whole command inside ONE argv word (ADR-0020) -------------------
+	//
+	// ADR-0019 says the tier follows the payload "whichever program was going
+	// to receive it", and the implementation consulted it only when one of six
+	// flag spellings announced the operand. `nu --commands` and `fish -C` are
+	// published syntax outside those six. Both backstops missed them: the
+	// suffix scan reads argv words as separate tokens, so a quoted command is
+	// ONE word whose normalizeProgramWord is empty, and looksLikeStatement
+	// wants whitespace AND punctuation while `rm -rf /` has only whitespace.
+	{cmd: `nu --commands "rm -rf /"`, want: wantPrompt, tableOnly: noInterpreterShim},
+	{cmd: `nu --commands='rm -rf /'`, want: wantPrompt, tableOnly: noInterpreterShim},
+	{cmd: `fish -C "rm -rf /"`, want: wantPrompt,
+		tableOnly: "the fish stand-in runs a -c payload, which is the spelling the row is NOT " +
+			"about; emulating --init-command would be a stand-in written to match the reader"},
+	{cmd: `zq-shell-nobody-here-runs --zq-invented-flag 'rm -rf /'`, want: wantPrompt,
+		tableOnly: "the program and the flag are both invented — that is what makes the row a " +
+			"statement about the reading rather than about a table"},
+	{cmd: `git -c core.pager='rm -rf /' log`, want: wantPrompt},
+	{cmd: `git -c alias.zz='!rm -rf /' zz`, want: wantPrompt},
+	{cmd: `git config --global core.pager 'rm -rf /'`, want: wantPrompt,
+		tableOnly: "a PERSISTENT form: the payload does not run in this command, it is written to " +
+			"a config file for the next one. No single-command witness can reach it"},
+	{cmd: `ssh -o ProxyCommand='rm -rf /' host`, want: wantPrompt,
+		tableOnly: "the ssh stand-in joins the trailing argv and hands it to a shell, which is the " +
+			"spelling this row is not about; emulating ProxyCommand would be a second reader"},
+	{cmd: `tar -I 'rm -rf /' -cf a.tar .`, want: wantPrompt, tableOnly: noUtilityShim},
+	{cmd: `gdb -ex 'shell rm -rf /' ./a.out`, want: wantPrompt,
+		tableOnly: "the boundary looksLikeStatement wrote down (whitespace, no punctuation) and " +
+			"left open; there is no gdb stand-in and emulating -ex would be one"},
+	// The relief table is what gates this reading, and these are the rows that
+	// go red if it stops being consulted. Searching for a dangerous string is
+	// ordinary work.
+	{cmd: `grep -e 'rm -rf /' out10`, want: wantAllow, tableOnly: noUtilityShim,
+		why: "`-e` is a PATTERN. The relief table gates the word reading, and this row is what " +
+			"proves the gate is live — without it a code search starts prompting"},
+	{cmd: `git commit -m "fix the thing"`, want: wantAllow,
+		why: "an ordinary commit message; no reading of it is a command"},
+	// The measured COST of the word reading, recorded rather than argued away.
+	{cmd: `git commit -m "rm -rf / considered harmful"`, want: wantPrompt,
+		tableOnly: "the stand-in commits nothing; the row pins the accepted over-strictness — a " +
+			"message that begins with a destructive command now costs one prompt"},
 
 	// ---- Storage destroyers reached through their own operands --------------
 	{cmd: `truncate -s 0 /dev/disk0`, want: wantFloor, tableOnly: noDeviceWitness},
@@ -681,10 +763,14 @@ $X -rf /`, want: wantFloor},
 	{cmd: `Remove-Item -Recurse C:\temp\`, want: wantPrompt, interp: "powershell"},
 	{cmd: `Remove-Item -Recurse $env:SystemDrive`, want: wantAllow, interp: "powershell",
 		why: "the value of $env:SystemDrive is not in the string; same rule as $BUILD_DIR above"},
-	{cmd: `Start-Process powershell -ArgumentList 'Remove-Item -Recurse C:\'`, want: wantAllow, interp: "powershell",
-		why: "the payload is inside -ArgumentList, which is a PARAMETER of a launcher rather than a " +
-			"wrapper's command operand. Reading it means modelling PowerShell's parameter binder; " +
-			"measured and left open rather than half-covered"},
+	// This row was Allow, with a `why` saying the -ArgumentList operand could
+	// only be reached by modelling PowerShell's parameter binder. It is a
+	// prompt now WITHOUT any binder being modelled: classifyWordAsCommand reads
+	// the single argv word as a command line, and a boundary described as
+	// needing a program-specific reader turned out to need no program knowledge
+	// at all. Kept as the row that shows the ADR-0020 reading is not
+	// POSIX-specific.
+	{cmd: `Start-Process powershell -ArgumentList 'Remove-Item -Recurse C:\'`, want: wantPrompt, interp: "powershell"},
 	{cmd: `Get-ChildItem C:\`, want: wantAllow, interp: "powershell",
 		why: "an ordinary listing. It is here because the POSIX reader refuses it (trailing escape) " +
 			"and the whole point of the PowerShell reader is that it must not"},
@@ -848,7 +934,18 @@ func TestNoSpellingTheShellExecutesIsAllowed(t *testing.T) {
 // measurement of how much of this corpus the reference shell cannot reach.
 // Every one of the rows counted here can be flipped to Allow by an editor who
 // also breaks the defence it probes, and nothing in this package will notice.
-const tableOnlyRowCount = 32
+//
+// IT WENT UP BY 11 WITH ADR-0020, and that is stated here rather than edited
+// quietly. The 10 rows of the assignment-prefix family that a stand-in COULD
+// witness were given one (fidelity_test.go's env-dispatch shims, and git's
+// `-c key=value` channel); the 11 counted here are the ones where a stand-in
+// would have to be written to match the reader under test (fish's
+// --init-command, ssh's ProxyCommand, gdb's -ex), where the program is invented
+// on purpose, where the payload is written to a config file for a LATER command
+// (`git config --global core.pager`), or where the thing being pinned is the
+// ABSENCE of an execution (`MSG='rm -rf /' echo hi` is a prompt, and no shell
+// run can witness a floor not being applied).
+const tableOnlyRowCount = 43
 
 // unwitnessedAllowRowCount is the same measurement for rows pinned to Allow,
 // counted SEPARATELY because the two admissions are not the same size.
@@ -861,10 +958,11 @@ const tableOnlyRowCount = 32
 // the package stay green. Folding the two into one number would let a growing
 // pile of the second kind hide behind a shrinking pile of the first.
 //
-// It went DOWN by one when git left the relief table: `git -c user.name=x
-// commit` needed a stand-in to witness the removal, and once git was on the
-// shim PATH the reference shell constrained that row too.
-const unwitnessedAllowRowCount = 17
+// It moved by +3/-1 with ADR-0020: three ordinary commands added as the reverse
+// samples for the new readings name utilities with no stand-in, and
+// `git -c user.name=x commit` LOST its note, because git is now on the shim
+// PATH and the reference shell does constrain it.
+const unwitnessedAllowRowCount = 20
 
 // TestTableOnlyRowsHaveNotGrown is the half of the bookkeeping that does not
 // need a shell, so it runs on the Windows leg too — where the differential

@@ -301,6 +301,137 @@ func TestOpaqueIsNotTheStructuralFloor(t *testing.T) {
 	}
 }
 
+// unmodelledVariable is a variable name that names nothing on any system. It is
+// the other half of the structural claim below: the verdict must not depend on
+// the NAME of the variable any more than it depends on the name of the program.
+const unmodelledVariable = "ZQ_NOBODY_READS_THIS_VAR"
+
+// TestTheValueOfAnAssignmentPrefixIsRead is ADR-0020's first half: THE VALUE OF
+// AN ASSIGNMENT PREFIX IS A COMMAND NOBODY READ.
+//
+// `lexShellLite` walks past `GIT_SSH_COMMAND='rm -rf /'` to reach `git`, and
+// expandKnownParameters only resolves an assignment some `$VAR` uses, so the
+// value was in no reading of the string. Ten spellings were measured Allow with
+// a real /bin/sh handing `rm -rf /` to the recorder.
+//
+// The first row is the load-bearing one: an INVENTED VARIABLE NAME in front of
+// an INVENTED PROGRAM NAME. A fix built from a table of dangerous variables
+// (GIT_SSH_COMMAND, LESSOPEN, BASH_ENV, …) or of env-reading programs passes
+// every other row here and fails this one.
+func TestTheValueOfAnAssignmentPrefixIsRead(t *testing.T) {
+	g := New()
+	prof := probeProfile()
+	for _, tc := range []struct{ cmd, note string }{
+		{unmodelledVariable + `='rm -rf /' ` + unmodelledInterpreter,
+			"THE STRUCTURAL CLAIM: neither the variable name nor the program name is in any table " +
+				"here, so the verdict can only come from reading the VALUE"},
+		{`GIT_SSH_COMMAND='rm -rf /' git fetch origin`, "witnessed: /bin/sh ran rm -rf /"},
+		{`PAGER='rm -rf /' git log`, "witnessed"},
+		{`GIT_PAGER='rm -rf /' git log`, "witnessed"},
+		{`GIT_EDITOR='rm -rf /' git commit`, "witnessed"},
+		{`VISUAL='rm -rf /' crontab -e`, "witnessed"},
+		{`EDITOR='rm -rf /' crontab -e`, "witnessed"},
+		{`LESSOPEN='|rm -rf /' less foo.txt`, "witnessed; the leading pipe is less's own convention"},
+		{`RSYNC_RSH='rm -rf /' rsync a host:b`, "witnessed"},
+		{`MANPAGER='rm -rf /' man git`, "witnessed"},
+		{`GIT_EXTERNAL_DIFF='rm -rf /' git diff HEAD`, "same family"},
+	} {
+		got := classOf(g.Check(prof, Action{Tool: "shell_run", Shell: tc.cmd, Workdir: segTestWorkdir}))
+		if got != wantPrompt {
+			t.Errorf("Check(%q) = %s, want %s — %s", tc.cmd, got, wantPrompt, tc.note)
+		}
+	}
+	// THE CAP. Whether the receiving program ever executes the value is exactly
+	// what is not known, and nothing in the text answers it, so the tier is a
+	// prompt rather than a floor. `MSG='rm -rf /' echo hi` runs nothing and is
+	// indistinguishable from the first group by any property of the string.
+	if got := ClassifyDestruction(`MSG='rm -rf /' echo hi`, segTestWorkdir); got != DestructionOpaque {
+		t.Errorf("ClassifyDestruction(MSG='rm -rf /' echo hi) = %v, want Opaque — a floor here would "+
+			"be an unappealable refusal of a command that runs nothing", got)
+	}
+	// The reverse direction, and the reason this change costs nothing in
+	// practice: an assignment prefix whose value is not a command reads as
+	// nothing at all.
+	for _, cmd := range []string{
+		`CGO_ENABLED=0 go build ./...`,
+		`GOFLAGS=-mod=vendor go test ./...`,
+		`MAKEFLAGS='-j 8' make all`,
+		`TZ='America/New_York' date`,
+		`LANG=C.UTF-8 sort file`,
+		`GIT_COMMITTER_NAME='Jane Doe' git commit -m x`,
+		`NODE_ENV=production npm run build`,
+		`PYTHONPATH=./src python3 -m pytest`,
+	} {
+		if got := ClassifyDestruction(cmd, segTestWorkdir); got != DestructionNone {
+			t.Errorf("ClassifyDestruction(%q) = %v, want None — an ordinary assignment prefix must "+
+				"not start prompting", cmd, got)
+		}
+	}
+}
+
+// TestAWholeCommandInsideOneWordIsRead is ADR-0020's second half, and it is
+// what makes ADR-0019's criterion structural rather than flag-gated.
+//
+// gradeUnreadPayload states "if the payload reads as a catastrophic shell
+// command the verdict is the catastrophic one, WHICHEVER PROGRAM was going to
+// receive it" — but it was only ever consulted when one of six flag spellings
+// announced the operand. `nu --commands "rm -rf /"` and `fish -C "rm -rf /"`
+// are published syntax outside those six, and the two backstops missed them for
+// two different reasons: the suffix scan reads argv words as separate tokens,
+// so a quoted command is ONE word whose normalizeProgramWord is empty, and
+// looksLikeStatement needs whitespace AND structural punctuation while
+// `rm -rf /` has only whitespace.
+//
+// The made-up rows are what separate "read the word" from "know the flag".
+func TestAWholeCommandInsideOneWordIsRead(t *testing.T) {
+	g := New()
+	prof := probeProfile()
+	for _, tc := range []struct{ cmd, note string }{
+		{unmodelledInterpreter + ` --zq-made-up-flag 'rm -rf /'`,
+			"THE STRUCTURAL CLAIM: an invented program and an invented flag spelling"},
+		{unmodelledInterpreter + ` 'rm -rf /'`, "the same, with no flag at all"},
+		{`nu --commands "rm -rf /"`, "published nushell syntax outside codePayloadFlags"},
+		{`nu --commands='rm -rf /'`, "the attached spelling of the same"},
+		{`fish -C "rm -rf /"`, "published fish syntax (--init-command)"},
+		{`ssh -o ProxyCommand='rm -rf /' host`, "an option VALUE that names a program"},
+		{`tar -I 'rm -rf /' -cf a.tar .`, "tar's compress program"},
+		{`git -c core.pager='rm -rf /' log`, "the git relief-table entry this round removed"},
+		{`git config --global core.pager 'rm -rf /'`, "the persistent spelling of the same"},
+		{`gdb -ex 'shell rm -rf /' ./a.out`, "the boundary looksLikeStatement wrote down: spaces, no punctuation"},
+	} {
+		got := classOf(g.Check(prof, Action{Tool: "shell_run", Shell: tc.cmd, Workdir: segTestWorkdir}))
+		if got != wantPrompt {
+			t.Errorf("Check(%q) = %s, want %s — %s", tc.cmd, got, wantPrompt, tc.note)
+		}
+	}
+	// The relief table gates this reading and nothing else, which is the only
+	// thing keeping a code search from prompting. These are the rows that fail
+	// if it stops being consulted.
+	for _, cmd := range []string{
+		`grep -e 'rm -rf /' file`,
+		`rg 'rm -rf /' .`,
+		`sed -e 's/a b/c/' out10`,
+		`curl -d '{"a": 1}' http://x`,
+		`echo rm -rf /`,
+		`printf 'rm -rf /'`,
+		`git commit -m "fix the thing"`,
+		`git log --format='%H %s'`,
+		`git -c user.name=x commit -m y`,
+		`mkdir "my new dir"`,
+	} {
+		if got := ClassifyDestruction(cmd, segTestWorkdir); got != DestructionNone {
+			t.Errorf("ClassifyDestruction(%q) = %v, want None — an ordinary operand must not be "+
+				"read as a command", cmd, got)
+		}
+	}
+	// The suffix reading keeps running for a relief-table program: the table
+	// says its OPERANDS are data, not that a command written after it is.
+	if got := ClassifyDestruction(`git rm -r .`, segTestWorkdir); got != DestructionOpaque {
+		t.Errorf("ClassifyDestruction(git rm -r .) = %v, want Opaque — gating the word reading on "+
+			"the relief table must not gate the suffix reading with it", got)
+	}
+}
+
 // reliefOperandClass pins nonInterpreterPrograms' membership together with the
 // CLASS of operand each entry claims, one word per entry.
 //

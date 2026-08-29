@@ -222,6 +222,13 @@ func classifyDestruction(cmd, workdir string, depth int, topLevel bool) Destruct
 			worst = maxDestruction(worst, classifyLexed(program, args, workdir, depth))
 		}
 	}
+	// THE VALUE OF AN ASSIGNMENT PREFIX IS A STRING NOBODY READ. The lexer just
+	// below walks past `GIT_SSH_COMMAND='rm -rf /'` to reach `git`, and
+	// expandKnownParameters only resolves an assignment some `$VAR` uses, so
+	// until ADR-0020 the value was in no reading of this command. It is graded
+	// here rather than inside classifyLexed because classifyLexed is handed the
+	// program and its argv, which is exactly what the prefix is not.
+	worst = maxDestruction(worst, classifyAssignmentPrefix(cmd, workdir, depth))
 	program, args, ok := lexShellLite(cmd)
 	if !ok {
 		return worst
@@ -754,6 +761,37 @@ func isDoubleQuoteEscapable(b byte) bool {
 }
 
 func lexShellLiteMode(cmd string, dqEscapes bool) (program string, args []string, ok bool) {
+	tokens, ok := lexShellLiteTokens(cmd, dqEscapes)
+	if !ok {
+		return "", nil, false
+	}
+	first := assignmentPrefixLen(tokens)
+	return normalizeProgramWord(tokens[first]), tokens[first+1:], true
+}
+
+// assignmentPrefixLen returns how many leading tokens are VAR=value assignment
+// words — the ones the shell applies to the environment of the command that
+// follows, and the ones lexShellLiteMode walks past to find the program word.
+//
+// The last token is never counted: `FOO=1` on its own runs nothing, and
+// reporting an empty program would lose the fact that there was a command word
+// at all.
+//
+// It is a named function rather than the inline loop it used to be because
+// classifyAssignmentPrefix needs the same boundary from the other side: those
+// skipped tokens carry VALUES, and until ADR-0020 nothing read them.
+func assignmentPrefixLen(tokens []string) int {
+	first := 0
+	for first < len(tokens)-1 && isAssignmentWord(tokens[first]) {
+		first++
+	}
+	return first
+}
+
+// lexShellLiteTokens is the tokenizing half of lexShellLiteMode, split out so
+// the assignment prefix is available to a caller that wants the words
+// lexShellLiteMode discards rather than the program word it keeps.
+func lexShellLiteTokens(cmd string, dqEscapes bool) ([]string, bool) {
 	var tokens []string
 	var cur strings.Builder
 	quote := byte(0)
@@ -792,7 +830,7 @@ func lexShellLiteMode(cmd string, dqEscapes bool) (program string, args []string
 		case c == '$' && i+1 < len(cmd) && cmd[i+1] == '\'':
 			lit, next, spanOK := execpolicy.DecodeANSICSpan(cmd, i+2)
 			if !spanOK {
-				return "", nil, false // unterminated $'...' — same as any unterminated quote
+				return nil, false // unterminated $'...' — same as any unterminated quote
 			}
 			cur.WriteString(lit)
 			inTok = true
@@ -808,34 +846,26 @@ func lexShellLiteMode(cmd string, dqEscapes bool) (program string, args []string
 		}
 	}
 	if quote != 0 {
-		return "", nil, false
+		return nil, false
 	}
 	flush()
 	if len(tokens) == 0 {
-		return "", nil, false
+		return nil, false
 	}
 	// Leading VAR=value words are ASSIGNMENTS the shell applies to the
 	// environment of the command that follows; the program is the first word
-	// that is not one. Measured before this loop existed: `FOO=1 rm -rf /` and
-	// `A= rm -rf /` produced the program word `foo=1`, which is in no table
-	// this file consults, so every predicate declined and the command graded
-	// DestructionNone under a permissive profile.
+	// that is not one (assignmentPrefixLen). Measured before that walk existed:
+	// `FOO=1 rm -rf /` and `A= rm -rf /` produced the program word `foo=1`,
+	// which is in no table this file consults, so every predicate declined and
+	// the command graded DestructionNone under a permissive profile.
 	//
-	// This belongs in the lexer rather than in stripCommandPrefix because
+	// The walk belongs in the lexer rather than in stripCommandPrefix because
 	// normalizeProgramWord splits on path separators: by the time a caller sees
 	// the program word, `FOO=/tmp/x rm -rf /` has already become `x`. The
 	// existing `env FOO=1 rm -rf /` spelling was caught only because `env` is a
 	// prefix runner with assignments enabled; the bare prefix is the same shape
 	// with the `env` left off, which is what a shell accepts and a model writes.
-	//
-	// The last token is never consumed: `FOO=1` on its own runs nothing, and
-	// reporting an empty program would lose the fact that there was a command
-	// word at all.
-	first := 0
-	for first < len(tokens)-1 && isAssignmentWord(tokens[first]) {
-		first++
-	}
-	return normalizeProgramWord(tokens[first]), tokens[first+1:], true
+	return tokens, true
 }
 
 // isAssignmentWord reports whether w has the shape of a shell variable

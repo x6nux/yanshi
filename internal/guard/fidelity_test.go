@@ -163,14 +163,35 @@ esac
 	// does and does not emulate.
 	"find": findScript,
 
-	// git dispatches commands through a general-purpose key/value channel, and
-	// the relief table it used to be in was justified for exactly one value of
-	// one key. The stand-in is that channel and nothing else — no subcommands,
-	// no repository — because the claim the corpus rows make is only that some
-	// key in it names a program git hands to a shell.
-	"git": gitConfigScript + "exit 0\n",
+	// PROGRAMS THAT RUN A COMMAND NAMED BY AN ENVIRONMENT VARIABLE. This is the
+	// family ADR-0020 closes, and it is the one the differential assertion had
+	// nothing to say about: the payload is not in the argv at all, it is in an
+	// assignment prefix the lexer walks past. Each list below is that program's
+	// documented dispatch, in its documented order, and nothing else — no
+	// subcommand parsing, so a `git log` row and a `git fetch` row reach the
+	// same walk. That costs nothing here because every corpus row in the family
+	// sets exactly ONE of the variables.
+	// git dispatches through TWO general-purpose key/value channels, and the
+	// relief table it used to be in was justified for only one value of one of
+	// them. `-c` comes first because it is the spelling that was Allow.
+	"git": gitConfigScript +
+		envDispatchScript("GIT_SSH_COMMAND", "GIT_EXTERNAL_DIFF", "GIT_PAGER", "PAGER", "GIT_EDITOR"),
+	"crontab": envDispatchScript("VISUAL", "EDITOR"),
+	"less":    envDispatchScript("LESSOPEN"),
+	"man":     envDispatchScript("MANPAGER", "PAGER"),
+	"rsync":   envDispatchScript("RSYNC_RSH"),
 }
 
+// envDispatchScript runs the first of the named environment variables that is
+// set, as a shell command. A leading `|` is stripped because that is less's own
+// LESSOPEN convention for "this is a filter to run" rather than part of the
+// command.
+//
+// It is a stand-in for the DISPATCH, not for the program: `git` here does not
+// parse subcommands and `rsync` transfers nothing. What it witnesses is the one
+// claim the corpus rows make — that these programs hand an environment value to
+// a shell — which is what makes `PAGER='rm -rf /' git log` a real bypass rather
+// than a plausible-looking table row.
 // gitConfigScript is git's `-c key=value` channel, for the handful of keys
 // whose value git hands to a shell: the pager, the editor, an external diff
 // driver, the sequence editor, and any `alias.*` whose value begins with `!`.
@@ -194,6 +215,14 @@ for a in "$@"; do
   prev="$a"
 done
 `
+
+func envDispatchScript(vars ...string) string {
+	s := ""
+	for _, v := range vars {
+		s += `[ -n "${` + v + `:-}" ] && exec /bin/sh -c "${` + v + `#|}"` + "\n"
+	}
+	return s + "exit 0\n"
+}
 
 // relayPreamble is the shared argv walk: skip the runner's own options, then a
 // fixed number of its own operands, leaving "$@" as the command to run.
