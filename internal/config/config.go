@@ -954,7 +954,10 @@ func (c *Config) validate() error {
 // off. That combination is inert rather than wrong — the rule applies the
 // moment inspection is enabled, and plain-HTTP requests through the proxy
 // carry a readable method with no inspection at all — so refusing it would
-// reject a valid configuration. bootstrap says it out loud on stderr instead.
+// reject a valid configuration. bootstrap says it out loud via slog instead
+// (security posture belongs in the log file an operator audits later, not
+// only on the terminal of whoever started the process — see bootstrap.go's
+// own comment next to that slog.Warn call).
 func (c *Config) validateNetworkMethods() error {
 	for i, rule := range c.Security.Network.Methods {
 		if strings.TrimSpace(rule.Host) == "" {
