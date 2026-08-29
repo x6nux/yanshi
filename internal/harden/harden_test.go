@@ -104,9 +104,12 @@ func TestApplyReportsEveryStep(t *testing.T) {
 	for name := range want {
 		t.Errorf("step %q never ran", name)
 	}
-	if report.Failed() {
-		t.Error("Report.Failed() must agree with the per-step errors above")
-	}
+	// Report.Failed() used to be asserted here. It was deleted: its doc said "so
+	// a caller can decide whether the Report is worth printing", and the only
+	// caller — WriteFailures — never called it, so the whole of its behaviour
+	// was this assertion agreeing with the loop above it. An exported predicate
+	// whose sole reader is a test that restates the loop next to it is not a
+	// covered feature, it is a second implementation of the loop.
 }
 
 // TestCoreDumpsAreVerifiedNotAssumed pins that the core-dump step read the

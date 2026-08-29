@@ -199,8 +199,16 @@ func TestPTYCtrlCReachesTheChild(t *testing.T) {
 //     is interactive;
 //   - the typed line is ECHOED back, which is the kernel line discipline and is
 //     structurally impossible over a pipe;
-//   - the command's output arrives, so the loop really evaluated it rather than
+//   - the command's OUTPUT arrives, so the loop really evaluated it rather than
 //     buffering input nobody read.
+//
+// The third one has to be checked against a string the echo cannot contain, and
+// the first version of this test got that wrong: it typed `echo hello-from-repl`
+// and then looked for "hello-from-repl", which is a strict substring of the
+// echoed line the assertion above had already waited for. That third expect
+// could never fail on its own — the doc said three things fail differently and
+// only two did. Typing an ARITHMETIC expansion fixes it: "42" appears only if a
+// shell evaluated $((6*7)), and the echo shows the expression, not the result.
 func TestPTYRunsAnInteractiveREPL(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("this probe drives /bin/sh; the ConPTY path is exercised by TestPTYConsoleIsWiredOnEveryPlatform")
@@ -213,17 +221,20 @@ func TestPTYRunsAnInteractiveREPL(t *testing.T) {
 	})
 	p.expect("REPL>", 10*time.Second)
 
-	p.typeLine("echo hello-from-repl")
+	p.typeLine("echo hello-from-repl-$((6*7))")
 	// The echo of what was typed. A pipe-backed console never produces this
 	// line, so it is the assertion that distinguishes a real terminal from a
 	// child that merely printed the right answer.
-	p.expect("echo hello-from-repl", 10*time.Second)
-	p.expect("hello-from-repl", 10*time.Second)
+	p.expect("echo hello-from-repl-$((6*7))", 10*time.Second)
+	// The evaluated result. "hello-from-repl-42" cannot appear in the echo,
+	// which carries the unexpanded expression, so this line fails on its own if
+	// the shell reads the input and never runs it.
+	p.expect("hello-from-repl-42", 10*time.Second)
 
 	// A second turn: a REPL that answers once and then wedges would pass every
 	// assertion above.
-	p.typeLine("echo second-turn-$((6*7))")
-	p.expect("second-turn-42", 10*time.Second)
+	p.typeLine("echo second-turn-$((7*9))")
+	p.expect("second-turn-63", 10*time.Second)
 
 	p.typeLine("exit")
 	_ = p.waitEOF(10 * time.Second)

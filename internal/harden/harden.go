@@ -75,17 +75,6 @@ type Report struct {
 	Skipped bool `json:"skipped,omitempty"`
 }
 
-// Failed reports whether any step failed, so a caller can decide whether the
-// Report is worth printing.
-func (r Report) Failed() bool {
-	for _, s := range r.Steps {
-		if s.Err != "" {
-			return true
-		}
-	}
-	return false
-}
-
 // WriteFailures prints one line per failed step, and nothing at all when every
 // step succeeded.
 //
