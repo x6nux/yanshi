@@ -505,8 +505,20 @@ $X -rf /`, want: wantFloor},
 		why: "`-e` here is a PATTERN and the operand does contain a space, so it is the " +
 			"nonInterpreterPrograms relief table — not looksLikeCode — that keeps it out. Missing " +
 			"an entry there costs one prompt; this row is what proves the entry is live"},
-	{cmd: `git -c user.name=x commit -m "hi there"`, want: wantAllow, tableOnly: noUtilityShim,
-		why: "same relief table"},
+	// git was in the relief table too, and for the same shape as rsync: `-c`
+	// takes a CONFIG KEY, and `core.pager`, `alias.*`, `diff.external` and
+	// `core.editor` are all keys whose value git hands to a shell. The entry's
+	// justification named one innocuous value (`core.pager="less -R"`) instead
+	// of the value space. Both spellings below were measured Allow with a real
+	// /bin/sh handing `rm -rf /` to the recorder.
+	{cmd: `git -c core.pager='rm -rf /' log`, want: wantPrompt},
+	{cmd: `git -c alias.zz='!rm -rf /' zz`, want: wantPrompt},
+	// This row is what the entry was buying, and it is still Allow WITHOUT it:
+	// `user.name=x` carries no whitespace, so looksLikeCode never fired on it
+	// and the relief was never load-bearing here.
+	{cmd: `git -c user.name=x commit -m "hi there"`, want: wantAllow,
+		why: "the -c operand has no whitespace and no structural punctuation, so no reading takes " +
+			"it for a command. git is no longer in the relief table and this row did not move"},
 
 	// ---- Storage destroyers reached through their own operands --------------
 	{cmd: `truncate -s 0 /dev/disk0`, want: wantFloor, tableOnly: noDeviceWitness},
@@ -848,7 +860,11 @@ const tableOnlyRowCount = 32
 // pinning `pkexec rm -rf /` (already witnessed executing) to Allow and watching
 // the package stay green. Folding the two into one number would let a growing
 // pile of the second kind hide behind a shrinking pile of the first.
-const unwitnessedAllowRowCount = 18
+//
+// It went DOWN by one when git left the relief table: `git -c user.name=x
+// commit` needed a stand-in to witness the removal, and once git was on the
+// shim PATH the reference shell constrained that row too.
+const unwitnessedAllowRowCount = 17
 
 // TestTableOnlyRowsHaveNotGrown is the half of the bookkeeping that does not
 // need a shell, so it runs on the Windows leg too — where the differential

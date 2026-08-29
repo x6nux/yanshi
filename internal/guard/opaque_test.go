@@ -300,3 +300,52 @@ func TestOpaqueIsNotTheStructuralFloor(t *testing.T) {
 		t.Fatal("the opaque refusal has no reason; an operator cannot act on it")
 	}
 }
+
+// reliefOperandClass pins nonInterpreterPrograms' membership together with the
+// CLASS of operand each entry claims, one word per entry.
+//
+// The table's admission rule (see its doc) turns on the class: a pattern, a
+// mini-language script, a request body or a name is admitted; a value in a
+// general-purpose key/value channel is not. Two entries were wrong at once —
+// `rsync` (a transport command) and `git` (a config key) — and both had a
+// justification that read plausibly because it was written about ONE value of
+// the flag. Requiring the class here does not verify the claim; it makes
+// adding an entry a reviewable edit that has to state one, rather than a
+// one-word diff.
+var reliefOperandClass = map[string]string{
+	"grep": "pattern", "egrep": "pattern", "fgrep": "pattern", "zgrep": "pattern",
+	"rg": "pattern", "ag": "pattern",
+	"sed":     "mini-language script",
+	"jq":      "filter expression",
+	"curl":    "request body",
+	"wget":    "request body",
+	"echo":    "text written to stdout",
+	"printf":  "text written to stdout",
+	"kubectl": "container name",
+}
+
+// TestReliefTableMembershipIsPinned checks the pin in both directions, so an
+// entry cannot be added without a class and a class cannot outlive its entry.
+func TestReliefTableMembershipIsPinned(t *testing.T) {
+	for p := range nonInterpreterPrograms {
+		if reliefOperandClass[p] == "" {
+			t.Errorf("%q is in the relief table with no operand class named. Read the admission "+
+				"rule on nonInterpreterPrograms first: an entry whose operand is a value in a "+
+				"key/value channel (a config key, an environment variable, a transport command) "+
+				"does not belong there at all — that is how `rsync` and `git` both got in", p)
+		}
+	}
+	for p := range reliefOperandClass {
+		if !nonInterpreterPrograms[p] {
+			t.Errorf("%q has an operand class but is no longer in the relief table", p)
+		}
+	}
+	// The two removals, named so re-adding either one is a deliberate act.
+	for _, p := range []string{"rsync", "git", "docker", "podman", "nerdctl"} {
+		if nonInterpreterPrograms[p] {
+			t.Errorf("%q is back in the relief table. Its flag operand is a value in a key/value "+
+				"channel (rsync -e: a transport command; git -c: a config key; docker -e: a "+
+				"container environment variable), which the admission rule refuses", p)
+		}
+	}
+}

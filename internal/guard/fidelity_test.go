@@ -162,7 +162,38 @@ esac
 	// find needs its own argument shape; see findScript for what its stand-in
 	// does and does not emulate.
 	"find": findScript,
+
+	// git dispatches commands through a general-purpose key/value channel, and
+	// the relief table it used to be in was justified for exactly one value of
+	// one key. The stand-in is that channel and nothing else — no subcommands,
+	// no repository — because the claim the corpus rows make is only that some
+	// key in it names a program git hands to a shell.
+	"git": gitConfigScript + "exit 0\n",
 }
+
+// gitConfigScript is git's `-c key=value` channel, for the handful of keys
+// whose value git hands to a shell: the pager, the editor, an external diff
+// driver, the sequence editor, and any `alias.*` whose value begins with `!`.
+// A leading `!` is stripped because that is git's own marker for "this alias is
+// a shell command" rather than part of it.
+//
+// The list is not git's full configuration space and does not need to be: the
+// claim being witnessed is that SOME key in this channel names a program, which
+// is the claim the relief-table entry for git implicitly denied. A key outside
+// the list (`user.name`) falls through, which is what keeps the ordinary
+// `git -c user.name=x commit` row honest.
+const gitConfigScript = `prev=
+for a in "$@"; do
+  case "$prev" in
+    -c)
+      case "$a" in
+        core.pager=*|core.editor=*|diff.external=*|sequence.editor=*|alias.*=*)
+          v=${a#*=}; exec /bin/sh -c "${v#!}" ;;
+      esac ;;
+  esac
+  prev="$a"
+done
+`
 
 // relayPreamble is the shared argv walk: skip the runner's own options, then a
 // fixed number of its own operands, leaving "$@" as the command to run.

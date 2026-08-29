@@ -76,21 +76,51 @@ var codePayloadFlags = map[string]bool{
 }
 
 // nonInterpreterPrograms are programs whose codePayloadFlags operand is DATA,
-// not code: a regular expression, a config path, a transport command for
-// another program to run.
+// not code: a regular expression, a filter script in the program's own
+// language, a request body, a container name.
 //
 // This is the relief table the file header describes, and its failure direction
 // is the safe one. A program missing from it produces one prompt on a command
-// that did not need one; a program wrongly IN it produces a silent pass, which
-// is why membership is "the flag's operand is documented as not being a
-// program" rather than "this program is trusted".
+// that did not need one; a program wrongly IN it produces a SILENT PASS.
 //
-// `rsync` WAS here and was wrong, which is the failure direction this comment
-// warns about, arriving. The justification on its line read "-e is the remote
-// shell for the transfer" — and a remote shell for the transfer is a PROGRAM
-// rsync execs. `rsync -e 'sh -c "rm -rf /"' a h:b` was Allow. An entry has to
-// mean "the operand is not a program", and "the operand is the program used to
-// reach the far end" is the opposite of that.
+// # The admission rule, rewritten after it let the same defect in twice
+//
+// The rule used to read "the flag's operand is documented as not being a
+// program". Two entries satisfied that sentence and were still wrong:
+//
+//   - `rsync`, justified as "-e is the remote shell for the transfer" — and a
+//     remote shell for the transfer is a PROGRAM rsync execs.
+//     `rsync -e 'sh -c "rm -rf /"' a h:b` was Allow.
+//   - `git`, justified with an EXAMPLE rather than a class: `git -c
+//     core.pager="less -R" log`. `core.pager` is a program git hands to a
+//     shell, and so are `alias.*`, `diff.external`, `core.editor` and
+//     `sequence.editor`. `git -c core.pager='rm -rf /' log` was Allow.
+//
+// Both slipped through because the sentence was written about ONE value of the
+// flag. The rule is therefore about the flag's VALUE SPACE, and it has a
+// negative half that names the shape both failures had:
+//
+//	ADMITTED when the operand is consumed BY THE PROGRAM ITSELF as a value of
+//	one fixed, non-executable type: a pattern, a script in the program's own
+//	non-shell mini-language, a request body, a name.
+//
+//	REFUSED when the operand is a value in a GENERAL-PURPOSE KEY/VALUE CHANNEL
+//	— a configuration key, an environment variable, a transport command.
+//	Such a channel's value type is "whatever that key means", and the set of
+//	keys meaning "a program to run" is unbounded. Operationally: IF THE FLAG
+//	TAKES A `key=value` PAIR AT ALL, THE ENTRY IS REFUSED.
+//
+// That is what disqualifies rsync's `-e` and git's `-c`, and it also names the
+// third instance BEFORE it arrives rather than after: `docker`/`podman`/
+// `nerdctl` were here for `-e VAR=VALUE`, a container environment variable,
+// which is the same channel one process boundary over. They are gone too —
+// measured, their relief bought nothing, because `-e FOO=bar` carries no
+// whitespace and looksLikeCode never fired on it.
+//
+// TestReliefTableMembershipIsPinned holds the membership and the operand class
+// of every entry, so an addition is a reviewable edit with a class named on it
+// rather than a one-word diff. It does not verify the claim — that is what the
+// corpus rows and their real-shell witness are for.
 var nonInterpreterPrograms = map[string]bool{
 	// -e is a PATTERN.
 	"grep": true, "egrep": true, "fgrep": true, "zgrep": true, "rg": true, "ag": true,
@@ -106,10 +136,6 @@ var nonInterpreterPrograms = map[string]bool{
 	// thing for the trailing-argv scan; this is the membership rule's own
 	// wording of it — the operand is documented as not being a program.
 	"echo": true, "printf": true,
-	// -c is a configuration override (`git -c core.pager="less -R" log`).
-	"git": true,
-	// -e is an environment variable for the container.
-	"docker": true, "podman": true, "nerdctl": true,
 	// -c names a container in a pod.
 	"kubectl": true,
 }
