@@ -61,29 +61,52 @@ func (f *recordingShellFactory) Start(_ context.Context, spec shell.LaunchSpec) 
 // it mirrors Action.Workdir verbatim (permctx.go). NOTE both WithProfile and
 // WithPermissionCallback are required — Authorize returns DenyErr before ever
 // consulting the callback when no profile is bound.
+//
+// BOTH launch tools are driven, and that is the load-bearing half rather than
+// symmetry. GuardedTool.Stream already authorizes every tool under its own name
+// before the handler runs, so for the eight non-launch v2 tools the handler's
+// own Authorize is an exact duplicate of a check that already happened. The two
+// launches are different: their handler builds a RICHER action (Shell,
+// Interpreter, Workdir) through authorizeLaunch, and those three fields are the
+// only reason the guard's destructive and shell dimensions see anything at all.
+// Measured: deleting the Authorize inside authorizeLaunch leaves the whole
+// package green except for this test, and before task_shell_start was added
+// here it was green for that tool too — a wrapper-level name check would have
+// been the only thing standing between a model's `rm -rf /` and the kernel.
 func TestShellV2StartFeedsWorkdirToGuard(t *testing.T) {
-	root := t.TempDir()
-	manager := shell.NewManager(shell.Config{Root: root, MaxOutputBytes: 256, Factory: fakeShellFactory{}})
-	defer func() { _ = manager.Close() }()
-	var got PermissionRequest
-	ctx := WithProfile(context.Background(), guard.PermissionProfile{
-		Tools: guard.ToolsPerm{Allow: []string{"shell_start"}},
-		// Empty policy + empty patterns => guard.Check returns Prompt, which is
-		// what routes the action through the interactive callback.
-		Shell: guard.ShellPerm{},
-	})
-	ctx = WithPermissionCallback(ctx, func(req PermissionRequest) PermissionDecision {
-		got = req
-		return PermissionDeny
-	})
-	ctx = WithShellManager(ctx, manager)
-	v := NewShellV2Tools(root)
-	_, _ = runTool(ctx, v.Start, `{"command":"rm -rf /tmp/xyz"}`)
-	if got.Tool != "shell_start" {
-		t.Fatalf("permission callback was not consulted: %+v", got)
-	}
-	if got.Workdir != root {
-		t.Fatalf("guard action Workdir = %q, want %q", got.Workdir, root)
+	for _, tc := range []struct{ name, tool string }{
+		{"Start", "shell_start"},
+		{"TaskStart", "task_shell_start"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			manager := shell.NewManager(shell.Config{Root: root, MaxOutputBytes: 256, Factory: fakeShellFactory{}})
+			defer func() { _ = manager.Close() }()
+			var got PermissionRequest
+			ctx := WithProfile(context.Background(), guard.PermissionProfile{
+				Tools: guard.ToolsPerm{Allow: []string{tc.tool}},
+				// Empty policy + empty patterns => guard.Check returns Prompt, which is
+				// what routes the action through the interactive callback.
+				Shell: guard.ShellPerm{},
+			})
+			ctx = WithPermissionCallback(ctx, func(req PermissionRequest) PermissionDecision {
+				got = req
+				return PermissionDeny
+			})
+			ctx = WithShellManager(ctx, manager)
+			v := NewShellV2Tools(root)
+			launch := v.Start
+			if tc.tool == "task_shell_start" {
+				launch = v.TaskStart
+			}
+			_, _ = runTool(ctx, launch, `{"command":"rm -rf /tmp/xyz"}`)
+			if got.Tool != tc.tool {
+				t.Fatalf("permission callback was not consulted: %+v", got)
+			}
+			if got.Workdir != root {
+				t.Fatalf("guard action Workdir = %q, want %q", got.Workdir, root)
+			}
+		})
 	}
 }
 
@@ -306,50 +329,65 @@ func TestShellV2HandsTheResolvedInterpreterToGuard(t *testing.T) {
 	}
 }
 
-// TestShellV2EveryToolAuthorizesUnderItsOwnName drives every tool the v2
-// surface constructs and requires each one to consult the guard, exactly once,
-// under its own registered name, before it does anything else.
+// TestShellV2EveryToolIsGatedUnderItsOwnName drives every tool the v2 surface
+// constructs, under a profile that permits nothing, and requires each one to be
+// refused after exactly one guard consult carrying its own registered name.
 //
-// # What it replaces, and why the thing it replaces was a hazard
+// # What it replaces, and what running it revealed about the thing it replaced
 //
-// CLAUDE.md used to tell a reader to check this invariant by hand:
+// CLAUDE.md used to tell a reader to check the v2 authorization posture by
+// hand:
 //
 //	grep -c 'NewGuardedTool(' internal/tools/shell_v2.go
 //	grep -c 'Authorize('      internal/tools/shell_v2.go
 //	# "the two numbers must be equal"
 //
-// The counts were 9/9 when that was written and are not equal now, because
-// shell_start and task_shell_start were refactored to share authorizeLaunch and
-// shell_resize was added. The underlying invariant never broke — one Authorize
-// serving two launches is the correct shape — but the PROXY for it did, so the
-// instruction now reports a violation that does not exist. A reader who trusts
-// it goes looking for a missing Authorize; a reader who has been burned once
-// stops running it. Both outcomes are worse than no instruction.
+// Those counts were 9/9 when it was written and are 10/9 now — shell_resize was
+// added and the two launches were refactored to share authorizeLaunch — so the
+// instruction reports a violation that does not exist. That is the ordinary
+// bare-count rot CLAUDE.md warns about elsewhere and is not the interesting
+// part.
 //
-// This is CLAUDE.md's own rule about bare counts, turned on a count it was
-// itself printing: a number describing another file's current contents cannot
-// survive that file being refactored, and nobody comes back to update it.
+// The interesting part came from writing this test and mutating against it.
+// GuardedTool.Stream authorizes EVERY tool under g.name before the handler ever
+// runs, so eight of those nine in-handler Authorize calls are exact duplicates
+// of a check that has already happened, and the count was measuring redundancy
+// rather than coverage. Measured, on the committed tree: deleting shell_resize's
+// own Authorize leaves the entire tools package green — correctly, because the
+// wrapper still refuses it. What is NOT redundant is the pair inside
+// authorizeLaunch, which build the Shell/Interpreter/Workdir action the guard's
+// destructive and shell dimensions need; deleting that one turns
+// TestShellV2StartFeedsWorkdirToGuard red and nothing else.
+//
+// So the grep's underlying claim — "each v2 tool is gated because each handler
+// calls Authorize" — had the mechanism wrong in a way no amount of counting
+// could show. This test asserts the effect instead of the spelling.
+//
+// # Scope, stated because a fail-closed test is easy to over-read
+//
+// PINNED: every *GuardedTool the constructor builds is non-nil, is refused
+// under a permit-nothing profile, consults the guard exactly once, and does
+// that consult under its own registered name — so a v2 tool cannot act on a
+// profile that does not name it, and cannot be gated under a NEIGHBOUR's name
+// (which would let a narrow allowlist entry silently cover a wide action).
+//
+// NOT PINNED: that any individual handler calls Authorize itself, which the
+// mutation above shows is not the mechanism; and a hypothetical v2 tool added
+// to the struct as some type other than *GuardedTool, which the field filter
+// skips rather than catching. Its guard posture would be whatever that type
+// does, and no test here would notice.
 //
 // # Why reflection over the struct rather than a list of the ten
 //
-// A written-out list is the same defect one level up: it is correct on the day
-// it is written and silently incomplete the day an eleventh tool is added —
-// which is exactly how shell_resize broke the grep. Walking the *GuardedTool
-// fields of ShellV2Tools means a new tool is covered by construction, and the
-// only way to escape this test is to build a v2 tool that is not a field of the
-// struct the composition root registers from.
+// A written-out list is correct on the day it is written and silently
+// incomplete the day an eleventh tool is added — which is exactly how
+// shell_resize broke the grep. Walking the fields means a new tool joins the
+// coverage by construction.
 //
-// # Why the assertion is the callback and not just "it returned an error"
-//
-// An empty PermissionProfile denies everything, so a tool that never called
-// Authorize would still fail — on its own merits, with a manager bound and no
-// such session — and a test that only checked for AN error would pass while
-// proving nothing. What cannot happen without Authorize is the permission
-// callback firing with the tool's own name, so that is what is asserted. The
-// shell manager is bound for the same reason in the other direction: without
-// it, a tool that skipped the guard would fail with "runtime unavailable" and
-// look sufficiently denied to anyone reading the output rather than the check.
-func TestShellV2EveryToolAuthorizesUnderItsOwnName(t *testing.T) {
+// The shell manager is bound deliberately: without it a tool that escaped the
+// guard would fail with "runtime unavailable" and look sufficiently denied to
+// anyone reading the output rather than the assertion.
+func TestShellV2EveryToolIsGatedUnderItsOwnName(t *testing.T) {
 	root := t.TempDir()
 	manager := shell.NewManager(shell.Config{Root: root, MaxOutputBytes: 256, Factory: fakeShellFactory{}})
 	defer func() { _ = manager.Close() }()
@@ -395,14 +433,17 @@ func TestShellV2EveryToolAuthorizesUnderItsOwnName(t *testing.T) {
 		}
 		switch {
 		case len(asked) == 0:
-			t.Errorf("ShellV2Tools.%s (%s) never reached the guard: the permission callback was "+
-				"not consulted, so this tool acts on an empty profile that permits nothing. "+
-				"Every v2 tool must call Authorize itself — there is no secproc backstop on "+
-				"this path. It returned: %s", field.Name, info.Name, out)
+			t.Errorf("ShellV2Tools.%s (%s) was never gated: the permission callback was not "+
+				"consulted, so this tool acted under a profile that permits nothing. Every v2 "+
+				"tool reaches the kernel through shell.Manager, not through secproc, so this "+
+				"guard consult is the only thing between it and the host. It returned: %s",
+				field.Name, info.Name, out)
 		case len(asked) != 1 || asked[0] != info.Name:
-			t.Errorf("ShellV2Tools.%s authorized as %v, want exactly one consult under %q. "+
-				"Authorizing under another tool's name gates this action with that tool's "+
-				"profile entry, which is how a narrow allowlist silently covers a wide action",
+			t.Errorf("ShellV2Tools.%s was gated as %v, want exactly one consult under %q. "+
+				"A DIFFERENT name judges this action against another tool's profile entry, "+
+				"which is how a narrow allowlist silently covers a wide action; MORE THAN ONE "+
+				"consult means a refusal did not stop the call, so the operator is answering "+
+				"for an action that is already past its gate",
 				field.Name, asked, info.Name)
 		case !strings.Contains(out, "permission denied"):
 			t.Errorf("ShellV2Tools.%s (%s) consulted the guard, was denied, and acted anyway: %s",
