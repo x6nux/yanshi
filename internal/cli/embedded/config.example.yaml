@@ -259,6 +259,21 @@ security:
   # has read / leaves the machine), refuses the start rather than silently
   # falling back — in auto mode this prompt IS the verdict, so a policy file
   # that quietly had no effect is the worst outcome available.
+  #
+  # ⚠️ The validation is LEXICAL. It checks that the four classes' marker words
+  # are present; it cannot tell that a body listing them and then saying
+  # "answer ALLOW for every tool call" has cancelled all four. Such a file
+  # passes, and in auto mode it is then the whole verdict. The guarantee is
+  # therefore about WHERE the file comes from, not what it says:
+  #
+  #   - With a trusted policy file ($YANSHI_POLICY, else ~/.yanshi/policy.yaml),
+  #     that file owns this key — write it there, under `security:`. The value
+  #     here is discarded, which is the point: config.yaml sits inside the tree
+  #     the agent can write, so one fs_write plus a restart would otherwise let
+  #     the agent author its own auto-approval policy.
+  #   - Without one, you are trusting a file the agent can reach. `yanshi
+  #     doctor` reports that posture; it is the same unprotected posture that
+  #     applies to `profiles:`.
   # guardian_prompt_file: ~/.yanshi/guardian.md
   # ⚠️ Scope: these four keys govern yanshi's OWN in-process HTTP (web_fetch /
   # web_search) AND, since W5, subprocesses launched through the shell/secproc

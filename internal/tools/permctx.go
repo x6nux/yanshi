@@ -519,9 +519,11 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 	// Placed AFTER guard.Check so it can only ever tighten: a Prompt stays a
 	// Prompt and a HardDeny of either tier is untouched, so strict mode cannot
 	// downgrade the structural floor into something a callback may answer.
+	strictConfirm := false
 	if dec.Verdict == guard.Allow && confirmEveryCall(ctx) {
 		dec = guard.ConfirmPrompt("strict mode: every tool call is confirmed, " +
 			"including ones the permission profile already allows")
+		strictConfirm = true
 	}
 	// profileDenied marks an OVERRIDABLE profile-policy HardDeny routed through
 	// the shared escalation path (approval manager -> callback) so the interactive
@@ -563,12 +565,27 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 	}
 
 	// (3) Approval manager: short-circuit on a prior session/persistent rule.
-	scope, err := scopeFromAction(action)
-	if err != nil {
+	//
+	// A scope that cannot be derived is a hard refusal for a GENUINE prompt —
+	// the shape scopeFromAction's own doc explains at length, where a silent
+	// denial once hid behind it. It must NOT be one for a call strict mode
+	// rewrote: the guard said Allow, and a UX mode whose promise is "you get
+	// asked" turning that into a refusal the user never sees is a regression the
+	// mode introduced, not a policy anyone chose. Multi-segment commands
+	// (`echo a && echo b`, which guard evaluates per segment and allows) landed
+	// there with asked=0 and an internal error string.
+	//
+	// The memory is what is actually lost. Without a scope there is nothing to
+	// look up and nothing to store, so a confirmed call is honoured ONCE and
+	// "always allow" degrades to "allow" — which is the conservative reading of
+	// a button whose scope nobody can write down.
+	scope, scopeErr := scopeFromAction(action)
+	if scopeErr != nil && !strictConfirm {
 		auditPermission(ctx, action, "deny", "approval_scope", "scope_error")
-		return &DenyErr{Reason: "approval scope: " + err.Error()}
+		return &DenyErr{Reason: "approval scope: " + scopeErr.Error()}
 	}
-	if ac, ok := approvalFromContext(ctx); ok {
+	scoped := scopeErr == nil
+	if ac, ok := approvalFromContext(ctx); ok && scoped {
 		if hit, _ := ac.Manager.Match(ac.SessionID, scope, time.Now()); hit {
 			auditPermission(ctx, action, "allow", "approval_manager", "")
 			return nil
@@ -596,6 +613,11 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 		auditPermission(ctx, action, "allow", source, "")
 		return nil
 	case PermissionAlwaysAllow, PermissionAllowSession:
+		if !scoped {
+			// Confirmed, but unstorable — see the scopeErr branch above.
+			auditPermission(ctx, action, "allow", "interactive_once", "unscopable")
+			return nil
+		}
 		if ac, ok := approvalFromContext(ctx); ok {
 			rule := approval.Rule{ID: newApprovalID(), Action: action.Tool, Scope: scope, TTL: approval.TTLSession, Source: approval.SourceUser, ExpiresAt: approvalExpiry(approval.TTLSession, time.Now())}
 			if err := ac.Manager.Record(ac.SessionID, rule); err != nil {
@@ -608,6 +630,10 @@ func Authorize(ctx context.Context, action guard.Action, argsJSON string) error 
 		auditPermission(ctx, action, "deny", "approval_record", "no_manager")
 		return &DenyErr{Reason: "approval manager unavailable"}
 	case PermissionAllowPersistent:
+		if !scoped {
+			auditPermission(ctx, action, "allow", "interactive_once", "unscopable")
+			return nil
+		}
 		if ac, ok := approvalFromContext(ctx); ok {
 			rule := approval.Rule{ID: newApprovalID(), Action: action.Tool, Scope: scope, TTL: approval.TTLPersistent, Source: approval.SourceUser, ExpiresAt: approvalExpiry(approval.TTLPersistent, time.Now())}
 			if err := ac.Manager.Record(ac.SessionID, rule); err != nil {
@@ -800,12 +826,25 @@ func RequireApproval(ctx context.Context, req PermissionRequest) error {
 // every approval -- including the ones the user was asked to grant "for this
 // session" -- outlived the session and every session after it.
 //
-// A zero return means no deadline, which is what TTLOnce wants: it is
-// consumed at the prompt and never recorded, so a rule carrying it is a bug
-// elsewhere and a deadline would only hide it.
+// TTLOnce used to return zero, on the reasoning that such a rule "is consumed
+// at the prompt and never recorded, so a rule carrying it is a bug elsewhere".
+// W-B-12 made that false in the same batch that wrote it: request_permission
+// records a TTLOnce rule for a call that has not happened yet, and it is the
+// DEFAULT scope. Manager.expireLocked does nothing with a zero ExpiresAt, so an
+// unconsumed pre-emptive grant outlived the eight-hour "session" one — the
+// narrow choice living longer, in wall-clock terms, than the wide one.
+//
+// It gets the same eight-hour bound rather than a shorter one because the
+// question it answers is the same: how long may a decision the operator made
+// keep applying while they are not looking. Consumption still ends it sooner;
+// this only stops "never used" from meaning "never expires".
+//
+// A zero return survives for a TTL class this function does not recognise,
+// which is the fail-safe direction only because Manager.Match still requires an
+// exact scope hit — a rule nothing matches grants nothing.
 func approvalExpiry(ttl approval.TTL, now time.Time) time.Time {
 	switch ttl {
-	case approval.TTLSession:
+	case approval.TTLOnce, approval.TTLSession:
 		// Long enough not to interrupt a working session, short enough that a
 		// forgotten terminal does not keep granting a decision made yesterday.
 		return now.Add(8 * time.Hour)

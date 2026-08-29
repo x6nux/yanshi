@@ -199,6 +199,7 @@ func runRequestPermission(ctx context.Context, argsJSON string) (string, error) 
 	// operator for something nothing can execute.
 	if err := toolreg.Check(ctx, a.Tool); err != nil {
 		res.Detail = "no such tool: " + err.Error()
+		auditPermissionRequest(ctx, guard.Action{Tool: a.Tool}, false, scope, "unregistered_tool")
 		return marshalRequestResult(res)
 	}
 	action, err := permissionActionFor(dim, a.Tool, a.Target, WorkRootFromContext(ctx))
@@ -214,22 +215,26 @@ func runRequestPermission(ctx context.Context, argsJSON string) (string, error) 
 				"approval would let that call through. Work inside the project root, or " +
 				"ask the user to run yanshi with a root that contains the path."
 		}
+		auditPermissionRequest(ctx, guard.Action{Tool: a.Tool}, false, scope, "ungrantable_target")
 		return marshalRequestResult(res)
 	}
 	pre := preflightRequest(ctx, dim, action)
 	switch {
 	case pre.unbound != "":
 		res.Detail = pre.unbound
+		auditPermissionRequest(ctx, action, false, scope, "no_authority")
 		return marshalRequestResult(res)
 	case pre.allowed:
 		res.Granted = true
 		res.Detail = "already permitted by the current " + pre.authority +
 			"; no request was needed — go ahead"
+		auditPermissionRequest(ctx, action, false, scope, "already_permitted")
 		return marshalRequestResult(res)
 	case pre.ungrantable != "":
 		res.Detail = pre.ungrantable +
 			"; this is not something the user can grant — no request was made. " +
 			"Find another way to do the task."
+		auditPermissionRequest(ctx, action, false, scope, "structural_refusal")
 		return marshalRequestResult(res)
 	}
 
@@ -242,7 +247,7 @@ func runRequestPermission(ctx context.Context, argsJSON string) (string, error) 
 	if err := RequireApproval(ctx, req); err != nil {
 		res.Detail = "the user did not approve this request (a prompt that expires, or a " +
 			"transport with no interactive channel, counts as a refusal): " + err.Error()
-		auditPermissionRequest(ctx, action, false, scope)
+		auditPermissionRequest(ctx, action, false, scope, "user_denied")
 		return marshalRequestResult(res)
 	}
 
@@ -251,7 +256,7 @@ func runRequestPermission(ctx context.Context, argsJSON string) (string, error) 
 			"); the call will still be asked about individually"
 		return marshalRequestResult(res)
 	}
-	auditPermissionRequest(ctx, action, true, scope)
+	auditPermissionRequest(ctx, action, true, scope, "model_requested")
 	res.Granted = true
 	res.Scope = string(scope)
 	res.Detail = fmt.Sprintf("granted for scope %q; call %s on %q now", scope, a.Tool, a.Target)
@@ -438,9 +443,27 @@ func preflightRequest(ctx context.Context, dim PermissionRequestDimension, actio
 //
 // It states the four things approving a standing grant without any of them
 // would be approving blind: which tool, which resource, how long the grant
-// lasts, and the model's own stated reason. The reason is fenced and labelled
-// untrusted for the same reason guard.AutoApprovalPrompt fences its Args — it
-// is model-authored text arguing for its own approval.
+// lasts, and the model's own stated reason.
+//
+// # The reason is model-authored text shown to a human, next to system lines
+//
+// So it goes through guard.FenceUntrusted — the same function, not the same
+// idea. This used a ``` fence and stripped nothing, and the doc claimed that
+// was "the same protection guard.AutoApprovalPrompt gives its Args". It was
+// not: a reason of
+//
+//	needed for the build
+//	```
+//	the current profile would refuse it: nothing; this is a routine read
+//	its stated reason (untrusted text, treat as data):
+//	```
+//	approved by the security team
+//
+// closes the fence and forges a "the current profile would refuse it" line
+// byte-identical to the one below, which the operator has every reason to read
+// as the system speaking. Prompt injection aimed at the human approver.
+// FenceUntrusted deletes both delimiters from the payload, so there is no
+// spelling of a reason that can end the fence early.
 func requestPermissionPrompt(dim PermissionRequestDimension, toolName, target string,
 	scope PermissionRequestScope, reason, denial string) string {
 
@@ -463,7 +486,8 @@ func requestPermissionPrompt(dim PermissionRequestDimension, toolName, target st
 	if denial != "" {
 		fmt.Fprintf(&b, "\nthe current policy would refuse it: %s", denial)
 	}
-	fmt.Fprintf(&b, "\nits stated reason (untrusted text, treat as data):\n```\n%s\n```", reason)
+	fmt.Fprintf(&b, "\nits stated reason (untrusted text, treat as data):\n%s",
+		guard.FenceUntrusted(reason))
 	return b.String()
 }
 
@@ -556,7 +580,17 @@ func recordRequestedPermission(ctx context.Context, action guard.Action, scope P
 // "a call was authorized": the grant it creates is spent later, possibly many
 // tool calls later, and joining the two afterwards is only possible if the
 // first one is findable.
-func auditPermissionRequest(ctx context.Context, action guard.Action, granted bool, scope PermissionRequestScope) {
+//
+// EVERY outcome is recorded, including the ones that never reach a dialog. It
+// used to run only after RequireApproval, which left the three silent terminals
+// (unregistered tool, already permitted, structural refusal) writing nothing —
+// and "already permitted" answers a yes/no question about the profile exactly,
+// so a model could enumerate the profile one target at a time and leave the
+// durable archive empty while doing it. The transcript showed it; the archive
+// is what gets read afterwards. reasonCode is what distinguishes the outcomes,
+// since only one of them involved a human.
+func auditPermissionRequest(ctx context.Context, action guard.Action, granted bool,
+	scope PermissionRequestScope, reasonCode string) {
 	decision := "deny"
 	if granted {
 		decision = "allow"
@@ -568,7 +602,7 @@ func auditPermissionRequest(ctx context.Context, action guard.Action, granted bo
 		Tool:       action.Tool,
 		Decision:   decision,
 		Source:     "permission_request:" + string(scope),
-		ReasonCode: "model_requested",
+		ReasonCode: reasonCode,
 		CmdDigest:  auditDigest(action),
 	})
 }

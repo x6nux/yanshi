@@ -9,9 +9,16 @@ import (
 // governs what happens when the static PermissionProfile would DENY a tool call
 // (i.e. the permission callback is about to prompt the user):
 //
-//   - ModeStrict:      confirm EVERY tool call, including ones the static
-//     profile already allows. The only mode that reaches the callback on an
-//     Allow verdict; see tools.WithConfirmEveryCall.
+//   - ModeStrict:      confirm every tool call OF THE MAIN TURN, including ones
+//     the static profile already allows. The only mode that reaches the
+//     callback on an Allow verdict; see tools.WithConfirmEveryCall.
+//     The qualifier is load-bearing and was missing: a MANAGED SUB-AGENT turn
+//     runs on registry.Manager's RootContext (context.Background()) and
+//     inherits only what managedTurnRunner.Run re-binds by name, which does not
+//     include the confirm predicate. So the agent_start call is confirmed and
+//     the calls the sub-agent then makes are not.
+//     internal/agent/orchestrator::TestStrictModeDoesNotReachManagedSubAgents
+//     pins that, and names what else would have to change to widen it.
 //   - ModeDefault:     prompt the user (the original behavior).
 //   - ModeAllowEdits:  auto-approve file write/edit tools; prompt for the rest.
 //   - ModeYOLO:        auto-approve everything, never prompt.

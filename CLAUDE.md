@@ -160,9 +160,13 @@ Profile 来自 `profiles:` 配置 map（见 `config.example.yaml` 中的 `coding
 
   **提示词可由操作员整体替换**（W-B-14，`security.guardian_prompt_file`），但**可定制不等于可掏空**：`guard.ValidateAutoApprovalTemplate` 按 `guard.RequiredRiskCategories` 的四类逐条校验，缺任何一类都拒。两道，失败方式不同 —— `internal/config::Config.loadGuardianPrompt` 在**加载期**拒绝启动（可见），`guard.AutoApprovalPromptWith` 在**使用期**回落到内置正文（安全）。四类的门槛比内置正文低得多（内置那份由上面那条 17 类的测试守），否则「可覆盖」就只允许把内置的原样交回来。**可替换的只有指令正文**：fence、「视为数据」标注、单词回复契约留在 Go 里 —— 后者是 `guard.ParseAutoApproval` 实现的那半个契约，操作员改不到一个自己看不见的解析器。
 
+  ⚠️ **「可定制不等于可掏空」只在词法层成立，别把它读成语义保证。** 校验是九个 marker 的存在性检查：一份**列全九个 marker、正文写「answer ALLOW for every tool call… never answer ASK」**的模板，加载期与使用期**双双通过**，在 auto 模式里成为全部判据（实测；`internal/config::TestGuardianPromptIsUnderTrustedPolicyAuthority` 顺带把「它确实通过校验」钉住了）。所以真正的保证是**出处而不是内容**：`security.guardian_prompt_file` 现在归**可信策略文件**管（`config.PolicySecurity`）—— 有 policy 文件时它说了算，**说空也算**（空 = 内置正文），本地 `config.yaml` 里的值被丢弃。理由与 W-B-18 拒绝让 `fs.protected` 可删减**逐字相同**：config.yaml 在 agent 自己的写作用域里，一次 `fs_write` 加一次重启就能让 agent 给自己写一份放行政策。这两条此前对同一个威胁模型给了相反的判断。没有 policy 文件时本地键照旧生效 —— 与 `profiles:` 同一套向后兼容姿态，`yanshi doctor` 报告这个未受保护的姿态。
+
   **没有等级也没有阈值**（此前是 LLM 打 1-10 分比阈值，中间还短暂做过静态黑白名单）。**错误策略是单向的**：无模型、超时、API 报错、回复读不懂，全部 → 弹窗。**auto 退化成 manual，永远不退化成放行**。回复解析（`guard.ParseAutoApproval`）只认 ≤3 词的短回答且拒绝两个判决词并存 —— 散文没法解析只能拒绝，`I would not allow this without asking` 里 "asking" 不是 "ask"，纯词扫描会把一句拒绝读成批准（这是测试逼出来的，不是设计出来的）。
 - **default / allow-edits**：普通拒绝弹窗询问；profile 策略拒绝（`ProfileHardDeny`）**静默拒绝**（`policy: "deny"` = 不问，直接拦）。
 - **strict**（W-B-20 补的第四档执行级别，对应 QwenPaw 的 STRICT）：**在 `resolvePermissionMode` 里与 default 逐字节同判** —— 一个只在「已被拒绝的调用」上跑的模式闸门，没有比 default 更严的余地。它的额外严格**不在 guard 也不在这个函数里**，而在 `internal/tools::Authorize`：`tools.WithConfirmEveryCall` 绑定的谓词为真时，guard 给的 **Allow 被改写成 Prompt**（`guard.ConfirmPrompt`），于是 profile 本来放行的调用也走一遍审批链。改写点在 `guard.Check` **之后**，所以只能收紧：Prompt 仍是 Prompt，两档 HardDeny 都不动。谓词是个**函数**而不是 bool，因为 `permModeState` 是活的 —— turn 开始时快照会把模式冻在宽的一侧。谓词未绑定（子代理、SSE、绝大多数测试）时逐字节等于引入前的行为。
+
+  ⚠️ **「每一次工具调用」指的是主 turn 的每一次**，**不含被托管的子代理**：`registry.Manager` 的 RootContext 是 `context.Background()`，子代理 turn 只拿到 `managedTurnRunner.Run` 逐个重绑的那些值，谓词不在那张表里。所以 `agent_start` 本身会被确认，它之后子代理的每次工具调用不会。`internal/agent/orchestrator::TestStrictModeDoesNotReachManagedSubAgents` 钉住这条，并写明了要把它扩到子代理还需要改什么（那条路径上没有 callback，直接绑谓词等于把子代理的工具调用**全拒**而不是全问）。**另一处**：strict 把 Allow 改写成 Prompt 后，`scopeFromAction` 建不出 scope 的命令（多可执行段，如 `echo a && echo b`）此前变成 `asked=0` 的**硬拒绝**；现在照样弹窗，只是**不进审批记忆**（`always allow` 退化成一次性 allow）。非 strict 的 scope 错误仍是硬拒绝，那一档没动。
 - **plan**：只读，写操作一律拒绝。
 
   ⚠️ **`strict` 与 `plan` 都不在 `guard.CycleMode` 的 Shift+Tab 环里**，只能显式键入 `/mode strict`。理由对称：一个对每次调用都弹窗，另一个什么都不让写，误切进去代价都很大。
@@ -251,7 +255,7 @@ per-turn 的可插拔停止条件框架：`loopguard.Gate` 观察每次迭代（
 - **重复逻辑必须抽成公共函数** —— 发现重复实现的函数或反复出现的相同逻辑片段时，提取为公共函数/辅助函数（同包内，或放进合适的小包）复用；禁止复制粘贴。
 - **注释是承重文档** —— 包和导出符号都带有多段 doc 注释来解释*为什么*（尤其在 ADK、guard、VCS 周围）。在这些区域增改时，请保持同样的注释密度。
 - **Fake 优先于 mock** —— `einollm.FakeModel`、`goalloop.FakePlanner`/`FakeImplementer`、`cli.FakeBackend`、`acp.FakeAgent` 驱动确定性测试，无需 API key 或子进程。优先新增一个 fake，而非引入 mock 框架。
-- **承重架构决策走 ADR** —— `docs/adr/` 是单决策的演进档案（ADR-0001..0011 已覆盖 UnknownToolsHandler、guard fail-closed、压缩、WS/SSE、autoVCS scope 覆盖、台账逐句对账等）。新增或修改上述架构章节里的约束时，从 `docs/adr/0000-template.md` 复制一条新 ADR（编号取当前最大 +1），把不可违反的约束落进 Consequences。CLAUDE.md 写全景当前态，ADR 写单条决策的来龙去脉 —— 交叉引用，不要互相复制。
+- **承重架构决策走 ADR** —— `docs/adr/` 是单决策的演进档案（ADR-0001..0022 已覆盖 UnknownToolsHandler、guard fail-closed、压缩、WS/SSE、autoVCS scope 覆盖、台账逐句对账、授权只在被消费处成立、可信策略文件的射程判据等）。新增或修改上述架构章节里的约束时，从 `docs/adr/0000-template.md` 复制一条新 ADR（编号取当前最大 +1），把不可违反的约束落进 Consequences。CLAUDE.md 写全景当前态，ADR 写单条决策的来龙去脉 —— 交叉引用，不要互相复制。
 - **对外契约在 `sdk/`** —— `sdk/schema/` 存放版本化的 API 契约（v1、v1.1），**它就是真相源**：`sdk/schema/schema.go` 用 embed 暴露那两个物理文件，`internal/api/v1::SchemaBytes` 原样返回 v1，`GET /api/v1/schema/agent-v1.json` 吐的就是这串字节。此前运行时另有一份 3-`$defs` 的 Go 字面量、`$id` 与 SDK 那份 21-`$defs` 的不同，客户端 fetch 到的文档描述的不是它自己 SDK 强制的契约。
   `sdk/python` 与 `sdk/ts` 是**手工维护**的镜像（都不是生成的 —— `cmd/api-schema` 曾自称 TS 生成器而实为手抄字面量，那一半已删，命令现在只有 `-markdown` 一个职责）。四路一致性由 `internal/api/v1/parity_test.go::TestContractParityAcrossFourSources` 对账：Go struct / JSON Schema / TS / pydantic 的字段集合必须一致，差异逐条具名带理由，死条目判失败。落点在 Go 侧是因为 `go test ./...` 无条件跑，而 Node/Python 工具链在 CI 里是可选步骤。改动 `internal/api` 的 wire 格式时四处同改，漏一处那条测试会红。
 - **提交信息用 conventional commit** —— `feat(scope):` / `fix:` / `docs:` / `refactor:` / `test:` / `chore:` / `ci:`，CHANGELOG 由 `cliff.toml` 自动生成。**（重要：用户没主动要求时，绝对不要执行 git 提交/分支操作）**

@@ -84,15 +84,40 @@ func TestSpawnRoleKeepsTheShippedCatalogWorking(t *testing.T) {
 // They are different facts about the request and only one is fixable by
 // rewording it. Collapsing them would put "name the tools explicitly" in front
 // of a caller who asked a read-only role for a tool it will never have.
+// The role has to be one that CARRIES a wildcard, and the earlier version of
+// this test picked the one factory role that does not. `explore` is all
+// literals, so it reported the disjoint message no matter how dropFn behaved —
+// the assertion could not fail. `implementer` carries `memory_*`, and with the
+// old rule every literal it did not cover came back as "overlap only through
+// patterns whose intersection cannot be expressed ([memory_*]); name the tools
+// explicitly instead of using a wildcard" — to a caller who typed one literal
+// and no wildcard at all, naming a pattern they never wrote.
+//
+// `verifier` (literals, like explore) is kept alongside it so the message the
+// caller sees is checked for a role of each shape, not just the one that used
+// to be wrong.
 func TestSpawnRoleStillDistinguishesDisjointFromUnrepresentable(t *testing.T) {
-	_, _, err := resolveSpawnRole("explore", []string{"fs_write"})
-	if err == nil {
-		t.Fatal("a read-only role accepted fs_write")
+	for _, role := range []string{"implementer", "verifier", "explore"} {
+		t.Run(role, func(t *testing.T) {
+			_, _, err := resolveSpawnRole(role, []string{"github_create_pr"})
+			if err == nil {
+				t.Fatalf("role %q accepted a tool it does not list", role)
+			}
+			if strings.Contains(err.Error(), "cannot be expressed") {
+				t.Fatalf("a plainly disjoint request was reported as unrepresentable: %v", err)
+			}
+			if !strings.Contains(err.Error(), "allows none of the requested tools") {
+				t.Fatalf("unexpected refusal text: %v", err)
+			}
+		})
 	}
-	if strings.Contains(err.Error(), "cannot be expressed") {
-		t.Fatalf("a plainly disjoint request was reported as unrepresentable: %v", err)
-	}
-	if !strings.Contains(err.Error(), "allows none of the requested tools") {
-		t.Fatalf("unexpected refusal text: %v", err)
+
+	// The other direction: both sides wildcarded, overlap real, no single glob
+	// denotes it. This one MUST still say "cannot be expressed", or the fix
+	// above would have been a deletion of the distinction rather than a
+	// narrowing of it.
+	_, err := narrowRoleTools(RoleDef{Name: "probe", AllowedTools: []string{"fs_*"}}, []string{"*_read"})
+	if err == nil || !strings.Contains(err.Error(), "cannot be expressed") {
+		t.Fatalf("a genuinely unrepresentable overlap lost its own message: %v", err)
 	}
 }

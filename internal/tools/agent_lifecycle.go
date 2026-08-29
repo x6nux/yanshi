@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -219,13 +220,33 @@ func intersectToolSets(roleTools, callerTools []string) (kept, unprovable []stri
 			out = append(out, name)
 		}
 	}
+	// An unrepresentable overlap needs a wildcard on BOTH sides.
+	//
+	// Only a wildcard can be one at all — a literal the other side does not
+	// match is plain disjointness, and calling that "cannot be expressed" sends
+	// the caller looking for a spelling that does not exist. But that test alone
+	// is not enough, and the shipped catalog proved it: `implementer` carries
+	// `memory_*`, so ANY literal request it did not cover came back as
+	// "overlap only through patterns whose intersection cannot be expressed
+	// ([memory_*]); name the tools explicitly instead of using a wildcard" — to
+	// a caller who wrote one literal and no wildcard at all, naming a pattern
+	// they never typed.
+	//
+	// It is sound to require both sides. A wildcard on one side meets literals
+	// on the other, and each of those literals either matches (kept above) or is
+	// not in the set at all; so the intersection is exactly the kept ones and
+	// there is nothing left over to be inexpressible.
+	//
+	// Still conservative in the other direction: `fs_*` against `net_*` is
+	// reported as unrepresentable although it is empty. Deciding glob
+	// disjointness in general is a machine this hint does not justify, and the
+	// error is the harmless one — the request is refused either way, and the
+	// wording only affects what the caller tries next.
+	bothSidesGlob := slices.ContainsFunc(roleTools, guard.HasGlobMeta) &&
+		slices.ContainsFunc(callerTools, guard.HasGlobMeta)
 	dropped := map[string]bool{}
 	dropFn := func(name string) {
-		// Only a WILDCARD can be an unrepresentable overlap. A literal that no
-		// pattern on the other side matches is a plain disjointness, and
-		// reporting it as "cannot be expressed" would send the caller looking
-		// for a spelling that does not exist.
-		if guard.HasGlobMeta(name) && !dropped[name] {
+		if bothSidesGlob && guard.HasGlobMeta(name) && !dropped[name] {
 			dropped[name] = true
 			unprovable = append(unprovable, name)
 		}

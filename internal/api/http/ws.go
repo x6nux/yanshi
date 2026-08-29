@@ -694,8 +694,15 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 			turnCtx = tools.WithErrCounter(turnCtx)
 			// W-B-20: the one seam that lets an ALLOWED call reach the callback.
 			// It reads cs.perm LIVE for the reason permModeState exists at all —
-			// a /mode strict typed mid-turn must bind on the very next tool call,
-			// including one already running inside a sub-agent.
+			// a /mode strict typed mid-turn must bind on the very next tool call
+			// of this turn, without waiting for the turn to end.
+			//
+			// It does NOT reach a call already running inside a managed
+			// sub-agent, and this comment used to say it did. registry.Manager
+			// runs those on context.Background(), so they inherit only what
+			// managedTurnRunner.Run re-binds by name and the predicate is not on
+			// that list. See guard.PermissionMode's ModeStrict entry and
+			// orchestrator's TestStrictModeDoesNotReachManagedSubAgents.
 			turnCtx = tools.WithConfirmEveryCall(turnCtx, func() bool {
 				return cs.perm.get() == guard.ModeStrict
 			})

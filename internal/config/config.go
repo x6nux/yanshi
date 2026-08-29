@@ -699,6 +699,15 @@ func Load(path string) (*Config, error) {
 	}
 	cfg.PolicyNarrowed = cfg.ApplyPolicy(policy)
 	cfg.PolicyActive = policy != nil && len(policy.Profiles) > 0
+	// ApplyPolicy may have replaced security.guardian_prompt_file with the
+	// trusted one, so the body LoadBytes read from the local value is stale and
+	// was cleared. Re-read from whichever path is now authoritative, through the
+	// same validating function — a trusted policy that names an unreadable or
+	// hollow guardian file must fail the load for the reason loadGuardianPrompt
+	// gives, not fall back to the file the agent could write.
+	if err := cfg.loadGuardianPrompt(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 

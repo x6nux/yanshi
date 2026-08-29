@@ -99,6 +99,13 @@ type FSPerm struct {
 	// internal/config/policy.go's header). The way to permit one of these paths
 	// is to name it literally in fs.write, which is the same escape hatch the
 	// credential denylist uses and the same thing a reviewer can see in a diff.
+	//
+	// It is no longer the ONLY way, and saying so would be inaccurate: W-B-12's
+	// request_permission can obtain the same write at runtime. That door is
+	// narrower rather than wider — one path, one tool, bounded lifetime, a
+	// dialog that names the protected directory and the tier verbatim, and an
+	// audit row — but it leaves no diff, so a reviewer reading only the config
+	// will not see it. The durable audit archive is where it shows up.
 	Protected []string `yaml:"protected"`
 }
 
