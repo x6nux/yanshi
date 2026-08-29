@@ -105,13 +105,15 @@ func (p Policy) CheckRequest(host, method string) Decision {
 			continue
 		}
 		verb := "deny"
+		participle := "denied"
 		if rule.Allow {
 			verb = "allow"
+			participle = "allowed"
 		}
 		return Decision{
 			Allowed: rule.Allow,
 			Rule:    "method-" + verb + ":" + rule.Host + " " + strings.ToUpper(method),
-			Reason:  "method " + strings.ToUpper(method) + " " + verb + "ed by a method rule for " + rule.Host,
+			Reason:  "method " + strings.ToUpper(method) + " " + participle + " by a method rule for " + rule.Host,
 		}
 	}
 	return d

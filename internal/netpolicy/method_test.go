@@ -61,6 +61,34 @@ func TestCheckRequestWithNoMethodTableMatchesCheckHost(t *testing.T) {
 	}
 }
 
+// TestCheckRequestReasonSpellsTheVerdictCorrectly is the fix for W-B fix-b57
+// finding 5. CheckRequest built its Reason as verb+"ed" where verb is the Rule
+// field's "deny"/"allow" token, and "deny"+"ed" spells "denyed" — a typo that
+// reached an operator-visible 403 body and a slog audit line. verb itself
+// stays as-is (the Rule field's compact form, e.g. "method-deny:host GET",
+// is unaffected); only Reason's word must be a real English participle.
+func TestCheckRequestReasonSpellsTheVerdictCorrectly(t *testing.T) {
+	policy := Policy{
+		Default: "deny",
+		Allow:   []string{"api.test"},
+		Methods: []MethodRule{
+			{Host: "api.test", Methods: []string{"GET"}, Allow: true},
+			{Host: "api.test", Allow: false},
+		},
+	}
+	denied := policy.CheckRequest("api.test", "POST")
+	if strings.Contains(denied.Reason, "denyed") {
+		t.Fatalf("Reason still contains the typo: %q", denied.Reason)
+	}
+	if !strings.Contains(denied.Reason, "denied") {
+		t.Fatalf("Reason = %q, want it to contain %q", denied.Reason, "denied")
+	}
+	allowed := policy.CheckRequest("api.test", "GET")
+	if !strings.Contains(allowed.Reason, "allowed") {
+		t.Fatalf("Reason = %q, want it to contain %q", allowed.Reason, "allowed")
+	}
+}
+
 // TestAGrantDoesNotOpenThePrivateAddressRanges is the boundary on the runtime
 // approval. The host rules were widened by exactly one name; the SSRF guard is
 // untouched, so an approved host resolving to the cloud metadata service is
