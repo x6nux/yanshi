@@ -2,9 +2,12 @@ package netpolicy
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestCheckRequestMethodRules(t *testing.T) {
@@ -66,6 +69,23 @@ func TestCheckRequestWithNoMethodTableMatchesCheckHost(t *testing.T) {
 // It is the reason PolicyDialer skips CheckHost and not CheckResolvedIPs when
 // Granted answers true, and it is the test that goes red if someone
 // "simplifies" that back into one call.
+//
+// "the guard refused" and "the dial itself failed" both surface to the client
+// as a 502 with the underlying error as the body, so asserting on the status
+// code alone (or on the "netpolicy:" prefix, which every netpolicy dial error
+// carries) cannot tell the two apart — a mutant that lets a granted host skip
+// checkIPRanges still gets a 502, just from the real dial to 169.254.169.254
+// failing instead. The assertion below reads the checkIPRanges Reason text
+// itself out of the body.
+//
+// A short client timeout keeps the result from depending on how long a real
+// dial to 169.254.169.254 takes on the runner: on the unmutated tree
+// checkIPRanges answers before any socket opens (no I/O, effectively 0s), so
+// the timeout never matters. If the guard is skipped, the real dial either
+// fails fast, hangs past the timeout, or — on a host where that address is a
+// live metadata endpoint — actually succeeds; all three still fail this test
+// (wrong body, client error, or 200 respectively) instead of racing the
+// network for up to the transport's own 10s dial timeout.
 func TestAGrantDoesNotOpenThePrivateAddressRanges(t *testing.T) {
 	p, err := NewProxy(Policy{Default: "deny"}, fakeResolver{
 		ips: []net.IPAddr{{IP: net.IPv4(169, 254, 169, 254)}},
@@ -76,18 +96,25 @@ func TestAGrantDoesNotOpenThePrivateAddressRanges(t *testing.T) {
 	defer p.Close()
 	p.SetApprover(&recordingApprover{verdict: true})
 
-	resp, err := proxyClient(p).Get("http://metadata.test/latest/meta-data/")
+	client := proxyClient(p)
+	client.Timeout = 500 * time.Millisecond
+	resp, err := client.Get("http://metadata.test/latest/meta-data/")
 	if err != nil {
-		t.Fatalf("request: %v", err)
+		t.Fatalf("checkIPRanges did not answer before the dial (got a client-side error instead of an immediate 502): %v", err)
 	}
 	defer resp.Body.Close()
+	if !p.isGranted("metadata.test") {
+		t.Fatal("the approval was not recorded, so this test proves nothing about grants")
+	}
 	// The host is approved, so the handler lets it through; the DIAL is what
 	// refuses, which surfaces as 502 rather than 403.
 	if resp.StatusCode == http.StatusOK {
 		t.Fatal("an approved host reached a link-local address")
 	}
-	if !p.isGranted("metadata.test") {
-		t.Fatal("the approval was not recorded, so this test proves nothing about grants")
+	body, _ := io.ReadAll(resp.Body)
+	const wantReason = "resolved address 169.254.169.254 is private/local"
+	if !strings.Contains(string(body), wantReason) {
+		t.Fatalf("body = %q, want it to contain the checkIPRanges reason %q (a dial that simply fails against the real address also produces a 502 with a \"netpolicy:\" prefix, so that prefix alone cannot prove the guard fired)", body, wantReason)
 	}
 }
 
