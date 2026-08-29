@@ -192,8 +192,11 @@ func TestWindowsConfiningReasonNamesTheControlsItDoesNotApply(t *testing.T) {
 				"W-B-25 asks for is missing with no disclosure: %q", must, reason)
 		}
 	}
-	// ...and it must still say what it DOES do, in terms the operator configured.
-	for _, must := range []string{"WRITE_RESTRICTED", "workspace-write"} {
+	// ...and it must still say what it DOES do, in terms the operator configured,
+	// plus the two holes in it. READS being unrestricted and Everyone-writable
+	// objects staying writable are both real, and an operator reading
+	// "os-isolated" would otherwise assume neither.
+	for _, must := range []string{"WRITE_RESTRICTED", "workspace-write", "READS", "Everyone"} {
 		if !strings.Contains(reason, must) {
 			t.Errorf("the Reason does not state the boundary that IS in force (%q): %q", must, reason)
 		}

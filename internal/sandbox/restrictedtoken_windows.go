@@ -98,8 +98,8 @@ const sandboxReadOnlyCapabilitySID = "S-1-15-3-1024-2657981914-3390417052-" +
 const sandboxProbeCapabilitySID = "S-1-15-3-1024-1997364028-2438205905-" +
 	"1120643971-3496612577-2054993540-4152730236-1793065224-2611548417"
 
-// createRestrictedToken builds a WRITE_RESTRICTED primary token whose only
-// restricting SID is sid.
+// createRestrictedToken builds a WRITE_RESTRICTED primary token confined to
+// sidStr.
 //
 // # Why the resulting token can be used without SeAssignPrimaryToken
 //
@@ -109,8 +109,33 @@ const sandboxProbeCapabilitySID = "S-1-15-3-1024-1997364028-2438205905-" +
 // VERSION OF THE CALLER'S OWN primary token needs neither. That is the whole
 // reason this backend can exist unelevated, and it is why the base token is
 // opened from the current process rather than logged on separately.
+//
+// # Why the restricting list is three SIDs and not one
+//
+// Confining writes to the capability SID alone produces a token that cannot
+// start a process at all, and the failure has nothing to do with the workspace:
+//
+//   - The window station (WinSta0) and the desktop (Default) are securable
+//     objects whose DACLs grant the LOGON SID. A process whose write checks
+//     cannot match it fails to attach to either, so it never runs a line of
+//     code — and the symptom is an opaque CreateProcessAsUser failure, not a
+//     denied write.
+//   - The null device, anonymous pipes and a long tail of kernel objects grant
+//     EVERYONE. `>NUL` is in half the cmd scripts in existence, and the pipes
+//     the shell layer builds are in all of them.
+//
+// The reference implementation puts the same two SIDs in the same list for the
+// same reasons. The cost is real and worth naming: any object whose DACL grants
+// Everyone write access is writable by a confined child. On NTFS that is a
+// short list — user files grant the owner and Users, not Everyone — but
+// C:\Users\Public and some third-party install trees are on it. That is the
+// price of a token that runs; a token that does not run confines nothing at all
+// because the operator turns it off.
+//
+// ponytail: Everyone in the restricting list; drop it and grant the specific
+// objects instead if a real escape through an Everyone-writable path shows up.
 func createRestrictedToken(sidStr string) (windows.Token, error) {
-	sid, err := windows.StringToSid(sidStr)
+	capSID, err := windows.StringToSid(sidStr)
 	if err != nil {
 		return 0, fmt.Errorf("the sandbox capability SID %q is not a valid SID: %w", sidStr, err)
 	}
@@ -125,10 +150,21 @@ func createRestrictedToken(sidStr string) (windows.Token, error) {
 	}
 	defer base.Close()
 
-	restrict := []windows.SIDAndAttributes{{Sid: sid, Attributes: 0}}
+	logon, err := logonSID(base)
+	if err != nil {
+		return 0, err
+	}
+	everyone, err := windows.CreateWellKnownSid(windows.WinWorldSid)
+	if err != nil {
+		return 0, fmt.Errorf("CreateWellKnownSid(Everyone) failed: %w", err)
+	}
+	restrict := []windows.SIDAndAttributes{
+		{Sid: capSID}, {Sid: logon}, {Sid: everyone},
+	}
+
 	var out windows.Token
 	// A lazy proc rather than a typed wrapper: x/sys/windows does not declare
-	// CreateRestrictedToken. The argument list is nine words with four unused
+	// CreateRestrictedToken. The argument list is nine words with two unused
 	// pairs (no SIDs to disable, no privileges to delete beyond what
 	// DISABLE_MAX_PRIVILEGE already removes).
 	//
@@ -149,7 +185,102 @@ func createRestrictedToken(sidStr string) (windows.Token, error) {
 	if r == 0 {
 		return 0, fmt.Errorf("CreateRestrictedToken failed: %w", e)
 	}
+	if err := setPermissiveDefaultDACL(base, out, capSID); err != nil {
+		_ = out.Close()
+		return 0, err
+	}
 	return out, nil
+}
+
+// logonSID returns the SID that identifies this interactive logon session.
+//
+// It is found by ATTRIBUTE rather than by shape: the logon SID is whichever
+// group in the token carries SE_GROUP_LOGON_ID. Recognising it by its
+// S-1-5-5-x-y form instead would be a parser for a documented-but-incidental
+// encoding, and would silently pick the wrong group on a service token.
+//
+// A missing one is an error rather than a degradation-in-place, because a token
+// without it cannot open a window station and so cannot start a process. Making
+// it optional would move the failure from construction, where the probe turns
+// it into an honest degraded report, to every single spawn.
+//
+// The SID is COPIED out of the token-groups buffer. AllGroups hands back
+// pointers into that buffer, and returning one would leave the caller holding a
+// pointer into memory the collector is free to reclaim as soon as this function
+// returns — a use-after-free whose symptom is an intermittent, inexplicable
+// CreateRestrictedToken failure.
+func logonSID(base windows.Token) (*windows.SID, error) {
+	groups, err := base.GetTokenGroups()
+	if err != nil {
+		return nil, fmt.Errorf("GetTokenInformation(TokenGroups) failed: %w", err)
+	}
+	for _, g := range groups.AllGroups() {
+		if g.Attributes&windows.SE_GROUP_LOGON_ID == 0 {
+			continue
+		}
+		sid, err := g.Sid.Copy()
+		if err != nil {
+			return nil, fmt.Errorf("copying the logon SID failed: %w", err)
+		}
+		return sid, nil
+	}
+	return nil, fmt.Errorf("this process's token carries no logon SID, so a restricted " +
+		"token built from it could not open a window station and no child would start")
+}
+
+// tokenDefaultDACL mirrors TOKEN_DEFAULT_DACL, which x/sys/windows does not
+// declare. It is a single PACL.
+type tokenDefaultDACL struct {
+	DefaultDacl *windows.ACL
+}
+
+// setPermissiveDefaultDACL makes objects the confined child creates writable by
+// the child itself.
+//
+// # Why this is not redundant with the restricting list
+//
+// The default DACL is the ACL the kernel stamps onto objects a process CREATES
+// when it supplies none — pipes, events, mutexes, the section objects a shell
+// pipeline is made of. Inherited from the base token it names the user and
+// SYSTEM, and neither is in the restricted token's restricting list, so the
+// child would create an object and then be refused write access to its own
+// handle. The symptom is not a denied file: it is PowerShell failing to build a
+// pipeline, which reads as yanshi being broken.
+//
+// The capability SID is what is added, because that is the one entry the child
+// is guaranteed to match. The user SID is kept so the parent, which is not
+// restricted, keeps the access it would have had.
+//
+// No inheritance flags: a default DACL is applied to an object, not propagated
+// down a container hierarchy, and setting them would put meaningless bits in
+// every ACL the child ever creates.
+func setPermissiveDefaultDACL(base, tok windows.Token, capSID *windows.SID) error {
+	user, err := base.GetTokenUser()
+	if err != nil {
+		return fmt.Errorf("GetTokenInformation(TokenUser) failed: %w", err)
+	}
+	var entries []windows.EXPLICIT_ACCESS
+	for _, sid := range []*windows.SID{user.User.Sid, capSID} {
+		entries = append(entries, windows.EXPLICIT_ACCESS{
+			AccessPermissions: windows.GENERIC_ALL,
+			AccessMode:        windows.GRANT_ACCESS,
+			Trustee: windows.TRUSTEE{
+				TrusteeForm:  windows.TRUSTEE_IS_SID,
+				TrusteeType:  windows.TRUSTEE_IS_UNKNOWN,
+				TrusteeValue: windows.TrusteeValueFromSID(sid),
+			},
+		})
+	}
+	acl, err := windows.ACLFromEntries(entries, nil)
+	if err != nil {
+		return fmt.Errorf("building the token's default DACL failed: %w", err)
+	}
+	info := tokenDefaultDACL{DefaultDacl: acl}
+	if err := windows.SetTokenInformation(tok, uint32(windows.TokenDefaultDacl),
+		(*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
+		return fmt.Errorf("SetTokenInformation(TokenDefaultDacl) failed: %w", err)
+	}
+	return nil
 }
 
 // setCapabilityGrant adds, or removes, an inheritable full-access ACE for sid
@@ -409,7 +540,26 @@ const restrictedProbeTimeout = 30 * time.Second
 // where these directories live. Probing with it would make "outside" already
 // writable and the denial assertion vacuous — a green probe proving nothing,
 // which is the exact failure mode this package keeps re-learning.
-func probeRestrictedToken() (string, bool) {
+func probeRestrictedToken() (string, bool) { return cachedRestrictedTokenProbe() }
+
+// cachedRestrictedTokenProbe runs the self-check at most once per process.
+//
+// Whether this kernel honours WRITE_RESTRICTED is a property of the HOST, not
+// of the moment — the same argument that already keeps Report() cached rather
+// than re-probed. Without this, every sandbox.New pays for two process spawns
+// and four ACL round-trips, and bootstrap's tests build a great many sandboxes.
+//
+// ⚠️ The one thing the cache does NOT make less true, because it was already
+// true: the probe measures a temp directory, not the configured workspace. A
+// host whose temp is NTFS and whose workspace is on exFAT or a share that
+// ignores DACLs would pass here and confine nothing there. Probing the
+// workspace itself would mean writing a file into the operator's project to
+// prove writes work and finding somewhere inside it to prove one is refused,
+// which is a worse trade than this gap.
+var cachedRestrictedTokenProbe = sync.OnceValues(probeRestrictedTokenUncached)
+
+// probeRestrictedTokenUncached is the body cachedRestrictedTokenProbe memoises.
+func probeRestrictedTokenUncached() (string, bool) {
 	base, err := os.MkdirTemp("", "yanshi-sandbox-probe")
 	if err != nil {
 		return fmt.Sprintf("cannot create a directory to verify confinement in: %v", err), false

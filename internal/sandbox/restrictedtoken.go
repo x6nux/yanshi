@@ -27,14 +27,16 @@ import (
 //
 // # What it is used for
 //
-// The Windows restricted token is created with WRITE_RESTRICTED and this SID as
-// its only restricting SID. Under WRITE_RESTRICTED, a WRITE access check
-// succeeds only if the object's DACL grants the access to the normal token AND
-// to one of the restricting SIDs; READ checks use the normal token alone. So a
-// child holding this token can write exactly the objects whose DACL names this
-// SID and nothing else, while reads stay unrestricted — which is why the
-// deny-read ACEs below exist as a separate mechanism rather than falling out of
-// the token for free.
+// The Windows restricted token is created with WRITE_RESTRICTED and this SID in
+// its restricting list. Under WRITE_RESTRICTED, a WRITE access check succeeds
+// only if the object's DACL grants the access to the normal token AND to one of
+// the restricting SIDs; READ checks use the normal token alone. So a child
+// holding this token writes the objects whose DACL names this SID, and reads
+// stay unrestricted.
+//
+// It is not the ONLY restricting SID — the logon SID and Everyone are in the
+// list too, because without them the child cannot open a window station or the
+// null device and never starts. createRestrictedToken states what that costs.
 //
 // # Why a hard-coded capability SID rather than a generated one
 //
@@ -89,7 +91,7 @@ type restrictedTokenProbe struct {
 	// which is not a failure and must not be reported as one.
 	Attempted bool
 	// TokenCreated reports that CreateRestrictedToken returned a usable primary
-	// token carrying sandboxCapabilitySID as its restricting SID.
+	// token restricted to sandboxCapabilitySID.
 	TokenCreated bool
 	// ACLsApplied reports that the workspace grant and every deny-read ACE were
 	// written successfully.
@@ -354,10 +356,12 @@ func windowsReasonFor(cfg Config, jp jobProbe, tp restrictedTokenProbe) string {
 		b.WriteString(windowsUnenforcedNote(cfg))
 		return b.String()
 	}
-	b.WriteString(". Access is confined by a WRITE_RESTRICTED restricted token: " +
-		"writes are limited to the workspace root (tier=" + cfg.Tier.String() + "), " +
-		"and deny-read ACEs cover the credential stores under the user profile " +
-		"including the paths their reparse points resolve to")
+	b.WriteString(". Writes are confined by a WRITE_RESTRICTED token to the " +
+		"workspace root and the scratch directories (tier=" + cfg.Tier.String() +
+		"). READS are NOT restricted — a WRITE_RESTRICTED token cannot carry a " +
+		"deny-read — and any object whose ACL grants Everyone write access is " +
+		"still writable, because Everyone has to be in the restricting list for " +
+		"the child to reach the null device and its own pipes")
 	b.WriteString(windowsStructuralGapNote())
 	return b.String()
 }
