@@ -119,6 +119,42 @@ C15 TUI 偏好：`keymap`（默认 default）、`theme`（默认 default）、`v
 
 `tui.bindings` 里写坏的键位不会让启动失败 —— TUI 正是你用来修它的东西。`yanshi doctor` 报告问题，`/keymap diagnostics` 在 TUI 里打印同一份诊断，`/keymap reset` 让内置默认盖过本块。
 
+## 不在 config.yaml 里的开关（环境变量）
+
+下面两项**没有配置字段**，只认环境变量。放在这里是因为它们都会改变进程或子进程的安全姿态，而操作员在 `config.yaml` 里找不到它们。
+
+### `YANSHI_NO_HARDEN`
+
+设为任意非空值时，启动时的进程加固**整体跳过**（关 core dump、拒绝调试器 attach、清掉 `LD_*`/`DYLD_*`）。跳过时 stderr 会打一行 `yanshi: process hardening skipped (…)`，成功时一个字都不打。
+
+存在的理由很具体：macOS 上的 `PT_DENY_ATTACH` 会让二进制**无法调试**，且事后 attach 会**杀掉进程**，维护者跑 `dlv exec ./yanshi` 需要一个不是「改源码」的出口。
+
+它**不是**安全漏洞：这里每一项挡的都是**别的进程**，一个能设置本进程环境的攻击者在进程启动前就已经赢了。日常使用不要设。
+
+### `YANSHI_ALLOW_CHILD_ENV`
+
+逗号分隔的**变量名**列表，这些名字可以越过凭据清洗，被 yanshi 启动的辅助程序继承。
+
+yanshi 起的每个辅助程序（MCP server、language server、`gh`、`git`、skills 的 clone、截图与剪贴板后端、版本探测、`task_gate_run` 的 gate 命令）拿到的都是**剥掉凭据的**环境。剥是对的，但有几个变量子进程真的需要：
+
+| 变量 | 谁需要它 |
+|---|---|
+| `NETRC` | `gopls` 拉私有模块（`GOPRIVATE` 不在清洗名单里，会自己留下） |
+| `npm_config_*` / `NPM_CONFIG_USERCONFIG` | 经 npm prefix 安装的 `pyright` / `typescript-language-server`；`npm test` 这类 gate 命令 |
+| `SSH_AUTH_SOCK` | 走 SSH 的 git 操作 |
+
+```sh
+export YANSHI_ALLOW_CHILD_ENV=NETRC,npm_config_registry,SSH_AUTH_SOCK
+```
+
+三条边界：
+
+- **只按名字**，不接受前缀或模式 —— 「凡是看起来像 token 的都放行」正是攻击者提供的值会满足的谓词。
+- **不放宽 `shell_run` / ACP agent 那条路**。那条是**不受信程序**的发射路径，它的 allowlist 属于 profile 的安全姿态；让一个进程级环境变量悄悄放宽它，等于给了操作员一个不用改安全配置就能关掉安全控制的开关。
+- 这个变量**自己不会进子进程环境** —— 它列举的正是「这台机器上还留着哪些凭据」，没有子进程需要这份清单。
+
+`gh` 的凭据是另一条路：`GH_TOKEN` / `GITHUB_TOKEN` / `GH_CONFIG_DIR` / `GH_HOST` / `GH_ENTERPRISE_TOKEN` / `GITHUB_ENTERPRISE_TOKEN` 已经在代码里按名字放行，GitHub Enterprise 不需要额外设置。
+
 ## 配置字段骨架（由 gendocs 生成）
 
 下表由 `go run ./cmd/gendocs -config docs/user-guide/configuration.md` 从 `internal/config.Config` 反射生成；列出每个字段的 key（dotted 路径）与类型。说明列留空，语义见上方各块 prose。修改 Config struct 后重生成；不要手改本区块。CI 守门确保 struct 与骨架一一对应（[../adr/README.md](../adr/README.md) 见 governance）。

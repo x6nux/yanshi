@@ -293,10 +293,20 @@ func (m *Manager) clientFor(lang string) (*Client, error) {
 // whatever else DefaultLanguages resolves on the host. A language server has no
 // use for any of it: it reads source files and answers questions about them.
 //
-// There is deliberately no allowlist parameter. Unlike `gh`, no language server
-// authenticates to anything, so an escape hatch here would only ever be used to
-// undo the fix. A server that turns out to need a specific variable gets it
-// named in DefaultLanguages, where the decision is visible.
+// There is deliberately no per-server allowlist parameter, but "no language
+// server authenticates to anything" — which an earlier version of this comment
+// asserted — is false, and the escape hatch it pointed at did not exist.
+// Measured: the scrub removes NETRC, npm_config_*, NPM_CONFIG_USERCONFIG and
+// SSH_AUTH_SOCK. gopls needs NETRC (and GOPRIVATE, which survives) to fetch a
+// private module; pyright and typescript-language-server are usually installed
+// through an npm prefix. The stated hatch, "name it in DefaultLanguages", is a
+// table with no Env field and no config section behind it, i.e. "edit the
+// source and rebuild".
+//
+// The hatch is netpolicy.ChildEnvAllowlistEnv, which is operator-level and
+// covers every ScrubbedEnviron caller rather than growing a third variant of
+// the same fix. Keeping it out of this function is the point: a per-language
+// Env map would be one more place to look and one more place to disagree.
 func languageServerEnv() []string { return netpolicy.ScrubbedEnviron() }
 
 func (m *Manager) spawnLocked(lang string, ls LanguageServer) (*Client, func(), error) {

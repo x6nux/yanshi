@@ -3,6 +3,7 @@ package netpolicy
 import (
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/x6nux/yanshi/internal/secrets"
 )
@@ -92,8 +93,13 @@ func ManagedEnvWithPolicy(proxyURL string, policy CredentialPolicy) []string {
 // authorization statement about a specific program — `gh` cannot authenticate
 // without GH_TOKEN no matter how restrictive the posture — and those lists
 // belong in a named variable next to the caller, not inline.
+//
+// On top of the caller's list, the operator's ChildEnvAllowlistEnv is merged in.
+// See that constant for why the escape hatch is here and not per call site.
 func ScrubbedEnviron(allow ...string) []string {
+	allow = append(append([]string(nil), allow...), OperatorAllowedChildEnv()...)
 	kept, dropped := ScrubCredentials(os.Environ(), CredentialPolicy{AllowEnv: allow})
+	kept = withoutName(kept, ChildEnvAllowlistEnv)
 	if len(dropped) > 0 {
 		slog.Debug("netpolicy inherited-environment scrub",
 			"dropped_count", len(dropped),
@@ -101,6 +107,82 @@ func ScrubbedEnviron(allow ...string) []string {
 			"allowed", allow)
 	}
 	return kept
+}
+
+// ChildEnvAllowlistEnv is the operator's escape hatch from the credential
+// scrub: a comma-separated list of variable NAMES that survive it, for every
+// helper program yanshi starts through ScrubbedEnviron.
+//
+// # Why one knob rather than one per caller
+//
+// Stripping credentials is right; having no way to put back the two the child
+// genuinely needs is the defect, and it appeared three times in a row. `gh`
+// lost GH_HOST and the enterprise tokens, so `yanshi pr` stopped working
+// against GitHub Enterprise. Language servers lost NETRC (gopls fetching a
+// private module), npm_config_* (how pyright and typescript-language-server are
+// usually installed) and SSH_AUTH_SOCK, with no Env field on LanguageServer and
+// no lsp config section — the doc's suggested hatch, "name it in
+// DefaultLanguages", is a table with nowhere to name it, i.e. "recompile".
+// task_gate_run's command likewise loses npm_config_* the moment a gate runs
+// `npm test`.
+//
+// Each of those has an obvious local fix, and three local fixes is three places
+// to look, three things to document and three ways to be inconsistent. One
+// operator-level list is the smaller thing: it is set in the same shell that
+// exported the variables it names, it is by NAME so it can never be a pattern an
+// attacker-supplied value satisfies, and it appears in the scrub's log line so a
+// widening is visible rather than assumed.
+//
+// # What it deliberately does NOT widen
+//
+// Only ScrubbedEnviron, which is the path for programs YANSHI chose to run: MCP
+// and language servers, gh, git, the skills clone, the screenshot and clipboard
+// helpers, the version probes, and the gate command. PrepareEnvWithPolicy and
+// ManagedEnvWithPolicy — the untrusted-program launch path behind shell_run and
+// the ACP agents — are untouched, because there the allowlist is part of the
+// profile's posture and a process-wide variable that quietly widened it would be
+// a security control an operator could disable without editing the security
+// config.
+//
+// The variable is removed from the child's own environment. It describes the
+// host's posture and nothing downstream has any use for it; leaving it in would
+// tell every child which credentials are worth asking for.
+//
+// Not a security hole for the same reason harden.DisableEnv is not: an attacker
+// who can set this process's environment has already won. The names are by
+// definition ones the operator exported on purpose.
+const ChildEnvAllowlistEnv = "YANSHI_ALLOW_CHILD_ENV"
+
+// OperatorAllowedChildEnv parses ChildEnvAllowlistEnv into variable names.
+//
+// Empty entries are dropped so "A,,B" and a trailing comma are not names, which
+// matters because the empty name would otherwise be compared against every
+// variable by the folding matcher.
+func OperatorAllowedChildEnv() []string {
+	raw := os.Getenv(ChildEnvAllowlistEnv)
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var out []string
+	for _, name := range strings.Split(raw, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// withoutName drops the NAME=value entry for name, comparing case-insensitively
+// because Windows does.
+func withoutName(env []string, name string) []string {
+	out := env[:0]
+	for _, entry := range env {
+		if key, _, ok := strings.Cut(entry, "="); ok && strings.EqualFold(key, name) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 // GitHubCLICredentialEnv is the exact credential set the `gh` CLI is allowed to
@@ -117,7 +199,20 @@ func ScrubbedEnviron(allow ...string) []string {
 // relocated it. The name ends in a word the scrub treats as credential
 // material, so without naming it here gh would silently look in the wrong
 // place.
-var GitHubCLICredentialEnv = []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR"}
+//
+// GH_HOST is in the list for EXACTLY the same reason and was missed: the scrub
+// strips GH_ and GITHUB_ as whole prefixes, so an unnamed GH_HOST is dropped and
+// gh falls back to github.com. That is worse than the GH_CONFIG_DIR failure it
+// mirrors — a GitHub Enterprise operator does not get "not logged in", they get
+// a request aimed at the public site. The two enterprise token names are the
+// credentials that go with it; `yanshi pr` is a new caller in this batch, so
+// before it there was no scrub on that path at all and this list going in
+// narrower than gh's own documented set was a regression rather than a
+// tightening.
+var GitHubCLICredentialEnv = []string{
+	"GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR",
+	"GH_HOST", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
+}
 
 // ScrubCredentials removes credential-bearing entries from env without touching
 // proxy variables, for callers that build their child environment themselves
