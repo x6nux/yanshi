@@ -102,18 +102,30 @@ func TestSnapshotDoesNotSmuggleAProxyVariable(t *testing.T) {
 // documented on the now-deleted netpolicy.PrepareEnvWithPolicy (W-B fix-b57
 // finding 7): childLaunchPosture.env runs netpolicy.ScrubCredentials BEFORE
 // netpolicy.PrepareEnvFor appends the managed proxy variables. Running it the
-// other way round would make the scrub's own output eligible for inspection,
-// which is harmless until a proxy URL carries inline basic-auth credentials
-// (http://user:pass@proxy) — a shape LooksLikeCredentialValue recognises, and
-// exactly the value the child needs in order to reach the proxy at all.
+// other way round would make the scrub's own output eligible for
+// re-inspection, and any managed variable whose value matched a shape
+// secrets.LooksLikeCredentialValue recognises would be stripped from the
+// child that needs it in order to reach the proxy at all.
+//
+// The proxy value below is a synthetic connection-string shape
+// ("postgres://user:pass@host"), not a realistic ProxyURL, chosen because it
+// is the closest match in secrets.credentialValuePatterns — no http/https/
+// socks5 scheme is in that table, so no proxy URL a real deployment would
+// ever set is currently recognised as a credential by ScrubCredentials. That
+// means this specific failure mode is not reachable today, but the ordering
+// is what keeps it that way rather than luck: this test would go red the
+// instant either the ordering regresses or that pattern table grows a
+// proxy-shaped entry while the ordering has already regressed.
 //
 // This invariant used to be pinned only in internal/netpolicy against
-// PrepareEnvWithPolicy directly; that function had zero production callers
-// (production always went through this posture) and was deleted along with
-// its dedicated test. This is the replacement, against the composition that
-// actually ships.
+// PrepareEnvWithPolicy directly, with the same non-reachable http:// value —
+// that function had zero production callers (production always went through
+// this posture) and was deleted along with its dedicated test. This is the
+// replacement, against the composition that actually ships, fixed to
+// actually exercise the scrub instead of a value neither old nor new code
+// ever removed.
 func TestProxyCredentialsSurviveTheScrub(t *testing.T) {
-	const proxy = "http://proxyuser:proxypass@127.0.0.1:9000"
+	const proxy = "postgres://proxyuser:proxypass@127.0.0.1:9000"
 	posture := childLaunchPosture{Policy: &netpolicy.Policy{}, ProxyURL: proxy}
 	joined := strings.Join(postureEnv(posture), "\n")
 	for _, want := range []string{"HTTP_PROXY=" + proxy, "http_proxy=" + proxy} {

@@ -122,12 +122,17 @@ func (p childLaunchPosture) proxy() netpolicy.ManagedProxy {
 // proxy variables are appended. Calling netpolicy.PrepareEnvFor first and
 // netpolicy.ScrubCredentials over ITS result reads equivalently and is not:
 // the scrub would then re-inspect the proxy entries this function just
-// published, and a proxy URL carrying inline basic-auth credentials
-// (http://user:pass@proxy) is a shape LooksLikeCredentialValue recognises —
-// so the managed variables would be stripped from the child that needs them
-// to reach the proxy at all. See internal/shell/posture_egress_test.go's
-// TestProxyCredentialsSurviveTheScrub, which pins exactly this ordering
-// against this method.
+// published, and any whose value happened to match a shape
+// secrets.LooksLikeCredentialValue recognises would be stripped from the
+// child that needs it to reach the proxy at all. No managed-proxy scheme
+// (http/https/socks5) currently matches one of those shapes — the
+// connection-string pattern only recognises mongodb/mysql/postgres(ql)/
+// redis(s)/amqp(s) — so an inline-basic-auth proxy URL is not reachable by
+// this failure mode today. The ordering is what keeps it that way rather
+// than luck, and costs nothing to get right; see
+// internal/shell/posture_egress_test.go's TestProxyCredentialsSurviveTheScrub,
+// which pins it against this method using a synthetic value chosen to match
+// a recognised credential shape, since no real proxy URL currently does.
 //
 // The proxy variables this function appends are NOT a containment boundary:
 // see proxy() for exactly which clients and which launchers they reach.
