@@ -85,12 +85,75 @@ func errnoOrNil(errno unix.Errno) error {
 	return errno
 }
 
+// seccompTestsOptionalEnv lets a host that genuinely cannot install a filter
+// downgrade the behaviour tests below from a failure to a skip.
+//
+// It must be set EXPLICITLY, and that is the whole design. See
+// requireSeccompInstallable.
+const seccompTestsOptionalEnv = "YANSHI_SECCOMP_TESTS_OPTIONAL"
+
+// requireSeccompInstallable decides whether an unavailable seccomp is a skip or
+// a failure, and defaults to FAILURE.
+//
+// # Why the default flipped
+//
+// These two behaviour tests are the only evidence that the filter does anything
+// — everything else about it is a pure-function assertion on the BPF program's
+// shape. They were unconditionally skipped when seccompSupported() said no,
+// which produces a PASS on a runner that quietly forbids nested seccomp. The
+// batch report that shipped them said so in as many words: "seeing a skip means
+// it was not verified, do not read it as passing". A status that can only be
+// read correctly by someone who also read a warning in a report is not a
+// status. It is the same defect GOV8 already refuses in the ledger — a test
+// that compiled, ran, reported pass, and asserted nothing.
+//
+// # What is a genuine "not supported" and what is a run that did not happen
+//
+// The file is //go:build linux, so GOOS carries no information here. The real
+// discriminator is WHOSE property the unavailability is:
+//
+//   - The architecture has no verified syscall-number mapping in this package
+//     (seccompAuditArch). That is a property of THIS CODE, it is the same answer
+//     on every host of that architecture, and there is nothing a runner could do
+//     about it. Skip, and say which arch.
+//
+//   - Everything else — the kernel refusing the probe, a container policy
+//     forbidding a nested filter — is a property of THIS RUN. On the CI leg that
+//     is meant to be the evidence for W-B-09, that is precisely the case that
+//     must be loud: the leg exists to exercise this, and a leg that silently
+//     stops exercising it leaves an acceptance clause permanently "pending CI".
+//
+// A host in the second category that cannot be fixed sets
+// seccompTestsOptionalEnv. That is one deliberate act by whoever owns the
+// runner, recorded where the runner is configured, instead of a default that
+// answers "fine" for everyone.
+func requireSeccompInstallable(t *testing.T) {
+	t.Helper()
+	err := seccompSupported()
+	if err == nil {
+		return
+	}
+	if _, mapped := seccompAuditArch[runtime.GOARCH]; !mapped {
+		t.Skipf("this package has no verified seccomp syscall mapping for GOARCH=%s; "+
+			"that is a gap in the code, not in this host", runtime.GOARCH)
+	}
+	if os.Getenv(seccompTestsOptionalEnv) != "" {
+		t.Skipf("seccomp is unavailable here and %s is set: %v", seccompTestsOptionalEnv, err)
+	}
+	t.Fatalf("seccomp could not be installed on this host: %v\n\n"+
+		"This is a FAILURE rather than a skip on purpose. The two behaviour tests in this "+
+		"file are the only evidence that the filter blocks anything; skipping them yields a "+
+		"green run that is indistinguishable from a verified one, and W-B-09's acceptance "+
+		"names the linux CI leg as where it is checked. If this host genuinely cannot install "+
+		"a filter — a container with a policy that forbids nesting — set %s where that "+
+		"runner is configured, which records the decision instead of defaulting to it.",
+		err, seccompTestsOptionalEnv)
+}
+
 // runSeccompHelper spawns the helper and returns its label=value lines.
 func runSeccompHelper(t *testing.T, mode string) map[string]string {
 	t.Helper()
-	if err := seccompSupported(); err != nil {
-		t.Skipf("seccomp unavailable on this host: %v", err)
-	}
+	requireSeccompInstallable(t)
 	cmd := exec.Command(os.Args[0], "-test.run", "^TestSeccompHelper$", "-test.v=false")
 	cmd.Env = append(os.Environ(), seccompHelperEnv+"="+mode)
 	out, err := cmd.Output()
