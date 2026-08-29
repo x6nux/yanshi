@@ -22,9 +22,24 @@ type ResilientConfig struct {
 	// mid-stream drops (notably the openai acl's "failed to receive stream
 	// chunk: unexpected EOF"), 5xx, rate limits — for BOTH Generate and Stream.
 	// A retry re-issues the model call with exponential backoff. Defaults to 10.
+	//
+	// This is the FALLBACK a provider without its own override falls back to
+	// (W-C-07) — see PerProviderMaxRetries.
 	MaxRetries int
 	BaseDelay  time.Duration
 	MaxDelay   time.Duration
+
+	// PerProviderMaxRetries (W-C-07) overrides MaxRetries independently for
+	// each entry of the chain passed to NewResilientModel, indexed the same
+	// way (chain[i] ↔ PerProviderMaxRetries[i]). A value of -1 (NOT 0, which
+	// is a legitimate "never retry this provider") means "not set, fall back
+	// to MaxRetries" — the same nil-means-omit shape config.ProviderConfig.
+	// MaxRetries uses at the config layer, mirrored here as a sentinel
+	// because a parallel slice cannot hold *int cheaply. nil (the zero
+	// value) or a slice shorter than chain means every index falls back to
+	// MaxRetries, so a chain built without this field behaves exactly as it
+	// did before W-C-07. See maxRetriesFor.
+	PerProviderMaxRetries []int
 
 	// MaxEmptyRetries is the number of times to retry a successful-but-empty
 	// response (Content=="" && no ToolCalls) or an empty stream before giving
@@ -184,6 +199,17 @@ func NewResilientModel(chain []model.BaseChatModel, cfg ResilientConfig) (*Resil
 	return &ResilientChatModel{chain: chain, cfg: cfg}, nil
 }
 
+// maxRetriesFor returns the retry ceiling for r.chain[i]: chain[i]'s own
+// PerProviderMaxRetries override (W-C-07) when the composition root set one
+// (sentinel -1 means "not set"), else the shared cfg.MaxRetries every
+// provider fell back to before this field existed.
+func (r *ResilientChatModel) maxRetriesFor(i int) int {
+	if i >= 0 && i < len(r.cfg.PerProviderMaxRetries) && r.cfg.PerProviderMaxRetries[i] >= 0 {
+		return r.cfg.PerProviderMaxRetries[i]
+	}
+	return r.cfg.MaxRetries
+}
+
 // isEmpty reports whether msg is a successful-but-empty model response: an
 // assistant/user message with no Content and no ToolCalls. Tool messages and
 // nil are NOT empty (nil is absent; tool messages aren't model responses).
@@ -200,8 +226,8 @@ func isEmpty(msg *schema.Message) bool {
 // Generate tries each provider, retrying within a provider on transient errors.
 func (r *ResilientChatModel) Generate(ctx context.Context, in []*schema.Message, opts ...model.Option) (*schema.Message, error) {
 	var lastErr error
-	for _, p := range r.chain {
-		msg, err := r.retry(ctx, func() (*schema.Message, error) { return p.Generate(ctx, in, opts...) })
+	for i, p := range r.chain {
+		msg, err := r.retry(ctx, r.maxRetriesFor(i), func() (*schema.Message, error) { return p.Generate(ctx, in, opts...) })
 		if err == nil {
 			return msg, nil
 		}
@@ -267,6 +293,14 @@ func (r *ResilientChatModel) runStream(ctx context.Context, in []*schema.Message
 		deliveredTools             bool
 		emptyAttempts, errAttempts int
 		lastErr                    error
+		// curIdx is the chain index openStreamChain last resolved to (-1
+		// before the first open). W-C-07: errAttempts is this PROVIDER's
+		// retry count, so a failover to a different provider must reset it
+		// — otherwise a chain of two providers each configured for 1 retry
+		// could be driven to 2 combined retries under provider 0's budget
+		// alone, and provider 1 would inherit whatever was left rather than
+		// its own configured ceiling.
+		curIdx = -1
 	)
 	for {
 		// attemptCtx is a per-attempt child of ctx so the watchdog can cancel
@@ -286,10 +320,13 @@ func (r *ResilientChatModel) runStream(ctx context.Context, in []*schema.Message
 		// OUR side calls, closes an unrelated channel recv() never selects
 		// on).
 		attemptCtx, cancelAttempt := context.WithCancel(ctx)
-		sr, openErr := r.openStreamChain(attemptCtx, in, opts)
+		sr, openIdx, openErr := r.openStreamChain(attemptCtx, in, opts)
 		if openErr != nil {
 			cancelAttempt()
 			lastErr = openErr
+			// openIdx is -1 here: EVERY provider's setup failed this round,
+			// so there is no single provider to attribute the budget to —
+			// fall back to the shared cfg.MaxRetries, same as before W-C-07.
 			if isRetryableStreamErr(ctx, openErr) && errAttempts < r.cfg.MaxRetries {
 				errAttempts++
 				if !r.sleepRetry(ctx, sw, onRetry, errAttempts, r.cfg.MaxRetries, lastErr) {
@@ -299,6 +336,14 @@ func (r *ResilientChatModel) runStream(ctx context.Context, in []*schema.Message
 			}
 			_ = sw.Send(nil, openErr)
 			return
+		}
+		if openIdx != curIdx {
+			// A different provider than last attempt served this stream —
+			// either the very first open, or a failover after the previous
+			// provider's setup started failing. Either way, this provider's
+			// retry budget starts fresh (see curIdx's doc above).
+			curIdx = openIdx
+			errAttempts = 0
 		}
 		// Wrap with the idle watchdog only when at least one budget is set, so
 		// a default (zero, zero) config never allocates the extra goroutine —
@@ -333,9 +378,14 @@ func (r *ResilientChatModel) runStream(ctx context.Context, in []*schema.Message
 			// Retry only while no tool call has been delivered (retrying after a
 			// tool call would duplicate it) and the error is transient.
 			retryable := isRetryableStreamErr(ctx, recvErr) && !deliveredTools
-			if retryable && errAttempts < r.cfg.MaxRetries {
+			// curIdx is well-defined here: the stream that just failed
+			// mid-flight was successfully opened by openStreamChain above,
+			// so this IS a single provider's retry budget (W-C-07), unlike
+			// the openErr branch's forced-global fallback.
+			maxRetries := r.maxRetriesFor(curIdx)
+			if retryable && errAttempts < maxRetries {
 				errAttempts++
-				if !r.sleepRetry(ctx, sw, onRetry, errAttempts, r.cfg.MaxRetries, lastErr) {
+				if !r.sleepRetry(ctx, sw, onRetry, errAttempts, maxRetries, lastErr) {
 					return
 				}
 				continue
@@ -348,19 +398,24 @@ func (r *ResilientChatModel) runStream(ctx context.Context, in []*schema.Message
 
 // openStreamChain opens a stream from the first provider whose setup succeeds,
 // failing over across the chain. Returns the last setup error when all fail.
-func (r *ResilientChatModel) openStreamChain(ctx context.Context, in []*schema.Message, opts []model.Option) (*schema.StreamReader[*schema.Message], error) {
+//
+// The returned int is the chain index of the provider that actually served
+// the stream (-1 on total failure), so the caller (runStream) can resolve
+// that provider's own retry ceiling (W-C-07's maxRetriesFor) instead of the
+// single shared cfg.MaxRetries every open used before this field existed.
+func (r *ResilientChatModel) openStreamChain(ctx context.Context, in []*schema.Message, opts []model.Option) (*schema.StreamReader[*schema.Message], int, error) {
 	var lastErr error
-	for _, p := range r.chain {
+	for i, p := range r.chain {
 		sr, err := p.Stream(ctx, in, opts...)
 		if err == nil {
-			return sr, nil
+			return sr, i, nil
 		}
 		lastErr = err
 	}
 	if lastErr == nil {
 		lastErr = errors.New("eino: no stream providers")
 	}
-	return nil, lastErr
+	return nil, -1, lastErr
 }
 
 // streamRecver is the one capability consumeStream needs from its source:
@@ -585,7 +640,13 @@ var legacyTransientMarkers = []string{
 	"retry",
 }
 
-func (r *ResilientChatModel) retry(ctx context.Context, call func() (*schema.Message, error)) (*schema.Message, error) {
+// retry runs call, retrying transient failures with exponential backoff up to
+// maxRetries (W-C-07: the caller resolves this per-provider via
+// maxRetriesFor before calling in). Empty-response retries are independent
+// and always use cfg.MaxEmptyRetries — W-C-07 only scoped the error-retry
+// axis, since the spec's acceptance criterion ("每 provider 独立
+// MaxRetries") names retries, not the separate empty-response cap.
+func (r *ResilientChatModel) retry(ctx context.Context, maxRetries int, call func() (*schema.Message, error)) (*schema.Message, error) {
 	maxEmpty := r.cfg.MaxEmptyRetries
 	var lastErr error
 	// errAttempts / emptyAttempts are independent caps on consecutive retries
@@ -633,7 +694,7 @@ func (r *ResilientChatModel) retry(ctx context.Context, call func() (*schema.Mes
 			return nil, err
 		}
 		errAttempts++
-		if errAttempts > r.cfg.MaxRetries {
+		if errAttempts > maxRetries {
 			return nil, lastErr
 		}
 	}

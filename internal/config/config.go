@@ -630,6 +630,15 @@ type LLMConfig struct {
 	// reproducing pre-W-A-06 behaviour byte-for-byte. See
 	// einollm.watchdogReader.
 	StreamIdleTimeout time.Duration `yaml:"stream_idle_timeout"`
+
+	// MaxRetries (W-C-07) is the global per-attempt retry ceiling
+	// ResilientChatModel falls back to for a provider that does not set its
+	// own ProviderConfig.MaxRetries. 0 (the zero value, and therefore what an
+	// absent llm block yields) means "use the resilient layer's own
+	// built-in default" (10, see NewResilientModel) — this field only
+	// becomes an override once the operator sets it, so a config that never
+	// mentions retries behaves exactly as it did before this field existed.
+	MaxRetries int `yaml:"max_retries"`
 }
 
 // RateLimitConfig bounds how fast yanshi issues model calls. It appears both
@@ -718,6 +727,63 @@ type ProviderConfig struct {
 	// Burst is this provider's back-to-back allowance after an idle period.
 	// 0 derives it from the effective QPM.
 	Burst int `yaml:"burst"`
+
+	// Headers (W-C-02) are extra HTTP headers sent with every request to this
+	// provider — Azure's `api-key`, an enterprise gateway's auth token, a
+	// tracing header a proxy requires. Values go through the same
+	// os.ExpandEnv pass LoadBytes applies to the whole document before
+	// unmarshal, so `${AZURE_KEY}` resolves like every other config value.
+	//
+	// SECURITY: a header value is exactly as sensitive as APIKey — it is
+	// registered with the secrets.Redactor at boot (bootstrap.go, mirroring
+	// the APIKey registration loop) so it cannot reach a log line, a crash
+	// dump, or a compaction summary in the clear. Do not add a new sink that
+	// reads ProviderConfig.Headers without registering its values first.
+	Headers map[string]string `yaml:"headers"`
+
+	// MaxRetries (W-C-07) overrides LLMConfig.MaxRetries for THIS provider.
+	// nil (unset) inherits the global value — a plain int cannot distinguish
+	// "operator did not say" from "operator explicitly wants 0 retries",
+	// which is the same nil-means-omit convention MaxTokens/Temperature/TopP
+	// already use above (M4). See ResilientConfig.PerProviderMaxRetries.
+	MaxRetries *int `yaml:"max_retries"`
+
+	// Auth (W-C-12) configures command-based token authentication: a
+	// credential produced by running an external command rather than
+	// supplied as a static APIKey. Nil means "use APIKey as usual". See
+	// ProviderAuthConfig.
+	Auth *ProviderAuthConfig `yaml:"auth"`
+}
+
+// ProviderAuthConfig configures W-C-12 command-based token authentication for
+// one provider: the credential is the stdout of running Command, refreshed
+// every RefreshInterval and re-run once after a 401.
+//
+// SECURITY: Command is executed. It is configuration, not model input, but
+// config is not automatically trusted either — a config.yaml can come from a
+// shared template, a team repo, or (since agents write files through the
+// same fs tools that can touch config.yaml) from the agent's own prior edit.
+// The command therefore goes through internal/secproc.Launch exactly like
+// any other untrusted spawn (shell_run, an ACP agent CLI): it is Authorized
+// against a purpose-built minimal profile, its environment is scrubbed of
+// ambient credentials, and it runs under the production sandbox factory. See
+// internal/llm/eino/cmdauth.go and internal/bootstrap's AuthCommandRunner
+// registration.
+type ProviderAuthConfig struct {
+	// Command is the argv to run: Command[0] is the program, the rest are
+	// its arguments. The command's stdout, trimmed of trailing whitespace,
+	// becomes the bearer/api-key credential for this provider. Required —
+	// an Auth block with an empty Command is a config error (validate()).
+	Command []string `yaml:"command"`
+
+	// RefreshInterval is how long a cached credential is reused before the
+	// command is re-run. 0 defaults to 15 minutes (applyDefaults) — long
+	// enough that a fast-issuing command is not re-run every turn, short
+	// enough that a typical cloud STS token (usually valid 15-60m) is
+	// refreshed well before it expires. The command is also re-run once,
+	// out of band from this interval, immediately after a 401 (see
+	// CommandTokenSource.Refresh).
+	RefreshInterval time.Duration `yaml:"refresh_interval"`
 }
 
 // AgentConfig configures a named sub-agent.
@@ -940,6 +1006,13 @@ func (c *Config) applyDefaults() {
 	if c.Storage.WALAutoCheckpoint == 0 {
 		c.Storage.WALAutoCheckpoint = 1000
 	}
+	// W-C-12: an Auth block with no explicit refresh_interval gets 15m — see
+	// ProviderAuthConfig.RefreshInterval's doc for why that value.
+	for i := range c.LLM.Providers {
+		if c.LLM.Providers[i].Auth != nil && c.LLM.Providers[i].Auth.RefreshInterval == 0 {
+			c.LLM.Providers[i].Auth.RefreshInterval = 15 * time.Minute
+		}
+	}
 }
 
 func (c *Config) validate() error {
@@ -947,6 +1020,9 @@ func (c *Config) validate() error {
 		return errors.New("subagents.limit must be within 1..20")
 	}
 	if err := c.validateProviderThresholds(); err != nil {
+		return err
+	}
+	if err := c.validateProviderRetriesAndAuth(); err != nil {
 		return err
 	}
 	if err := c.loadGuardianPrompt(); err != nil {
@@ -979,6 +1055,31 @@ func (c *Config) validateProviderThresholds() error {
 	for i, p := range c.LLM.Providers {
 		if p.AutoCompactThreshold > 1 {
 			return fmt.Errorf("llm.providers[%d] (name=%q): auto_compact_threshold must be a fraction of the context window (<= 1), got %v — this looks like an absolute token count, not a ratio", i, p.Name, p.AutoCompactThreshold)
+		}
+	}
+	return nil
+}
+
+// validateProviderRetriesAndAuth rejects the two shapes W-C-07 and W-C-12
+// cannot mean anything sensible: a negative retry ceiling (a retry loop
+// cannot run a command a negative number of times, so this is always an
+// operator typo, not a policy) and an auth block with no command to run
+// (nothing would ever produce a credential, so every call would fail closed
+// with a confusing "auth command produced no token" rather than a clear
+// config error at boot).
+func (c *Config) validateProviderRetriesAndAuth() error {
+	if c.LLM.MaxRetries < 0 {
+		return fmt.Errorf("llm.max_retries must be >= 0, got %d", c.LLM.MaxRetries)
+	}
+	for i, p := range c.LLM.Providers {
+		if p.MaxRetries != nil && *p.MaxRetries < 0 {
+			return fmt.Errorf("llm.providers[%d] (name=%q): max_retries must be >= 0, got %d", i, p.Name, *p.MaxRetries)
+		}
+		if p.Auth != nil && len(p.Auth.Command) == 0 {
+			return fmt.Errorf("llm.providers[%d] (name=%q): auth.command must not be empty when auth is configured", i, p.Name)
+		}
+		if p.Auth != nil && p.Auth.RefreshInterval < 0 {
+			return fmt.Errorf("llm.providers[%d] (name=%q): auth.refresh_interval must be >= 0, got %v", i, p.Name, p.Auth.RefreshInterval)
 		}
 	}
 	return nil

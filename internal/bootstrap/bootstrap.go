@@ -704,9 +704,25 @@ func Build(opts Options) (*App, error) {
 		named, chain = BuildAdaptiveModels(named, chain, adaptiveDeps{
 			Cfg: cfg, Store: st, Windows: windows, Redactor: redactor,
 		})
+		// W-C-07: PerProviderMaxRetries[i] tracks cfg.LLM.Providers[i] one for
+		// one — BuildProviders (and any ProviderBuilder standing in for it)
+		// appends to chain in the SAME order it iterates cfg.LLM.Providers,
+		// which is why this can be derived here rather than plumbed back
+		// through BuildProviders' return signature. -1 (not 0, a legitimate
+		// "never retry") is the "not set" sentinel maxRetriesFor reads.
+		perProviderMaxRetries := make([]int, len(cfg.LLM.Providers))
+		for i, p := range cfg.LLM.Providers {
+			if p.MaxRetries != nil {
+				perProviderMaxRetries[i] = *p.MaxRetries
+			} else {
+				perProviderMaxRetries[i] = -1
+			}
+		}
 		rm, err := einollm.NewResilientModel(chain, einollm.ResilientConfig{
-			FirstChunkTimeout: cfg.LLM.StreamFirstChunkTimeout,
-			IdleTimeout:       cfg.LLM.StreamIdleTimeout,
+			FirstChunkTimeout:     cfg.LLM.StreamFirstChunkTimeout,
+			IdleTimeout:           cfg.LLM.StreamIdleTimeout,
+			MaxRetries:            cfg.LLM.MaxRetries,
+			PerProviderMaxRetries: perProviderMaxRetries,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap: resilient model: %w", err)

@@ -921,3 +921,138 @@ func TestResilientModel_StreamIdleTimeoutCancelsProviderContext(t *testing.T) {
 		t.Fatal("provider's Stream ctx was never cancelled — runStream is not threading the watchdog's cancel into the chain")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// W-C-07: per-provider MaxRetries
+// ---------------------------------------------------------------------------
+
+// TestMaxRetriesFor pins maxRetriesFor's contract directly: the -1 sentinel
+// (not present, out of range, or explicitly -1) falls back to cfg.MaxRetries;
+// any other value — including the legitimate "never retry" 0 — is used as-is.
+func TestMaxRetriesFor(t *testing.T) {
+	cases := []struct {
+		name   string
+		per    []int
+		idx    int
+		global int
+		want   int
+	}{
+		{"nil slice falls back", nil, 0, 5, 5},
+		{"empty slice falls back", []int{}, 0, 5, 5},
+		{"sentinel -1 falls back", []int{-1, 2}, 0, 5, 5},
+		{"explicit zero is honoured, not treated as unset", []int{0}, 0, 5, 0},
+		{"explicit override is honoured", []int{7}, 0, 5, 7},
+		{"index out of range falls back", []int{1}, 3, 5, 5},
+		{"negative index (total-open-failure state) falls back", []int{1}, -1, 5, 5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newScriptedModel([]bool{false}, new(int32))
+			r, err := NewResilientModel([]model.BaseChatModel{m}, ResilientConfig{
+				MaxRetries:            tc.global,
+				PerProviderMaxRetries: tc.per,
+				BaseDelay:             time.Millisecond,
+				MaxDelay:              time.Millisecond,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, r.maxRetriesFor(tc.idx))
+		})
+	}
+}
+
+// TestResilientModel_GeneratePerProviderMaxRetriesOverridesGlobal proves a
+// provider with a lower PerProviderMaxRetries than the global MaxRetries
+// exhausts its OWN budget and fails over sooner than the global value would
+// allow. Without maxRetriesFor's per-index dispatch, bad would be retried
+// against the global cap (5) instead of its override (1), so it would take 6
+// calls (not 2) before failover — this is the assertion that would go red if
+// Generate's retry loop reverted to r.cfg.MaxRetries for every provider.
+func TestResilientModel_GeneratePerProviderMaxRetriesOverridesGlobal(t *testing.T) {
+	var badCalls, goodCalls int32
+	bad := newScriptedModel([]bool{true, true, true, true, true, true}, &badCalls)
+	good := newScriptedModel([]bool{false}, &goodCalls)
+	r, err := NewResilientModel([]model.BaseChatModel{bad, good}, ResilientConfig{
+		MaxRetries:            5,
+		PerProviderMaxRetries: []int{1, -1},
+		BaseDelay:             time.Millisecond,
+		MaxDelay:              time.Millisecond,
+	})
+	require.NoError(t, err)
+	out, err := r.Generate(context.Background(), []*schema.Message{schema.UserMessage("x")})
+	require.NoError(t, err)
+	assert.Equal(t, "ok", out.Content)
+	assert.Equal(t, int32(2), atomic.LoadInt32(&badCalls), "override (1) means 1 initial + 1 retry, then failover")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&goodCalls))
+}
+
+// TestResilientModel_GeneratePerProviderMaxRetriesFallsBackToGlobal proves the
+// -1 sentinel, present as an explicit array element (not merely absent),
+// still falls back to the global MaxRetries — the "未设置时回退全局值" half
+// of the acceptance criterion, exercised through the same array shape
+// bootstrap.go actually builds (one element per configured provider, -1 for
+// every provider without an explicit override).
+func TestResilientModel_GeneratePerProviderMaxRetriesFallsBackToGlobal(t *testing.T) {
+	var calls int32
+	f := newScriptedModel([]bool{true, true, true}, &calls) // fails 3x, global cap is 2 retries
+	r, err := NewResilientModel([]model.BaseChatModel{f}, ResilientConfig{
+		MaxRetries:            2,
+		PerProviderMaxRetries: []int{-1},
+		BaseDelay:             time.Millisecond,
+		MaxDelay:              time.Millisecond,
+	})
+	require.NoError(t, err)
+	_, err = r.Generate(context.Background(), []*schema.Message{schema.UserMessage("x")})
+	require.Error(t, err)
+	assert.Equal(t, int32(3), atomic.LoadInt32(&calls), "1 initial + 2 retries = global MaxRetries, not the sentinel")
+}
+
+// alwaysFlakyStreamModel opens successfully on every call (so openStreamChain
+// never fails over — see its doc comment: failover only happens on a p.Stream
+// open error) but errors mid-stream every time, forever. It is the fixture
+// for proving the STREAM path's mid-stream retry cap (runStream's streamErr
+// case) reads maxRetriesFor(curIdx), not the global cfg.MaxRetries.
+type alwaysFlakyStreamModel struct {
+	calls *int32
+}
+
+func (m *alwaysFlakyStreamModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	return schema.AssistantMessage("ok", nil), nil
+}
+
+func (m *alwaysFlakyStreamModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	atomic.AddInt32(m.calls, 1)
+	return streamReaderFrom([]*schema.Message{schema.AssistantMessage("partial", nil)}, io.ErrUnexpectedEOF), nil
+}
+
+var _ model.BaseChatModel = (*alwaysFlakyStreamModel)(nil)
+
+// TestResilientModel_StreamPerProviderMaxRetriesCapsMidStreamRetries proves
+// the override caps mid-stream retries below what the global MaxRetries (5)
+// would otherwise allow (6 calls). Without maxRetriesFor(curIdx) in the
+// streamErr branch, this would take 6 Stream() calls instead of 2.
+func TestResilientModel_StreamPerProviderMaxRetriesCapsMidStreamRetries(t *testing.T) {
+	var calls int32
+	f := &alwaysFlakyStreamModel{calls: &calls}
+	r, err := NewResilientModel([]model.BaseChatModel{f}, ResilientConfig{
+		MaxRetries:            5,
+		PerProviderMaxRetries: []int{1},
+		BaseDelay:             time.Millisecond,
+		MaxDelay:              time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	sr, err := r.Stream(context.Background(), []*schema.Message{schema.UserMessage("x")})
+	require.NoError(t, err)
+	defer sr.Close()
+
+	var recvErr error
+	for {
+		_, e := sr.Recv()
+		if e != nil {
+			recvErr = e
+			break
+		}
+	}
+	require.Error(t, recvErr, "budget exhausted, the mid-stream error must surface")
+	assert.Equal(t, int32(2), atomic.LoadInt32(&calls), "override (1) means 1 initial open + 1 retried open, then give up")
+}
