@@ -82,14 +82,20 @@ func PlatformPTYCapability() PTYCapability {
 // Three details are load-bearing and each has a failure mode that looks like
 // something else:
 //
-//   - Setsid + Setctty. Without a controlling terminal the child's isatty()
-//     still answers true (it holds a tty fd) but signals do not reach it and a
-//     shell refuses to enable job control, printing "can't access tty" — which
-//     reads as a broken shell rather than a missing ioctl. Ctty is 0 because it
-//     names a CHILD descriptor, after os/exec has dup'd Stdin into place.
-//     Setpgid is deliberately NOT also set: setpgid(2) returns EPERM for a
-//     session leader, so asking for both makes every PTY spawn fail in the
-//     child between fork and exec.
+//   - Setsid + Setctty. isatty() answering true is NOT the same as having a
+//     controlling terminal, and it is the second one that gives the pty a
+//     foreground process group — without which the line discipline turns ^C
+//     into a data byte instead of a SIGINT. Ctty is 0 because it names a CHILD
+//     descriptor, after os/exec has dup'd Stdin into place. Setpgid is
+//     deliberately NOT also set: setpgid(2) returns EPERM for a session leader,
+//     so asking for both makes every PTY spawn fail in the child between fork
+//     and exec.
+//
+//     Measured caveat: on darwin the kernel assigns the controlling terminal to
+//     the session leader regardless, so removing Setctty here changes nothing
+//     observable on that platform — TestPTYCtrlCReachesTheChild stays green.
+//     Linux does not, which is where that test discriminates. Do not read the
+//     darwin result as "this flag is redundant".
 //
 //   - The parent closes the slave once the child owns it. Holding it open
 //     means the master never reaches end-of-file, and Manager.pump reads to EOF

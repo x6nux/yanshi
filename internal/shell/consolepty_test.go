@@ -148,6 +148,48 @@ func TestPTYChildSeesATerminal(t *testing.T) {
 	}
 }
 
+// TestPTYCtrlCReachesTheChild pins the property that depends on the child
+// having a real CONTROLLING terminal rather than merely a tty descriptor:
+// typing ^C generates SIGINT.
+//
+// The line discipline turns 0x03 into a signal for the terminal's FOREGROUND
+// PROCESS GROUP, and a pty acquires one only when some process claims it as its
+// controlling terminal (TIOCSCTTY, which is what SysProcAttr.Setctty performs).
+// Without that the byte is delivered as data and a cancel does nothing — which
+// looks exactly like a child that ignores SIGINT.
+//
+// # What this test does and does not discriminate, measured
+//
+// On darwin it does NOT discriminate: dropping Setctty from the spawn leaves
+// this test green, along with every other probe in this file (isatty, an open
+// of /dev/tty, the REPL conversation). The kernel assigns the controlling
+// terminal to the session leader anyway. That is a measurement, not a guess —
+// the mutation was applied to the working tree and the suite rerun.
+//
+// On linux it does: setsid() leaves the child with no controlling terminal, and
+// the already-open slave descriptor does not confer one, so without TIOCSCTTY
+// the pty has no foreground process group and ^C generates nothing. The CI
+// ubuntu leg is therefore where this assertion earns its keep; here it is a
+// (still real) end-to-end check that signals travel.
+func TestPTYCtrlCReachesTheChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("^C over ConPTY is a different mechanism; this probe drives /bin/sh")
+	}
+	p := newPTYProbe(t, LaunchSpec{
+		Program: "/bin/sh",
+		Args: []string{"-c",
+			`trap 'echo GOT-INT; exit 0' INT; echo READY; i=0; while [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done`},
+		Env: ptyShellEnv(),
+		PTY: true,
+	})
+	p.expect("READY", 10*time.Second)
+	if _, err := p.console.Write([]byte{0x03}); err != nil {
+		t.Fatalf("write ^C to the pty: %v", err)
+	}
+	p.expect("GOT-INT", 10*time.Second)
+	_ = p.waitEOF(10 * time.Second)
+}
+
 // TestPTYRunsAnInteractiveREPL is the acceptance the spec asks for in words a
 // unit test can check: a real read-eval-print loop, driven by typing.
 //
@@ -226,6 +268,13 @@ func TestPTYResizeReachesTheChild(t *testing.T) {
 // and then reaps, so a raw EIO would not hang — it would silently mark every
 // completed PTY session as having failed, and the operator would see a session
 // that produced correct output and reported an error.
+//
+// Measured: on darwin this test does NOT discriminate. Deleting the translation
+// from ptyConsole.Read leaves it green, because macOS already reports the same
+// event as a zero-length read. The assertion is real on the CI ubuntu leg and
+// is a tautology here; that asymmetry is the whole reason the translation
+// exists, and recording it stops a future reader from concluding the branch is
+// dead code because their laptop never takes it.
 func TestPTYSessionEndsAtEOFNotAtEIO(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("this probe drives /bin/sh")
