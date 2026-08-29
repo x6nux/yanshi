@@ -240,6 +240,24 @@ func TestEgressPromptIsAlwaysForcePrompt(t *testing.T) {
 	}
 }
 
+// TestEgressReasonStatesTheGrantIsHostWide is the fix for W-B fix-b57
+// finding 3 (Ruling W-B-25). egressScope is host-only and, since this batch
+// added a SOCKS5 path, a granted host is reachable over an arbitrary byte
+// tunnel — any protocol, any port — not just the one request that raised
+// the prompt. Before this fix the dialog said "GET over http", which reads
+// narrower than what record() actually persists; an operator approving one
+// HTTP GET has no way to learn from the dialog that they just admitted a
+// SOCKS5 connection to an unrelated loopback service on that same host.
+func TestEgressReasonStatesTheGrantIsHostWide(t *testing.T) {
+	got := egressReason(netpolicy.Request{Protocol: "http", Host: "grant.test", Method: "GET"})
+	for _, want := range []string{"grant.test", "ALL egress", "any protocol", "any port"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("egressReason = %q, want it to contain %q — the dialog must say the grant "+
+				"covers all egress to the host, not just this one request", got, want)
+		}
+	}
+}
+
 // TestEgressArgsCarryNoPathOrHeaders is ADR-0023's recording constraint at the
 // place an operator would see it. A URL path routinely carries a bearer token
 // in a query parameter, and the dialog is the most tempting place to put one.

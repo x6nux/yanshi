@@ -219,13 +219,24 @@ func egressArgs(req netpolicy.Request) string {
 // otherwise always means "the model wants to do X", and an operator who reads
 // this one that way would be approving something the transcript never
 // mentioned.
+//
+// It also has to say what the grant actually covers, and that is wider than
+// the one request that triggered it: egressScope is host-only (deliberately —
+// see its own doc), and since this batch added a SOCKS5 path a granted host
+// is not "one more HTTP GET admitted" but an arbitrary byte tunnel to any
+// port on that host, any protocol at all. A dialog that names only the
+// request in front of it (e.g. "GET over http") reads as narrower than what
+// gets recorded, and record() persists exactly the host-only scope the
+// wording now names.
 func egressReason(req netpolicy.Request) string {
 	what := req.Protocol
 	if req.Method != "" {
 		what = req.Method + " over " + req.Protocol
 	}
-	return fmt.Sprintf("a subprocess is trying to reach %s (%s) and security.network does not allow it",
-		req.Host, what)
+	return fmt.Sprintf(
+		"a subprocess is trying to reach %s (%s) and security.network does not allow it; "+
+			"approving grants ALL egress to %s — any protocol, any port — not just this one request",
+		req.Host, what, req.Host)
 }
 
 // mergeContexts returns a context canceled when either input is.
