@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -568,4 +569,122 @@ func (c *countingRuleRecorder) ApproveShellForSession(string, string) bool {
 func (c *countingRuleRecorder) DemoteShellForSession(string, string) bool {
 	c.demotions++
 	return true
+}
+
+// TestAIOverrideRoundTripReachesTheWireAndTheArchive is the CALL-SITE test, and
+// it exists because a mutation probe found nothing holding the call site.
+//
+// oneShotIfAIDeclined, auditAIOverride and the AIDeclined annotation each have
+// their own unit test, and all three of them pass with the two calls DELETED
+// from the ChatWS callback — measured. Three green tests for three functions
+// nothing invokes is the exact shape this repository keeps rediscovering, so
+// the property has to be asserted end to end: over a real connection, in auto
+// mode, with a model that says ASK.
+//
+// Three claims, one round trip, because they are one behaviour:
+//
+//	the prompt SAYS the model refused          -> the annotation reached the wire
+//	the archive HAS an override row            -> auditAIOverride is called
+//	the identical second call prompts AGAIN    -> always_allow did not stick
+//
+// The third is the load-bearing one. Without it a "yes" to an AI-declined call
+// would record an approval rule, and Authorize's approval-manager short-circuit
+// runs BEFORE the mode gate — so the risk assessment would be skipped for that
+// scope for the rest of the session, silently.
+func TestAIOverrideRoundTripReachesTheWireAndTheArchive(t *testing.T) {
+	workdir := t.TempDir()
+
+	var rows []tools.PermissionAuditRecord
+	var rowsMu sync.Mutex
+	tools.SetPermissionAuditSink(&tools.StoreAuditSink{
+		Append: func(rec tools.PermissionAuditRecord) error {
+			rowsMu.Lock()
+			defer rowsMu.Unlock()
+			rows = append(rows, rec)
+			return nil
+		},
+	})
+	t.Cleanup(func() { tools.SetPermissionAuditSink(nil) })
+
+	call := func(id string) *schema.Message {
+		return schema.AssistantMessage("", []schema.ToolCall{
+			{ID: id, Type: "function", Function: schema.FunctionCall{
+				Name: "fs_write", Arguments: `{"path":"a.txt","content":"x"}`,
+			}},
+		})
+	}
+	finish := schema.AssistantMessage("ok", nil)
+	turnModel := einollm.NewFakeModelWithMessages(
+		[]*schema.Message{call("c1"), finish, call("c2"), finish}, nil)
+
+	// A SEPARATE model answers the auto-approval question, so the turn script
+	// above is not consumed by it. It always says ASK.
+	judge := map[string]model.BaseChatModel{"default": einollm.NewFakeModel(
+		[]string{"ASK", "ASK", "ASK", "ASK"}, nil)}
+
+	fs := tools.NewFSTools(workdir)
+	o, err := orchestrator.New(orchestrator.Config{
+		Model: turnModel,
+		Tools: []orchestrator.BaseTool{fs.Write},
+		Profile: guard.PermissionProfile{
+			Tools: guard.ToolsPerm{Allow: []string{"fs_*"}},
+			// "a.txt" is outside the write allowlist, so fs_write returns
+			// Prompt and the interactive path runs.
+			FS: guard.FSPerm{Write: []string{filepath.Join(workdir, "safe/**")}},
+		},
+	})
+	require.NoError(t, err)
+	s := New(Config{Token: "t"})
+	s.ChatWS(o, judge, nil)
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	c := dial(t, "ws"+strings.TrimPrefix(ts.URL, "http")+"/api/v1/chat/ws")
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.NewSetMode(string(guard.ModeAuto))))
+
+	// Turn 1: auto mode, the model says ASK, the user overrides with the
+	// STICKIEST answer available.
+	require.NoError(t, c.WriteJSON(proto.NewUserMessage("go")))
+	req := drainUntil(t, c, "permission_request")
+	assert.Contains(t, req.Reason, "automatic risk assessment",
+		"the prompt must say the model refused; otherwise the user cannot tell a "+
+			"profile denial from a risk verdict and the override is not an informed one")
+	require.NoError(t, c.WriteJSON(proto.NewPermissionResponse(req.ID, "always_allow")))
+	for {
+		if readFrame(t, c).Type == "done" {
+			break
+		}
+	}
+
+	rowsMu.Lock()
+	var sawOverride bool
+	for _, r := range rows {
+		if r.Source == "auto_approval_override" && r.Decision == "allow" {
+			sawOverride = true
+		}
+	}
+	rowsMu.Unlock()
+	assert.True(t, sawOverride,
+		"a human reversing the model's refusal left no row in the archive")
+
+	// Turn 2: the identical action must ask AGAIN. always_allow on an
+	// AI-declined call grants that call, not a standing exemption from the
+	// judge.
+	require.NoError(t, c.WriteJSON(proto.NewUserMessage("again")))
+	var sawSecondPrompt bool
+	for {
+		f := readFrame(t, c)
+		if f.Type == "permission_request" {
+			sawSecondPrompt = true
+			require.NoError(t, c.WriteJSON(proto.NewPermissionResponse(f.ID, "deny")))
+		}
+		if f.Type == "done" {
+			break
+		}
+	}
+	assert.True(t, sawSecondPrompt,
+		"always_allow on an AI-declined call became a standing rule; the approval "+
+			"manager short-circuits BEFORE the mode gate, so the risk assessment "+
+			"would never run for this scope again")
 }

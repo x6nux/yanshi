@@ -576,7 +576,19 @@ func checkSandbox(cfg *config.Config, cfgErr error, workRoot string) CheckResult
 		Tier:          sandbox.ParseTier(cfg.Security.Sandbox.Tier),
 		NetworkDeny:   cfg.Security.Sandbox.NetworkDeny,
 	})
-	rep := sb.Report()
+	return sandboxCheckResult(sb.Report())
+}
+
+// sandboxCheckResult renders one CapabilityReport as the doctor row.
+//
+// Split from checkSandbox so it can be driven with a SYNTHESISED report. The
+// row that matters most for W-B-13 — a backend that is Enforced and OSIsolated
+// and still leaves network_deny inert — is the Landlock-without-seccomp shape,
+// which no developer machine and only one CI leg can produce. A test that could
+// only observe the local host's real backend would silently assert nothing
+// about it, which is the position the per-field warning exists to fix one layer
+// down.
+func sandboxCheckResult(rep sandbox.CapabilityReport) CheckResult {
 	msg := fmt.Sprintf("tier %s, effective %s, backend %s", rep.Requested, rep.Effective, rep.Backend)
 	if rep.Reason != "" {
 		msg += " (" + rep.Reason + ")"
