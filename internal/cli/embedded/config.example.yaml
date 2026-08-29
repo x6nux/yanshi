@@ -37,6 +37,14 @@ llm:
   # max_retries (W-C-07) is the global per-attempt retry ceiling for a
   # provider that does not set its own max_retries below. Omit it (or leave
   # 0) to keep the resilient layer's own built-in default (10).
+  #
+  # WARNING: 0 means something different here than it does on a single
+  # provider's own max_retries below. This field is a plain int, so its zero
+  # value IS "omitted" — 0 (or leaving the whole llm: block out) falls back to
+  # the built-in default of 10. A provider's own max_retries is a *int, which
+  # CAN distinguish "omitted" from "explicitly 0" — there, 0 really does mean
+  # "never retry this provider." Same digit, opposite meaning, because only
+  # one of the two types has room to represent "unset."
   # max_retries: 5
   providers:
     # context_window is OPTIONAL. Omit it and yanshi resolves the window from a
@@ -87,6 +95,14 @@ llm:
       #   refresh_interval: 15m    # re-run the command at most this often; also re-run once after
       #                             # any 401. Omit to default to 15m. Runs through secproc.Launch
       #                             # (Authorized + credential-scrubbed), same as shell_run/ACP.
+      #                             # "Credential-scrubbed" cuts both ways: the command does NOT
+      #                             # inherit yanshi's own ambient credential env vars (AWS_*,
+      #                             # OPENAI_API_KEY, ...) — they are wiped along with everything
+      #                             # else on the credential axis before this argv is spawned. If
+      #                             # your helper script itself needs a secret from the
+      #                             # environment (e.g. to mint an STS token), it must obtain it
+      #                             # some other way (baked into the script, a config file, its
+      #                             # own login state) — yanshi will not forward it in.
     # Local runtimes (Ollama / LM Studio / vLLM / llama.cpp) are auto-detected
     # from base_url (loopback, RFC1918, *.local) or from kind, and are NEVER
     # given a cloud model's window: a local serve truncates at its own num_ctx

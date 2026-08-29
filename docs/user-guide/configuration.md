@@ -26,7 +26,11 @@ SQLite 持久化（`sqlite_path`）。F1 的 WAL 相关项：`wal_max_open_conns
 
 `max_retries`（int，W-C-07）是这个 provider 自己的重试上限，覆盖 `llm.max_retries` 这个全局回退值；不设置（省略）时用全局值，设置为 `0` 是显式的"这个 provider 一次都不重试"，两者的区别由指针类型钉住（config.go 的 M4 nil-means-omit 惯例）。`ResilientChatModel` 是重试的唯一权威，per-provider 预算在 failover 换到别的 provider 时会重置，不会带着上一个 provider 已经花掉的次数。负值在加载期直接拒绝启动（`llm.max_retries` 或某个 provider 的 `max_retries` < 0）。
 
+⚠️ **同一个取值 `0` 在这两层是相反的语义。** 顶层 `llm.max_retries` 是普通 `int`（零值就是省略），`0`（或整段省略 `llm` 块）意味着"没配置，用 `ResilientChatModel` 的内置默认 10"；每个 provider 的 `max_retries` 是 `*int`，`0` 是**显式**配置出来的取值，意味着"这个 provider 一次都不重试"。原因就是上一段说的指针类型：顶层没有 nil-means-omit 的空间，`0` 只能读成"没说"；provider 级别有，`0` 因此能读成"说了，说的是零"。
+
 `auth`（W-C-12）配置**命令产出型**凭据：`auth.command`（`[]string`，argv 形式，不经 shell 解析）是产出 token 的命令，`auth.refresh_interval`（duration，默认 `15m`）是刷新周期。配了 `auth` 时 `api_key` 可以留空。命令执行必须走 `secproc`（W-B-02 收敛后的唯一子进程入口），401 会触发一次命令重跑再重试。`auth.command` 为空、或 `refresh_interval` 为负值，都在加载期直接拒绝启动。
+
+⚠️ **`auth.command` 拿不到 yanshi 自己继承的环境凭据。** 这条命令的 `AllowEnv` 留空（`runAuthCommand` 的实现），于是 `netpolicy.ScrubCredentials` 会把父进程环境里所有凭据类变量（`AWS_SECRET_ACCESS_KEY`、`OPENAI_API_KEY` 这类）连同其余环境一起清洗掉——理由与 `shell_run`/ACP agent 等其余不受信子进程完全一致：这是一条产出 token 的**外部命令**，对 yanshi 自己的凭据没有天然主张权。如果 helper 脚本本身依赖某个环境变量（例如用 `AWS_SECRET_ACCESS_KEY` 去换一个临时 STS token），它必须自己想办法拿到这个值（写进脚本、读配置文件、走脚本自己的登录态），而不能指望 yanshi 把它转发进来。
 
 ## agents
 
