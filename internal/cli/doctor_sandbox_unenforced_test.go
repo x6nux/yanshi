@@ -90,7 +90,7 @@ func TestDoctorAndRuntimeReportTheSameSandboxPosture(t *testing.T) {
 	doctorCfg := sandbox.Config{ // mirrors checkSandbox's sandbox.Config literal
 		Enabled: true, WorkspaceRoot: "/w", Tier: sandbox.WorkspaceWrite, NetworkDeny: true,
 	}
-	runtimeCfg := doctorCfg // same operator config...
+	runtimeCfg := doctorCfg                        // same operator config...
 	runtimeCfg.ProxyURL = "http://127.0.0.1:38080" // ...plus bootstrap's own wiring doctor never sets.
 
 	enforced := []string{sandbox.FieldTier, sandbox.FieldWorkspaceRoot, sandbox.FieldNetworkDeny}
