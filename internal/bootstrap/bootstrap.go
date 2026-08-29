@@ -361,7 +361,15 @@ type Options struct {
 // context windows, the per-model auto-compact thresholds (W-C-01 / INF2),
 // and an error. bootstrap calls it AFTER credential resolution so
 // cfg.LLM.Providers[i].APIKey holds plaintext.
-type ProviderBuilder func(*config.Config) (
+//
+// The trailing ...einollm.SecretRegistrar (W-C-12 review B-2) is how Build
+// hands einollm.BuildProviders the SAME redactor instance every other
+// dynamic credential (APIKey, Headers) is already registered with, so an
+// auth.command-produced token gets that protection too. A test
+// ProviderBuilder that ignores the parameter is unaffected — nil registrar
+// simply disables registration, same as every other soft-degradation
+// default in einollm.
+type ProviderBuilder func(*config.Config, ...einollm.SecretRegistrar) (
 	map[string]model.BaseChatModel,
 	[]model.BaseChatModel,
 	map[string]int,
@@ -714,7 +722,10 @@ func Build(opts Options) (*App, error) {
 		if providerBuilder == nil {
 			providerBuilder = einollm.BuildProviders
 		}
-		named, chain, windows, thresholds, err := providerBuilder(cfg)
+		// redactor (B-2): the SAME instance APIKey/Headers were just
+		// registered with above, so an auth.command-produced token gets
+		// identical protection — see ProviderBuilder's doc comment.
+		named, chain, windows, thresholds, err := providerBuilder(cfg, redactor)
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap: build providers: %w", err)
 		}

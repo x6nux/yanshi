@@ -54,8 +54,16 @@ import (
 // config override nor a catalog row is simply absent from this map; the
 // caller's own CompactionConfig.Threshold applies unchanged (see
 // ResolveAutoCompactThreshold, modelcatalog.go).
-func BuildProviders(cfg *config.Config) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, error) {
+//
+// registrars is optional (variadic, so the many existing call sites that do
+// not exercise W-C-12's B-2 credential registration keep compiling
+// unchanged) — the first non-nil element, if any, is forwarded to every
+// provider's auth.command token source so a command-produced credential is
+// scrubbed from logs/WS/SSE/SQLite the same way a config api_key or header
+// already is. See SecretRegistrar's doc comment (cmdauth.go).
+func BuildProviders(cfg *config.Config, registrars ...SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, error) {
 	ctx := context.Background()
+	registrar := firstRegistrar(registrars)
 	chain := make([]model.BaseChatModel, 0, len(cfg.LLM.Providers))
 	models := make(map[string]model.BaseChatModel, len(cfg.LLM.Providers))
 	windows := make(map[string]int, len(cfg.LLM.Providers))
@@ -76,7 +84,7 @@ func BuildProviders(cfg *config.Config) (map[string]model.BaseChatModel, []model
 		return fmt.Sprintf("model-%d", i)
 	}
 	for i, p := range cfg.LLM.Providers {
-		m, err := buildOne(ctx, p)
+		m, err := buildOne(ctx, p, registrar)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("eino: build provider %q (kind=%q): %w", p.Name, p.Kind, err)
 		}
@@ -161,7 +169,7 @@ func normalizeKind(k string) string {
 // A plain value type would erase the difference between "unset" and "set to 0",
 // and 0 is meaningful for both temperature (deterministic judge calls) and
 // top_p (greedy decoding).
-func buildOne(ctx context.Context, p config.ProviderConfig) (model.BaseChatModel, error) {
+func buildOne(ctx context.Context, p config.ProviderConfig, registrar SecretRegistrar) (model.BaseChatModel, error) {
 	// W-C-12: apiKeyOrPlaceholder stands in for the three adapters' non-empty
 	// APIKey validation when the real credential comes from auth.command
 	// instead. It never reaches the wire — each branch's authRefreshTransport
@@ -177,7 +185,7 @@ func buildOne(ctx context.Context, p config.ProviderConfig) (model.BaseChatModel
 		// prefix) — see AnthropicModel.setHeaders.
 		var hc *http.Client
 		if p.Auth != nil {
-			hc = &http.Client{Transport: authRefreshHTTPTransport(http.DefaultTransport, p.Auth, "x-api-key", false)}
+			hc = &http.Client{Transport: authRefreshHTTPTransport(http.DefaultTransport, p.Auth, "x-api-key", false, registrar)}
 		}
 		return NewAnthropicModel(ctx, &AnthropicModelConfig{
 			APIKey:      apiKeyOrPlaceholder,
@@ -193,7 +201,7 @@ func buildOne(ctx context.Context, p config.ProviderConfig) (model.BaseChatModel
 		// Authorization: Bearer <key> — see openaiResponsesModel.setHeaders.
 		var hc *http.Client
 		if p.Auth != nil {
-			hc = &http.Client{Transport: authRefreshHTTPTransport(http.DefaultTransport, p.Auth, "Authorization", true)}
+			hc = &http.Client{Transport: authRefreshHTTPTransport(http.DefaultTransport, p.Auth, "Authorization", true, registrar)}
 		}
 		return NewOpenAIResponsesModel(ctx, &ResponsesConfig{
 			APIKey:          apiKeyOrPlaceholder,
@@ -218,7 +226,7 @@ func buildOne(ctx context.Context, p config.ProviderConfig) (model.BaseChatModel
 		hc := newHeaderCaptureClient(p.Headers)
 		if p.Auth != nil {
 			hc = &http.Client{Transport: &headerCaptureTransport{
-				base:    authRefreshHTTPTransport(http.DefaultTransport, p.Auth, "Authorization", true),
+				base:    authRefreshHTTPTransport(http.DefaultTransport, p.Auth, "Authorization", true, registrar),
 				headers: p.Headers,
 			}}
 		}

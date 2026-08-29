@@ -47,6 +47,40 @@ const placeholderAPIKeyForCommandAuth = "auth-command-managed"
 // supply a fake without a mock framework.
 type AuthCommandRunner func(ctx context.Context, argv []string) (string, error)
 
+// SecretRegistrar records a credential-bearing string with the process-wide
+// secrets.Redactor (internal/secrets), so it is scrubbed from every log line,
+// WS/SSE frame and SQLite row from that point on — the same protection
+// bootstrap.Build already gives every configured api_key and provider header
+// (see bootstrap.go's redactor.Register loops for APIKey/Headers). Narrow,
+// one-method interface — mirroring internal/ctxcompact.Redactor's precedent —
+// so this package accepts *secrets.Redactor structurally without importing
+// internal/secrets: nothing here needs any other Redactor method.
+//
+// W-C-12 review B-2: before this existed, the auth.command-produced token was
+// the ONLY dynamic credential in the provider stack never registered — a
+// config api_key or a config header value is redacted on sight, but a token
+// this package fetched itself was not, so it would appear verbatim in any log
+// line or transcript that happened to echo it back (a 401 diagnostic, a
+// stack trace from the HTTP client).
+type SecretRegistrar interface {
+	Register(secret string)
+}
+
+// firstRegistrar returns the first non-nil element of regs, or nil.
+// BuildProviders and NewCommandTokenSource take an OPTIONAL trailing
+// SecretRegistrar (variadic, so the dozens of existing call sites across
+// tests that do not care about credential registration keep compiling
+// unchanged); buildOne and authRefreshHTTPTransport downstream take a plain
+// SecretRegistrar once BuildProviders has already made that choice.
+func firstRegistrar(regs []SecretRegistrar) SecretRegistrar {
+	for _, r := range regs {
+		if r != nil {
+			return r
+		}
+	}
+	return nil
+}
+
 // DefaultAuthCommandRunner is the production runner: it spawns argv through
 // secproc.Launch, the single Authorize-gated entry point every untrusted
 // spawn in yanshi must use. It calls secproc.Launch directly rather than
@@ -149,17 +183,32 @@ func runAuthCommand(ctx context.Context, argv []string) (string, error) {
 		return "", fmt.Errorf("eino: auth.command launch: %w", err)
 	}
 
-	out, readErr := io.ReadAll(started.Stdout)
-	waitErr := started.Wait()
+	// B-1: drain BOTH stdout and stderr to EOF concurrently, BEFORE Wait.
+	// The previous version here read stdout in full, called Wait, and only
+	// THEN conditionally read stderr on a non-zero exit — exactly the
+	// single-stream-first shape secproc.WaitDrained's doc comment names as
+	// a deadlock risk (the unread stream's OS pipe buffer fills, the child
+	// blocks writing to it, and the child therefore never reaches the exit
+	// the stdout read is waiting for) as well as a read-after-close race on
+	// a fast exit. internal/tools' runSecureCaptureOnce already had this
+	// right; WaitDrained is the shared extraction of that implementation
+	// (internal/secproc/capture.go) so this is the second consumer, not a
+	// third reimplementation. Bounded with secproc.CaptureLimit for the
+	// same reason runSecureCaptureOnce bounds its captures: a runaway
+	// auth-command helper must not grow this capture without limit.
+	stdout := secproc.NewBoundedCapture(secproc.CaptureLimit)
+	stderr := secproc.NewBoundedCapture(secproc.CaptureLimit)
+	waitErr, drainErr := secproc.WaitDrained(started, stdout, stderr)
+	if drainErr != nil {
+		return "", fmt.Errorf("eino: auth.command %q: %w", argv[0], drainErr)
+	}
+	stdoutText, _, _ := stdout.Snapshot()
+	stderrText, _, _ := stderr.Snapshot()
 	if waitErr != nil {
-		stderr, _ := io.ReadAll(started.Stderr)
 		return "", fmt.Errorf("eino: auth.command %q failed: %w (stderr: %s)",
-			argv[0], waitErr, strings.TrimSpace(string(stderr)))
+			argv[0], waitErr, strings.TrimSpace(stderrText))
 	}
-	if readErr != nil {
-		return "", fmt.Errorf("eino: auth.command %q: reading stdout: %w", argv[0], readErr)
-	}
-	token := strings.TrimSpace(string(out))
+	token := strings.TrimSpace(stdoutText)
 	if token == "" {
 		return "", fmt.Errorf("eino: auth.command %q produced an empty credential", argv[0])
 	}
@@ -174,9 +223,10 @@ func runAuthCommand(ctx context.Context, argv []string) (string, error) {
 // credential helper should surface as a request failure, not a silently
 // stale (and possibly already-revoked) token retried forever.
 type CommandTokenSource struct {
-	argv    []string
-	refresh time.Duration
-	runner  AuthCommandRunner
+	argv      []string
+	refresh   time.Duration
+	runner    AuthCommandRunner
+	registrar SecretRegistrar
 
 	mu      sync.Mutex
 	token   string
@@ -185,12 +235,15 @@ type CommandTokenSource struct {
 
 // NewCommandTokenSource builds a source for argv, refreshing at most every
 // refresh. A nil runner defaults to DefaultAuthCommandRunner; tests pass a
-// fake to avoid spawning a real process.
-func NewCommandTokenSource(argv []string, refresh time.Duration, runner AuthCommandRunner) *CommandTokenSource {
+// fake to avoid spawning a real process. registrars is optional (variadic so
+// the many existing call sites that do not exercise B-2 keep compiling
+// unchanged) — the first non-nil element, if any, has every fetched token
+// registered with it; see SecretRegistrar's doc comment.
+func NewCommandTokenSource(argv []string, refresh time.Duration, runner AuthCommandRunner, registrars ...SecretRegistrar) *CommandTokenSource {
 	if runner == nil {
 		runner = DefaultAuthCommandRunner
 	}
-	return &CommandTokenSource{argv: argv, refresh: refresh, runner: runner}
+	return &CommandTokenSource{argv: argv, refresh: refresh, runner: runner, registrar: firstRegistrar(registrars)}
 }
 
 // Token returns the cached credential if it is within refresh of when it was
@@ -216,6 +269,16 @@ func (c *CommandTokenSource) fetch(ctx context.Context, force bool) (string, err
 	tok, err := c.runner(ctx, c.argv)
 	if err != nil {
 		return "", err
+	}
+	// B-2: register BEFORE returning to any caller. This single registration
+	// protects the token wherever its exact text later appears — including a
+	// stderr-derived error from a LATER failed refresh (a stale or just-
+	// revoked copy of this same token can show up in the helper's own
+	// diagnostic output on a 401 retry) — because Redactor.Redact matches
+	// substrings regardless of which stream the text originally arrived on;
+	// there is no need to separately register anything read from stderr.
+	if c.registrar != nil {
+		c.registrar.Register(tok)
 	}
 	c.token = tok
 	c.fetched = time.Now()
@@ -309,11 +372,13 @@ func newAuthRefreshClient(next http.RoundTripper, source *CommandTokenSource, he
 // the one buildOne built before this feature existed. header/bearer encode
 // where and how each adapter kind carries its credential (anthropic:
 // "x-api-key", raw; openai / openai-responses: "Authorization", "Bearer "
-// prefix) — see buildOne's three call sites.
-func authRefreshHTTPTransport(base http.RoundTripper, auth *config.ProviderAuthConfig, header string, bearer bool) http.RoundTripper {
+// prefix) — see buildOne's three call sites. registrar (B-2) is forwarded to
+// NewCommandTokenSource unchanged; nil disables registration, matching every
+// other soft-degradation default in this package.
+func authRefreshHTTPTransport(base http.RoundTripper, auth *config.ProviderAuthConfig, header string, bearer bool, registrar SecretRegistrar) http.RoundTripper {
 	if auth == nil {
 		return base
 	}
-	source := NewCommandTokenSource(auth.Command, auth.RefreshInterval, nil)
+	source := NewCommandTokenSource(auth.Command, auth.RefreshInterval, nil, registrar)
 	return &authRefreshTransport{next: base, source: source, header: header, bearer: bearer}
 }

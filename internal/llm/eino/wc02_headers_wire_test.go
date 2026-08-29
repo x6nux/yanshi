@@ -19,6 +19,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +28,8 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/x6nux/yanshi/internal/config"
+	"github.com/x6nux/yanshi/internal/secproc"
+	"github.com/x6nux/yanshi/internal/shell"
 )
 
 // wcCanaryHeader / wcCanaryValue are the header name/value used across this
@@ -83,6 +87,61 @@ func TestWC02_HeaderOverridesBuiltinAuthorizationForOpenAIKind(t *testing.T) {
 	}
 	if got := reqs[0].Auth; got != "Bearer overridden-by-operator" {
 		t.Errorf("stub saw Authorization=%q, want the operator's override — go-openai's own %q won silently", got, "Bearer stub-key")
+	}
+}
+
+// TestWC02_HeaderReachesTheWireForOpenAIKindWithAuthCommandConfigured is
+// W-C-12 review finding m-1: buildOne's "openai" branch takes a DIFFERENT
+// code path once p.Auth is also set — headerCaptureTransport wraps
+// authRefreshHTTPTransport's transport instead of wrapping
+// http.DefaultTransport directly via newHeaderCaptureClient (see buildOne's
+// "default" case in provider.go) — so a test that only ever exercises
+// headers WITHOUT auth (the test above) or auth WITHOUT headers
+// (cmdauth_test.go's transport-level tests) cannot tell whether the two
+// features still compose once both are configured on the SAME provider.
+// This drives a real auth.command (the re-exec'd helper pattern established
+// in cmdauth_test.go) AND a configured header through the same request,
+// against the real stub server, and asserts BOTH survive: the operator
+// header (proving Headers is not silently dropped once Auth is also
+// configured) and the auth.command-sourced Authorization: Bearer token
+// (proving the auth wiring inside that same branch still works).
+func TestWC02_HeaderReachesTheWireForOpenAIKindWithAuthCommandConfigured(t *testing.T) {
+	const canaryToken = "wc-m1-openai-auth-plus-headers-canary-2b6e0a"
+	outPath := filepath.Join(t.TempDir(), "stdout.txt")
+	if err := os.WriteFile(outPath, []byte(canaryToken+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(cmdauthHelperEnvFlag, "1")
+	t.Setenv(cmdauthHelperStdoutFile, outPath)
+	withSwappedAuthorizer(t, allowAuthCommandAuthorizer)
+
+	s := newStubProvider(t, nil) // always succeeds
+	m, _ := buildStubModel(t, s, func(p *config.ProviderConfig) {
+		p.Headers = map[string]string{wcCanaryHeader: wcCanaryValue}
+		p.Auth = &config.ProviderAuthConfig{
+			Command:         []string{os.Args[0], "-test.run=^TestCmdAuthHelperProcess$", "--"},
+			RefreshInterval: time.Hour,
+		}
+	})
+
+	ctx := secproc.WithFactory(context.Background(), shell.UnsandboxedSecureFactory())
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if _, err := m.Generate(ctx, []*schema.Message{schema.UserMessage("hi")}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	reqs := s.chatRequests()
+	if len(reqs) != 1 {
+		t.Fatalf("chat requests = %d, want 1", len(reqs))
+	}
+	if got := reqs[0].Header.Get(wcCanaryHeader); got != wcCanaryValue {
+		t.Errorf("stub saw %s=%q, want %q — the operator header was dropped once Auth was also configured",
+			wcCanaryHeader, got, wcCanaryValue)
+	}
+	if want := "Bearer " + canaryToken; reqs[0].Auth != want {
+		t.Errorf("stub saw Authorization=%q, want %q — the auth.command credential was dropped once Headers was also configured",
+			reqs[0].Auth, want)
 	}
 }
 

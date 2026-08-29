@@ -46,6 +46,7 @@ import (
 	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/sandbox"
 	"github.com/x6nux/yanshi/internal/secproc"
+	"github.com/x6nux/yanshi/internal/secrets"
 	"github.com/x6nux/yanshi/internal/shell"
 )
 
@@ -247,6 +248,112 @@ func TestCommandTokenSource_RunnerErrorIsNotCached(t *testing.T) {
 	}
 }
 
+// recordingRegistrar is a SecretRegistrar test double that records every
+// secret it is asked to register, for the B-2 assertions below.
+type recordingRegistrar struct {
+	mu       sync.Mutex
+	recorded []string
+}
+
+func (r *recordingRegistrar) Register(secret string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recorded = append(r.recorded, secret)
+}
+
+func (r *recordingRegistrar) has(secret string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, s := range r.recorded {
+		if s == secret {
+			return true
+		}
+	}
+	return false
+}
+
+// TestCommandTokenSource_RegistersFetchedTokenWithRegistrar is W-C-12 review
+// finding B-2's direct fix verification: before this existed, a token
+// auth.command produced was the only dynamic credential in the provider
+// stack never handed to a SecretRegistrar, so it would appear verbatim in
+// any log line or transcript that happened to echo it back. Each ACTUAL
+// runner call (an initial fetch and a forced Refresh — NOT a cache hit,
+// which never calls the runner and so has nothing new to register) must
+// register the token it produced.
+func TestCommandTokenSource_RegistersFetchedTokenWithRegistrar(t *testing.T) {
+	runner := newFakeAuthCommandRunner("tok-1", "tok-2")
+	reg := &recordingRegistrar{}
+	src := NewCommandTokenSource([]string{"get-token"}, time.Hour, runner.run, reg)
+
+	if _, err := src.Token(context.Background()); err != nil {
+		t.Fatalf("Token(): %v", err)
+	}
+	if !reg.has("tok-1") {
+		t.Fatalf("registrar recorded %v, want it to contain tok-1 after the first fetch", reg.recorded)
+	}
+
+	// A cache hit must not call the runner again, so it has no new token to
+	// register — the registrar's recorded list must stay exactly as it was.
+	if _, err := src.Token(context.Background()); err != nil {
+		t.Fatalf("second Token(): %v", err)
+	}
+	if len(reg.recorded) != 1 {
+		t.Fatalf("registrar recorded %v after a cache hit, want still just [tok-1]", reg.recorded)
+	}
+
+	if _, err := src.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh(): %v", err)
+	}
+	if !reg.has("tok-2") {
+		t.Fatalf("registrar recorded %v, want it to also contain tok-2 after the forced refresh", reg.recorded)
+	}
+}
+
+// TestCommandTokenSource_NilRegistrarDoesNotPanic proves the optional
+// registrar is genuinely optional: NewCommandTokenSource called with no
+// trailing SecretRegistrar argument at all (the shape every pre-B-2 call
+// site in this file still uses) must not panic on a nil-check miss.
+func TestCommandTokenSource_NilRegistrarDoesNotPanic(t *testing.T) {
+	runner := newFakeAuthCommandRunner("tok-1")
+	src := NewCommandTokenSource([]string{"get-token"}, time.Hour, runner.run)
+	if _, err := src.Token(context.Background()); err != nil {
+		t.Fatalf("Token(): %v", err)
+	}
+}
+
+// TestCommandTokenSource_RegisteredTokenIsRedactedWhereverItLaterAppears is
+// B-2's integration-level proof: it registers a fetched token with a REAL
+// secrets.Redactor (not just a recording test double) and confirms the
+// Redactor scrubs that exact text out of an arbitrary later string — the
+// property the design actually depends on, since secrets.Redactor.Redact
+// matches by substring regardless of which stream (a stdout token vs. a
+// stderr diagnostic that happens to echo a stale copy of the same token on
+// a later failed refresh) the text originally arrived on. A single
+// registration on the successful stdout fetch is therefore enough to
+// protect BOTH channels; this test is what makes that claim checkable
+// rather than merely asserted in a comment.
+func TestCommandTokenSource_RegisteredTokenIsRedactedWhereverItLaterAppears(t *testing.T) {
+	const canaryToken = "wc12-b2-canary-secret-4a1f9c"
+	runner := newFakeAuthCommandRunner(canaryToken)
+	redactor := secrets.NewRedactor()
+	src := NewCommandTokenSource([]string{"get-token"}, time.Hour, runner.run, redactor)
+
+	if _, err := src.Token(context.Background()); err != nil {
+		t.Fatalf("Token(): %v", err)
+	}
+
+	// The token itself, appearing on what would be the stdout channel.
+	if got := redactor.Redact("stdout: " + canaryToken); strings.Contains(got, canaryToken) {
+		t.Fatalf("Redact(stdout occurrence) = %q, still contains the canary", got)
+	}
+	// The SAME token text, now appearing in a simulated stderr diagnostic
+	// from a later failed refresh — the crossover scenario B-2 exists for.
+	stderrMsg := fmt.Sprintf("auth.command failed: token %s was rejected (401)", canaryToken)
+	if got := redactor.Redact(stderrMsg); strings.Contains(got, canaryToken) {
+		t.Fatalf("Redact(stderr occurrence) = %q, still contains the canary — one registration must protect both channels", got)
+	}
+}
+
 // ---- runAuthCommand: the secproc routing contract ----
 
 // TestRunAuthCommand_EmptyArgvErrors is the one input-validation edge
@@ -393,14 +500,33 @@ func TestRunAuthCommand_SpecFieldsMatchSecurityContract(t *testing.T) {
 // credential command surfaces as a request failure (per CommandTokenSource's
 // no-stale-fallback design) with the child's stderr attached, not a bare
 // "exit status 1" that hides why the credential fetch failed.
+//
+// This spawns a REAL child process rather than using specCapturingFactory's
+// strings.Reader-backed Stdout/Stderr (W-C-12 review finding M-1; review
+// checklist D3, "fake wider than reality"): a strings.Reader stays readable
+// no matter when — or whether — it is read relative to Wait, so a fake built
+// on one cannot tell a correct drain-before-Wait implementation apart from a
+// buggy read-after-Wait one; neither ordering can make it block or return
+// stale data. A real OS pipe can — reading it after the reaper has already
+// reaped the child risks "file already closed" instead of the bytes the
+// child wrote, which is exactly the bug secproc.WaitDrained's
+// drain-before-Wait ordering fixes (see runAuthCommand). Only a genuine
+// child process, not an in-memory stand-in, can prove stderr still reaches
+// the returned error under real pipe semantics.
 func TestRunAuthCommand_NonZeroExitReturnsStderrInError(t *testing.T) {
-	withSwappedAuthorizer(t, allowAuthCommandAuthorizer)
-	factory := &specCapturingFactory{stderr: "aws: not logged in", waitErr: errors.New("exit status 1")}
-	ctx := secproc.WithFactory(context.Background(), factory)
+	const stderrCanary = "aws: not logged in (wc12-real-subprocess-stderr-canary)"
+	t.Setenv(cmdauthHelperEnvFlag, "1")
+	t.Setenv(cmdauthHelperStdoutFile, "")
+	t.Setenv("YANSHI_CMDAUTH_HELPER_STDERR_MSG", stderrCanary)
+	t.Setenv("YANSHI_CMDAUTH_HELPER_EXIT", "1")
 
-	_, err := runAuthCommand(ctx, []string{"aws-get-token"})
-	if err == nil || !strings.Contains(err.Error(), "not logged in") {
-		t.Fatalf("err = %v, want it to contain the child's stderr", err)
+	withSwappedAuthorizer(t, allowAuthCommandAuthorizer)
+	ctx := secproc.WithFactory(context.Background(), shell.UnsandboxedSecureFactory())
+
+	argv := []string{os.Args[0], "-test.run=^TestCmdAuthHelperExitProcess$", "--"}
+	_, err := DefaultAuthCommandRunner(ctx, argv)
+	if err == nil || !strings.Contains(err.Error(), stderrCanary) {
+		t.Fatalf("err = %v, want it to contain the real child's stderr %q", err, stderrCanary)
 	}
 }
 
@@ -491,8 +617,13 @@ func TestWC12_RunAuthCommandSpawnsARealProcessAndCapturesStdout(t *testing.T) {
 // TestWC12_RunAuthCommandRealProcessNonZeroExitFails is the negative control
 // for the test above: a real child process that exits non-zero must fail
 // runAuthCommand, proving the exit-status check runs against the genuine
-// secproc reaper (StartedProcess.Wait) and not just against the in-memory
-// fake used by TestRunAuthCommand_NonZeroExitReturnsStderrInError.
+// secproc reaper (StartedProcess.Wait) and not just against an in-memory
+// fake. It also asserts the specific exit status (W-C-12 review finding
+// N-3) rather than only err != nil: a bare "err is non-nil" assertion would
+// stay green even if the real exit code got lost or replaced by a generic
+// "auth.command failed" placeholder on the way into the returned error —
+// naming "exit status 3" pins that the genuine child's genuine exit status
+// survives.
 func TestWC12_RunAuthCommandRealProcessNonZeroExitFails(t *testing.T) {
 	t.Setenv(cmdauthHelperEnvFlag, "1")
 	t.Setenv(cmdauthHelperStdoutFile, "") // no file: helper prints nothing, then exits via the flag below
@@ -503,18 +634,26 @@ func TestWC12_RunAuthCommandRealProcessNonZeroExitFails(t *testing.T) {
 
 	argv := []string{os.Args[0], "-test.run=^TestCmdAuthHelperExitProcess$", "--"}
 	_, err := DefaultAuthCommandRunner(ctx, argv)
-	if err == nil {
-		t.Fatal("want an error from a non-zero-exit real child process")
+	if err == nil || !strings.Contains(err.Error(), "exit status 3") {
+		t.Fatalf("err = %v, want it to name the real exit status (exit status 3)", err)
 	}
 }
 
 // TestCmdAuthHelperExitProcess is TestWC12_RunAuthCommandRealProcessNonZeroExitFails's
-// helper: it exits with the code named by YANSHI_CMDAUTH_HELPER_EXIT and
-// prints nothing, proving the failure path does not depend on stdout being
-// empty vs. absent.
+// AND TestRunAuthCommand_NonZeroExitReturnsStderrInError's helper: it exits
+// with the code named by YANSHI_CMDAUTH_HELPER_EXIT, first writing
+// YANSHI_CMDAUTH_HELPER_STDERR_MSG (if set) to stderr. Leaving the stderr
+// message unset (as TestWC12_RunAuthCommandRealProcessNonZeroExitFails does)
+// proves the failure path does not depend on stdout OR stderr being
+// non-empty; setting it (as TestRunAuthCommand_NonZeroExitReturnsStderrInError
+// does) proves a real child's real stderr, read through a real OS pipe,
+// survives into runAuthCommand's returned error.
 func TestCmdAuthHelperExitProcess(t *testing.T) {
 	if os.Getenv(cmdauthHelperEnvFlag) != "1" {
 		return
+	}
+	if msg := os.Getenv("YANSHI_CMDAUTH_HELPER_STDERR_MSG"); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
 	}
 	code := 0
 	if v := os.Getenv("YANSHI_CMDAUTH_HELPER_EXIT"); v != "" {
@@ -669,7 +808,7 @@ func TestAuthRefreshTransport_DoesNotRetryATwiceRefusedToken(t *testing.T) {
 // W-C-12 existed — not merely "an equivalent transport".
 func TestAuthRefreshHTTPTransport_NilAuthReturnsBaseUnchanged(t *testing.T) {
 	base := &http.Transport{}
-	got := authRefreshHTTPTransport(base, nil, "x-api-key", false)
+	got := authRefreshHTTPTransport(base, nil, "x-api-key", false, nil)
 	if got != http.RoundTripper(base) {
 		t.Fatalf("authRefreshHTTPTransport(base, nil, ...) returned a different value than base; want it unchanged")
 	}
@@ -681,7 +820,7 @@ func TestAuthRefreshHTTPTransport_NilAuthReturnsBaseUnchanged(t *testing.T) {
 func TestAuthRefreshHTTPTransport_NonNilAuthWrapsBase(t *testing.T) {
 	base := &http.Transport{}
 	auth := &config.ProviderAuthConfig{Command: []string{"get-token"}, RefreshInterval: time.Minute}
-	got := authRefreshHTTPTransport(base, auth, "x-api-key", false)
+	got := authRefreshHTTPTransport(base, auth, "x-api-key", false, nil)
 	wrapped, ok := got.(*authRefreshTransport)
 	if !ok {
 		t.Fatalf("authRefreshHTTPTransport(base, non-nil auth, ...) = %T, want *authRefreshTransport", got)

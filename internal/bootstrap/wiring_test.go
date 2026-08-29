@@ -787,7 +787,7 @@ func TestShellV2TaskJobIsControllableWithTheIDItReturns(t *testing.T) {
 // keyed by the registry key (p.Model), mirroring what einollm.BuildProviders
 // really does when a config override or a models.yaml catalog hit resolves
 // one.
-func providerLadderBuilder(cfg *config.Config) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, error) {
+func providerLadderBuilder(cfg *config.Config, _ ...einollm.SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, error) {
 	named := make(map[string]model.BaseChatModel)
 	var chain []model.BaseChatModel
 	windows := make(map[string]int)
