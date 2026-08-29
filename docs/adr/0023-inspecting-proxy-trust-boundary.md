@@ -87,16 +87,26 @@ postinstall 脚本、`go mod download`、`gh api`。没有哪个工具层看得�
 
 | 位置 | 是否受本机制约束 | 理由 |
 |---|---|---|
-| Linux + landlock 后端 | **有内核兜底** | W-B-09 的 seccomp 只放行 `AF_UNIX`，裸 socket 出不去 |
-| Linux + bubblewrap 后端 | **有内核兜底** | network namespace（比 seccomp 更强），但 `io_uring` 不在拦截面内 |
+| Linux + landlock 后端，`network_deny: false` | **无内核兜底**（与 darwin/windows 同档） | `buildSeccompFilter` 里那段 AF_UNIX-only 的 `socket`/`socketpair` 限制只在 `netDeny=true` 时才追加（`internal/sandbox/seccomp_linux.go`）；`network_deny: false` 时哪怕 seccomp 已装上，也只拦 ptrace/process_vm_readv/io_uring，网络出口不受限 |
+| Linux + landlock 后端，`network_deny: true`（`config.example.yaml` 出厂值） | **有内核兜底，但兜底连代理那一跳也一起挡了** | seccomp 把 `socket(2)`/`socketpair(2)` 限定到 `AF_UNIX`：子进程连去 `127.0.0.1` 受管代理的 socket 都建不出来。不是「HTTPS 检查在拦」，是**`security.network.allow` 对这个子进程整体失效**——策略从来没被求值的机会，因为连接从未被尝试 |
+| Linux + bubblewrap 后端，`network_deny: false` | **无内核兜底**（与 darwin/windows 同档） | `--share-net` 保留宿主网络命名空间（`internal/sandbox/bwrapargs.go`），出口不受限 |
+| Linux + bubblewrap 后端，`network_deny: true`（`config.example.yaml` 出厂值） | **有内核兜底，同样把代理一起挡了** | `--unshare-net` 整体丢弃网络命名空间——新命名空间里连 `lo` 都不存在，不是「AF_UNIX 之外都拒」而是**没有任何网络设备可用**，含 `127.0.0.1`。同上一行：`security.network.allow` 还没来得及求值，出口已经不存在 |
 | darwin | **可被绕过** | Seatbelt 不做 socket 族过滤；无视环境变量、直接 `connect()` 的子进程完全不受约束 |
 | Windows | **可被绕过** | 同上，且 Go 的 `crypto/tls` 在 Windows 上不读 `SSL_CERT_FILE`，所以 Go 写的子进程**连信任都建立不起来** |
 | ACP / MCP / LSP 子进程 | **不经过** | 它们从 `os.Environ()` 建环境，不走 `childLaunchPosture` |
 | 证书固定（pinning）的客户端 | **握手失败** | 这是**可见**的失败，不是静默回落 |
 
-第三、四行是本 ADR 与 ADR-0014 补记里那段 seccomp 说明的直接推论：**代理在 linux
-上有底，在 darwin/windows 上没有**。任何文档、UI 或台账都不得把 HTTPS 检查描述成
-无平台限定的防线。
+第三至六行是本 ADR 与 ADR-0014 补记里那段 seccomp 说明的直接推论，但**「有内核兜底」
+四个字本身需要 `network_deny` 限定，不是 linux 天生比 darwin/windows 强**：
+`network_deny: false` 时两个 linux 后端都不拦 socket，网络出口与 darwin/windows
+同样不受约束；只有 `network_deny: true`（`config.example.yaml` 的出厂值）才会触发
+内核层限制。而这条内核限制拦的是**全部**网络访问而不是「HTTPS 检查生效」——它连子
+进程去本机受管代理的那一跳都一并挡下，`security.network.allow`、`inspect_https`
+这些策略字段在这个组合下根本没有被求值的机会，是被短路而不是被绕过。任何文档、UI
+或台账都不得把这一行为简化成「HTTPS 检查在 linux 上有平台级兜底」——准确的说法是
+「`network_deny: true` 时 linux 会把子进程的网络整体掐断，包括去代理的那一跳」，
+这两句话描述的不是同一件事：前者暗示代理仍在工作只是多了一层保险，后者是代理连
+入口都摸不到。
 
 ### 不可违反的约束
 
