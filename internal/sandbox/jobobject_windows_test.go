@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -72,6 +73,55 @@ func startProbeChild(t *testing.T) (*exec.Cmd, <-chan struct{}) {
 		}
 	})
 	return cmd, done
+}
+
+// jobTestsOptionalEnv lets a host on which job objects demonstrably do not
+// contain — a nested job inside a Windows container is the real case —
+// downgrade the enforcement tests below from a failure to a skip.
+//
+// It must be set EXPLICITLY. See requireContainingJob.
+const jobTestsOptionalEnv = "YANSHI_JOBOBJECT_TESTS_OPTIONAL"
+
+// requireContainingJob fails, rather than skips, when this host does not give
+// the backend a containing job (W-B-24).
+//
+// # Why there is no unconditional "unsupported" branch here
+//
+// Unlike seccomp and Landlock, job objects have no kernel-config or ABI
+// question to ask: every Windows that can run this binary has had them since
+// Windows 2000, and this whole file is //go:build windows, so GOOS carries no
+// information either. There is therefore no state that legitimately answers
+// "this platform does not have the mechanism" — which means every skip in this
+// file was, by construction, a run that did not happen rather than a capability
+// that is absent.
+//
+// That matters because W-B-24's acceptance is "在 CI windows leg 上实测进程树限制
+// 生效". A leg that quietly stops exercising containment and reports pass leaves
+// the item permanently pending while the board says green, which is the exact
+// shape B3 had to go back and fix for seccomp.
+//
+// The one genuine environmental case is a nested job: inside a Windows
+// container, or under an outer job that refuses AssignProcessToJobObject, the
+// mechanism really is unavailable and no change to this code helps. A runner in
+// that state sets jobTestsOptionalEnv where it is configured — one deliberate
+// act, recorded next to the runner, instead of a default that answers "fine"
+// for every host including the healthy ones.
+func requireContainingJob(t *testing.T, rep CapabilityReport) {
+	t.Helper()
+	if rep.CanKillTree {
+		return
+	}
+	if os.Getenv(jobTestsOptionalEnv) != "" {
+		t.Skipf("job objects do not contain here and %s is set: %s", jobTestsOptionalEnv, rep.Reason)
+	}
+	t.Fatalf("job objects do not contain on this Windows host: %s\n\n"+
+		"This is a FAILURE rather than a skip on purpose. There is no version of Windows "+
+		"without job objects, so this is not an unsupported platform — it is either the "+
+		"backend being broken (the regression these tests exist to catch) or a nested-job "+
+		"environment such as a Windows container. Skipping makes both indistinguishable "+
+		"from a verified run, and W-B-24's only evidence is this leg. If this runner "+
+		"genuinely cannot contain, set %s where the runner is configured.",
+		rep.Reason, jobTestsOptionalEnv)
 }
 
 // waitDead reports whether the child was reaped within d.
@@ -180,12 +230,30 @@ func TestKillOnJobCloseTerminatesGrandchildren(t *testing.T) {
 	before, err := jobProcessCount(job)
 	if err != nil {
 		_ = windows.CloseHandle(job)
-		t.Skipf("cannot query the job's process list on this host: %v", err)
+		// QueryInformationJobObject on a job this process just created is not a
+		// capability question — the handle carries JOB_OBJECT_QUERY by
+		// construction. A failure here is a broken host or a wrong call, and
+		// skipping it would remove the only check that the job's CONTENTS are
+		// what the transitive claim rests on.
+		t.Fatalf("cannot query the process list of a job this test just created: %v", err)
 	}
 	if before == 0 {
 		_ = windows.CloseHandle(job)
-		t.Skip("the grandchild did not join the job (the shell may have broken away); " +
-			"this host cannot demonstrate the transitive case")
+		if os.Getenv(jobTestsOptionalEnv) != "" {
+			t.Skipf("the grandchild did not join the job and %s is set", jobTestsOptionalEnv)
+		}
+		// createKillOnCloseJob deliberately does NOT set BREAKAWAY_OK, so a
+		// grandchild CANNOT legitimately leave the job: `start /b` inherits job
+		// membership. An empty job here means either the transitive containment
+		// that is this backend's entire reason for existing does not hold, or
+		// the parent never spawned. Both must be loud — a skip here reports
+		// success for the one guarantee CanKillTree=true is making.
+		t.Fatalf("the job contained no process after the parent exited; either the "+
+			"grandchild never started or it left a job created without BREAKAWAY_OK, "+
+			"which means the transitive containment CanKillTree promises does not hold "+
+			"here.\n\nThis is a FAILURE rather than a skip because transitive "+
+			"containment is the whole reason this backend exists. If this runner is a "+
+			"nested-job environment, set %s where it is configured.", jobTestsOptionalEnv)
 	}
 	if err := windows.CloseHandle(job); err != nil {
 		t.Fatalf("CloseHandle(job): %v", err)
@@ -252,10 +320,7 @@ func jobProcessCount(job windows.Handle) (int, error) {
 func TestPostStartContainsTheChildThroughThePublicSeam(t *testing.T) {
 	sb := New(Config{Enabled: true, WorkspaceRoot: t.TempDir(), Tier: WorkspaceWrite})
 	rep := sb.Report()
-	if !rep.CanKillTree {
-		t.Skipf("job objects do not contain on this host, so the seam cannot be "+
-			"exercised: %s", rep.Reason)
-	}
+	requireContainingJob(t, rep)
 	ps, ok := sb.(PostStartSandbox)
 	if !ok {
 		t.Fatal("the Windows backend does not implement PostStartSandbox, so the " +
@@ -307,9 +372,7 @@ func TestPostStartContainsTheChildThroughThePublicSeam(t *testing.T) {
 // package exists to prevent — so PostStart must terminate it and say so.
 func TestPostStartAfterCloseTerminatesRatherThanLeaking(t *testing.T) {
 	sb := New(Config{Enabled: true, WorkspaceRoot: t.TempDir(), Tier: ReadOnly})
-	if !sb.Report().CanKillTree {
-		t.Skip("job objects do not contain on this host")
-	}
+	requireContainingJob(t, sb.Report())
 	ps, ok := sb.(PostStartSandbox)
 	if !ok {
 		t.Fatal("the Windows backend does not implement PostStartSandbox")
