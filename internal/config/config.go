@@ -779,11 +779,23 @@ type ProviderConfig struct {
 // secproc.Factory the command spawns through is whatever the calling
 // request's context already carries. Every orchestrator turn binds one
 // unconditionally (orchestrator's effectiveSecureFactory falls back to
-// shell.UnsandboxedSecureFactory when none is configured), so by the time a
-// provider's Generate/Stream runs, a Factory is always present. A caller
-// that builds a provider against a bare context.Background() (no
-// orchestrator turn) gets the same fail-closed error any other secproc
-// caller gets without a bound Factory.
+// shell.UnsandboxedSecureFactory when none is configured) — but that is NOT
+// every caller of a provider's Generate/Stream. At least three production
+// call sites invoke Generate/Stream on a context that never passed through
+// bindExecutionContext, so no Factory is bound there: the SSE pre-turn
+// compaction summarizer call in internal/api/http/chat.go, the WebSocket
+// pre-turn compaction summarizer call in internal/api/http/ws_compaction.go
+// (both call ctxcompact.MaybeCompactWithOptions, which may run the summary
+// model against a provider that has auth.command configured), and the
+// memory-distillation Generate call in internal/agent/upkeep/memory.go. Each
+// of those gets the SAME fail-closed error any other secproc caller gets
+// without a bound Factory (see runAuthCommand's doc comment in
+// internal/llm/eino/cmdauth.go) — not a panic, not a silently-empty
+// credential — but it is a real gap: if the provider chosen for compaction
+// or memory distillation uses auth.command, that call fails until a Factory
+// is threaded onto those contexts too. Nothing in this package enforces
+// that; it is a property of which callers happen to route through
+// bindExecutionContext today.
 type ProviderAuthConfig struct {
 	// Command is the argv to run: Command[0] is the program, the rest are
 	// its arguments. The command's stdout, trimmed of trailing whitespace,
