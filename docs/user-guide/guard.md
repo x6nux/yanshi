@@ -111,6 +111,26 @@ shell 维度先拆段（见下一节），再对**每一段**过下面两层，�
 
 在 PowerShell 那边这不是补一个角落：用 cmdlet 写文件本来就是**惯用写法**，重定向才是少见的那个，所以只判重定向等于几乎什么都没判。
 
+**上面那张表原先只对着「这一段的第一个程序词」查。** 在前面加一个前缀执行器，整个 fs 写维度就消失了 —— `tee -a ~/.ssh/authorized_keys` 弹窗，`sudo tee -a ~/.ssh/authorized_keys` 直接 Allow，19 个前缀试了 17 个有效，**编造的程序名同样有效**；只允许写项目树的窄 profile 下，`sudo tee -a /etc/zz.conf` 也是 Allow。现在的判据和「尾部 argv 里的命令」那一节是同一条：**argv 的每一个后缀各读一遍**，谁在前面叫什么名字都不影响（`internal/guard::segmentWriteTargets`）。
+
+**输出 flag 也按 flag 读，不按程序名读。** `-o` / `-O` / `--output` / `--output-document` / `--output-file` 在哪个程序上都表示「写到这个路径」，所以 `curl -o ~/.ssh/authorized_keys <url>` —— 「把网上的东西落到这里」最标准的写法 —— 不需要 `curl` 在任何表里就能被判到（`internal/guard::outputFlagTargets`）。三种操作数被跳过，都是实测出来的误报：URL（`curl -O <url>` 里 `-O` 是开关不带路径）、`key=value`（`ssh -o`、`mount -o`）、以及裸 `-`（约定俗成的 stdout）。
+
+**后缀那一读被刻意收窄到「拼法上离开工作目录」的目标**（绝对路径、`~`、`$` 展开、盘符、`..` 逃逸）。不收窄时 `apt-get install vim` 会被读成写 `vim` —— coreutils 的 `install` 真在表里，而 `<工具> install <东西>` 是通用写法 —— 在没配 `fs.write` 的 profile 下那会变成一次拒绝。代价写在明处：`fs.write` 为空的 profile 下，`sudo tee -a build/out.txt` 会被放过，而不带前缀的同一条不会。
+
+### 写方向有自己的路径表
+
+内建凭据 denylist 的入选规则写在它自己头上：「**读**出来是一个能拿到项目之外东西的秘密」。这张表原先读、写两个方向共用，于是**写方向没有自己的判据**，该被它挡住的那一族整个在表外：`tee -a ~/.bashrc`、`~/.zshrc`、`~/.profile`、`~/.config/fish/config.fish`、`/etc/cron.d/`、`/etc/profile.d/`、`/etc/systemd/system/`、`~/.local/bin/`、`/usr/local/bin/` 全是 Allow，而 `tee -a ~/.gitconfig` 弹窗 —— **下一个交互式 shell 必然执行的那个在表外，只在 git 走到某个键时才执行的那个在表里**，因为选表的问题问的是「读」。
+
+现在是两张表、两条规则，写方向多查一张（`internal/guard::executedOnWriteSuffixes`）：
+
+> **写规则**：写进这个路径，等于安排了一次**以后会执行、而这一轮没人读过**的代码 —— 写入本身就是被推迟的执行。
+
+覆盖 shell 启动文件、默认 PATH 上的目录、cron / systemd / launchd / XDG autostart、`ld.so.preload`、以及 Windows 的 Startup 文件夹。两张表在写方向叠加（凭据表对写方向仍然生效），**读方向只查凭据表** —— 读 `~/.bashrc`、列 `/usr/bin` 是日常操作，写规则说的那种伤害在读方向不存在。
+
+`/etc/passwd`、`/etc/group` **刻意不在**这张表里：写它们创建的是**账号**，那是另一种伤害、另一条规则，收进来就等于重犯「一张表回答两个问题」这个毛病。`.git/hooks` 是这条规则最纯粹的例子（git 下一次提交就会跑那个脚本），但它是**项目相对**的，既不能写成 home 相对后缀也不能写成绝对前缀 —— 记在这里而不是默默省略。
+
+逃生门与凭据表一致：profile 里**逐字**写出那个路径（不带任何通配符）就免弹窗。
+
 ## fail-closed：空 Allow 拒绝一切
 
 > 这是架构级安全承诺，不可妥协。详见 [../adr/0003-guard-fail-closed-empty-allow.md](../adr/0003-guard-fail-closed-empty-allow.md)。
@@ -182,7 +202,7 @@ profile **不是**按 `agents[].profile` 字段选的 —— 那个字段今天*
 |---|---|
 | `default` | 普通拒绝弹窗询问；profile 策略拒绝（`policy: "deny"` 等）**静默拒绝**，不问。 |
 | `allow-edits` | 编辑类工具（`internal/guard::EditToolNames`）免提示放行，其余同 `default`。 |
-| `yolo` | 越过全部 profile 策略（含 MCP allowlist）。**仍然拦**：灾难性删除、工作目录之外的删除、强制批准工具。 |
+| `yolo` | 越过全部 profile 策略（含 MCP allowlist）。**它不替你回答的**：灾难性删除与「嵌套深过 guard 愿意拆的层数」（直接拦）、工作目录之外的删除（直接拦）、**读不出来的 payload**（`Opaque` —— 弹窗问你，不是拦，见本页上面那节）、强制批准工具（弹窗）。这一行不是权威清单，权威的在本页上面那两节。 |
 | `auto` | 灾难性删除直接拦、越界删除弹窗；**其余一切交给 AI 判断**（`guard.AutoApprovalPrompt`），Go 侧没有静态白/黑名单。模型拿到完整命令原文 + 会话上下文（用户最近的请求、workdir、策略拒绝理由）答 ALLOW/ASK。风险类别写在提示词里，四组：伸出项目之外（提权/关机/磁盘/系统账户/防火墙/系统包管理器/定时任务/远程执行）、不可逆（force-push、删除 VCS 未记录的东西、容器逃逸）、**执行没人读过的代码**（下载即执行、从 `/tmp` `~/Downloads` 跑脚本 —— 远程脚本必须先落盘审计）、数据外泄（外传项目内容/凭据、`env` 把 API key 打进 transcript）。无模型、超时、出错、回复读不懂 → 一律弹窗；auto 退化成 manual，不退化成放行。无阈值可调。 |
 | `plan` | 只读，写操作一律拒绝。 |
 
