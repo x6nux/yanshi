@@ -59,7 +59,9 @@ llm:
     # W-C-01's data-driven model catalog: it is a FRACTION of the resolved
     # context_window (e.g. 0.75), not an absolute token count. Omit it and
     # yanshi resolves the threshold from the same built-in catalog (falls back
-    # to compaction.threshold below when the catalog has no opinion either).
+    # to compaction.threshold below when the catalog has no opinion either —
+    # the shipped catalog currently has no rows for this field, so in practice
+    # this is the only way to set it).
     # Set it to give one noisy model (heavy tool output, frequent repetition)
     # its own earlier trigger point without lowering the global default for
     # every other provider.
@@ -76,9 +78,11 @@ llm:
     # "head=<N>,tail=<M>" (either key may be omitted). Omit the whole field
     # and yanshi resolves the policy from the built-in model catalog (falls
     # back to a conservative head=15,tail=10 default when the catalog has no
-    # opinion either — unlike auto_compact_threshold above, an unparsable
-    # value here does NOT fail startup; it degrades the same way an absent
-    # value would, with a warning logged at boot).
+    # opinion either — the shipped catalog currently has no rows for this
+    # field either, so in practice this is the only way to set it; unlike
+    # auto_compact_threshold above, an unparsable value here does NOT fail
+    # startup, it degrades the same way an absent value would, with a
+    # warning logged at boot).
     - name: "openai"
       kind: "openai"
       model: "gpt-4o"
