@@ -237,39 +237,48 @@ func RunPreflight(ctx context.Context, cfg *config.Config) {
 	einollm.LogPreflight(einollm.PreflightModels(pctx, nil, probes))
 }
 
-// buildProviderFallbacks (W-C-10) resolves each registry entry's declared
-// compaction-summary fallback chain (einollm.KnownFallbackModels) against the
-// SAME registry map einollm.BuildProviders already returned, rather than
-// adding a 6th return value to BuildProviders itself. Both
-// orchestrator.CompactionConfig.ProviderFallbacks and its apihttp sibling
-// read the result of this single call, exactly like providerWindows/
-// providerThresholds are computed once and forwarded to both.
+// buildProviderFallbacks (W-C-10, declared-id resolution extended by M-2)
+// resolves each registry entry's declared compaction-summary fallback chain
+// against the SAME registry map einollm.BuildProviders already returned.
+// Both orchestrator.CompactionConfig.ProviderFallbacks and its apihttp
+// sibling read the result of this single call, exactly like
+// providerWindows/providerThresholds are computed once and forwarded to
+// both.
 //
-// A declared id that is not a key in named is skipped, not an error: the
+// declared is BuildProviders' 6th return value (M-2): registry key → the
+// already-resolved (config override, else catalog — see
+// einollm.ResolveFallbackModels) list of declared model ids for that
+// provider. This function's OWN job is only the second half — turning those
+// ids into live model.BaseChatModel objects — because that lookup needs
+// every provider's key already chosen, which only BuildProviders' loop
+// knows (a declared id may name a provider later in cfg.LLM.Providers than
+// the one declaring it, or one from another provider entirely).
+//
+// A declared id that is not a key in named is skipped, not an error: an
+// override may name a model this deployment never configured, and the
 // catalog is compiled into the binary and cannot know which providers THIS
-// deployment actually configured, and a fallback chain with a hole in it is
-// simply a shorter chain, not a broken one. A key whose resolved chain ends
-// up empty (every declared id unresolvable, or the catalog has no opinion at
-// all) is omitted from the returned map entirely — never given an empty
-// slice — so fallbacksFor's `len(fallbacks) > 0` check in orchestrator.go
-// (and compactionModel()'s twin in ws_compaction.go) stays the single source
-// of "does this model have a fallback chain", with no second "empty but
-// present" state to keep in sync with it.
+// deployment actually configured either — a fallback chain with a hole in
+// it is simply a shorter chain, not a broken one. A key whose resolved
+// chain ends up empty (every declared id unresolvable, or nothing declared
+// anything) is omitted from the returned map entirely — never given an
+// empty slice — so fallbacksFor's `len(fallbacks) > 0` check in
+// orchestrator.go (and compactionModel()'s twin in ws_compaction.go) stays
+// the single source of "does this model have a fallback chain", with no
+// second "empty but present" state to keep in sync with it.
 //
-// The shipped model catalog (models.yaml, Ruling RC-8) currently declares
-// zero fallback_models rows, so KnownFallbackModels returns (nil, false) for
-// every key and this function always returns an empty map — a no-op,
-// byte-identical to pre-W-C-10 behavior, until a future ticket adds catalog
-// data.
-func buildProviderFallbacks(named map[string]model.BaseChatModel) map[string][]model.BaseChatModel {
+// Before ProviderConfig.FallbackModels (M-2) existed, declared could only
+// ever come from the shipped model catalog (models.yaml, Ruling RC-8),
+// which declares zero fallback_models rows — so this function always
+// returned an empty map, a no-op byte-identical to pre-W-C-10 behavior, no
+// matter what an operator wrote, because there was nowhere to write it.
+func buildProviderFallbacks(named map[string]model.BaseChatModel, declared map[string][]string) map[string][]model.BaseChatModel {
 	out := map[string][]model.BaseChatModel{}
-	for key := range named {
-		declared, ok := einollm.KnownFallbackModels(key)
-		if !ok || len(declared) == 0 {
+	for key, ids := range declared {
+		if len(ids) == 0 {
 			continue
 		}
-		resolved := make([]model.BaseChatModel, 0, len(declared))
-		for _, id := range declared {
+		resolved := make([]model.BaseChatModel, 0, len(ids))
+		for _, id := range ids {
 			if m, ok := named[id]; ok && m != nil {
 				resolved = append(resolved, m)
 			}

@@ -298,6 +298,31 @@ func KnownFallbackModels(modelID string) ([]string, bool) {
 	return ids, ok
 }
 
+// ResolveFallbackModels (M-2 / W-C-10) returns modelID's compaction-summary
+// fallback chain and whether anything (config or catalog) had an opinion,
+// mirroring ResolveTruncationPolicy's "explicit override, then catalog"
+// shape — override wins outright when non-empty, exactly like
+// ProviderConfig.FallbackModels' own doc comment promises. It does not
+// merge override and catalog entries: a provider that sets fallback_models
+// gets EXACTLY that chain, not that chain plus whatever the catalog also
+// knows, so a deliberately short (or single-entry) override cannot be
+// silently lengthened by a future catalog row.
+//
+// override is unresolved config data (declared model ids, not live
+// model.BaseChatModel objects) — bootstrap's buildProviderFallbacks does
+// that resolution afterwards, dropping any id that is not a key in the
+// registry this deployment actually built. An override entry naming a model
+// no configured provider resolves to is therefore a silently shorter chain,
+// the same tolerance KnownFallbackModels' catalog path already has (see its
+// doc comment) — not a config validation error, because validating a model
+// id here would need the very provider registry this function runs before.
+func ResolveFallbackModels(override []string, modelID string) ([]string, bool) {
+	if len(override) > 0 {
+		return override, true
+	}
+	return KnownFallbackModels(modelID)
+}
+
 // KnownAutoCompactThreshold returns the cataloged auto-compact threshold for
 // modelID and whether the catalog knew it. A false second return means "not
 // in the table" — the caller keeps its own configured/global threshold

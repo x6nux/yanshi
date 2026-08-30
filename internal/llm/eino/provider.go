@@ -36,9 +36,10 @@ import (
 // retry to do usefully. http.DefaultTransport still provides connection reuse
 // and proper protocol-level behavior.
 //
-// Returns (models, chain, windows, thresholds, truncations, err): models
-// keys each entry by the provider's REAL model id (with fallbacks — see
-// chooseKey); chain is the same models in config order (for
+// Returns (models, chain, windows, thresholds, truncations, fallbacks,
+// err): models keys each entry by the provider's REAL model id (with
+// collision fallback — see chooseKey); chain is the same models in config
+// order (for
 // NewResilientModel); windows maps the SAME registry key → p.ContextWindow
 // for every provider that sets one, so the http layer's per-model window
 // lookup (contextWindowFor) hits when the session queries it with the
@@ -68,13 +69,26 @@ import (
 // nothing else; see orchestrator.Config.ProviderTruncationPolicies, the
 // consumer this map now feeds.
 //
+// M-2: fallbacks mirrors truncations for W-C-10's compaction-summary
+// fallback chain — ResolveFallbackModels(p.FallbackModels, p.Model) per
+// provider, present only when its second return is true. Unlike
+// windows/thresholds/truncations the values are declared model ids, not
+// resolved objects: bootstrap's buildProviderFallbacks still does the
+// id→live-model lookup against the SAME registry this function also
+// returns, because that lookup needs every provider's key already chosen
+// (a fallback id may name a provider later in cfg.LLM.Providers than the
+// one declaring it). Before this field existed, ProviderConfig had no
+// fallback_models key at all, so KnownFallbackModels' catalog path was the
+// ONLY rung of this ladder — and the shipped catalog ships zero rows on it
+// (Ruling RC-8), making W-C-10 unreachable by any deployment.
+//
 // registrars is optional (variadic, so the many existing call sites that do
 // not exercise W-C-12's B-2 credential registration keep compiling
 // unchanged) — the first non-nil element, if any, is forwarded to every
 // provider's auth.command token source so a command-produced credential is
 // scrubbed from logs/WS/SSE/SQLite the same way a config api_key or header
 // already is. See SecretRegistrar's doc comment (cmdauth.go).
-func BuildProviders(cfg *config.Config, registrars ...SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, map[string]TruncationSpec, error) {
+func BuildProviders(cfg *config.Config, registrars ...SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, map[string]TruncationSpec, map[string][]string, error) {
 	ctx := context.Background()
 	registrar := firstRegistrar(registrars)
 	chain := make([]model.BaseChatModel, 0, len(cfg.LLM.Providers))
@@ -82,6 +96,7 @@ func BuildProviders(cfg *config.Config, registrars ...SecretRegistrar) (map[stri
 	windows := make(map[string]int, len(cfg.LLM.Providers))
 	thresholds := make(map[string]float64, len(cfg.LLM.Providers))
 	truncations := make(map[string]TruncationSpec, len(cfg.LLM.Providers))
+	fallbacks := make(map[string][]string, len(cfg.LLM.Providers))
 	// The registry is keyed by the provider's REAL model id (config `model`),
 	// so /model lists and switches on the concrete model name (e.g.
 	// "claude-opus-4-8") rather than the config label (e.g. "claude"). When the
@@ -100,7 +115,7 @@ func BuildProviders(cfg *config.Config, registrars ...SecretRegistrar) (map[stri
 	for i, p := range cfg.LLM.Providers {
 		m, err := buildOne(ctx, p, registrar)
 		if err != nil {
-			return nil, nil, nil, nil, nil, fmt.Errorf("eino: build provider %q (kind=%q): %w", p.Name, p.Kind, err)
+			return nil, nil, nil, nil, nil, nil, fmt.Errorf("eino: build provider %q (kind=%q): %w", p.Name, p.Kind, err)
 		}
 		chain = append(chain, m)
 		key := chooseKey(p, i)
@@ -137,8 +152,11 @@ func BuildProviders(cfg *config.Config, registrars ...SecretRegistrar) (map[stri
 		if spec, ok := ResolveTruncationPolicy(p.TruncationPolicy, p.Model); ok {
 			truncations[key] = spec
 		}
+		if declared, ok := ResolveFallbackModels(p.FallbackModels, p.Model); ok {
+			fallbacks[key] = declared
+		}
 	}
-	return models, chain, windows, thresholds, truncations, nil
+	return models, chain, windows, thresholds, truncations, fallbacks, nil
 }
 
 // providerShape projects a config.ProviderConfig onto the minimal shape

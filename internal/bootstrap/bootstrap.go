@@ -359,8 +359,9 @@ type Options struct {
 // ProviderBuilder is the production BuildProviders signature. Returns the
 // per-name model map, the chain passed to NewResilientModel, the per-model
 // context windows, the per-model auto-compact thresholds (W-C-01 / INF2),
-// the per-model truncation policies (M-4), and an error. bootstrap calls it
-// AFTER credential resolution so cfg.LLM.Providers[i].APIKey holds
+// the per-model truncation policies (M-4), the per-model declared
+// compaction-summary fallback ids (M-2 / W-C-10), and an error. bootstrap
+// calls it AFTER credential resolution so cfg.LLM.Providers[i].APIKey holds
 // plaintext.
 //
 // The trailing ...einollm.SecretRegistrar (W-C-12 review B-2) is how Build
@@ -376,6 +377,7 @@ type ProviderBuilder func(*config.Config, ...einollm.SecretRegistrar) (
 	map[string]int,
 	map[string]float64,
 	map[string]einollm.TruncationSpec,
+	map[string][]string,
 	error,
 )
 
@@ -710,14 +712,15 @@ func Build(opts Options) (*App, error) {
 	// ProviderConfig.TruncationPolicy's doc comment documented a per-provider
 	// override that only ever took effect for cfg.LLM.Providers[0].
 	var providerTruncationPolicies map[string]einollm.TruncationSpec
-	// providerFallbacks (W-C-10) maps registry key -> resolved compaction-
-	// summary fallback chain, computed once by buildProviderFallbacks from
-	// providerModels + the embedded catalog and forwarded to both the
-	// orchestrator's mid-turn CompactionConfig and the http layer's pre-turn
-	// one, mirroring providerWindows/providerThresholds exactly. nil on the
-	// fake-model path (buildProviderFallbacks is only called in the real-
-	// provider branch below), which fallbacksFor/its apihttp twin already
-	// treat as "no fallback for anyone".
+	// providerFallbacks (W-C-10, config rung added by M-2) maps registry key
+	// -> resolved compaction-summary fallback chain, computed once by
+	// buildProviderFallbacks from providerModels + BuildProviders' declared
+	// map (config override, else the embedded catalog) and forwarded to
+	// both the orchestrator's mid-turn CompactionConfig and the http
+	// layer's pre-turn one, mirroring providerWindows/providerThresholds
+	// exactly. nil on the fake-model path (buildProviderFallbacks is only
+	// called in the real-provider branch below), which fallbacksFor/its
+	// apihttp twin already treat as "no fallback for anyone".
 	var providerFallbacks map[string][]model.BaseChatModel
 	// fakeChatModel stays nil on the production path ON PURPOSE: SelectRLMModel
 	// treats a non-nil fake as "rlm_query may fall back to it", so handing it a
@@ -746,7 +749,7 @@ func Build(opts Options) (*App, error) {
 		// redactor (B-2): the SAME instance APIKey/Headers were just
 		// registered with above, so an auth.command-produced token gets
 		// identical protection — see ProviderBuilder's doc comment.
-		named, chain, windows, thresholds, truncations, err := providerBuilder(cfg, redactor)
+		named, chain, windows, thresholds, truncations, fallbackDecls, err := providerBuilder(cfg, redactor)
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap: build providers: %w", err)
 		}
@@ -783,7 +786,7 @@ func Build(opts Options) (*App, error) {
 		providerWindows = windows
 		providerThresholds = thresholds
 		providerTruncationPolicies = truncations
-		providerFallbacks = buildProviderFallbacks(named)
+		providerFallbacks = buildProviderFallbacks(named, fallbackDecls)
 		// M9: warn about a model name the provider does not list, naming the
 		// nearest matches. Non-blocking by construction — see RunPreflight.
 		// It takes context.Background() rather than the app's root context

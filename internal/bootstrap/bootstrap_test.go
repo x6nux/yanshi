@@ -1254,7 +1254,7 @@ func TestOutputLanguageInstructionIndependentOfUILocale(t *testing.T) {
 	}
 }
 
-func fakeProviderBuilder(cfg *config.Config, _ ...einollm.SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, map[string]einollm.TruncationSpec, error) {
+func fakeProviderBuilder(cfg *config.Config, _ ...einollm.SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, map[string]einollm.TruncationSpec, map[string][]string, error) {
 	named := make(map[string]model.BaseChatModel)
 	var chain []model.BaseChatModel
 	for _, p := range cfg.LLM.Providers {
@@ -1262,7 +1262,7 @@ func fakeProviderBuilder(cfg *config.Config, _ ...einollm.SecretRegistrar) (map[
 		named[p.Model] = fm
 		chain = append(chain, fm)
 	}
-	return named, chain, nil, nil, nil, nil
+	return named, chain, nil, nil, nil, nil, nil
 }
 
 // TestBuild_PerProviderMaxRetriesSentinelIsWiredCorrectly is the W-C-07 C2
@@ -1318,7 +1318,7 @@ llm:
 	require.NoError(t, os.WriteFile(cfgPath, []byte(cfgContent), 0o644))
 
 	var fakes []*einollm.FakeModel
-	builder := func(cfg *config.Config, _ ...einollm.SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, map[string]einollm.TruncationSpec, error) {
+	builder := func(cfg *config.Config, _ ...einollm.SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, map[string]einollm.TruncationSpec, map[string][]string, error) {
 		named := make(map[string]model.BaseChatModel)
 		var chain []model.BaseChatModel
 		for _, p := range cfg.LLM.Providers {
@@ -1327,7 +1327,7 @@ llm:
 			chain = append(chain, fm)
 			fakes = append(fakes, fm)
 		}
-		return named, chain, nil, nil, nil, nil
+		return named, chain, nil, nil, nil, nil, nil
 	}
 
 	app, err := bootstrap.Build(bootstrap.Options{

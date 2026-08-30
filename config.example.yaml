@@ -83,6 +83,19 @@ llm:
     # auto_compact_threshold above, an unparsable value here does NOT fail
     # startup, it degrades the same way an absent value would, with a
     # warning logged at boot).
+    #
+    # fallback_models (M-2 / W-C-10) is OPTIONAL and names, in priority
+    # order, the registry model ids this provider's compaction-summary call
+    # falls back to when it errors — the SAME key context_window /
+    # auto_compact_threshold / truncation_policy resolve against above (the
+    # model: field's value, not the name: label). Omit it and yanshi
+    # resolves the chain from the built-in model catalog (falls back to no
+    # fallback at all when the catalog has no opinion either — the shipped
+    # catalog currently has no rows for this field either, so in practice
+    # this is the only way to set it). A listed id that no configured
+    # provider resolves to is silently dropped, not a load-time error —
+    # validating it here would need the provider registry this field is
+    # itself an input to.
     - name: "openai"
       kind: "openai"
       model: "gpt-4o"
@@ -90,6 +103,7 @@ llm:
       context_window: 128000      # this model's token window; compaction sizes against it
       # auto_compact_threshold: 0.75  # fraction of context_window; omit to use the catalog/global default
       # truncation_policy: "head=20,tail=15"  # per-model tool-output retention; omit to use the catalog/default
+      # fallback_models: ["gpt-4o-mini"]  # compaction-summary fallback chain; omit to use the catalog/no-fallback default
       # max_tokens: 32000         # cap per response; omit to keep the 4096 default
       # temperature: 0.2          # omit to keep the provider default; 0 is a valid setting
       # top_p: 0.95               # tune this OR temperature, not both

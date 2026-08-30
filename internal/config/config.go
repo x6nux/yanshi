@@ -789,6 +789,33 @@ type ProviderConfig struct {
 	// just not a refused start. See ResolveTruncationPolicy's doc comment for
 	// the full reasoning.
 	TruncationPolicy string `yaml:"truncation_policy"`
+
+	// FallbackModels (M-2 / W-C-10) names, in priority order, the registry
+	// model ids (llm.providers[].model — the SAME key context_window /
+	// auto_compact_threshold / truncation_policy resolve against, not the
+	// config `name` label) THIS provider's compaction-summary call falls
+	// back to when it errors. Empty (the zero value) means "no override":
+	// resolution falls through to the model catalog
+	// (einollm.KnownFallbackModels), then to no fallback at all — see
+	// einollm.ResolveFallbackModels, the fourth and last of the four
+	// provider-level resolution ladders (context_window /
+	// auto_compact_threshold / truncation_policy / fallback_models all
+	// share the same "explicit field wins, then catalog, then nothing"
+	// shape).
+	//
+	// Before this field existed, W-C-10 had NO config-level rung: the
+	// shipped models.yaml ships zero fallback_models catalog rows (Ruling
+	// RC-8), so with no override the feature was unreachable by any
+	// deployment — buildProviderFallbacks always returned an empty map,
+	// byte-identical to pre-W-C-10 behavior no matter what an operator
+	// wrote, because there was nowhere to write it.
+	//
+	// An entry naming a model id no configured provider resolves to is
+	// silently dropped (bootstrap's buildProviderFallbacks), not a load-time
+	// error — the same tolerance the catalog path already has, since
+	// validating an id here would need the provider registry this field is
+	// itself an input to.
+	FallbackModels []string `yaml:"fallback_models"`
 }
 
 // ProviderAuthConfig configures W-C-12 command-based token authentication for

@@ -781,19 +781,21 @@ func TestShellV2TaskJobIsControllableWithTheIDItReturns(t *testing.T) {
 
 // providerLadderBuilder is a bootstrap.ProviderBuilder fixture for
 // TestProviderWindowsReachTheOrchestrator / TestProviderThresholdsReachBothCompactionConfigs
-// (F-2 / W-C-05) and TestProviderTruncationPolicyReachesTheActiveTurn (M-4).
-// Unlike the package's fakeProviderBuilder (which always returns nil
-// windows/thresholds/truncations — deliberately, so it does not accidentally
-// pin this ladder), it returns KNOWN, non-zero, non-default per-model values
-// keyed by the registry key (p.Model), mirroring what einollm.BuildProviders
-// really does when a config override or a models.yaml catalog hit resolves
-// one.
-func providerLadderBuilder(cfg *config.Config, _ ...einollm.SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, map[string]einollm.TruncationSpec, error) {
+// (F-2 / W-C-05), TestProviderTruncationPolicyReachesTheActiveTurn (M-4), and
+// TestProviderFallbackModelsReachTheCompactionConfig (M-2). Unlike the
+// package's fakeProviderBuilder (which always returns nil
+// windows/thresholds/truncations/fallbacks — deliberately, so it does not
+// accidentally pin this ladder), it returns KNOWN, non-zero, non-default
+// per-model values keyed by the registry key (p.Model), mirroring what
+// einollm.BuildProviders really does when a config override or a
+// models.yaml catalog hit resolves one.
+func providerLadderBuilder(cfg *config.Config, _ ...einollm.SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, map[string]einollm.TruncationSpec, map[string][]string, error) {
 	named := make(map[string]model.BaseChatModel)
 	var chain []model.BaseChatModel
 	windows := make(map[string]int)
 	thresholds := make(map[string]float64)
 	truncations := make(map[string]einollm.TruncationSpec)
+	fallbacks := make(map[string][]string)
 	for _, p := range cfg.LLM.Providers {
 		fm := einollm.NewFakeModel([]string{"reply"}, nil)
 		named[p.Model] = fm
@@ -801,12 +803,13 @@ func providerLadderBuilder(cfg *config.Config, _ ...einollm.SecretRegistrar) (ma
 	}
 	// Only "small-model" gets a resolved entry — deliberately, so the tests
 	// below can also assert the OTHER provider still falls back to the
-	// global Compaction.*/TruncationPolicy values instead of every provider
-	// sharing one map entry by accident.
+	// global Compaction.*/TruncationPolicy values (or no fallback chain at
+	// all) instead of every provider sharing one map entry by accident.
 	windows["small-model"] = 42000
 	thresholds["small-model"] = 0.55
 	truncations["small-model"] = einollm.TruncationSpec{HeadLines: 30, TailLines: 20}
-	return named, chain, windows, thresholds, truncations, nil
+	fallbacks["small-model"] = []string{"big-model"}
+	return named, chain, windows, thresholds, truncations, fallbacks, nil
 }
 
 // buildAppWithProviderLadder builds a real App with two providers — one
@@ -949,6 +952,49 @@ func TestProviderTruncationPolicyReachesTheActiveTurn(t *testing.T) {
 		"a provider the builder left unresolved must fall back to the global default, not spuriously acquire an entry")
 	require.NotEqual(t, smallSpec, bigSpec,
 		"this test is only meaningful if the two turns actually resolve to different policies")
+}
+
+// TestProviderFallbackModelsReachTheCompactionConfig pins the composition
+// root's half of the M-2 fix for W-C-10's compaction-summary fallback
+// chain — the fourth and last of the four provider-level resolution
+// ladders (context_window / auto_compact_threshold / truncation_policy /
+// fallback_models), and the only one this test suite could not previously
+// exercise at all: before ProviderConfig.FallbackModels existed there was
+// no config-level input to drive a per-model fallback chain through a real
+// App build, since the shipped catalog (models.yaml, Ruling RC-8) ships
+// zero fallback_models rows.
+//
+// providerLadderBuilder's fixture stands in for BuildProviders' declared-id
+// resolution (ResolveFallbackModels) directly, so this test is really
+// pinning the SECOND half — buildProviderFallbacks turning a declared id
+// into the live model.BaseChatModel object registered under that id, and
+// bootstrap forwarding the result to BOTH consumers — rather than the
+// resolution-precedence first half, which
+// internal/llm/eino::TestResolveFallbackModels_OverrideOutranksCatalog pins
+// directly (mirroring how TestProviderTruncationPolicyReachesTheActiveTurn
+// pins bootstrap's forwarding while modelcatalog_test.go's
+// TestResolveTruncationPolicy_OverrideOutranksCatalog pins
+// ResolveTruncationPolicy itself).
+//
+// Both consumers are asserted independently, same rationale as
+// TestProviderThresholdsReachBothCompactionConfigs above: a future edit
+// could fix bootstrap's orchestrator.Config wiring and miss the
+// apihttp.Config one (or vice versa) and this test would still fail on
+// whichever side broke, instead of passing as long as one survives.
+func TestProviderFallbackModelsReachTheCompactionConfig(t *testing.T) {
+	app := buildAppWithProviderLadder(t)
+
+	occ := app.Orch.CompactionForTest()
+	require.Len(t, occ.ProviderFallbacks["small-model"], 1,
+		"small-model's declared fallback_models=[\"big-model\"] must resolve to exactly one live model in the orchestrator's mid-turn CompactionConfig")
+	require.Empty(t, occ.ProviderFallbacks["big-model"],
+		"a provider the builder left undeclared must not spuriously acquire a fallback chain")
+
+	svc := app.ServerCompaction
+	require.Len(t, svc.ProviderFallbacks["small-model"], 1,
+		"small-model's declared fallback_models=[\"big-model\"] must ALSO resolve in the http server's pre-turn CompactionConfig, independently of the orchestrator's copy")
+	require.Empty(t, svc.ProviderFallbacks["big-model"],
+		"a provider the builder left undeclared must not spuriously acquire a fallback chain")
 }
 
 // buildAppWithTruncationPolicy builds a real App (FakeModel:true, so no

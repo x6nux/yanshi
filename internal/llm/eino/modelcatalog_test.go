@@ -451,6 +451,86 @@ func withTruncationPolicies(t *testing.T, fixture map[string]TruncationSpec) {
 	t.Cleanup(func() { truncationPolicies = prev })
 }
 
+// withFallbackModelsCatalog swaps the package-level catalog-derived table
+// for the duration of one test and restores the original afterwards,
+// mirroring withTruncationPolicies above for the same reason: the shipped
+// models.yaml currently populates ZERO fallback_models rows (Ruling RC-8),
+// so this is the only way to exercise KnownFallbackModels' /
+// ResolveFallbackModels' catalog-hit branch against a known value instead of
+// always taking the "nothing had an opinion" branch.
+func withFallbackModelsCatalog(t *testing.T, fixture map[string][]string) {
+	t.Helper()
+	prev := fallbackModels
+	fallbackModels = fixture
+	t.Cleanup(func() { fallbackModels = prev })
+}
+
+// TestKnownFallbackModels_ExactMatchOnly pins the empty-modelID guard and the
+// EXACT (not boundary-substring) matching KnownFallbackModels' doc comment
+// claims, mirroring TestKnownTruncationPolicy_ExactMatchOnly below.
+func TestKnownFallbackModels_ExactMatchOnly(t *testing.T) {
+	withFallbackModelsCatalog(t, map[string][]string{
+		"gpt-5-preview": {"gpt-5-mini"},
+	})
+
+	ids, ok := KnownFallbackModels("gpt-5-preview")
+	require.True(t, ok)
+	assert.Equal(t, []string{"gpt-5-mini"}, ids)
+
+	// Case/whitespace normalization still applies, exactly like the lookup key.
+	ids, ok = KnownFallbackModels("  GPT-5-Preview  ")
+	require.True(t, ok)
+	assert.Equal(t, []string{"gpt-5-mini"}, ids)
+
+	// A substring of a known id must not match: this table is exact-match,
+	// not boundary-substring.
+	_, ok = KnownFallbackModels("gpt-5")
+	assert.False(t, ok, "a prefix of a cataloged id must not match under exact-match semantics")
+
+	// Empty/blank modelID is guarded before the map lookup.
+	_, ok = KnownFallbackModels("")
+	assert.False(t, ok)
+	_, ok = KnownFallbackModels("   ")
+	assert.False(t, ok)
+
+	// A model with no opinion in the table.
+	_, ok = KnownFallbackModels("nobody-has-an-opinion")
+	assert.False(t, ok)
+}
+
+// TestResolveFallbackModels_OverrideOutranksCatalog pins the precedence
+// ResolveFallbackModels' doc comment documents (M-2 / W-C-10): a non-empty
+// override wins outright over a catalog hit, an empty override falls
+// through to the catalog, and when neither has an opinion the function
+// reports false so the caller keeps using modelID alone — mirroring
+// TestResolveTruncationPolicy_OverrideOutranksCatalog above. Unlike
+// truncation_policy there is no "malformed" middle case to test: the field
+// is already a []string, so there is nothing for ResolveFallbackModels
+// itself to fail parsing (config.go's own doc comment covers the
+// unresolvable-id case, which is bootstrap's buildProviderFallbacks'
+// concern, not this function's).
+func TestResolveFallbackModels_OverrideOutranksCatalog(t *testing.T) {
+	withFallbackModelsCatalog(t, map[string][]string{
+		"catalog-model": {"catalog-fallback"},
+	})
+
+	// Both override and catalog have an opinion: override wins, verbatim —
+	// not merged with the catalog's entry.
+	ids, ok := ResolveFallbackModels([]string{"override-fallback"}, "catalog-model")
+	require.True(t, ok)
+	assert.Equal(t, []string{"override-fallback"}, ids, "a non-empty override must outrank the catalog, not merge with it")
+
+	// Only the catalog has an opinion (empty override): catalog wins.
+	ids, ok = ResolveFallbackModels(nil, "catalog-model")
+	require.True(t, ok)
+	assert.Equal(t, []string{"catalog-fallback"}, ids)
+
+	// Neither has an opinion: caller's own fallback applies (signaled by ok=false).
+	ids, ok = ResolveFallbackModels(nil, "nobody-has-an-opinion")
+	assert.False(t, ok)
+	assert.Empty(t, ids)
+}
+
 // TestKnownTruncationPolicy_ExactMatchOnly pins the empty-modelID guard and
 // the EXACT (not boundary-substring) matching KnownTruncationPolicy's doc
 // comment claims: a family-prefix substring of a known id must NOT match,
