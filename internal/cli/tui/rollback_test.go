@@ -301,9 +301,24 @@ func TestSessionForked_NormalForkUnaffected(t *testing.T) {
 // requires an explicit, self-contained pin of "single Esc unchanged" across
 // every site, not just an absence of regressions in scattered tests.
 func TestEscEsc_AllSevenExistingEscSitesStillWork(t *testing.T) {
+	// RE-11 (fix-e3a): every subtest below now seeds m.entries with a real
+	// user turn. Without it, m.rollbackCandidates() is unconditionally empty
+	// and the Esc-Esc branch this test claims to guard against (`if items :=
+	// m.rollbackCandidates(); m.streamCh == nil && len(items) > 0`) can never
+	// fire no matter where it lives or how its double-press window is
+	// judged — two independent mutations (widening the window to always-true,
+	// and hoisting the whole gesture ahead of every modal check below) both
+	// left all 8 subtests green. Seeding a real candidate is what makes "the
+	// gesture fired where it should not have" observable.
+	withCandidate := func() model {
+		m := newModel(&fakeSession{}, "/proj")
+		m.entries = []entry{&userEntry{text: "hello"}}
+		return m
+	}
+
 	// Site 1: pagerVisible (W-E-03 fullscreen pager) — Esc closes the pager.
 	t.Run("1_pager", func(t *testing.T) {
-		m := newModel(&fakeSession{}, "/proj")
+		m := withCandidate()
 		m.pagerVisible = true
 		mm, ok := handleKey(m, tea.KeyMsg{Type: tea.KeyEscape})
 		assert.True(t, ok)
@@ -312,7 +327,7 @@ func TestEscEsc_AllSevenExistingEscSitesStillWork(t *testing.T) {
 
 	// Site 2: helpVisible (F1 panel) — Esc closes help.
 	t.Run("2_help", func(t *testing.T) {
-		m := newModel(&fakeSession{}, "/proj")
+		m := withCandidate()
 		m.helpVisible = true
 		mm, ok := handleKey(m, tea.KeyMsg{Type: tea.KeyEscape})
 		assert.True(t, ok)
@@ -321,7 +336,7 @@ func TestEscEsc_AllSevenExistingEscSitesStillWork(t *testing.T) {
 
 	// Site 3: restoreSessions picker — Esc dismisses it.
 	t.Run("3_restore_picker", func(t *testing.T) {
-		m := newModel(&fakeSession{}, "/proj")
+		m := withCandidate()
 		m.restoreSessions = []proto.SessionInfo{{ID: "a"}}
 		mm, ok := handleKey(m, tea.KeyMsg{Type: tea.KeyEscape})
 		assert.True(t, ok)
@@ -330,7 +345,7 @@ func TestEscEsc_AllSevenExistingEscSitesStillWork(t *testing.T) {
 
 	// Site 4: action palette (Ctrl+K) — Esc closes it.
 	t.Run("4_action_palette", func(t *testing.T) {
-		m := newModel(&fakeSession{}, "/proj")
+		m := withCandidate()
 		m.action = &actionState{visible: true}
 		mm, ok := handleKey(m, tea.KeyMsg{Type: tea.KeyEscape})
 		assert.True(t, ok)
@@ -339,7 +354,7 @@ func TestEscEsc_AllSevenExistingEscSitesStillWork(t *testing.T) {
 
 	// Site 5: history search popup (Alt+R) — Esc closes it without touching the draft.
 	t.Run("5_history_search", func(t *testing.T) {
-		m := newModel(&fakeSession{}, "/proj")
+		m := withCandidate()
 		m.historySearch = &historyState{visible: true, items: []historyItem{{Text: "x"}}}
 		mm, ok := handleKey(m, tea.KeyMsg{Type: tea.KeyEscape})
 		assert.True(t, ok)
@@ -348,7 +363,7 @@ func TestEscEsc_AllSevenExistingEscSitesStillWork(t *testing.T) {
 
 	// Site 6: interactive command picker (/model, /mode, /theme) — Esc closes it.
 	t.Run("6_command_picker", func(t *testing.T) {
-		m := newModel(&fakeSession{}, "/proj")
+		m := withCandidate()
 		m.pickerKind = "theme"
 		m.pickerItems = []pickerItem{{name: "dark"}}
 		mm, ok := handleKey(m, tea.KeyMsg{Type: tea.KeyEscape})
@@ -360,7 +375,7 @@ func TestEscEsc_AllSevenExistingEscSitesStillWork(t *testing.T) {
 	// error toast dismisses it; a single press with none is a handled no-op.
 	// Neither opens the rollback picker.
 	t.Run("7_bottom_level_toast_dismiss", func(t *testing.T) {
-		m := newModel(&fakeSession{}, "/proj")
+		m := withCandidate()
 		m.toasts.push(toast{Level: "error", Text: "boom"})
 		mm, ok := handleKey(m, tea.KeyMsg{Type: tea.KeyEscape})
 		assert.True(t, ok)
@@ -368,7 +383,7 @@ func TestEscEsc_AllSevenExistingEscSitesStillWork(t *testing.T) {
 		assert.Nil(t, mm.rollback)
 	})
 	t.Run("7_bottom_level_noop", func(t *testing.T) {
-		m := newModel(&fakeSession{}, "/proj")
+		m := withCandidate()
 		mm, ok := handleKey(m, tea.KeyMsg{Type: tea.KeyEscape})
 		assert.False(t, ok, "no toast, no modal: single Esc falls through to the default input handler, matching pre-W-E-11 behavior")
 		assert.Nil(t, mm.rollback)

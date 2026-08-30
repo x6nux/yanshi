@@ -492,19 +492,45 @@ func newModelWithPrefs(sess tuiSession, root string, project Preferences) model 
 // having the TUI load config itself keeps package tui free of internal/config,
 // which is what lets cmd/yanshi stay the only place that knows both halves.
 func NewProgram(sess *cli.Session, root string, project Preferences) *tea.Program {
-	m := newModelWithPrefs(sess, root, project)
 	// W-E-01 (INF5): detect terminal capability from the environment before
-	// anything renders, and apply it to every lipgloss/glamour style in this
-	// package (see ApplyColorProfile's doc comment for why one call suffices
-	// for all of them). TERM=dumb additionally suppresses the alt-screen
-	// switch — see TermCapability.AltScreen and programOptions.
+	// anything renders. See buildModelForCapability for what gets wired from
+	// it (RE-12: that used to happen inline here, where tea.Program hides the
+	// initialModel it wraps — third_party/bubbletea's Program.initialModel is
+	// unexported — so no test could ever observe a wiring line added or
+	// broken in this function; capability_wiring_test.go's AST census over
+	// buildModelForCapability's body is what closes that hole now).
 	cap := cli.DetectCapability(os.Getenv)
+	m := buildModelForCapability(sess, root, project, cap)
+	return tea.NewProgram(m, programOptions(cap)...)
+}
+
+// buildModelForCapability builds the full initial model NewProgram wraps in
+// a *tea.Program, including every field derived from the detected terminal
+// capability. It exists as its own function — rather than inlined in
+// NewProgram — purely so a test can call it directly with an arbitrary cap
+// and inspect the result: NewProgram's return type (*tea.Program) offers no
+// way to get the model back out, so this is the only seam through which
+// "does NewProgram actually wire cap.X into m.Y" can be answered by running
+// real production code instead of a hand-rolled re-derivation of it.
+//
+// capability_wiring_test.go's capabilityWiredFields census (checked by
+// TestCapabilityWiredFieldsMatchCensus via an AST walk of this function's
+// body) requires every `m.<field> = …` assignment added here to be
+// registered with a low/high capability pair that TestBuildModelForCapability_
+// FieldsFollowCapability proves actually changes the field — the mechanism
+// RE-12 asked for so the next line like `m.mouseEnabled = cap.AltScreen`
+// cannot land silently uncovered the way this one did.
+func buildModelForCapability(sess *cli.Session, root string, project Preferences, cap cli.TermCapability) model {
+	m := newModelWithPrefs(sess, root, project)
+	// W-E-01 (INF5): apply the detected profile to every lipgloss/glamour
+	// style in this package (see ApplyColorProfile's doc comment for why one
+	// call suffices for all of them).
 	ApplyColorProfile(cap.Profile)
 	// W-E-03: mirrors programOptions' own gate below — see mouseEnabled's
 	// doc comment on the model struct for why the pager's raw-copy toggle
 	// needs to know this at runtime, not just at startup.
 	m.mouseEnabled = cap.AltScreen
-	return tea.NewProgram(m, programOptions(cap)...)
+	return m
 }
 
 // programOptions builds the bubbletea startup options for cap: mouse
