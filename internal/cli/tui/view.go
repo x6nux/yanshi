@@ -748,10 +748,20 @@ func (m model) statusHeader() string {
 		t = themeList[0]
 	}
 	tc := func(key string) segmentColors {
-		if c, ok2 := t.Colors[key]; ok2 {
-			return c
+		c, ok2 := t.Colors[key]
+		if !ok2 {
+			c = segmentColors{fg: "255", bg: "236", bold: false}
 		}
-		return segmentColors{fg: "255", bg: "236", bold: false}
+		// RE-E (fix-e1 review of W-E-01): a handful of segments have a
+		// hand-picked replacement for termenv's mechanical 256→16 nearest-
+		// color downgrade (see segmentColors.ansiBg's doc comment for why);
+		// substitute it here, at lookup time, so every caller of tc() — and
+		// the generic footerColorSeq downgrade path both use — gets it for
+		// free without needing to know which keys carry an override.
+		if c.ansiBg != "" && currentColorProfile() == termenv.ANSI {
+			c.bg = c.ansiBg
+		}
+		return c
 	}
 	var segs []segmentDef
 	var c segmentColors

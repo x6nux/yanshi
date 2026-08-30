@@ -11,6 +11,7 @@ import (
 	"github.com/muesli/termenv"
 
 	"github.com/x6nux/yanshi/internal/cli"
+	"github.com/x6nux/yanshi/internal/guard"
 )
 
 // newTestModel returns a fresh model wired with fakeSession — the standard
@@ -438,6 +439,48 @@ func TestRenderFooterDegradesTo16ColorUnderANSI(t *testing.T) {
 	}
 	if !strings.ContainsRune(out, '\x1b') {
 		t.Fatalf("ANSI (16-color) profile: expected a 16-color escape sequence, got none: %q", out)
+	}
+}
+
+// TestStatusHeaderANSIOverridesFixMeasuredCollisions proves RE-E (fix-e1
+// review of W-E-01) end to end through the production entry point
+// (statusHeader, not a hand-built segmentDef): under termenv.ANSI, the
+// "ctx"/"perm_auto" pills no longer degrade to SGR 43 (yellow — the review
+// measured white-on-yellow as low contrast) and "total" no longer degrades to
+// SGR 101 (bright red — misleading, since red is this same footer's
+// perm_yolo error color). ANSI256 is exercised as a negative control in the
+// same test: those pills MUST still show their original 8-bit backgrounds
+// there, proving this is a profile-scoped override, not a change to the
+// underlying theme table.
+func TestStatusHeaderANSIOverridesFixMeasuredCollisions(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	m = m.applyEvent(cli.StreamEvent{
+		Kind: "status", Model: "claude-opus-4", TokensIn: 2000, TokensOut: 500, ContextWindow: 128000,
+	})
+	m.permMode = guard.ModeAuto
+
+	withColorProfile(t, termenv.ANSI)
+	out := m.statusHeader()
+	if strings.Contains(out, "43m") || strings.Contains(out, ";43;") || strings.Contains(out, ";43m") {
+		t.Errorf("ANSI profile: footer still degrades a pill to yellow (SGR 43): %q", out)
+	}
+	if strings.Contains(out, "101m") || strings.Contains(out, ";101;") || strings.Contains(out, ";101m") {
+		t.Errorf("ANSI profile: footer still degrades a pill to bright-red (SGR 101): %q", out)
+	}
+	if !strings.ContainsRune(out, '\x1b') {
+		t.Fatalf("ANSI profile: expected escape sequences in the footer, got none: %q", out)
+	}
+
+	withColorProfile(t, termenv.ANSI256)
+	out256 := m.statusHeader()
+	if !strings.Contains(out256, "48;5;58") {
+		t.Errorf("negative control failed: ANSI256 profile should still render \"ctx\" at its original 48;5;58, got %q", out256)
+	}
+	if !strings.Contains(out256, "48;5;130") {
+		t.Errorf("negative control failed: ANSI256 profile should still render \"total\" at its original 48;5;130, got %q", out256)
+	}
+	if !strings.Contains(out256, "48;5;94") {
+		t.Errorf("negative control failed: ANSI256 profile should still render \"perm_auto\" at its original 48;5;94, got %q", out256)
 	}
 }
 

@@ -409,10 +409,29 @@ const (
 // for one footer segment. Colour values are ANSI 256-color palette codes ("0"–
 // "255"); the caller must also know the default footer background ("236") for
 // passages that should not render as a coloured pill.
+//
+// ansiBg is an optional override consulted only under termenv.ANSI (real
+// 16-color terminals) — RE-E (fix-e1 review of W-E-01): bg is fed through
+// termenv's Profile.Convert on every profile, including ANSI, and that
+// conversion is a mechanical nearest-256-to-16 lookup table, not a palette
+// anyone designed for 16 colors. Measured (env -u COLORTERM TERM=xterm-16color,
+// tuidbg raster compare against the 256-color render): "ctx" (bg 58, dark
+// olive) downgrades to SGR 43 (yellow) — white-on-yellow, low contrast;
+// "perm_auto" (bg 94, dark brown) downgrades to the same SGR 43; "total" (bg
+// 130, dark orange) downgrades to SGR 101 (bright red) — readable but
+// semantically backwards, since red is this same footer's error/yolo color
+// (see "perm_yolo"). When set, ansiBg is itself just another ANSI-256 index —
+// it goes through the identical Convert path, so its value is chosen for
+// where *it* lands under ANSI, not for how it would look under 256-color
+// (which never sees it). Left empty for every segment ansiBg doesn't name:
+// the mechanical downgrade is unreviewed there too (see RE-E's review note on
+// A31, a full 16-color-aware palette, as future work) but wasn't measured as
+// failing the "distinguishable, not misleading" bar this fix targets.
 type segmentColors struct {
-	fg   string // ANSI 256-colour foreground code e.g. "255"
-	bg   string // ANSI 256-colour background code e.g. "17"
-	bold bool
+	fg     string // ANSI 256-colour foreground code e.g. "255"
+	bg     string // ANSI 256-colour background code e.g. "17"
+	bold   bool
+	ansiBg string // optional ANSI-256 index used instead of bg when profile == termenv.ANSI
 }
 
 // Theme defines a named footer colour theme with per-segment colour mappings.
@@ -445,18 +464,18 @@ var themeDefault = Theme{
 	Name:        ThemeDefault,
 	Description: "white text on coloured dark backgrounds",
 	Colors: map[string]segmentColors{
-		"mode":         {fg: "255", bg: "22", bold: false},  // white on dark green
-		"dir":          {fg: "255", bg: "24", bold: false},  // white on dark blue
-		"git":          {fg: "255", bg: "53", bold: false},  // white on dark purple
-		"model":        {fg: "255", bg: "23", bold: false},  // white on dark teal
-		"ctx":          {fg: "255", bg: "58", bold: false},  // white on dark olive
-		"total":        {fg: "255", bg: "130", bold: false}, // white on dark orange (consumption tally)
+		"mode":         {fg: "255", bg: "22", bold: false},                // white on dark green
+		"dir":          {fg: "255", bg: "24", bold: false},                // white on dark blue
+		"git":          {fg: "255", bg: "53", bold: false},                // white on dark purple
+		"model":        {fg: "255", bg: "23", bold: false},                // white on dark teal
+		"ctx":          {fg: "255", bg: "58", bold: false, ansiBg: "18"},  // white on dark olive; RE-E: 58 alone degrades to yellow(43) under 16-color, low contrast — 18 degrades to blue(44) instead
+		"total":        {fg: "255", bg: "130", bold: false, ansiBg: "87"}, // white on dark orange (consumption tally); RE-E: 130 alone degrades to bright-red(101) — reads as an error, but this pill is a cost tally, not perm_yolo's error color — 87 degrades to bright-cyan(106) instead
 		"perm_default": {fg: "245", bg: "236", bold: false},
-		"perm_edits":   {fg: "255", bg: "28", bold: false}, // RE-H: was bg 22, identical to "mode" — same pill, two meanings
-		"perm_auto":    {fg: "255", bg: "94", bold: false},
+		"perm_edits":   {fg: "255", bg: "28", bold: false},               // RE-H: was bg 22, identical to "mode" — same pill, two meanings
+		"perm_auto":    {fg: "255", bg: "94", bold: false, ansiBg: "95"}, // RE-E: 94 alone degrades to yellow(43), same low-contrast defect as "ctx" — 95 degrades to bright-black(100) instead
 		"perm_yolo":    {fg: "255", bg: "52", bold: true},
 		"tools":        {fg: "245", bg: "235", bold: false},
-		"queue":        {fg: "255", bg: "94", bold: true},
+		"queue":        {fg: "255", bg: "94", bold: true, ansiBg: "134"}, // RE-E: shared the same source (94) as "perm_auto" pre-fix — both degraded to identical yellow(43) under 16-color even though the two pills can render side by side (permission mode + queue depth); 134 degrades to bright-magenta(105), distinct from perm_auto's new bright-black(100)
 	},
 }
 
@@ -470,11 +489,11 @@ var themeHighContrast = Theme{
 		"dir":          {fg: "255", bg: "26", bold: true},
 		"git":          {fg: "255", bg: "55", bold: true},
 		"model":        {fg: "255", bg: "30", bold: true},
-		"ctx":          {fg: "255", bg: "59", bold: true},
-		"total":        {fg: "255", bg: "130", bold: true},
+		"ctx":          {fg: "255", bg: "59", bold: true},                // RE-E: measured — 59 degrades to bright-black(100) under 16-color, still high contrast with bold white text, left as-is
+		"total":        {fg: "255", bg: "130", bold: true, ansiBg: "87"}, // RE-E: same 130→bright-red(101) defect as themeDefault's "total" — see that entry's comment
 		"perm_default": {fg: "255", bg: "236", bold: true},
-		"perm_edits":   {fg: "255", bg: "34", bold: true}, // RE-H: was bg 28, identical to "mode" — same pill, two meanings
-		"perm_auto":    {fg: "255", bg: "100", bold: true},
+		"perm_edits":   {fg: "255", bg: "34", bold: true},                // RE-H: was bg 28, identical to "mode" — same pill, two meanings
+		"perm_auto":    {fg: "255", bg: "100", bold: true, ansiBg: "95"}, // RE-E: 100 also degrades to yellow(43) — same defect as themeDefault's "perm_auto", different source index, same downgrade table entry
 		"perm_yolo":    {fg: "15", bg: "88", bold: true},
 		"tools":        {fg: "255", bg: "237", bold: true},
 		"queue":        {fg: "255", bg: "63", bold: true}, // RE-H: was bg 100, identical to "perm_auto" — same pill, two meanings
