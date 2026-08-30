@@ -375,6 +375,33 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		now := time.Now()
 		isDouble := msg.Alt || (!m.lastEsc.IsZero() && now.Sub(m.lastEsc) < escDoublePressWindow)
 		m.lastEsc = now
+
+		// RE-21: an error toast wins over the rollback picker, checked
+		// BEFORE isDouble, even on the second press of a double-press pair.
+		// Pre-W-E-11, Esc's one job was dismissing the most-recent error
+		// toast, and a user clearing a stack of several toasts does it by
+		// pressing Esc repeatedly and fast — exactly the input shape
+		// isDouble is watching for. Without this ordering, the second press
+		// of that habitual repeat would silently stop dismissing toasts and
+		// open the rollback picker instead (measured in review-e3.md RE-21:
+		// `after 2nd Esc: hasErrorToast=true rollbackOpen=true`), and if the
+		// user's next reflexive keystroke is Enter (as it would be if they
+		// were still expecting toast-clearing, not a picker), rollbackConfirm
+		// forks the session and overwrites the input with the rolled-back
+		// turn's text — a surprising, semi-destructive action triggered by a
+		// muscle-memory gesture that meant something else entirely. Dismissing
+		// a toast is cheap and reversible; opening the picker is not free to
+		// walk back once a stray Enter lands on it, so ambiguity resolves
+		// toward the cheaper action. This does not lose the pairing: m.lastEsc
+		// is already updated to `now` above (not reset), so if a toast keeps
+		// eating presses, the NEXT fast press after the last toast clears
+		// still sees isDouble==true and opens the picker — the gesture is
+		// deferred, not dropped.
+		if m.hasErrorToast() {
+			m.toasts.dismissLastError()
+			m.reflow()
+			return m, nil, true
+		}
 		if isDouble {
 			m.lastEsc = time.Time{} // consume the pair; a third press starts fresh
 			// RE-19: same transport gate cmdDiff (commands.go) uses for
@@ -408,16 +435,6 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 			// drops slash commands while m.streamCh != nil): fall through to
 			// ordinary single-Esc handling instead of silently swallowing
 			// the keypress.
-		}
-		// C2 — UX7: dismiss the most-recent error toast (if any) on Esc.
-		// Returns immediately when there is no error toast so Esc keeps
-		// its existing meaning elsewhere (close picker, etc.). The toast
-		// tick handler prunes the now-empty queue and stops the tick on
-		// the next 500ms cadence.
-		if m.hasErrorToast() {
-			m.toasts.dismissLastError()
-			m.reflow()
-			return m, nil, true
 		}
 	case tea.KeyShiftTab:
 		mm, cmd := m.cycleMode()

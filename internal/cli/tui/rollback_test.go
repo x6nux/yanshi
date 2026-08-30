@@ -166,6 +166,42 @@ func TestEscEsc_AltEscapeCollapsedPairOpensPickerImmediately(t *testing.T) {
 	assert.True(t, mm.lastEsc.IsZero(), "the pair is consumed so a third press starts fresh")
 }
 
+// TestEscEsc_ErrorToastTakesPriorityOverPicker is RE-21's ruling: reproduces
+// review-e3.md's measured regression (a stack of error toasts, cleared by
+// repeated fast Esc, had its second press silently stop dismissing and open
+// the rollback picker instead — `after 2nd Esc: hasErrorToast=true
+// rollbackOpen=true`) and pins the chosen fix — a toast wins on every press,
+// including the second half of a double-press pair. Two error toasts are
+// stacked so the fix is visible: with only one toast, the first press alone
+// would already clear it and the ordering couldn't be told apart from the
+// old behavior.
+func TestEscEsc_ErrorToastTakesPriorityOverPicker(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	m.entries = []entry{&userEntry{text: "hello"}}
+	m.toasts.push(toast{Level: "error", Text: "first"})
+	m.toasts.push(toast{Level: "error", Text: "second"})
+
+	mm, ok := handleKey(m, tea.KeyMsg{Type: tea.KeyEscape})
+	assert.True(t, ok, "first press dismisses the newest toast, same as pre-W-E-11")
+	assert.Nil(t, mm.rollback, "must not open on the first press")
+	assert.True(t, mm.hasErrorToast(), "one toast remains in the stack")
+
+	mm2, ok2 := handleKey(mm, tea.KeyMsg{Type: tea.KeyEscape})
+	assert.True(t, ok2, "second press dismisses the remaining toast")
+	assert.Nil(t, mm2.rollback, "the picker must not open while any error toast is still up, even on the double-press's second half")
+	assert.False(t, mm2.hasErrorToast(), "the stack is now empty")
+
+	// The pairing was deferred, not dropped: m.lastEsc still holds the
+	// second press's timestamp (not reset to zero, since the isDouble
+	// branch that resets it never ran), so the immediate next fast press —
+	// now with no toast left to intercept it — opens the picker.
+	mm3, ok3 := handleKey(mm2, tea.KeyMsg{Type: tea.KeyEscape})
+	assert.True(t, ok3)
+	if assert.NotNil(t, mm3.rollback, "once toasts are cleared, the very next fast press opens the picker — the gesture wasn't lost") {
+		require.Len(t, mm3.rollback.items, 1)
+	}
+}
+
 func TestEscEsc_OutsideWindowIsTwoSinglePresses(t *testing.T) {
 	m := newModel(&fakeSession{}, "/proj")
 	m.entries = []entry{&userEntry{text: "hello"}}
