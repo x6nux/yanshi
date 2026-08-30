@@ -54,6 +54,18 @@ type Op struct {
 // keeps new lines reading above the following matched context, the
 // conventional ordering in unified diff output.
 //
+// This is NOT the tie-break internal/tools' predecessor unifiedDiff had
+// (deleted by this merge): that forward-DP implementation broke the same
+// ties toward Delete-from-a. Both are valid — an LCS tie means more than one
+// equally-minimal edit script exists — but they are different scripts, and
+// this reconciliation was previously undocumented (only SplitLines's
+// reconciliation was called out). Over every ordered pair of {A,B,C}-alphabet
+// line sequences of length <= 3 (1600 pairs), exactly 36 produce a different
+// (still equally minimal — same total -/+ line count) script; see
+// TestTieBreak_ChangedFromOldToolsAlgorithm in tiebreak_test.go, which
+// recomputes this figure against a reimplementation of the deleted
+// algorithm rather than restating it as a number that can silently drift.
+//
 // Edge cases: equal inputs collapse to all-Equal ops; empty a → all Insert;
 // empty b → all Delete; both empty → nil.
 func Compute(a, b string) []Op {
