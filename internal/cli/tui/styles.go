@@ -86,6 +86,14 @@ var (
 	// genuine depth-graded tier (gutter < context < add/del in visual
 	// weight), not just three same-weight hues with numbers bolted on. This
 	// is the "调色板...按色深分档" requirement the spec calls out by name.
+	//
+	// This tier only genuinely holds under ANSI256/TrueColor. Under
+	// termenv.ANSI (16-color, no extended grayscale ramp), 238 and 245 both
+	// degrade to the same 16-color code ("\x1b[90m", bright-black) — gutter
+	// and context become visually identical, collapsing the tier to two
+	// levels (gutter==context < add/del). Pinned by
+	// TestApplyColorProfile_ANSICollapsesGutterIntoContext in
+	// capability_test.go.
 	diffGutterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
 
 	inputBorder = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)

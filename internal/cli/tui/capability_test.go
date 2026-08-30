@@ -93,6 +93,39 @@ func TestApplyColorProfile_ANSIDegradesTo16Color(t *testing.T) {
 	}
 }
 
+// TestApplyColorProfile_ANSICollapsesGutterIntoContext pins RE-3's finding:
+// under termenv.ANSI (16-color), diffGutterStyle (grayscale index 238) and
+// diffCtxStyle (grayscale index 245) both degrade to the SAME 16-color code
+// (bright-black, "\x1b[90m") — the depth tier diffGutterStyle's doc comment
+// claims ("gutter < context < add/del in visual weight") only exists under
+// ANSI256/TrueColor, not under ANSI. Add/del (hue-declared, not grayscale)
+// stay genuinely distinguishable from gutter/context in every profile
+// including ANSI, so the four-role reading is never fully flat — only the
+// gutter/context half of the tier collapses.
+func TestApplyColorProfile_ANSICollapsesGutterIntoContext(t *testing.T) {
+	withColorProfile(t, termenv.ANSI)
+
+	gutter := diffGutterStyle.Render("x")
+	ctx := diffCtxStyle.Render("x")
+	add := diffAddStyle.Render("x")
+	del := diffDelStyle.Render("x")
+
+	if gutter != ctx {
+		t.Fatalf("ANSI profile: gutter and context no longer collapse (gutter=%q, ctx=%q) — "+
+			"either the depth tier now genuinely holds under ANSI (update diffGutterStyle's doc "+
+			"comment to drop the 256-color qualifier) or this pin needs to move to a different pair", gutter, ctx)
+	}
+	if add == gutter || add == ctx {
+		t.Fatalf("ANSI profile: diffAddStyle collapsed into gutter/context (add=%q, gutter=%q)", add, gutter)
+	}
+	if del == gutter || del == ctx {
+		t.Fatalf("ANSI profile: diffDelStyle collapsed into gutter/context (del=%q, gutter=%q)", del, gutter)
+	}
+	if add == del {
+		t.Fatalf("ANSI profile: diffAddStyle and diffDelStyle collapsed into each other (%q)", add)
+	}
+}
+
 // TestApplyColorProfile_InvalidatesGlamourCache proves renderer() rebuilds
 // under a new profile instead of serving a stale cache entry keyed only on
 // width (see ApplyColorProfile's doc comment for why this matters).
