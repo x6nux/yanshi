@@ -454,14 +454,27 @@ func NewProgram(sess *cli.Session, root string, project Preferences) *tea.Progra
 	// anything renders, and apply it to every lipgloss/glamour style in this
 	// package (see ApplyColorProfile's doc comment for why one call suffices
 	// for all of them). TERM=dumb additionally suppresses the alt-screen
-	// switch — see TermCapability.AltScreen.
+	// switch — see TermCapability.AltScreen and programOptions.
 	cap := cli.DetectCapability(os.Getenv)
 	ApplyColorProfile(cap.Profile)
+	return tea.NewProgram(m, programOptions(cap)...)
+}
+
+// programOptions builds the bubbletea startup options for cap: mouse
+// cell-motion capture is unconditional (see NewProgram's doc comment on why),
+// alt-screen is gated on cap.AltScreen (see TermCapability.AltScreen's doc
+// comment for why TERM=dumb sets it false). Extracted as its own function —
+// rather than left inline in NewProgram — because tea.Program exposes no way
+// to inspect which options a constructed *tea.Program was built with, so the
+// only way to test this gating logic at all is to call it directly on a
+// TermCapability value and inspect the returned slice; see
+// TestProgramOptions_AltScreenGatedByCapability.
+func programOptions(cap cli.TermCapability) []tea.ProgramOption {
 	opts := []tea.ProgramOption{tea.WithMouseCellMotion()}
 	if cap.AltScreen {
 		opts = append(opts, tea.WithAltScreen())
 	}
-	return tea.NewProgram(m, opts...)
+	return opts
 }
 
 func (m model) Init() tea.Cmd {
