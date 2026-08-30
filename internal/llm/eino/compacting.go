@@ -66,6 +66,24 @@ func compactCallback(ctx context.Context) func(string) {
 type CompactingModel struct {
 	Inner model.BaseChatModel
 
+	// Summarizer (W-C-10), when non-nil, is used for the ctxcompact.Run summary
+	// call INSTEAD of Inner — Inner still answers the turn itself (Generate/
+	// Stream's post-compaction call), only the summarization step inside
+	// maybeCompact prefers Summarizer. nil means "use Inner for summarization
+	// too", which is every behavior that predates W-C-10 (this field's zero
+	// value is a no-op).
+	//
+	// The split exists because Inner is not always resilient: a per-turn
+	// `/model`-pinned single provider is looked up as one bare entry from a
+	// provider registry map, with no failover chain wrapped around it. Wiring
+	// a fallback chain into Summarizer alone (see wrapCompaction in
+	// orchestrator.go, which sets this from CompactionConfig.ProviderFallbacks)
+	// lets a failed compaction summary retry against a DIFFERENT model without
+	// silently changing which model answers the turn — that would be a much
+	// bigger, riskier behavior change than falling back for a summarization
+	// call, and W-C-10 does not do it.
+	Summarizer model.BaseChatModel
+
 	// Threshold is the fraction of ContextWindow at which compaction fires
 	// (e.g. 0.8). Threshold <= 0 disables compaction (pass-through).
 	Threshold float64
@@ -191,11 +209,20 @@ func (c *CompactingModel) maybeCompact(ctx context.Context, msgs []*schema.Messa
 	// failure path — where res may be nil — has a size to arm with too.
 	attempted := ctxcompact.EstimateTokens(msgs)
 
+	// W-C-10: the summarization call prefers Summarizer (a fallback-wrapped
+	// model, when the catalog declares one for this model id) over Inner. The
+	// turn-answering calls in Generate/Stream above are untouched — only this
+	// one call site, feeding ctxcompact.Run, is affected.
+	summarizer := c.Inner
+	if c.Summarizer != nil {
+		summarizer = c.Summarizer
+	}
+
 	cb := compactCallback(ctx)
 	res, err := ctxcompact.Run(ctx, msgs,
 		ctxcompact.PlanOpts{KeepRecent: c.planKeepRecent()},
 		ctxcompact.RunOpts{ModelWindow: c.ContextWindow, ChunkThreshold: 0.9, Redactor: c.Redactor},
-		c.Inner, cb)
+		summarizer, cb)
 
 	c.cmMu.Lock()
 	c.lastCompactTokens = attempted

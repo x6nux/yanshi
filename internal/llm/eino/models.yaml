@@ -27,11 +27,32 @@
 #                           from absent: it explicitly disables compaction
 #                           for that one model regardless of the global
 #                           switch (see ResolveAutoCompactThreshold's doc
-#                           comment, W-C-04/ADR-0024). Ruling W-C-03: this
+#                           comment, W-C-04/ADR-0024). Ruling RC-3: this
 #                           ticket (W-C-01) ships ZERO rows with this field
 #                           populated — see the note before the `models:`
 #                           list below for why; do not treat its absence
 #                           from every row here as an oversight to "fill in".
+#                           (This bullet previously cited "Ruling W-C-03" —
+#                           a Ruling ID and a spec ticket ID collide in that
+#                           spelling; see progress.md's own warning about
+#                           this exact mistake. Corrected to RC-3, the real
+#                           Ruling ledger entry, while adding fallback_models
+#                           below under Ruling RC-8.)
+#   fallback_models         optional ordered list of model ids to fall back to
+#                           when this model's own compaction summary call
+#                           fails outright (exhausted retries, quota,
+#                           overload — the same failure class RunSummary
+#                           reports and W-C-04's pins-only path exists to
+#                           survive). This is NOT general turn-answering
+#                           fallback — only the compaction summarizer uses
+#                           this chain (see KnownFallbackModels in
+#                           modelcatalog.go, W-C-10). Declared ids that are
+#                           not configured providers in a given deployment
+#                           are skipped at resolution time, not an error.
+#                           Ruling RC-8: like auto_compact_threshold under
+#                           RC-3, this ticket ships ZERO rows with this field
+#                           populated — see the note before the `models:`
+#                           list below for why.
 #   pricing                 optional input_per_m / cache_hit_per_m /
 #                           output_per_m in USD per million tokens. Absent =
 #                           CostOK/Ledger.Cost report the model unknown
@@ -74,7 +95,7 @@
 # pricing.go's former DefaultPricing body) — see git history on either file
 # for provenance notes on individual numbers.
 #
-# auto_compact_threshold has ZERO rows below (Ruling W-C-03, see review-c1.md
+# auto_compact_threshold has ZERO rows below (Ruling RC-3, see review-c1.md
 # F-4/ADR-0024). There was no third Go literal table to transcribe it from —
 # the field, the parser, and the resolution ladder (ResolveAutoCompactThreshold)
 # are all real and tested this round, but the per-model NUMBERS are not: no
@@ -83,6 +104,21 @@
 # vendor-published guidance as researched data when none was. A future W-C
 # ticket adds real numbers, sourced and cited per row, not invented to make
 # this file look more complete than the research behind it.
+#
+# fallback_models has ZERO rows below (Ruling RC-8, W-C-10's C4 batch — the
+# same shape RC-3 shipped for auto_compact_threshold above, and explicitly
+# anticipated by RC-3's own text: "并且给 C4 批记一条前置 — W-C-04 / W-C-10 都
+# 会假设这张表里有东西"). The field, its parser (buildFallbackModels), and its
+# resolver (KnownFallbackModels) are real and tested this round; the wiring
+# that CONSUMES a non-empty chain (CompactingModel.Summarizer, wrapCompaction,
+# compactionModel()) is real and tested too. What is missing is the DATA: no
+# researched, quality-compatible fallback pairing (which model is an
+# acceptable stand-in summarizer for which primary) exists yet for any
+# provider in this catalog, and inventing plausible-looking pairs here would
+# misrepresent an editorial judgment call as researched guidance when none
+# was made. Until a future ticket adds real rows, KnownFallbackModels always
+# returns (nil, false) and every consumer of it is a no-op — byte-identical
+# to pre-W-C-10 behavior.
 
 models:
   # --- Anthropic -----------------------------------------------------------

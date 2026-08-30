@@ -138,6 +138,28 @@ type CompactionConfig struct {
 	// config.ProviderConfig.AutoCompactThreshold first, then the embedded
 	// model catalog — see einollm.ResolveAutoCompactThreshold.
 	ProviderThresholds map[string]float64
+	// ProviderFallbacks maps a registry model name to an ordered chain of
+	// stand-in models to retry the COMPACTION SUMMARY call against when that
+	// model's own summary call fails outright — keyed exactly as
+	// TurnOpts.ModelID, the W-C-10 sibling of ProviderWindows/
+	// ProviderThresholds. A turn whose model is absent, or whose entry is
+	// empty, gets no fallback (byte-identical to pre-W-C-10 behavior) — this
+	// is the common case today, since the shipped model catalog declares zero
+	// fallback_models rows (Ruling RC-8, models.yaml's header).
+	//
+	// This is NOT a general turn-answering fallback chain: only the
+	// compaction summarizer (CompactingModel.Summarizer / the pre-turn
+	// compactionModel() path) ever reads it. Silently answering a turn's
+	// actual response with a different model than the one requested is a
+	// much bigger, riskier behavior change than retrying a summarization
+	// call with a different model, and W-C-10 does not do that. Resolved
+	// once by bootstrap from einollm.KnownFallbackModels against the
+	// concrete provider registry (unresolvable declared ids are skipped, not
+	// an error) — sourced here rather than resolved locally for the same
+	// reason ProviderWindows is: bootstrap owns the provider registry, and
+	// the orchestrator must not import the packages that would let it build
+	// one itself.
+	ProviderFallbacks map[string][]model.BaseChatModel
 	// Redactor strips registered secrets from the history handed to the summary
 	// model on the MID-TURN compaction path, and from the summary it returns
 	// (C11). nil disables redaction.
@@ -168,6 +190,16 @@ func (cc CompactionConfig) thresholdFor(modelID string) float64 {
 		return 0
 	}
 	return cc.ProviderThresholds[modelID]
+}
+
+// fallbacksFor returns the compaction-summary fallback chain resolved for
+// modelID, or nil when modelID is unknown or has no declared chain. Mirrors
+// windowFor/thresholdFor exactly (W-C-10 / INF2's sibling to W-C-01).
+func (cc CompactionConfig) fallbacksFor(modelID string) []model.BaseChatModel {
+	if modelID == "" || cc.ProviderFallbacks == nil {
+		return nil
+	}
+	return cc.ProviderFallbacks[modelID]
 }
 
 // Orchestrator wraps an Eino ChatModelAgent + Runner.
@@ -326,7 +358,7 @@ func New(cfg Config) (*Orchestrator, error) {
 	rawModel := cfg.Model
 
 	return &Orchestrator{
-		model:              wrapCompaction(cfg.Model, cfg.Compaction, 0, 0),
+		model:              wrapCompaction(cfg.Model, cfg.Compaction, 0, 0, nil),
 		rawModel:           rawModel,
 		profile:            profile,
 		vcsScope:           cfg.VCSScope,
@@ -385,7 +417,19 @@ func New(cfg Config) (*Orchestrator, error) {
 // cc.Threshold" unchanged; only a negative resolved value opts this one
 // provider out, mirroring the global switch one layer down without touching
 // cc.Threshold itself.
-func wrapCompaction(m model.BaseChatModel, cc CompactionConfig, window int, threshold float64) model.BaseChatModel {
+//
+// fallbacks (W-C-10) is the pre-resolved compaction-summary fallback chain
+// for the model m will run against — pass cc.fallbacksFor(modelID) from the
+// call site, exactly like window/threshold are pre-resolved by the caller
+// rather than looked up here. An empty/nil chain leaves
+// CompactingModel.Summarizer unset (nil), which maybeCompact treats as "use
+// Inner", i.e. today's exact pre-W-C-10 behavior. A non-empty chain wraps m
+// together with its fallbacks in a fresh ResilientChatModel used ONLY for
+// the summarizer field — m itself still answers the turn unwrapped, so a
+// failed summary call can retry on a different model without changing which
+// model answers the turn (see CompactingModel.Summarizer's doc comment for
+// why that split is deliberate).
+func wrapCompaction(m model.BaseChatModel, cc CompactionConfig, window int, threshold float64, fallbacks []model.BaseChatModel) model.BaseChatModel {
 	if cc.Threshold <= 0 {
 		return m
 	}
@@ -398,7 +442,7 @@ func wrapCompaction(m model.BaseChatModel, cc CompactionConfig, window int, thre
 	if threshold <= 0 {
 		threshold = cc.Threshold
 	}
-	return &einollm.CompactingModel{
+	cm := &einollm.CompactingModel{
 		Inner:             m,
 		Threshold:         threshold,
 		ContextWindow:     window,
@@ -408,6 +452,18 @@ func wrapCompaction(m model.BaseChatModel, cc CompactionConfig, window int, thre
 		HardForceFraction: cc.HardForceFraction,
 		Redactor:          cc.Redactor,
 	}
+	if len(fallbacks) > 0 {
+		chain := append([]model.BaseChatModel{m}, fallbacks...)
+		if resilient, err := einollm.NewResilientModel(chain, einollm.ResilientConfig{}); err == nil {
+			cm.Summarizer = resilient
+		}
+		// err is only non-nil for an empty chain (see NewResilientModel), which
+		// chain cannot be here — it always has m as its first entry. No error
+		// path reaches production; cm.Summarizer stays nil (== Inner) if it
+		// somehow did, which is the same fail-safe "no fallback" default as an
+		// unresolved model id.
+	}
+	return cm
 }
 
 // collectToolNames returns registered tool Info names (best-effort).
@@ -692,7 +748,7 @@ func (o *Orchestrator) runnerFor(chatModel model.BaseChatModel, plan bool, model
 	names := collectToolNames(registered)
 
 	agent, err := adk.NewChatModelAgent(context.Background(), &adk.ChatModelAgentConfig{
-		Model:         wrapCompaction(chatModel, o.compaction, o.compaction.windowFor(modelID), o.compaction.thresholdFor(modelID)),
+		Model:         wrapCompaction(chatModel, o.compaction, o.compaction.windowFor(modelID), o.compaction.thresholdFor(modelID), o.compaction.fallbacksFor(modelID)),
 		Instruction:   o.instruction,
 		MaxIterations: o.maxIters,
 		ToolsConfig: adk.ToolsConfig{

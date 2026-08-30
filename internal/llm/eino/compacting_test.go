@@ -231,6 +231,83 @@ func TestCompactingModel_CompactsWhenOverThreshold(t *testing.T) {
 	assert.Equal(t, msgs[4], last[1])
 }
 
+// TestCompactingModel_SummarizerPreferredOverInnerForCompaction pins the
+// W-C-10 field split: when Summarizer is set, maybeCompact's ctxcompact.Run
+// call must use IT for the summarize call, not Inner — while Inner still
+// performs the real (post-compaction) turn-answering call, unaffected. This
+// is deliberately NOT the same model doing both: silently answering a turn
+// with a different model would be a much bigger behavior change than retrying
+// just the summarization call with a fallback, and W-C-10 does only the
+// latter (see the field's doc comment and wrapCompaction in
+// internal/agent/orchestrator).
+func TestCompactingModel_SummarizerPreferredOverInnerForCompaction(t *testing.T) {
+	inner := &recordingModel{reply: "answer", streamOK: true}
+	summarizer := &recordingModel{summary: "SUMMARY", streamOK: true}
+	cm := &CompactingModel{
+		Inner:         inner,
+		Summarizer:    summarizer,
+		Threshold:     0.5,
+		ContextWindow: 200, // 100-token threshold budget; ≥177 keeps RunSummary single-path
+		KeepRecent:    2,
+	}
+	msgs := []*schema.Message{
+		bigMessage(20),
+		bigMessage(20),
+		bigMessage(20),
+		bigMessage(20),
+		bigMessage(20),
+	}
+	require.True(t, cm.shouldCompact(msgs), "fixture is over threshold")
+
+	_, err := cm.Generate(context.Background(), msgs)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, summarizer.callCount(), "Summarizer, not Inner, must perform the summarize call")
+	assert.Equal(t, 1, inner.callCount(), "Inner still performs the real (post-compaction) call")
+
+	// Prove Inner's call carries the COMPACTED set produced by Summarizer's
+	// output, not the original 5 messages — i.e. the summary really flowed
+	// from Summarizer into the history Inner then answered.
+	ins := inner.inputsSnapshot()
+	require.Len(t, ins, 1)
+	last := ins[0]
+	assert.Len(t, last, 3, "compacted = KeepRecent tail (2) + summary at tail")
+	assert.Contains(t, last[2].Content, "SUMMARY")
+
+	// Inner must never have been asked to summarize.
+	summIns := summarizer.inputsSnapshot()
+	require.Len(t, summIns, 1, "summarizer performed exactly the summarize call")
+}
+
+// TestCompactingModel_NilSummarizerUsesInner pins the default (nil Summarizer)
+// behavior explicitly, as a companion to
+// TestCompactingModel_SummarizerPreferredOverInnerForCompaction: with no
+// Summarizer configured, Inner performs BOTH the summarize call and the real
+// call — byte-identical to pre-W-C-10 CompactingModel, which had no
+// Summarizer field at all.
+func TestCompactingModel_NilSummarizerUsesInner(t *testing.T) {
+	inner := &recordingModel{summary: "SUMMARY", reply: "answer", streamOK: true}
+	cm := &CompactingModel{
+		Inner:         inner,
+		Threshold:     0.5,
+		ContextWindow: 200,
+		KeepRecent:    2,
+	}
+	msgs := []*schema.Message{
+		bigMessage(20),
+		bigMessage(20),
+		bigMessage(20),
+		bigMessage(20),
+		bigMessage(20),
+	}
+	require.True(t, cm.shouldCompact(msgs))
+
+	_, err := cm.Generate(context.Background(), msgs)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, inner.callCount(), "with no Summarizer, Inner alone performs both the summarize and real calls")
+}
+
 // TestCompactingModel_StreamCompacts proves Stream mirrors Generate's compaction
 // (the ADK takes the Stream path under EnableStreaming).
 //

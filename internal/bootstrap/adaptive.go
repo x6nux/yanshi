@@ -236,3 +236,47 @@ func RunPreflight(ctx context.Context, cfg *config.Config) {
 	defer cancel()
 	einollm.LogPreflight(einollm.PreflightModels(pctx, nil, probes))
 }
+
+// buildProviderFallbacks (W-C-10) resolves each registry entry's declared
+// compaction-summary fallback chain (einollm.KnownFallbackModels) against the
+// SAME registry map einollm.BuildProviders already returned, rather than
+// adding a 6th return value to BuildProviders itself. Both
+// orchestrator.CompactionConfig.ProviderFallbacks and its apihttp sibling
+// read the result of this single call, exactly like providerWindows/
+// providerThresholds are computed once and forwarded to both.
+//
+// A declared id that is not a key in named is skipped, not an error: the
+// catalog is compiled into the binary and cannot know which providers THIS
+// deployment actually configured, and a fallback chain with a hole in it is
+// simply a shorter chain, not a broken one. A key whose resolved chain ends
+// up empty (every declared id unresolvable, or the catalog has no opinion at
+// all) is omitted from the returned map entirely — never given an empty
+// slice — so fallbacksFor's `len(fallbacks) > 0` check in orchestrator.go
+// (and compactionModel()'s twin in ws_compaction.go) stays the single source
+// of "does this model have a fallback chain", with no second "empty but
+// present" state to keep in sync with it.
+//
+// The shipped model catalog (models.yaml, Ruling RC-8) currently declares
+// zero fallback_models rows, so KnownFallbackModels returns (nil, false) for
+// every key and this function always returns an empty map — a no-op,
+// byte-identical to pre-W-C-10 behavior, until a future ticket adds catalog
+// data.
+func buildProviderFallbacks(named map[string]model.BaseChatModel) map[string][]model.BaseChatModel {
+	out := map[string][]model.BaseChatModel{}
+	for key := range named {
+		declared, ok := einollm.KnownFallbackModels(key)
+		if !ok || len(declared) == 0 {
+			continue
+		}
+		resolved := make([]model.BaseChatModel, 0, len(declared))
+		for _, id := range declared {
+			if m, ok := named[id]; ok && m != nil {
+				resolved = append(resolved, m)
+			}
+		}
+		if len(resolved) > 0 {
+			out[key] = resolved
+		}
+	}
+	return out
+}

@@ -37,16 +37,29 @@ type modelCatalogFile struct {
 // so a future W-C ticket can populate them without a schema migration, not
 // consumed by any Go code yet).
 type modelCatalogRow struct {
-	ID                   string           `yaml:"id"`
-	Aliases              []string         `yaml:"aliases"`
-	ContextWindow        int              `yaml:"context_window"`
-	AutoCompactThreshold float64          `yaml:"auto_compact_threshold"`
-	Pricing              *modelPricingRow `yaml:"pricing"`
-	MaxOutput            int              `yaml:"max_output"`
-	Modalities           []string         `yaml:"modalities"`
-	ReasoningEfforts     []string         `yaml:"reasoning_efforts"`
-	TruncationPolicy     string           `yaml:"truncation_policy"`
-	Priority             int              `yaml:"priority"`
+	ID                   string   `yaml:"id"`
+	Aliases              []string `yaml:"aliases"`
+	ContextWindow        int      `yaml:"context_window"`
+	AutoCompactThreshold float64  `yaml:"auto_compact_threshold"`
+	// FallbackModels (W-C-10) is an ordered list of model ids this model
+	// falls back to when its own compaction summary call fails outright
+	// (exhausted retries, quota, overload — the same failure RunSummary
+	// reports and W-C-04's pins-only path exists to survive). Declared ids
+	// that are not configured providers in THIS deployment are skipped at
+	// resolution time, not an error — the catalog is compiled into the
+	// binary and cannot know which providers an operator actually
+	// configured. See models.yaml's header for Ruling RC-8: this field ships
+	// ZERO populated rows in this round, the same "field/parser/resolver are
+	// real, only the DATA is missing" shape AutoCompactThreshold shipped
+	// under Ruling RC-3 (which explicitly anticipated this: "并且给 C4 批记
+	// 一条前置 — W-C-04 / W-C-10 都会假设这张表里有东西").
+	FallbackModels   []string         `yaml:"fallback_models"`
+	Pricing          *modelPricingRow `yaml:"pricing"`
+	MaxOutput        int              `yaml:"max_output"`
+	Modalities       []string         `yaml:"modalities"`
+	ReasoningEfforts []string         `yaml:"reasoning_efforts"`
+	TruncationPolicy string           `yaml:"truncation_policy"`
+	Priority         int              `yaml:"priority"`
 }
 
 // modelPricingRow is the USD-per-million-token shape inside a
@@ -173,10 +186,72 @@ func buildAutoCompactThresholds(cat modelCatalogFile) map[string]float64 {
 	return out
 }
 
+// buildFallbackModels projects the rows that carry fallback_models into an
+// exact-match id/alias -> ordered-id-list table, mirroring
+// buildAutoCompactThresholds. A row's own aliases all answer with the SAME
+// fallback list (an alias is a name for the same model, not a different
+// model with its own opinion) — consistent with how every other exact-match
+// index in this file (pricing, auto-compact-threshold) treats aliases.
+func buildFallbackModels(cat modelCatalogFile) map[string][]string {
+	out := make(map[string][]string)
+	for _, row := range cat.Models {
+		if len(row.FallbackModels) == 0 {
+			continue
+		}
+		ids := make([]string, 0, len(row.FallbackModels))
+		for _, id := range row.FallbackModels {
+			if id := strings.ToLower(strings.TrimSpace(id)); id != "" {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		for _, alias := range catalogAliases(row) {
+			out[alias] = ids
+		}
+	}
+	return out
+}
+
 // autoCompactThresholds is the catalog-sourced auto-compact-threshold table,
 // built once at package init from the same modelCatalog parse everything
 // else in this file reads.
 var autoCompactThresholds = buildAutoCompactThresholds(modelCatalog)
+
+// fallbackModels is the catalog-sourced fallback-chain table (W-C-10), built
+// once at package init from the same modelCatalog parse everything else in
+// this file reads.
+var fallbackModels = buildFallbackModels(modelCatalog)
+
+// KnownFallbackModels returns the ordered list of model ids modelID falls
+// back to when its own compaction summary call fails, and whether the
+// catalog had an opinion. A false second return (or an empty, ok=true list —
+// callers should treat both the same way) means modelID has no declared
+// fallback chain: the caller keeps using modelID alone, exactly the
+// behavior that predates W-C-10.
+//
+// The shipped models.yaml currently populates ZERO fallback_models rows
+// (Ruling RC-8, models.yaml's header): the field is live and consumed, it
+// just has no data yet — no per-model fallback chain has a documented
+// real-world basis (which models are actually suitable, quality-compatible
+// stand-ins for which primary model) to ship with. Until a future ticket
+// adds rows, this always returns (nil, false) and every caller of this
+// function is a no-op, byte-identical to pre-W-C-10 behavior.
+//
+// Matching is EXACT against id/aliases (see catalogAliases), not the
+// boundary-substring matching KnownContextWindow uses — same choice
+// KnownAutoCompactThreshold makes and for the same reason: a fallback chain
+// is a per-model editorial opinion, not a property that should leak across
+// every snapshot sharing a family prefix.
+func KnownFallbackModels(modelID string) ([]string, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(modelID))
+	if normalized == "" {
+		return nil, false
+	}
+	ids, ok := fallbackModels[normalized]
+	return ids, ok
+}
 
 // KnownAutoCompactThreshold returns the cataloged auto-compact threshold for
 // modelID and whether the catalog knew it. A false second return means "not

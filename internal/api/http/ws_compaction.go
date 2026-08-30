@@ -911,12 +911,12 @@ func compactNow(ctx context.Context, s *Server,
 func compactionModel(cc CompactionConfig, models map[string]model.BaseChatModel, sessionModel string) model.BaseChatModel {
 	if cc.Model != "" {
 		if m := models[cc.Model]; m != nil {
-			return m
+			return wrapCompactionFallback(m, cc.Model, cc)
 		}
 	}
 	if sessionModel != "" {
 		if m := models[sessionModel]; m != nil {
-			return m
+			return wrapCompactionFallback(m, sessionModel, cc)
 		}
 	}
 	// Fallback: deterministic (sorted) first registered model — a new session
@@ -927,9 +927,38 @@ func compactionModel(cc CompactionConfig, models map[string]model.BaseChatModel,
 	}
 	sort.Strings(names)
 	if len(names) > 0 {
-		return models[names[0]]
+		return wrapCompactionFallback(models[names[0]], names[0], cc)
 	}
 	return nil
+}
+
+// wrapCompactionFallback (W-C-10) wraps the PRE-TURN compaction summarizer m
+// in a fallback-aware ResilientChatModel when cc.ProviderFallbacks declares a
+// chain for id — the pre-turn twin of orchestrator.wrapCompaction's fallback
+// branch. An empty/absent chain returns m unchanged: this is the common case
+// today (the shipped catalog ships zero fallback_models rows, Ruling RC-8),
+// and it is what keeps every existing compactionModel() caller's behavior
+// byte-identical until an operator's registry actually resolves one.
+//
+// Unlike the mid-turn path, there is no separate "Summarizer" field to set
+// here — compactionModel()'s return value IS the summarizer (there is no
+// separate turn-answering call sharing this model on the pre-turn path), so
+// wrapping m directly, rather than something alongside it, is correct.
+func wrapCompactionFallback(m model.BaseChatModel, id string, cc CompactionConfig) model.BaseChatModel {
+	fallbacks := cc.ProviderFallbacks[id]
+	if len(fallbacks) == 0 {
+		return m
+	}
+	chain := append([]model.BaseChatModel{m}, fallbacks...)
+	resilient, err := einollm.NewResilientModel(chain, einollm.ResilientConfig{})
+	if err != nil {
+		// Only reachable for an empty chain (see NewResilientModel), which
+		// chain cannot be here — it always has m as its first entry. Fail-safe:
+		// fall back to the unwrapped model rather than dropping compaction
+		// entirely.
+		return m
+	}
+	return resilient
 }
 
 // contextWindowFor returns the context-window budget for model: the per-provider

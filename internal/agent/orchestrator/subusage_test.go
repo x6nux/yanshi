@@ -137,7 +137,7 @@ func TestCompactionGatesUseTheResolvedWindow(t *testing.T) {
 		HardForceFraction: 0.9,
 	}
 
-	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 128000, 0)
+	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 128000, 0, nil)
 	cm, ok := wrapped.(*einollm.CompactingModel)
 	require.True(t, ok, "compaction must be enabled")
 
@@ -167,7 +167,7 @@ func TestRunnerForSizesGatesToTheTurnsModel(t *testing.T) {
 	assert.Equal(t, 0, cc.windowFor(""), "an unset ModelID defers to the fallback")
 
 	// And the fallback really is the global one, not zero.
-	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, cc.windowFor("unknown"), cc.thresholdFor("unknown"))
+	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, cc.windowFor("unknown"), cc.thresholdFor("unknown"), nil)
 	cm, ok := wrapped.(*einollm.CompactingModel)
 	require.True(t, ok)
 	require.Equal(t, 256000, cm.ContextWindow,
@@ -212,7 +212,7 @@ func TestCompactionThresholdGatesUseTheResolvedThreshold(t *testing.T) {
 		ProviderThresholds: map[string]float64{"small": 0.6},
 	}
 
-	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 128000, cc.thresholdFor("small"))
+	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 128000, cc.thresholdFor("small"), nil)
 	cm, ok := wrapped.(*einollm.CompactingModel)
 	require.True(t, ok, "compaction must be enabled")
 
@@ -230,7 +230,7 @@ func TestCompactionThresholdGatesUseTheResolvedThreshold(t *testing.T) {
 func TestWrapCompaction_ZeroResolvedThresholdKeepsTheGlobalOne(t *testing.T) {
 	cc := CompactionConfig{Threshold: 0.8, ContextWindow: 128000, KeepRecent: 4}
 
-	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 0, cc.thresholdFor("unknown-model"))
+	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 0, cc.thresholdFor("unknown-model"), nil)
 	cm, ok := wrapped.(*einollm.CompactingModel)
 	require.True(t, ok)
 	assert.Equal(t, 0.8, cm.Threshold, "an unresolved per-model threshold must fall back to the global one")
@@ -247,7 +247,7 @@ func TestWrapCompaction_GlobalThresholdZeroStaysOffEvenWithACatalogHit(t *testin
 	cc := CompactionConfig{Threshold: 0, ProviderThresholds: map[string]float64{"small": 0.6}}
 
 	fm := einollm.NewFakeModel(nil, nil)
-	wrapped := wrapCompaction(fm, cc, 128000, cc.thresholdFor("small"))
+	wrapped := wrapCompaction(fm, cc, 128000, cc.thresholdFor("small"), nil)
 	assert.Same(t, model.BaseChatModel(fm), wrapped,
 		"Threshold<=0 must return the model unwrapped regardless of a per-model catalog hit")
 	_, stillWrapped := wrapped.(*einollm.CompactingModel)
@@ -269,12 +269,12 @@ func TestWrapCompaction_NegativeResolvedThresholdDisablesJustThisModel(t *testin
 	cc := CompactionConfig{Threshold: 0.8, ContextWindow: 128000, KeepRecent: 4}
 
 	fm := einollm.NewFakeModel(nil, nil)
-	wrapped := wrapCompaction(fm, cc, 128000, -1)
+	wrapped := wrapCompaction(fm, cc, 128000, -1, nil)
 	assert.Same(t, model.BaseChatModel(fm), wrapped,
 		"a negative resolved threshold must disable compaction for this model even though the global switch is on")
 
 	// The global fallback must stay untouched for every other model.
-	otherWrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 128000, cc.thresholdFor("other-model"))
+	otherWrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 128000, cc.thresholdFor("other-model"), nil)
 	cm, ok := otherWrapped.(*einollm.CompactingModel)
 	require.True(t, ok, "the negative per-model disable must not leak into other models")
 	assert.Equal(t, 0.8, cm.Threshold)

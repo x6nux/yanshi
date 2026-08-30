@@ -17,7 +17,7 @@ import (
 // TestWrapCompaction_WithThreshold wraps the model in CompactingModel.
 func TestWrapCompaction_WithThreshold(t *testing.T) {
 	fm := einollm.NewFakeModel([]string{"ok"}, nil)
-	wrapped := wrapCompaction(fm, CompactionConfig{Threshold: 0.8, ContextWindow: 1000, KeepRecent: 4}, 0, 0)
+	wrapped := wrapCompaction(fm, CompactionConfig{Threshold: 0.8, ContextWindow: 1000, KeepRecent: 4}, 0, 0, nil)
 	cm, ok := wrapped.(*einollm.CompactingModel)
 	require.True(t, ok, "threshold >0 must wrap in CompactingModel")
 	assert.Equal(t, 1000, cm.ContextWindow)

@@ -158,6 +158,17 @@ func TestRecordRetryEmitsSafeAttributes(t *testing.T) {
 	RecordRetry(ctx, 2, 3, nil) // nil error → SafeErrorType returns ""
 }
 
+// TestRecordFallbackEmitsSafeAttributes exercises RecordFallback (W-C-10):
+// a genuine chain-advance signal distinct from RecordRetry, indexed rather
+// than named (ResilientChatModel has no per-entry label), with the same
+// safe-attribute discipline (error TYPE only, never the error body).
+func TestRecordFallbackEmitsSafeAttributes(t *testing.T) {
+	withRecordingTracer(t)
+	ctx := context.Background()
+	RecordFallback(ctx, 0, 1, errors.New("provider exhausted"))
+	RecordFallback(ctx, 1, 2, nil) // nil error → SafeErrorType returns ""
+}
+
 // TestStartSessionErrorEndSetsStatus covers the error branch of the shared
 // end function for a session span: the error.type attribute and Error status
 // are set, and the error body itself never enters the span.

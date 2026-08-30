@@ -232,6 +232,14 @@ func (r *ResilientChatModel) Generate(ctx context.Context, in []*schema.Message,
 			return msg, nil
 		}
 		lastErr = err
+		// W-C-10: provider i exhausted its own retry budget and there is a
+		// next entry to try — record the ADVANCE, not the exhaustion (a
+		// failure on the LAST entry is chain exhaustion, reported below via
+		// the wrapped error, not a fallback: there is nowhere left to fall
+		// back to).
+		if i+1 < len(r.chain) {
+			otelobs.RecordFallback(ctx, i, i+1, err)
+		}
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("eino: all providers failed")
@@ -342,6 +350,13 @@ func (r *ResilientChatModel) runStream(ctx context.Context, in []*schema.Message
 			// either the very first open, or a failover after the previous
 			// provider's setup started failing. Either way, this provider's
 			// retry budget starts fresh (see curIdx's doc above).
+			//
+			// W-C-10: curIdx >= 0 excludes the very first open (nothing was
+			// "fallen back from" yet — recording one there would count every
+			// stream's initial provider choice as a fallback).
+			if curIdx >= 0 {
+				otelobs.RecordFallback(ctx, curIdx, openIdx, lastErr)
+			}
 			curIdx = openIdx
 			errAttempts = 0
 		}

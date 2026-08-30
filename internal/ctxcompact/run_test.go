@@ -100,7 +100,7 @@ func TestRun_ModelFailurePreservesEveryPinCategory(t *testing.T) {
 		{Role: schema.User, Content: "edit internal/ctxcompact/compact.go please"}, // 0 working-set (pin)
 		{Role: schema.User, Content: "first request, please keep this"},            // 1 user original (pin)
 		{Role: schema.Assistant, Content: "error: undefined: Foo"},                 // 2 error marker (pin)
-		{Role: schema.Assistant, Content: "--- a/x.go\n+++ b/x.go\n@@ -1 +1 @@"},    // 3 diff marker (pin)
+		{Role: schema.Assistant, Content: "--- a/x.go\n+++ b/x.go\n@@ -1 +1 @@"},   // 3 diff marker (pin)
 		{Role: schema.Assistant, Content: strings.Repeat("noise ", 100)},           // 4 summarize (DROPPED)
 		{Role: schema.Assistant, Content: strings.Repeat("more noise ", 100)},      // 5 tail (pin)
 		{Role: schema.User, Content: "recent"},                                     // 6 tail (pin)

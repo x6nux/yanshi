@@ -35,7 +35,7 @@ func TestWrapCompactionForwardsTheRedactor(t *testing.T) {
 		Redactor:      red,
 	}
 
-	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 128000, 0)
+	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 128000, 0, nil)
 	cm, ok := wrapped.(*einollm.CompactingModel)
 	require.True(t, ok, "compaction must be enabled")
 
@@ -54,7 +54,7 @@ func TestWrapCompactionForwardsTheRedactor(t *testing.T) {
 func TestWrapCompactionWithoutRedactorLeavesItNil(t *testing.T) {
 	cc := CompactionConfig{Threshold: 0.8, ContextWindow: 128000, KeepRecent: 4}
 
-	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 128000, 0)
+	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 128000, 0, nil)
 	cm, ok := wrapped.(*einollm.CompactingModel)
 	require.True(t, ok, "compaction must be enabled")
 

@@ -698,6 +698,15 @@ func Build(opts Options) (*App, error) {
 	// one so a per-model catalog/config threshold reaches both compaction
 	// paths (see CLAUDE.md's compaction section on why both must be wired).
 	var providerThresholds map[string]float64
+	// providerFallbacks (W-C-10) maps registry key -> resolved compaction-
+	// summary fallback chain, computed once by buildProviderFallbacks from
+	// providerModels + the embedded catalog and forwarded to both the
+	// orchestrator's mid-turn CompactionConfig and the http layer's pre-turn
+	// one, mirroring providerWindows/providerThresholds exactly. nil on the
+	// fake-model path (buildProviderFallbacks is only called in the real-
+	// provider branch below), which fallbacksFor/its apihttp twin already
+	// treat as "no fallback for anyone".
+	var providerFallbacks map[string][]model.BaseChatModel
 	// fakeChatModel stays nil on the production path ON PURPOSE: SelectRLMModel
 	// treats a non-nil fake as "rlm_query may fall back to it", so handing it a
 	// real model here would silently defeat the cheap-provider requirement and
@@ -761,6 +770,7 @@ func Build(opts Options) (*App, error) {
 		providerModels = named
 		providerWindows = windows
 		providerThresholds = thresholds
+		providerFallbacks = buildProviderFallbacks(named)
 		// M9: warn about a model name the provider does not list, naming the
 		// nearest matches. Non-blocking by construction — see RunPreflight.
 		// It takes context.Background() rather than the app's root context
@@ -1453,6 +1463,7 @@ func Build(opts Options) (*App, error) {
 			HardForceFraction:  cfg.Compaction.HardForceFraction,
 			ProviderWindows:    providerWindows,
 			ProviderThresholds: providerThresholds,
+			ProviderFallbacks:  providerFallbacks,
 			// C11: mid-turn compaction redacts its summarizer input. The
 			// pre-turn/SSE path is wired separately via httpCfg.Redactor;
 			// without this line only that half would be covered and secrets
@@ -1523,6 +1534,7 @@ func Build(opts Options) (*App, error) {
 			Model:              cfg.Compaction.Model,
 			ProviderWindows:    providerWindows,
 			ProviderThresholds: providerThresholds,
+			ProviderFallbacks:  providerFallbacks,
 		},
 		Store:         st,
 		VCS:           vcsInstance,
