@@ -354,6 +354,30 @@ type model struct {
 	// (internal/clipimg). Tests substitute a fake to stay off the desktop.
 	pendingImages []proto.ImageAttach
 	clipImage     clipImageFunc
+
+	// W-E-03: fullscreen transcript pager (Ctrl+T). pagerVisible reuses the
+	// SAME m.viewport the normal screen already scrolls instead of holding a
+	// second one — a pager showing a copy of the transcript would need its
+	// own content AND scroll position kept in sync with the original for no
+	// benefit, since the content is identical either way. pagerVisible only
+	// changes how reflow()/renderScreen() (view.go) size and compose that
+	// shared viewport; it also means "real-time tail" is free — applyEvent's
+	// existing unconditional m.viewport.GotoBottom() already applies to
+	// whatever the viewport is currently showing. pagerRawCopy toggles OFF
+	// the app's in-app mouse-drag text selection (tea.DisableMouse) so the
+	// user can fall back to the TERMINAL's own native selection, which mouse
+	// reporting normally suppresses — see pager.go.
+	pagerVisible bool
+	pagerRawCopy bool
+	// mouseEnabled mirrors programOptions' cap.AltScreen gate (RE-D): mouse
+	// cell-motion capture is only ever turned on at startup when the detected
+	// capability allows it (TERM=dumb does not), so pagerRawCopy's toggle
+	// must know whether there is anything to disable/re-enable — sending a
+	// mouse-mode escape sequence to a terminal that never had mouse mode on
+	// is exactly the escape-noise RE-D exists to avoid. Set once in
+	// NewProgram; zero value (false) in every test that builds a model
+	// directly, which is the safe default (no mouse escapes fire).
+	mouseEnabled bool
 }
 
 // newModel builds a model with no project preference layer. Kept as the
@@ -460,6 +484,10 @@ func NewProgram(sess *cli.Session, root string, project Preferences) *tea.Progra
 	// switch — see TermCapability.AltScreen and programOptions.
 	cap := cli.DetectCapability(os.Getenv)
 	ApplyColorProfile(cap.Profile)
+	// W-E-03: mirrors programOptions' own gate below — see mouseEnabled's
+	// doc comment on the model struct for why the pager's raw-copy toggle
+	// needs to know this at runtime, not just at startup.
+	m.mouseEnabled = cap.AltScreen
 	return tea.NewProgram(m, programOptions(cap)...)
 }
 

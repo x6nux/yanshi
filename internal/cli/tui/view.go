@@ -189,7 +189,16 @@ func (m *model) reflow() {
 		historyH = blockHeight(hp, m.width)
 	}
 	m.viewport.Width = m.width
-	m.viewport.Height = max(3, m.height-footerH-inputH-statusH-paletteH-permH-yoloH-pickerH-cmdPickerH-queueH-toastH-actionH-helpH-historyH)
+	if m.pagerVisible {
+		// W-E-03: fullscreen takeover. Skip every other block's reserved
+		// height (they cannot be showing — the guard that opens the pager
+		// in handlers.go refuses while any of them is already open) and
+		// give the whole screen to the shared viewport except the pager's
+		// own one-line control hint.
+		m.viewport.Height = max(3, m.height-blockHeight(m.pagerHint(), m.width))
+	} else {
+		m.viewport.Height = max(3, m.height-footerH-inputH-statusH-paletteH-permH-yoloH-pickerH-cmdPickerH-queueH-toastH-actionH-helpH-historyH)
+	}
 	m.refresh()
 	// Re-clamp YOffset after a Height change. A GotoBottom from an event that
 	// arrived BEFORE WindowSizeMsg (e.g. fetchInitialStatus) runs against the
@@ -313,6 +322,13 @@ func (m *model) refresh() {
 // factored out so selection can operate on the whole screen (covering the
 // footer too, not just the transcript).
 func (m model) renderScreen() string {
+	// W-E-03: fullscreen pager takeover — bypass every other block (toasts,
+	// input, footer, all popups) entirely. handlers.go's guard keeps this
+	// from opening while any of them already is, so nothing is lost by
+	// skipping them here.
+	if m.pagerVisible {
+		return lipgloss.JoinVertical(lipgloss.Left, m.viewport.View(), m.pagerHint())
+	}
 	// C2 — UX7: toast stack overlays the TOP of the viewport (above the
 	// transcript, below popups). Rendered first so it sits visually closest to
 	// the conversation flow (turn-end receipts) rather than over the input.

@@ -25,6 +25,54 @@ import (
 //
 // nolint:gocyclo // this is a 1:1 extraction of known hotkey dispatch logic
 func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
+	// W-E-03: fullscreen pager (Ctrl+T) is modal — checked FIRST, ahead of
+	// every other modal below, because it owns the whole screen: a stray
+	// Up/Down must scroll the pager, not move a picker cursor that cannot
+	// even be on screen right now. Ctrl+T itself is deliberately NOT handled
+	// in this block: it falls through (empty case, no return) all the way to
+	// the shared open/close toggle in the switch at the bottom of this
+	// function — the same pattern F1/helpVisible uses, where the modal's own
+	// hotkey closes it via the SAME case that opened it, not a copy living
+	// inside the modal's dedicated block.
+	if m.pagerVisible {
+		switch msg.Type {
+		case tea.KeyCtrlT:
+			// Falls through — see the comment above.
+		case tea.KeyEscape:
+			cmd := m.closePager()
+			m.reflow()
+			return m, cmd, true
+		case tea.KeyHome:
+			m.viewport.GotoTop()
+			return m, nil, true
+		case tea.KeyEnd:
+			m.viewport.GotoBottom()
+			return m, nil, true
+		case tea.KeyRunes:
+			switch string(msg.Runes) {
+			case "q":
+				cmd := m.closePager()
+				m.reflow()
+				return m, cmd, true
+			case "r":
+				return m, m.togglePagerRawCopy(), true
+			}
+			// Any other rune: forward to the viewport, which owns its own
+			// vi-style bindings (j/k/f/b/u/d — bubbles/viewport's
+			// DefaultKeyMap) rather than re-deriving that keymap here.
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(msg)
+			return m, cmd, true
+		default:
+			// ↑↓ PgUp/PgDn and anything else the viewport recognises;
+			// unrecognised key types are a harmless no-op cmd. Absorbed
+			// either way so nothing leaks into a textarea the pager has
+			// hidden from view.
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(msg)
+			return m, cmd, true
+		}
+	}
 	// C2 — UX2: help panel is read-only modal. Consume ↑↓/Enter/Esc +
 	// printable/backspace so query search works without leaking keystrokes
 	// into the textarea. F1/Esc close; everything else falls through after
@@ -441,6 +489,24 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 			return m, m.pushToast("warn", "could not start editor: "+err.Error()), true
 		}
 		return m, cmd, true
+	case tea.KeyCtrlT:
+		// W-E-03: fullscreen transcript pager. Reached on close too — the
+		// pagerVisible block above deliberately lets Ctrl+T fall through to
+		// here so open and close share one case, mirroring F1/help.
+		if m.pagerVisible {
+			cmd := m.closePager()
+			m.reflow()
+			return m, cmd, true
+		}
+		// Blocked while another modal owns the keyboard, matching Ctrl+E's
+		// guard — the pager takes over the whole screen, which no popup can
+		// survive being drawn under.
+		if m.paletteOpen() || m.pickerKind != "" || m.action != nil || m.helpVisible {
+			return m, nil, true
+		}
+		m.pagerVisible = true
+		m.reflow()
+		return m, nil, true
 	case tea.KeyF1:
 		// C2 — UX2: toggle the F1 help panel. If already open, close it
 		// (acts as Esc); otherwise clear any prior query and open fresh.
