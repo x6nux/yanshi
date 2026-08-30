@@ -435,7 +435,10 @@ func newModelWithPrefs(sess tuiSession, root string, project Preferences) model 
 }
 
 // NewProgram builds the bubbletea program for a session. Mouse cell-motion
-// capture is ON so BOTH work with a plain mouse:
+// capture is on whenever the detected capability allows alt-screen (see
+// programOptions / TermCapability.AltScreen — RE-D gated it off for
+// TERM=dumb, where it was previously always on), so BOTH work with a plain
+// mouse in every other case:
 //   - the WHEEL scrolls the viewport (routed in the MouseMsg handler), and
 //   - a LEFT-BUTTON DRAG selects text in-app (the terminal's native selection
 //     is disabled while mouse reporting is on, so the app implements selection
@@ -461,18 +464,31 @@ func NewProgram(sess *cli.Session, root string, project Preferences) *tea.Progra
 }
 
 // programOptions builds the bubbletea startup options for cap: mouse
-// cell-motion capture is unconditional (see NewProgram's doc comment on why),
-// alt-screen is gated on cap.AltScreen (see TermCapability.AltScreen's doc
-// comment for why TERM=dumb sets it false). Extracted as its own function —
-// rather than left inline in NewProgram — because tea.Program exposes no way
-// to inspect which options a constructed *tea.Program was built with, so the
-// only way to test this gating logic at all is to call it directly on a
-// TermCapability value and inspect the returned slice; see
-// TestProgramOptions_AltScreenGatedByCapability.
+// cell-motion capture and alt-screen are both gated on cap.AltScreen (see
+// TermCapability.AltScreen's doc comment for why TERM=dumb sets it false, and
+// this function's own body comment for why mouse joined the gate in RE-D).
+// Extracted as its own function — rather than left inline in NewProgram —
+// because tea.Program exposes no way to inspect which options a constructed
+// *tea.Program was built with, so the only way to test this gating logic at
+// all is to call it directly on a TermCapability value and inspect the
+// returned slice; see TestProgramOptions_AltScreenGatedByCapability.
 func programOptions(cap cli.TermCapability) []tea.ProgramOption {
-	opts := []tea.ProgramOption{tea.WithMouseCellMotion()}
+	// RE-D: mouse cell-motion capture is gated on the same signal as
+	// alt-screen, not unconditional — a dumb terminal (log pipe, some CI
+	// runners) gets nothing but noise from mouse-tracking enable/disable
+	// sequences, exactly as it does from the alt-screen switch. This also
+	// closes the OSC 52 clipboard-write path for TERM=dumb as a side effect:
+	// copyClipboard (view.go) is only reachable from handleSelectMouse's
+	// mouse-drag-release, which never fires without mouse mode enabled.
+	//
+	// This does NOT make TERM=dumb escape-free: bubbletea's fork bakes
+	// cursor-hide and cursor-addressed repaint into its renderer with no
+	// independent toggle short of WithoutRenderer (which breaks the whole
+	// interactive TUI) — see TermCapability.AltScreen's doc comment for what
+	// remains unaddressed.
+	var opts []tea.ProgramOption
 	if cap.AltScreen {
-		opts = append(opts, tea.WithAltScreen())
+		opts = append(opts, tea.WithMouseCellMotion(), tea.WithAltScreen())
 	}
 	return opts
 }

@@ -20,10 +20,24 @@ type TermCapability struct {
 	// (24-bit).
 	Profile termenv.Profile
 	// AltScreen reports whether the program may switch into the terminal's
-	// alternate screen buffer. False only for TERM=dumb: a dumb terminal has
-	// no cursor addressing at all, so the alt-screen switch sequence isn't
-	// merely wasted, it's noise the consumer (a log pipe, some CI runners)
-	// never asked for.
+	// alternate screen buffer, and also gates mouse cell-motion capture (see
+	// tui.programOptions). False only for TERM=dumb.
+	//
+	// This comment previously justified it as "a dumb terminal has no cursor
+	// addressing at all, so alt-screen is noise the consumer never asked
+	// for" — that reasoning does not hold. A real tuidbg capture comparing a
+	// TERM=dumb session against a TERM=xterm-256color control (same command,
+	// only TERM differs) showed both sessions receiving IDENTICAL
+	// cursor-hide and cursor-addressed-repaint sequences (tmux pane vars:
+	// mouse_any=1 mouse_sgr=1 cursor=0 on both) — bubbletea's fork bakes
+	// those into its renderer with no independent toggle short of
+	// WithoutRenderer, which would break the whole interactive TUI, so they
+	// are NOT suppressed under TERM=dumb. Only the alt-screen switch itself
+	// and (as of RE-D) mouse tracking are actually turned off. The real
+	// rationale is narrower than the old comment claimed: those two are the
+	// only startup options this package can independently gate, and a dumb
+	// terminal (log pipe, some CI runner) gets no benefit from either — not
+	// that a dumb terminal is escape-free once this field is honored.
 	AltScreen bool
 }
 

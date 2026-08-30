@@ -20,18 +20,19 @@ import (
 	"github.com/x6nux/yanshi/internal/cli"
 )
 
-// TestProgramOptions_AltScreenGatedByCapability proves the alt-screen
-// bubbletea option is present only when TermCapability.AltScreen is true —
-// the gate a prior mutation ("if true || cap.AltScreen") could remove without
-// any test noticing.
+// TestProgramOptions_AltScreenGatedByCapability proves the alt-screen and
+// mouse-cell-motion bubbletea options are present only when
+// TermCapability.AltScreen is true (RE-D joined mouse to the same gate — see
+// programOptions' body comment) — the gate a prior mutation ("if true ||
+// cap.AltScreen") could remove without any test noticing.
 func TestProgramOptions_AltScreenGatedByCapability(t *testing.T) {
 	with := programOptions(cli.TermCapability{AltScreen: true})
 	without := programOptions(cli.TermCapability{AltScreen: false})
 	if len(with) != 2 {
 		t.Fatalf("AltScreen=true: got %d options, want 2 (mouse + alt-screen)", len(with))
 	}
-	if len(without) != 1 {
-		t.Fatalf("AltScreen=false: got %d options, want 1 (mouse only) — alt-screen gate not honored", len(without))
+	if len(without) != 0 {
+		t.Fatalf("AltScreen=false: got %d options, want 0 (both gated off) — alt-screen gate not honored", len(without))
 	}
 }
 
