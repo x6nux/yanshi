@@ -238,6 +238,25 @@ func renderMarkdown(width int, md string) string {
 	if err != nil {
 		return md
 	}
+	if currentColorProfile() == termenv.Ascii {
+		// glamour.WithColorProfile(activeProfile) (see renderer() above) is
+		// correctly wired, but it doesn't reach every escape glamour v1.0.0
+		// emits: its bold/underline styling goes through termenv.String(s)
+		// (ansi/baseelement.go's renderText), and termenv@v0.16.0's
+		// Style.String() constructor hardcodes profile=ANSI internally — so
+		// Styled()'s own "if t.profile == Ascii { return s }" early-return
+		// never fires, and \x1b[1m / \x1b[4m / degenerate empty-parameter SGR
+		// sequences survive regardless of the profile passed to glamour. This
+		// is the third instance of the same "Ascii drops ALL styling" rule
+		// being violated by a path outside lipgloss's shared renderer (the
+		// other two: the footer's independent ANSI path, and the footer bold
+		// flag not downgrading — see footerSGRParts in view.go). Stripping
+		// here rather than waiting on upstream keeps the same guarantee
+		// TestApplyColorProfile_AsciiSuppressesColor already pins for
+		// lipgloss-rendered styles: zero \x1b bytes under Ascii, not just
+		// plain-looking ones.
+		out = stripANSI(out)
+	}
 	return out
 }
 

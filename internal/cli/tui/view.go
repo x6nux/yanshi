@@ -644,9 +644,19 @@ func footerColorSeq(code string, bg bool) string {
 // Ascii, termenv suppresses ALL styling, not just color, for every
 // lipgloss-rendered element elsewhere in this package. A real tuidbg capture
 // under NO_COLOR=1 confirmed this: roleUser (Bold+Foreground, rendering
-// "you:") produced zero escape bytes end to end. Keeping bold in the footer
-// under Ascii would make it the one element in the UI that still emits an
-// escape under NO_COLOR — the opposite of consistent.
+// "you:") produced zero escape bytes end to end.
+//
+// This footer is not the only hand-rolled path that needed its own downgrade
+// — an earlier version of this comment claimed keeping bold here would make
+// the footer "the one element in the UI that still emits an escape under
+// NO_COLOR"; that claim was false. glamour's markdown renderer (renderMarkdown
+// in styles.go) hit the same rule from a different bug: glamour v1.0.0's
+// termenv-backed bold/underline styling ignores the profile it was
+// constructed with (termenv@v0.16.0's Style.String() hardcodes profile=ANSI
+// internally), so under Ascii it kept emitting \x1b[1m/\x1b[4m/degenerate
+// empty SGR sequences until renderMarkdown started stripping its output
+// post-hoc. If a third such path turns up, fix this comment again rather
+// than let it keep asserting uniqueness that isn't real.
 func footerSGRParts(fg, bg string, bold bool) []string {
 	var parts []string
 	if bold && currentColorProfile() != termenv.Ascii {
