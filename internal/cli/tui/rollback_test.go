@@ -362,16 +362,28 @@ func TestSessionForked_NormalForkUnaffected(t *testing.T) {
 	assert.Equal(t, "draft in progress", m.input.Value(), "normal /fork must not touch the textarea")
 }
 
-// ---- the mandatory 7-Esc-site pinning test ----
+// ---- the mandatory Esc-site pinning test ----
 
-// TestEscEsc_AllSevenExistingEscSitesStillWork enumerates, by name, every one
-// of the 7 places handleKeyMsg reads tea.KeyEscape (per the file's own
-// ordering) and asserts each still produces its pre-W-E-11 single-press
-// behavior. This exists as its own test — separate from the fact that each
-// site's pre-existing dedicated test continues to pass — because the report
-// requires an explicit, self-contained pin of "single Esc unchanged" across
-// every site, not just an absence of regressions in scattered tests.
-func TestEscEsc_AllSevenExistingEscSitesStillWork(t *testing.T) {
+// TestEscEsc_AllExistingEscSitesStillWork enumerates, by name, every place
+// handleKeyMsg reads tea.KeyEscape (per the file's own ordering) and asserts
+// each still produces its pre-Esc-Esc single-press behavior.
+//
+// RE-18 (review-e3): this used to claim "7" and be named accordingly, but
+// only 6 of these are actually pre-existing — `git grep -c 'tea\.KeyEsc'
+// fa0cfed -- 'internal/cli/tui/*.go'` (fa0cfed is this whole batch's start
+// commit, before W-E-03 and W-E-11 both landed) counts 6 in handlers.go.
+// Site 1 (pagerVisible) is NOT one of them: W-E-03's fullscreen pager landed
+// earlier in THIS SAME batch, before the Esc-Esc gesture (W-E-11) landed on
+// top of it, so it has no pre-batch behavior to regress — it is pinned here
+// because Esc-Esc must not swallow the pager's own Esc either, not because
+// it predates this work. The set below is honestly 6 pre-existing + 1
+// introduced earlier in this batch, not 7 pre-existing.
+//
+// This exists as its own test — separate from the fact that each site's
+// dedicated test continues to pass — because the report requires an
+// explicit, self-contained pin of "single Esc unchanged" across every site,
+// not just an absence of regressions in scattered tests.
+func TestEscEsc_AllExistingEscSitesStillWork(t *testing.T) {
 	// RE-11 (fix-e3a): every subtest below now seeds m.entries with a real
 	// user turn. Without it, m.rollbackCandidates() is unconditionally empty
 	// and the Esc-Esc branch this test claims to guard against (`if items :=
@@ -387,7 +399,9 @@ func TestEscEsc_AllSevenExistingEscSitesStillWork(t *testing.T) {
 		return m
 	}
 
-	// Site 1: pagerVisible (W-E-03 fullscreen pager) — Esc closes the pager.
+	// Site 1: pagerVisible (W-E-03 fullscreen pager — new in this batch, NOT
+	// a pre-existing site; see RE-18 note on the test's doc comment) — Esc
+	// closes the pager.
 	t.Run("1_pager", func(t *testing.T) {
 		m := withCandidate()
 		m.pagerVisible = true
