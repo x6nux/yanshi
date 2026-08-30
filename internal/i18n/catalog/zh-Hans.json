@@ -57,6 +57,8 @@
   "tui.status.thinking": "思考",
   "tui.status.tokens_in": "输入 token",
   "tui.status.tokens_out": "输出 token",
+  "tui.title.busy": "{project} — yanshi（运行中）",
+  "tui.title.idle": "{project} — yanshi",
   "tui.workflow.completed": "已完成",
   "tui.workflow.failed": "失败",
   "tui.workflow.running": "运行中",

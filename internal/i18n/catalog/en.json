@@ -57,6 +57,8 @@
   "tui.status.thinking": "thinking",
   "tui.status.tokens_in": "tokens in",
   "tui.status.tokens_out": "tokens out",
+  "tui.title.busy": "{project} — yanshi (running)",
+  "tui.title.idle": "{project} — yanshi",
   "tui.workflow.completed": "completed",
   "tui.workflow.failed": "failed",
   "tui.workflow.running": "running",

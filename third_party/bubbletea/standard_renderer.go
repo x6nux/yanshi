@@ -505,6 +505,23 @@ func (r *standardRenderer) setWindowTitle(title string) {
 	r.execute(ansi.SetWindowTitle(title))
 }
 
+// pushWindowTitle saves the terminal's current window title onto its title
+// stack (XTWINOPS "CSI 22;2t" — the "2" parameter restricts the save to the
+// window title, not the icon name, matching what setWindowTitle's OSC 2
+// changes). Terminals that don't implement XTWINOPS silently discard
+// unrecognized CSI...t sequences per ECMA-48, so this degrades to a no-op
+// rather than visible garbage — same contract as every other capability
+// primitive in this fork.
+func (r *standardRenderer) pushWindowTitle() {
+	r.execute(ansi.WindowOp(22, 2))
+}
+
+// popWindowTitle restores the window title most recently saved by
+// pushWindowTitle (XTWINOPS "CSI 23;2t").
+func (r *standardRenderer) popWindowTitle() {
+	r.execute(ansi.WindowOp(23, 2))
+}
+
 // setIgnoredLines specifies lines not to be touched by the standard Bubble Tea
 // renderer.
 func (r *standardRenderer) setIgnoredLines(from int, to int) {

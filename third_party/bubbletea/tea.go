@@ -147,6 +147,18 @@ type Program struct {
 	// program starts.
 	startupTitle string
 
+	// titlePushed records whether SetWindowTitle has pushed the terminal's
+	// original title onto its title stack yet (see renderer.pushWindowTitle).
+	// It is an atomic.Bool rather than a plain bool guarded by a mutex the
+	// rest of the struct doesn't have: SetWindowTitle runs on the eventLoop
+	// goroutine while shutdown() (which reads this to decide whether to pop)
+	// can run on a different goroutine on the Kill/panic paths, so a plain
+	// bool read/write pair here would be a data race. Swap(true) makes "push
+	// exactly once" atomic without a separate lock: pushing on every title
+	// update (once per turn, in W-E-05's case) would grow the terminal's
+	// title stack unboundedly, since shutdown only pops one level.
+	titlePushed atomic.Bool
+
 	inputType inputType
 
 	// externalCtx is a context that was passed in via WithContext, otherwise defaulting
@@ -829,6 +841,15 @@ func (p *Program) shutdown(kill bool) {
 			p.renderer.kill()
 		} else {
 			p.renderer.stop()
+		}
+		// Restore whatever title the terminal had before SetWindowTitle first
+		// touched it (W-E-05). This runs for all three exit paths that reach
+		// shutdown: normal Quit, Kill (Ctrl+C/SIGTERM), and panic recovery
+		// (recoverFromPanic calls shutdown(true) directly) — see titlePushed's
+		// doc comment for why a program that never called SetWindowTitle
+		// leaves this a no-op instead of popping a title nothing pushed.
+		if p.titlePushed.Load() {
+			p.renderer.popWindowTitle()
 		}
 	}
 

@@ -81,6 +81,11 @@ var capabilityWiredFields = map[string]struct {
 		high: cli.TermCapability{AltScreen: true},
 		get:  func(m model) any { return m.mouseEnabled },
 	},
+	"titleEnabled": {
+		low:  cli.TermCapability{AltScreen: false},
+		high: cli.TermCapability{AltScreen: true},
+		get:  func(m model) any { return m.titleEnabled },
+	},
 }
 
 // TestCapabilityWiredFieldsMatchCensus parses buildModelForCapability's body

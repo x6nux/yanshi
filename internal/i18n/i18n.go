@@ -93,6 +93,9 @@ var requiredCatalogKeys = []string{
 	"tui.command.vim.disabled",
 	"tui.command.vim.enabled",
 	"tui.command.vim.usage",
+	// W-E-05: terminal window-title text (project + session status).
+	"tui.title.idle",
+	"tui.title.busy",
 }
 
 // Bundle is a locale catalog. Persistent is the user's configured value

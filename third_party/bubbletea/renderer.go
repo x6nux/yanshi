@@ -71,6 +71,22 @@ type renderer interface {
 	// setWindowTitle sets the terminal window title.
 	setWindowTitle(string)
 
+	// pushWindowTitle saves the terminal's current window title onto its
+	// title stack (XTWINOPS "CSI 22;2t"), so a later popWindowTitle call can
+	// restore it. Used by Program.SetWindowTitle (screen.go) so a caller who
+	// sets a dynamic title does not have to know or remember what the
+	// terminal's title was before the program started — see
+	// Program.titlePushed's doc comment (tea.go) for why this only fires
+	// once per process lifetime.
+	pushWindowTitle()
+
+	// popWindowTitle restores the window title most recently saved by
+	// pushWindowTitle (XTWINOPS "CSI 23;2t"). Called from shutdown() — the
+	// single choke point reached by every exit path (normal quit, Kill, and
+	// panic recovery) — so W-E-05's "restore the original title on exit"
+	// requirement holds regardless of how the program stopped.
+	popWindowTitle()
+
 	// reportFocus returns whether reporting focus events is enabled.
 	reportFocus() bool
 

@@ -379,6 +379,14 @@ type model struct {
 	// directly, which is the safe default (no mouse escapes fire).
 	mouseEnabled bool
 
+	// titleEnabled gates W-E-05's terminal window-title updates on the same
+	// cap.AltScreen signal mouseEnabled uses — a dumb terminal gets no OSC 2 /
+	// XTWINOPS title-stack bytes, matching E1's "TERM=dumb stays escape-free"
+	// contract for every feature this batch adds, not just the ones E1 itself
+	// gated. See windowTitleCmd (title.go) for the single call site that reads
+	// it. Zero value (false) in every test that builds a model directly.
+	titleEnabled bool
+
 	// W-E-11: Esc-Esc rollback/fork. lastEsc timestamps the most recent Esc
 	// press so handlers.go's bottom KeyEscape case can detect a second press
 	// within escDoublePressWindow (rollback.go) without disturbing what a
@@ -537,6 +545,8 @@ func buildModelForCapability(sess *cli.Session, root string, project Preferences
 	// doc comment on the model struct for why the pager's raw-copy toggle
 	// needs to know this at runtime, not just at startup.
 	m.mouseEnabled = cap.AltScreen
+	// W-E-05: see titleEnabled's doc comment on the model struct.
+	m.titleEnabled = cap.AltScreen
 	return m
 }
 
@@ -590,6 +600,9 @@ func (m model) Init() tea.Cmd {
 		repaintTick(),
 		watchGitHead(m.rootPath),
 		probeStartupTools(),
+		// W-E-05: set the initial idle title. nil under titleEnabled==false
+		// (TERM=dumb), so tea.Batch drops it — see windowTitleCmd.
+		m.windowTitleCmd(false),
 	)
 }
 
@@ -747,6 +760,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, dcmd)
 				drained = true
 			}
+		}
+		// W-E-05: a real drain immediately starts the NEXT turn (dispatchSend
+		// already re-set the busy title), so only revert to idle when this
+		// "done" is the turn actually ending, not a queue hop.
+		if msg.ev.Kind == "done" && !drained {
+			cmds = append(cmds, m.windowTitleCmd(false))
 		}
 		if !drained && m.streamCh != nil {
 			cmds = append(cmds, m.waitForEvent())

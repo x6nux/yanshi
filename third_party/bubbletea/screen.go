@@ -250,6 +250,9 @@ func (p *Program) DisableMouseAllMotion() {
 // Deprecated: Use the SetWindowTitle command instead.
 func (p *Program) SetWindowTitle(title string) {
 	if p.renderer != nil {
+		if !p.titlePushed.Swap(true) {
+			p.renderer.pushWindowTitle()
+		}
 		p.renderer.setWindowTitle(title)
 	} else {
 		p.startupTitle = title
