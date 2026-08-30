@@ -225,6 +225,7 @@ func renderer(width int) *glamour.TermRenderer {
 		glamour.WithStyles(style),
 		glamour.WithColorProfile(activeProfile),
 		glamour.WithWordWrap(width),
+		glamour.WithChromaFormatter(chromaFormatterFor(activeProfile)),
 	)
 	if err != nil {
 		return nil
@@ -236,6 +237,30 @@ func renderer(width int) *glamour.TermRenderer {
 
 // strPtr returns a pointer to s, for glamour's *string style fields.
 func strPtr(s string) *string { return &s }
+
+// chromaFormatterFor maps a termenv color profile to the chroma terminal
+// formatter name glamour should use for code-block syntax highlighting —
+// RE-I (fix-e1 review of W-E-01): glamour v1.0.0 hardcodes the formatter to
+// "terminal256" (ansi/codeblock.go's chromaFormatter const) and never
+// consults the renderer's own color profile, so a 16-color (termenv.ANSI)
+// terminal was receiving 8-bit palette codes ("38;5;N") it can't render —
+// measured at 17 occurrences in a single fenced code block under that
+// profile. This is a display-fidelity gap, not a no-color leak: glamour
+// skips chroma highlighting (and therefore the formatter) entirely under
+// termenv.Ascii (codeblock.go's own "ColorProfile != termenv.Ascii" gate),
+// so Ascii/TERM=dumb sessions were never affected by this. TrueColor and
+// ANSI256 both keep "terminal256" rather than TrueColor jumping to chroma's
+// "terminal16m": this package's own lipgloss styles don't distinguish
+// ANSI256 from TrueColor either (see the palette doc comment above), so
+// giving only code blocks finer resolution than every surrounding style
+// would make them the one element in the transcript that looks like a
+// different terminal.
+func chromaFormatterFor(p termenv.Profile) string {
+	if p == termenv.ANSI {
+		return "terminal16"
+	}
+	return "terminal256"
+}
 
 func renderMarkdown(width int, md string) string {
 	r := renderer(width)

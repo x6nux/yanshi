@@ -124,3 +124,51 @@ func TestPaletteHuesUnchangedUnderANSI256(t *testing.T) {
 		t.Errorf("selPaletteStyle (was bg 24): ANSI256 profile should still produce \"48;5;24\", got %q", bg)
 	}
 }
+
+// TestChromaFormatterFor pins the profile→formatter mapping RE-I depends on
+// (fix-e1 review of W-E-01): glamour v1.0.0 hardcodes chroma's "terminal256"
+// formatter for code blocks regardless of the renderer's own color profile,
+// so a 16-color (termenv.ANSI) terminal received 8-bit "38;5;N" palette
+// codes it can't render. A mutation collapsing this to always return
+// "terminal256" (i.e. deleting the ANSI branch) would leave this test red
+// but every other styles_test.go test green, since none of them render a
+// fenced code block under termenv.ANSI.
+func TestChromaFormatterFor(t *testing.T) {
+	cases := []struct {
+		profile termenv.Profile
+		want    string
+	}{
+		{termenv.Ascii, "terminal256"}, // moot: glamour skips chroma entirely under Ascii
+		{termenv.ANSI, "terminal16"},   // the profile RE-I found leaking 38;5; codes
+		{termenv.ANSI256, "terminal256"},
+		{termenv.TrueColor, "terminal256"}, // matches this package's other styles (see doc comment)
+	}
+	for _, c := range cases {
+		if got := chromaFormatterFor(c.profile); got != c.want {
+			t.Errorf("chromaFormatterFor(%s) = %q, want %q", c.profile.Name(), got, c.want)
+		}
+	}
+}
+
+// TestRenderMarkdown_ANSIProfileEmitsNoEightBitCodes proves the fix end to
+// end through the production entry point (renderMarkdown), not just the
+// mapping helper: a fenced code block rendered under termenv.ANSI must not
+// contain any "38;5;" 8-bit palette code. The review measured 17 such
+// occurrences in an equivalent block before this fix. ANSI256 is exercised
+// as a negative control in the same test — it MUST still contain "38;5;" —
+// so a mutation that disabled chroma highlighting entirely (rather than
+// correctly downgrading it) would fail here too, not silently pass by
+// starving both profiles of code coloring.
+func TestRenderMarkdown_ANSIProfileEmitsNoEightBitCodes(t *testing.T) {
+	const md = "```go\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n```\n"
+
+	withColorProfile(t, termenv.ANSI)
+	if out := renderMarkdown(80, md); strings.Contains(out, "38;5;") {
+		t.Errorf("ANSI (16-color) profile emitted an 8-bit palette code: %q", out)
+	}
+
+	withColorProfile(t, termenv.ANSI256)
+	if out := renderMarkdown(80, md); !strings.Contains(out, "38;5;") {
+		t.Errorf("negative control failed: ANSI256 profile produced no 38;5; code at all (%q) — chroma highlighting may be disabled, not just downgraded", out)
+	}
+}
