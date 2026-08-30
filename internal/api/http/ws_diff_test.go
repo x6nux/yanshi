@@ -15,7 +15,9 @@ import (
 )
 
 // TestCov_HandleWorkspaceDiff_VcsNil covers the VCS-unconfigured guard: an
-// empty (nil) reply, never a panic on the nil *vcs.VCS receiver.
+// error reply (RE-6, not an empty WorkspaceDiff — that would be
+// indistinguishable from "VCS enabled, nothing pending"), never a panic on
+// the nil *vcs.VCS receiver.
 func TestCov_HandleWorkspaceDiff_VcsNil(t *testing.T) {
 	wc, client, cleanup := newWSPair(t)
 	defer cleanup()
@@ -24,7 +26,10 @@ func TestCov_HandleWorkspaceDiff_VcsNil(t *testing.T) {
 
 	_, msg, err := client.ReadMessage()
 	require.NoError(t, err)
-	assert.Contains(t, string(msg), "workspace_diff")
+	var sf proto.ServerFrame
+	require.NoError(t, json.Unmarshal(msg, &sf))
+	require.Equal(t, "error", sf.Type)
+	assert.Contains(t, sf.Text, "workspace_diff")
 }
 
 // TestCov_HandleWorkspaceDiff_StoreError covers the UncommittedDiff error

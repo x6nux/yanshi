@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/store"
 	"github.com/x6nux/yanshi/internal/vcs"
 )
@@ -61,6 +63,23 @@ func TestCov_RestoreTurn_VcsNil(t *testing.T) {
 	_, msg, err = client.ReadMessage()
 	require.NoError(t, err)
 	assert.Contains(t, string(msg), "done")
+}
+
+// TestCov_ListSeams_VcsNil covers handleListSeams' VCS-unconfigured branch:
+// an error reply (RE-6), not the old NewSeams(nil,"",""), so a VCS-less
+// server tells the user /seams is unavailable rather than "no seams yet".
+func TestCov_ListSeams_VcsNil(t *testing.T) {
+	wc, client, cleanup := newWSPair(t)
+	defer cleanup()
+
+	handleListSeams(&Server{}, wc, &connSession{})
+
+	_, msg, err := client.ReadMessage()
+	require.NoError(t, err)
+	var sf proto.ServerFrame
+	require.NoError(t, json.Unmarshal(msg, &sf))
+	require.Equal(t, "error", sf.Type)
+	assert.Contains(t, sf.Text, "list_seams")
 }
 
 // TestCov_RestoreTurn_HeadMismatch covers the "head changed since listing"

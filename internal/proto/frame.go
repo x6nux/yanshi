@@ -501,9 +501,10 @@ type ServerFrame struct {
 	Features []FeatureRow `json:"features,omitempty"`
 	// WorkspaceDiff carries the current workspace's pending (uncommitted)
 	// changeset, reply to list_workspace_diff (W-E-13's /diff command). Empty
-	// when VCS is unconfigured or nothing is pending — the client cannot and
-	// need not distinguish those two cases, both render as "no pending
-	// changes".
+	// (non-nil) when nothing is pending. When VCS is unconfigured the reply
+	// is a separate "error" frame instead (RE-6) — the client must not
+	// conflate the two: one means "nothing changed yet", the other means
+	// "the feature is unavailable on this server".
 	WorkspaceDiff []WorkspaceDiffFile `json:"workspace_diff,omitempty"`
 }
 
