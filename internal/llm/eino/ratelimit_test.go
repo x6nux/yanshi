@@ -250,6 +250,14 @@ func TestQuotaGovernorDelay(t *testing.T) {
 			used: 100, resetAfter: 30 * time.Second, elapsed: 10 * time.Second, want: 20 * time.Second},
 		{name: "a window that has had time to fully reset no longer throttles",
 			used: 100, resetAfter: 30 * time.Second, elapsed: time.Minute, want: 0},
+		// B-1: a server reporting a multi-day window at 100% used must not
+		// wedge every call to this model for days. delay() clamps through
+		// clampRetryAfter (errclass.go), the same ceiling Retry-After uses,
+		// rather than sleeping the raw server-reported value.
+		{name: "100 percent on a multi-day window is clamped to MaxRetryAfter",
+			used: 100, resetAfter: 7 * 24 * time.Hour, elapsed: 0, want: MaxRetryAfter},
+		{name: "a ramp value above MaxRetryAfter is also clamped",
+			used: 99, resetAfter: 7 * 24 * time.Hour, elapsed: 0, want: MaxRetryAfter},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

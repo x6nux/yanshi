@@ -212,6 +212,17 @@ func (g *quotaGovernor) observe(w QuotaWindow) {
 // is a linear ramp, so a call landing right after the observation waits
 // almost the full remaining time near 100% used and almost none near the
 // floor.
+//
+// remaining comes straight from a response header (QuotaWindow.ResetAfter in
+// quota.go), so it is exactly as trustworthy as a server-supplied
+// Retry-After — which is to say: not at all. Both return paths go through
+// clampRetryAfter, the same ceiling errclass.go uses for Retry-After, rather
+// than a second constant: this is the same shape of problem (the server says
+// how long to wait, and we sleep that long), and MaxRetryAfter's doc comment
+// already argues why an unbounded wait here is unacceptable. Without the
+// clamp, a vendor reporting a 7-day window at 100% used wedges every call to
+// this model for that whole window with no output, no error, and no signal
+// the user can act on.
 func (g *quotaGovernor) delay() time.Duration {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -223,10 +234,10 @@ func (g *quotaGovernor) delay() time.Duration {
 		return 0
 	}
 	if g.used >= 100 {
-		return remaining
+		return clampRetryAfter(remaining)
 	}
 	frac := (g.used - quotaThrottleFloor) / (100 - quotaThrottleFloor)
-	return time.Duration(float64(remaining) * frac)
+	return clampRetryAfter(time.Duration(float64(remaining) * frac))
 }
 
 // wait blocks for delay(), or until ctx is done. Mirrors TokenBucket.Wait's
