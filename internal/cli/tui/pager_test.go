@@ -253,6 +253,27 @@ func TestPagerRawCopyToggle_NoopWithoutMouse(t *testing.T) {
 	}
 }
 
+// TestPagerHint_ExplainsUnavailableRawCopy is RE-20: pressing `r` while
+// !m.mouseEnabled used to be a completely silent no-op — no toast (toasts
+// don't render in the pager, see pagerHint's RE-16 comment), no state
+// change, footer unchanged. pagerHint now says so upfront, before `r` is
+// ever pressed, instead of staying silent about it. Deliberately does NOT
+// press `r` first — the whole point is that the explanation must not
+// depend on the user having already tried and failed.
+func TestPagerHint_ExplainsUnavailableRawCopy(t *testing.T) {
+	m := sized(t, newTestModel(t))
+	m.pagerVisible = true
+	// m.mouseEnabled left at its zero value: false.
+
+	hint := m.pagerHint()
+	if !strings.Contains(hint, "unavailable") || !strings.Contains(hint, "no mouse mode") {
+		t.Fatalf("pagerHint() = %q, want it to explain raw copy is unavailable without mouse mode", hint)
+	}
+	if strings.Contains(hint, "raw copy mode: off") {
+		t.Fatalf("pagerHint() = %q, must not advertise the on/off toggle as if `r` did something here", hint)
+	}
+}
+
 // TestClosePager_ReEnablesMouseOnlyIfRawCopyWasOn proves closePager's other
 // branch: closing while raw copy mode is OFF must not send a spurious
 // tea.EnableMouseCellMotion for a mouse mode that was never disabled.

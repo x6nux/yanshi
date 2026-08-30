@@ -20,13 +20,25 @@ import (
 // "(ctrl+o expand)"-style hint in this package, see entries.go) so it
 // degrades under NO_COLOR/ANSI exactly like the rest of the screen instead
 // of hand-rolling escapes.
+//
+// RE-20: when !m.mouseEnabled, `r` is a no-op (togglePagerRawCopy's own
+// doc comment explains why — nothing was ever turned on to disable). A
+// toast can't carry that explanation: renderScreen's pagerVisible branch
+// bypasses the toast stack entirely (see its RE-16 comment), so a toast
+// pushed from inside the pager would never actually render. This line is
+// the only thing drawn alongside the viewport while paging, so it says so
+// permanently instead — visible before the user ever presses `r`, not just
+// after, and it doesn't need togglePagerRawCopy to return a Cmd for it.
 func (m model) pagerHint() string {
-	raw := "off"
+	rawHint := "r raw copy mode: off"
 	if m.pagerRawCopy {
-		raw = "on"
+		rawHint = "r raw copy mode: on"
+	}
+	if !m.mouseEnabled {
+		rawHint = "raw copy mode: unavailable (this terminal has no mouse mode)"
 	}
 	return toolMeta.Render(fmt.Sprintf(
-		"q/Esc/Ctrl+T close · ↑↓ PgUp/PgDn Home/End scroll · r raw copy mode: %s", raw))
+		"q/Esc/Ctrl+T close · ↑↓ PgUp/PgDn Home/End scroll · %s", rawHint))
 }
 
 // closePager exits the pager and, if raw-copy mode had disabled the app's
