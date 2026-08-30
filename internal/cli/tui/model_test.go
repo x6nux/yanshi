@@ -878,10 +878,35 @@ func TestModel_FooterAccountsForViewportHeight(t *testing.T) {
 	assert.Greater(t, footerH, 0, "footer has a measurable height")
 }
 
-// TestModel_FooterColorized proves each status-bar segment has a distinct colour
-// configuration in the default theme, so the footer reads at a glance. We check
-// the theme's segmentColors map directly (rather than rendered ANSI escapes)
-// to keep the test independent of the terminal environment.
+// TestModel_FooterColorized proves each footer segment statusHeader
+// (view.go) actually renders has a distinct colour configuration in every
+// built-in theme, so the Powerline bar has visible contrast between pills.
+// The key list below is the exact set of literal keys statusHeader passes to
+// its tc(key) lookup (view.go) — read off every tc("...") call site by hand,
+// not copied from any theme table.
+//
+// RE-H (fix-e1 review of W-E-01) found the prior version of this test used
+// its own 10-key list, checked against ThemeDefault only, disconnected from
+// both directions of the real consumer: it included three keys ("name",
+// "think", "cache") statusHeader never looks up — theme-table entries with
+// zero readers, rendered permanently dead by tc()'s silent fallback — and
+// omitted two it does ("total", the four "perm_*" keys), so the test neither
+// caught the dead keys nor covered half of what actually renders. Extending
+// the key list to the real set surfaced three more real collisions the old
+// list's blind spot had hidden in every theme it checked (ThemeDefault) and
+// every one it never checked at all (ThemeHighContrast, ThemeMuted):
+// "perm_edits" was byte-identical to "mode" in all three tables, and
+// "perm_default"/"tools" were byte-identical in ThemeMuted — same pill,
+// different meanings. All four are now distinct colours (styles.go, RE-H
+// comments on those entries) and this test loops themeList instead of just
+// ThemeDefault so a fourth can't hide the same way.
+//
+// The require.Len(tm.Colors)==len(keys) assertion below is what makes this
+// self-enforcing going forward: a table entry added without a matching
+// tc() call (recreating RE-H) changes tm.Colors' size without keys', and a
+// keys entry added without a matching table entry fails the "missing
+// segment" check — either drift is caught here instead of silently
+// tolerated by tc()'s fallback.
 func TestModel_FooterColorized(t *testing.T) {
 	m := newModel(&fakeSession{}, "/proj")
 	m = m.applyEvent(cli.StreamEvent{
@@ -895,26 +920,33 @@ func TestModel_FooterColorized(t *testing.T) {
 	assert.Contains(t, footer, "1.6%")
 	assert.Contains(t, footer, "总消耗") // unified consumption segment (in+out)
 
-	// Default theme: every segment with a distinct (fg,bg,bold) tuple so the
-	// Powerline bar has visible contrast between pills.
-	tm, ok := themeByName(ThemeDefault)
-	require.True(t, ok, "default theme must exist")
-	keys := []string{"name", "mode", "dir", "git", "model", "ctx", "think", "cache", "tools", "queue"}
-	seen := make(map[string]string, len(keys))
-	for _, k := range keys {
-		c, ok2 := tm.Colors[k]
-		if !ok2 {
-			t.Fatalf("default theme missing segment %q", k)
-		}
-		// Colour must be set.
-		assert.NotEmptyf(t, c.fg, "default theme %q fg must be set", k)
-		assert.NotEmptyf(t, c.bg, "default theme %q bg must be set", k)
-		// (fg,bg,bold) tuple must be unique so pills are distinguishable.
-		key := fmt.Sprintf("fg=%s bg=%s bold=%v", c.fg, c.bg, c.bold)
-		if prev, dup := seen[key]; dup {
-			t.Fatalf("segment %q reuses the colour tuple of %q — segments must differ", k, prev)
-		}
-		seen[key] = k
+	keys := []string{
+		"dir", "mode", "git", "model", "ctx", "total",
+		"perm_default", "perm_edits", "perm_auto", "perm_yolo",
+		"tools", "queue",
+	}
+	for _, tm := range themeList {
+		t.Run(string(tm.Name), func(t *testing.T) {
+			require.Lenf(t, tm.Colors, len(keys),
+				"theme %q has %d segment(s) but statusHeader only looks up %d keys — table and consumer have drifted (RE-H)",
+				tm.Name, len(tm.Colors), len(keys))
+			seen := make(map[string]string, len(keys))
+			for _, k := range keys {
+				c, ok2 := tm.Colors[k]
+				if !ok2 {
+					t.Fatalf("theme %q missing segment %q that statusHeader looks up", tm.Name, k)
+				}
+				// Colour must be set.
+				assert.NotEmptyf(t, c.fg, "theme %q %q fg must be set", tm.Name, k)
+				assert.NotEmptyf(t, c.bg, "theme %q %q bg must be set", tm.Name, k)
+				// (fg,bg,bold) tuple must be unique so pills are distinguishable.
+				key := fmt.Sprintf("fg=%s bg=%s bold=%v", c.fg, c.bg, c.bold)
+				if prev, dup := seen[key]; dup {
+					t.Fatalf("theme %q: segment %q reuses the colour tuple of %q — segments must differ", tm.Name, k, prev)
+				}
+				seen[key] = k
+			}
+		})
 	}
 }
 
