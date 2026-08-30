@@ -18,20 +18,28 @@ type helpItem struct {
 }
 
 // keyBindings 是手工维护的静态表(Go 无法反射 keybinding)。
-// 新增 KeyMsg 分支时,同步更新此表 + TestHelp_KeybindingsCoreEntries。
+// 新增 KeyMsg 分支时,同步更新此表 + TestHelp_KeybindingsCoreEntries —— 且
+// handleKeyMsg 顶层 switch(handlers.go)的 case 现在由
+// keybindings_wiring_test.go::keyBindingsCensus 做双向机器核对,漏改这张表
+// 会让 TestKeyBindingsCensusMatchesSwitch 变红(见该文件的口径说明)。
 var keyBindings = []helpItem{
 	{Label: "Enter", Source: "key", Hint: "send message (textarea)"},
 	{Label: "Ctrl+Enter", Source: "key", Hint: "insert newline"},
 	{Label: "Ctrl+K", Source: "key", Hint: "open action palette"},
 	{Label: "Ctrl+O", Source: "key", Hint: "expand/collapse last block"},
 	{Label: "Ctrl+S", Source: "key", Hint: "save draft to stash"},
+	{Label: "Ctrl+E", Source: "key", Hint: "open $VISUAL/$EDITOR on the input"},
+	{Label: "Ctrl+T", Source: "key", Hint: "fullscreen transcript pager"},
 	{Label: "Ctrl+V", Source: "key", Hint: "attach clipboard image (silent if none)"},
 	{Label: "Ctrl+C", Source: "key", Hint: "cancel in-flight turn"},
 	{Label: "Alt+R", Source: "key", Hint: "search prompt history"},
 	{Label: "Alt+Up", Source: "key", Hint: "edit last queued message"},
+	{Label: "Shift+Tab", Source: "key", Hint: "cycle permission mode"},
 	{Label: "F1", Source: "key", Hint: "toggle this help"},
 	{Label: "Esc", Source: "key", Hint: "close popup / dismiss error toast"},
 	{Label: "Tab", Source: "key", Hint: "autocomplete command"},
+	{Label: "Up/Down", Source: "key", Hint: "navigate autocomplete list / permission prompt"},
+	{Label: "PgUp/PgDn", Source: "key", Hint: "scroll transcript"},
 }
 
 // collectHelpEntries 从四个 source 收集帮助项。modes/commands/themes 三段动态

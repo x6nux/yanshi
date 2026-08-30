@@ -1037,21 +1037,15 @@ func newCmdHelpEntry(b *i18n.Bundle, table []command) cmdHelpEntry {
 	sb.WriteString(strings.Join(rows, "\n") + "\n\n")
 	// Keyboard shortcuts section (C3 UX: makes shortcuts discoverable without
 	// reading docs — especially helpful for new users).
-	sb.WriteString(roleAsst.Render("▌ Keyboard shortcuts") + "\n")
-	shortcuts := []struct{ key, action string }{
-		{"Enter", "send message"},
-		{"Ctrl+Enter", "newline"},
-		{"Ctrl+C", "cancel running turn / copy"},
-		{"Ctrl+O", "toggle expand tool block"},
-		{"Ctrl+E", "toggle history view"},
-		{"Ctrl+K", "clear input"},
-		{"Ctrl+S", "toggle spinner/sound"},
-		{"Up/Dn", "scroll transcript"},
-		{"Tab", "autocomplete /command"},
-		{"Esc", "interrupt / close palette"},
-	}
-	for _, sc := range shortcuts {
-		sb.WriteString(fmt.Sprintf("  %-13s  %s\n", sc.key, toolMeta.Render(sc.action)))
+	//
+	// RE-15: this used to be a second, independently-hardcoded shortcut list
+	// that drifted from help.go's keyBindings (F1 popup) — wrong Ctrl+E/Ctrl+K/
+	// Ctrl+S hints and a missing Ctrl+T entry, found because two people had to
+	// maintain the same table twice and only one copy got updated. Rendering
+	// straight from keyBindings makes that a structural impossibility: there is
+	// only one table left to drift.
+	for _, kb := range keyBindings {
+		sb.WriteString(fmt.Sprintf("  %-13s  %s\n", kb.Label, toolMeta.Render(kb.Hint)))
 	}
 	sb.WriteString("\n")
 	return cmdHelpEntry{rows: sb.String()}
