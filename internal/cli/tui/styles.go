@@ -168,9 +168,15 @@ var (
 //
 // Changing the profile also invalidates the cached glamour renderer:
 // renderer() keys its cache on width only, so without this the cache would
-// keep serving markdown rendered under the previous profile after a switch
-// (e.g. after /model changes the detected capability, or in tests that probe
-// more than one profile).
+// keep serving markdown rendered under the previous profile after a switch.
+// In production there is exactly one call site (NewProgram, once per
+// session) so this never fires there; the switch this guards against is
+// tests that probe more than one profile in the same process
+// (TestApplyColorProfile_InvalidatesGlamourCache pins it) — RE-G (fix-e1
+// review of W-E-01): an earlier draft of this comment named "/model changes
+// the detected capability" as a second scenario, but /model (commands.go's
+// cmdModel) never touches terminal capability or calls ApplyColorProfile —
+// that scenario does not exist in this codebase.
 func ApplyColorProfile(p termenv.Profile) {
 	lipgloss.SetColorProfile(p)
 	mdRendererMu.Lock()
