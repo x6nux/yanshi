@@ -1,6 +1,6 @@
 package cli
 
-// C3 review's W-C-08 ruling requires an assertion against a genuinely
+// C3 review's I-1 ruling requires an assertion against a genuinely
 // assembled system, not a source-text/string-count check on
 // doctorlocalruntimes.go itself. Every test below stands up a real
 // httptest.Server simulating Ollama's/LM Studio's actual wire protocol (per
@@ -60,7 +60,7 @@ func newFakeLMStudioServer(t *testing.T, modelID string, loaded bool, chatCalls 
 }
 
 // TestReportLMStudio_ProbesAndPersistsImageSupportForLoadedModel is the
-// W-C-08 property-(2) assertion: a genuinely assembled reportLMStudio call,
+// I-1 property-(2) assertion: a genuinely assembled reportLMStudio call,
 // against a real (fake-protocol) HTTP server and a real on-disk cache, must
 // leave a probed verdict that a completely independent later reader can
 // observe. If PutImageSupport were never reached — the exact "zero
@@ -112,7 +112,7 @@ func TestReportLMStudio_ProbesAndPersistsImageSupportForLoadedModel(t *testing.T
 	}
 }
 
-// TestReportLMStudio_NeverProbesANotLoadedModel is the W-C-08 property-(3)
+// TestReportLMStudio_NeverProbesANotLoadedModel is the I-1 property-(3)
 // assertion: a model LM Studio itself reports as not loaded must never
 // receive a chat-completions request, because that request is exactly what
 // would cold-load it — the side effect checkMCP's doc comment forbids for a
@@ -245,7 +245,7 @@ func TestReportOllama_NeverProbesImageSupport(t *testing.T) {
 }
 
 // TestReportOllama_UnreachableIsReportedNotFatal proves the graceful-
-// degradation property (W-C-08's property (3)): pointing the client at a
+// degradation property (I-1's property (3)): pointing the client at a
 // closed port must produce an informational line, never a panic or an
 // error return reportOllama has no way to surface (it returns a plain
 // string precisely so checkLocalRuntimes can never fail the whole doctor
@@ -268,7 +268,7 @@ func TestReportOllama_UnreachableIsReportedNotFatal(t *testing.T) {
 }
 
 // TestRunDoctor_IncludesLocalRuntimesCheck is the wiring-proof half of
-// W-C-08's property (1): a real `RunDoctor` call — the same aggregate
+// I-1's property (1): a real `RunDoctor` call — the same aggregate
 // `yanshi doctor` itself calls — must include the "local-runtimes" check,
 // and it must never fail or warn on its own account just because this test
 // environment (like the overwhelming majority of CI/dev machines) has no

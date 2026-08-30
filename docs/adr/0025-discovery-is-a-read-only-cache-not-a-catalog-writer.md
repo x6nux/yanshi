@@ -87,7 +87,7 @@ W-C-15（多模态能力实测探针）是 capability-roadmap §5.2–§5.3 里�
    `ProviderConfig.ContextWindow`（ADR-0024 覆盖梯子里已经存在、优先级最高的那一层）
    ——发现子系统不做这一步，也不提供"自动应用"的开关。这一批（C3）不新增任何
    bootstrap 接线或自动执行这个搬运动作的 CLI 子命令，理由见后果段落。**C3
-   remediation（W-C-08）之后新增的唯一消费点是 `internal/cli/doctorlocalruntimes.go`
+   remediation（I-1）之后新增的唯一消费点是 `internal/cli/doctorlocalruntimes.go`
    的 `checkLocalRuntimes`——一个只读诊断，随 `yanshi doctor` 这条已存在的、操作员
    显式敲的命令一起跑，报告发现结果并（对 LM Studio 已加载的模型）回写探测出的
    `ImageSupport` 到发现自己的缓存层；它不读也不写 `ProviderConfig`/`config.yaml`，
@@ -120,7 +120,7 @@ W-C-15（多模态能力实测探针）是 capability-roadmap §5.2–§5.3 里�
   是别的条目（如 W-C-11），这四条验收本身都不要求。对没有安装 Ollama/LM Studio 的
   用户，每次启动都去探测两个本地端口是纯粹的浪费；把发现做成一个库、由后续批次
   （若立项）决定何时调用，是这批交付的边界。**C3 remediation 是这样一个后续批次**：
-  W-C-08 的裁决要求发现库必须有一个真实的生产消费点（否则整个子系统是没人读的死
+  I-1 的裁决要求发现库必须有一个真实的生产消费点（否则整个子系统是没人读的死
   代码），选定的消费点是 `yanshi doctor`（`internal/cli`，见 `checkLocalRuntimes`）
   ——它复用已存在的诊断命令入口，不新增子命令，也不碰 `internal/bootstrap`：doctor
   只在操作员显式运行 `yanshi doctor` 时才探测，进程正常启动/对话循环仍然从不触碰

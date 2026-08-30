@@ -161,7 +161,7 @@ func RunDoctor(ctx context.Context, opts DoctorOptions) DoctorReport {
 	checks = append(checks, checkPTY())
 	checks = append(checks, checkMCP(cfg, cfgErr))
 	checks = append(checks, checkLSP(ctx, root))
-	// W-C-08 (C3 remediation): the first production consumer of
+	// I-1 (C3 remediation): the first production consumer of
 	// internal/llm/eino's local-runtime discovery package. See
 	// doctorlocalruntimes.go's package comment for why it lives here and
 	// why it never fails/warns on its own account.

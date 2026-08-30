@@ -1,6 +1,6 @@
 package cli
 
-// W-C-08 (C3 remediation, top priority): before this file existed,
+// I-1 (C3 remediation, top priority): before this file existed,
 // internal/llm/eino's local-runtime discovery package (W-C-03 OllamaClient,
 // W-C-05 LMStudioClient, W-C-06 Cache, W-C-15 ProbeImageSupport/
 // PutImageSupport) had exactly zero production call sites — every exercise
@@ -40,7 +40,7 @@ import (
 	"github.com/x6nux/yanshi/internal/llm/eino"
 )
 
-// checkLocalRuntimes is RunDoctor's W-C-08 check. It builds a real
+// checkLocalRuntimes is RunDoctor's I-1 check. It builds a real
 // eino.Cache rooted at the default OS cache directory (the same one a live
 // `yanshi doctor` run and a future model-picker feature would both read)
 // and a real OllamaClient/LMStudioClient pointed at each runtime's default
