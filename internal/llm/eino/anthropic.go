@@ -306,6 +306,10 @@ func (m *AnthropicModel) Generate(ctx context.Context, in []*schema.Message, opt
 		return nil, fmt.Errorf("anthropic: do request: %w", err)
 	}
 	defer resp.Body.Close()
+	// W-C-08: observe quota-window headers on every completed round trip, not
+	// just failed ones — see quota.go's header comment for why success must
+	// be included.
+	observeQuotaHeaders(ctx, resp.Header)
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -354,6 +358,8 @@ func (m *AnthropicModel) Stream(ctx context.Context, in []*schema.Message, opts 
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: do request: %w", err)
 	}
+	// W-C-08: same as Generate above — observe on every completed round trip.
+	observeQuotaHeaders(ctx, resp.Header)
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()

@@ -146,6 +146,13 @@ func (t *headerCaptureTransport) RoundTrip(req *http.Request) (*http.Response, e
 		base = http.DefaultTransport
 	}
 	resp, err := base.RoundTrip(req)
+	if resp != nil {
+		// W-C-08: quota-window headers ride on ordinary successful responses
+		// too (that is the whole point — see quota.go's header comment), so
+		// this observes unconditionally, ahead of the >=400 gate below that
+		// exists only for M1's Retry-After capture.
+		observeQuotaHeaders(req.Context(), resp.Header)
+	}
 	if err != nil || resp == nil || resp.StatusCode < 400 {
 		return resp, err
 	}

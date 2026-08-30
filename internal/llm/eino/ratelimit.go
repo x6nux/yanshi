@@ -154,7 +154,99 @@ func (b *TokenBucket) Wait(ctx context.Context) error {
 	}
 }
 
-// RateLimiter holds one TokenBucket per model id.
+// quotaThrottleFloor is the used-percent threshold below which a quota
+// observation changes nothing (W-C-08).
+//
+// The point is to slow down BEFORE a limit is hit, not the instant any usage
+// at all is reported — a provider legitimately sitting at 10% used must see
+// no delay. 80 leaves room to react before the window is actually exhausted
+// while leaving the common case (bursty but well under quota) untouched.
+const quotaThrottleFloor = 80.0
+
+// quotaGovernor derives a preemptive delay from the most recent quota-window
+// observation for one model (W-C-08).
+//
+// Deliberately a separate mechanism from TokenBucket, and NOT gated by
+// TokenBucket.Enabled()/QPM configuration: an operator who has configured no
+// QPM at all — the common, default case — still benefits from a provider
+// telling it "you are about to run out". The two answer different questions
+// (self-imposed pace vs. provider-reported remaining room), and a governor
+// that has never observed anything is inert exactly like a QPM=0 bucket.
+type quotaGovernor struct {
+	mu         sync.Mutex
+	have       bool
+	used       float64
+	resetAfter time.Duration
+	observedAt time.Time
+	// now is the clock, injected so tests can drive elapsed time
+	// deterministically rather than by sleeping. nil means time.Now.
+	now func() time.Time
+}
+
+// clock returns the injected clock or time.Now.
+func (g *quotaGovernor) clock() time.Time {
+	if g.now != nil {
+		return g.now()
+	}
+	return time.Now()
+}
+
+// observe records w as the latest quota-window observation for this model.
+func (g *quotaGovernor) observe(w QuotaWindow) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.have = true
+	g.used = w.UsedPercent
+	g.resetAfter = w.ResetAfter
+	g.observedAt = g.clock()
+}
+
+// delay returns how long a caller should wait before its next request,
+// projecting the last observation forward to now.
+//
+// Below quotaThrottleFloor, or once the observed window has had time to
+// reset (resetAfter has elapsed since observedAt), the delay is zero — a
+// stale or already-reset observation must not throttle forever. At exactly
+// 100% used it is a hard stop for the whole remaining window (nothing sent
+// between now and reset would succeed anyway); between the floor and 100% it
+// is a linear ramp, so a call landing right after the observation waits
+// almost the full remaining time near 100% used and almost none near the
+// floor.
+func (g *quotaGovernor) delay() time.Duration {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.have || g.used < quotaThrottleFloor {
+		return 0
+	}
+	remaining := g.resetAfter - g.clock().Sub(g.observedAt)
+	if remaining <= 0 {
+		return 0
+	}
+	if g.used >= 100 {
+		return remaining
+	}
+	frac := (g.used - quotaThrottleFloor) / (100 - quotaThrottleFloor)
+	return time.Duration(float64(remaining) * frac)
+}
+
+// wait blocks for delay(), or until ctx is done. Mirrors TokenBucket.Wait's
+// contract: nil on a clean expiry, ctx.Err() on cancellation.
+func (g *quotaGovernor) wait(ctx context.Context) error {
+	d := g.delay()
+	if d <= 0 {
+		return ctx.Err()
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// RateLimiter holds one TokenBucket and one quotaGovernor per model id.
 //
 // Per-model and not per-process because the limits being respected are
 // per-model: a background summarisation hammering a cheap model must not stall
@@ -167,6 +259,11 @@ type RateLimiter struct {
 	def RateLimitConfig
 	// perModel holds explicit per-model configuration.
 	perModel map[string]RateLimitConfig
+	// quotas holds one quotaGovernor per model (W-C-08), created lazily.
+	// Unlike buckets, there is no per-model config to seed it with — a
+	// governor starts inert and only reacts once a provider actually reports
+	// usage via ObserveQuota.
+	quotas map[string]*quotaGovernor
 }
 
 // NewRateLimiter builds a limiter with a default config and optional per-model
@@ -177,7 +274,7 @@ func NewRateLimiter(def RateLimitConfig, perModel map[string]RateLimitConfig) *R
 	for k, v := range perModel {
 		cp[k] = v
 	}
-	return &RateLimiter{buckets: map[string]*TokenBucket{}, def: def, perModel: cp}
+	return &RateLimiter{buckets: map[string]*TokenBucket{}, def: def, perModel: cp, quotas: map[string]*quotaGovernor{}}
 }
 
 // bucketFor returns (creating on first use) the bucket for model.
@@ -196,13 +293,59 @@ func (l *RateLimiter) bucketFor(model string) *TokenBucket {
 	return b
 }
 
+// quotaFor returns (creating on first use) the quota governor for model.
+func (l *RateLimiter) quotaFor(model string) *quotaGovernor {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	g, ok := l.quotas[model]
+	if !ok {
+		g = &quotaGovernor{}
+		l.quotas[model] = g
+	}
+	return g
+}
+
+// ObserveQuota records the most urgent of windows as model's latest
+// quota-window observation (W-C-08). A nil limiter or empty windows is a
+// no-op, so every adapter's observeQuotaHeaders call site (quota.go) can call
+// this unconditionally without checking either first.
+//
+// "Most urgent" means highest UsedPercent, not e.g. always "primary" by
+// convention: Codex's primary (5h) and secondary (7d) windows are independent
+// quotas and EITHER one alone can block the next call, so the window closer
+// to exhaustion is the one that must drive the delay, regardless of which
+// window name it carries.
+func (l *RateLimiter) ObserveQuota(model string, windows map[string]QuotaWindow) {
+	if l == nil || len(windows) == 0 {
+		return
+	}
+	var worst QuotaWindow
+	var have bool
+	for _, w := range windows {
+		if !have || w.UsedPercent > worst.UsedPercent {
+			worst, have = w, true
+		}
+	}
+	if !have {
+		return
+	}
+	l.quotaFor(model).observe(worst)
+}
+
 // Wait throttles one call to model, blocking until allowed or ctx is done.
 // A nil limiter never throttles, so callers need no nil check.
+//
+// Waits on the TokenBucket (M7, self-imposed pace) first and the
+// quotaGovernor (W-C-08, provider-reported remaining room) second — the two
+// are independent ceilings, and either can be the one that actually binds.
 func (l *RateLimiter) Wait(ctx context.Context, model string) error {
 	if l == nil {
 		return nil
 	}
-	return l.bucketFor(model).Wait(ctx)
+	if err := l.bucketFor(model).Wait(ctx); err != nil {
+		return err
+	}
+	return l.quotaFor(model).wait(ctx)
 }
 
 // Enabled reports whether any throttle would apply to model. Used by callers

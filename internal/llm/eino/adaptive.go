@@ -247,9 +247,28 @@ func requestChanged(before, after request) bool {
 	return false
 }
 
+// withQuotaObserver binds a QuotaObserver (quota.go) to ctx that feeds any
+// quota-window headers the inner adapter observes back into a.cfg.Limiter, so
+// W-C-08's preemptive throttling shares exactly the RateLimiter this wrapper
+// already waits on for M7 — one write path, one read path, no second source
+// of truth for "how fast can this model go right now".
+//
+// A nil Limiter installs no observer rather than a closure with nowhere to
+// report to; WithQuotaObserver(ctx, nil) is already a no-op (quota.go), this
+// just avoids allocating the closure in the disabled case.
+func (a *AdaptiveModel) withQuotaObserver(ctx context.Context) context.Context {
+	if a.cfg.Limiter == nil {
+		return ctx
+	}
+	return WithQuotaObserver(ctx, func(windows map[string]QuotaWindow) {
+		a.cfg.Limiter.ObserveQuota(a.cfg.ModelID, windows)
+	})
+}
+
 // Generate throttles, sends, and on failure repairs and resends at most once.
 func (a *AdaptiveModel) Generate(ctx context.Context, msgs []*schema.Message, opts ...model.Option) (
 	*schema.Message, error) {
+	ctx = a.withQuotaObserver(ctx)
 	req := a.prepare(msgs, opts)
 	if err := a.cfg.Limiter.Wait(ctx, a.cfg.ModelID); err != nil {
 		return nil, err
@@ -287,6 +306,7 @@ func (a *AdaptiveModel) Generate(ctx context.Context, msgs []*schema.Message, op
 // provider's: openAndPeek replays the peeked item. See streamretry.go.
 func (a *AdaptiveModel) Stream(ctx context.Context, msgs []*schema.Message, opts ...model.Option) (
 	*schema.StreamReader[*schema.Message], error) {
+	ctx = a.withQuotaObserver(ctx)
 	req := a.prepare(msgs, opts)
 	if err := a.cfg.Limiter.Wait(ctx, a.cfg.ModelID); err != nil {
 		return nil, err
