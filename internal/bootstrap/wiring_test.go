@@ -781,17 +781,19 @@ func TestShellV2TaskJobIsControllableWithTheIDItReturns(t *testing.T) {
 
 // providerLadderBuilder is a bootstrap.ProviderBuilder fixture for
 // TestProviderWindowsReachTheOrchestrator / TestProviderThresholdsReachBothCompactionConfigs
-// (F-2 / W-C-05). Unlike the package's fakeProviderBuilder (which always
-// returns nil windows/thresholds — deliberately, so it does not accidentally
+// (F-2 / W-C-05) and TestProviderTruncationPolicyReachesTheActiveTurn (M-4).
+// Unlike the package's fakeProviderBuilder (which always returns nil
+// windows/thresholds/truncations — deliberately, so it does not accidentally
 // pin this ladder), it returns KNOWN, non-zero, non-default per-model values
 // keyed by the registry key (p.Model), mirroring what einollm.BuildProviders
 // really does when a config override or a models.yaml catalog hit resolves
 // one.
-func providerLadderBuilder(cfg *config.Config, _ ...einollm.SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, error) {
+func providerLadderBuilder(cfg *config.Config, _ ...einollm.SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, map[string]einollm.TruncationSpec, error) {
 	named := make(map[string]model.BaseChatModel)
 	var chain []model.BaseChatModel
 	windows := make(map[string]int)
 	thresholds := make(map[string]float64)
+	truncations := make(map[string]einollm.TruncationSpec)
 	for _, p := range cfg.LLM.Providers {
 		fm := einollm.NewFakeModel([]string{"reply"}, nil)
 		named[p.Model] = fm
@@ -799,11 +801,12 @@ func providerLadderBuilder(cfg *config.Config, _ ...einollm.SecretRegistrar) (ma
 	}
 	// Only "small-model" gets a resolved entry — deliberately, so the tests
 	// below can also assert the OTHER provider still falls back to the
-	// global Compaction.* values instead of every provider sharing one map
-	// entry by accident.
+	// global Compaction.*/TruncationPolicy values instead of every provider
+	// sharing one map entry by accident.
 	windows["small-model"] = 42000
 	thresholds["small-model"] = 0.55
-	return named, chain, windows, thresholds, nil
+	truncations["small-model"] = einollm.TruncationSpec{HeadLines: 30, TailLines: 20}
+	return named, chain, windows, thresholds, truncations, nil
 }
 
 // buildAppWithProviderLadder builds a real App with two providers — one
@@ -910,6 +913,42 @@ func TestProviderThresholdsReachBothCompactionConfigs(t *testing.T) {
 		"this test is only meaningful if the resolved value actually differs from the global fallback")
 	require.Zero(t, svc.ProviderThresholds["big-model"],
 		"a provider the builder left unresolved must not spuriously acquire an entry")
+}
+
+// TestProviderTruncationPolicyReachesTheActiveTurn pins the composition
+// root's per-provider half of the M-4 fix for W-C-09's truncation_policy.
+//
+// Before this fix, orchestrator.Config.TruncationPolicy was the ONLY
+// resolution bootstrap ever wired — read once from cfg.LLM.Providers[0] at
+// boot and bound unconditionally onto every turn by bindExecutionContext —
+// so a turn running on a NON-primary provider (reachable via /model) got the
+// PRIMARY provider's truncation_policy instead of its own, even though
+// ProviderConfig.TruncationPolicy's own doc comment documents a per-provider
+// override. See Orchestrator.truncationPolicyFor's doc comment for the fix.
+//
+// Read off WithTurnContextForTest (a real turn's context-binding path,
+// TurnOpts.ModelID included) rather than BindExecutionContextForTest —
+// bindExecutionContext alone only ever binds the DEFAULT value; the
+// per-model override only takes effect inside withTurnContext. That is
+// exactly the gap this test closes: TestTruncationPolicyOverrideReachesOrchestratorContext
+// above only proves the single-provider/no-ModelID case, which stayed green
+// throughout the M-4 bug's lifetime.
+func TestProviderTruncationPolicyReachesTheActiveTurn(t *testing.T) {
+	app := buildAppWithProviderLadder(t)
+
+	smallCtx := app.Orch.WithTurnContextForTest(context.Background(), orchestrator.TurnOpts{ModelID: "small-model"})
+	smallSpec, ok := tools.TruncationPolicyFromContext(smallCtx)
+	require.True(t, ok, "withTurnContext must bind a truncation policy unconditionally")
+	require.Equal(t, einollm.TruncationSpec{HeadLines: 30, TailLines: 20}, smallSpec,
+		"a turn on the provider WITH a resolved truncation policy must get its OWN policy, not the primary provider's")
+
+	bigCtx := app.Orch.WithTurnContextForTest(context.Background(), orchestrator.TurnOpts{ModelID: "big-model"})
+	bigSpec, ok := tools.TruncationPolicyFromContext(bigCtx)
+	require.True(t, ok, "withTurnContext must bind a truncation policy unconditionally")
+	require.Equal(t, einollm.DefaultTruncationSpec, bigSpec,
+		"a provider the builder left unresolved must fall back to the global default, not spuriously acquire an entry")
+	require.NotEqual(t, smallSpec, bigSpec,
+		"this test is only meaningful if the two turns actually resolve to different policies")
 }
 
 // buildAppWithTruncationPolicy builds a real App (FakeModel:true, so no

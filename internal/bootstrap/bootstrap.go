@@ -359,8 +359,9 @@ type Options struct {
 // ProviderBuilder is the production BuildProviders signature. Returns the
 // per-name model map, the chain passed to NewResilientModel, the per-model
 // context windows, the per-model auto-compact thresholds (W-C-01 / INF2),
-// and an error. bootstrap calls it AFTER credential resolution so
-// cfg.LLM.Providers[i].APIKey holds plaintext.
+// the per-model truncation policies (M-4), and an error. bootstrap calls it
+// AFTER credential resolution so cfg.LLM.Providers[i].APIKey holds
+// plaintext.
 //
 // The trailing ...einollm.SecretRegistrar (W-C-12 review B-2) is how Build
 // hands einollm.BuildProviders the SAME redactor instance every other
@@ -374,6 +375,7 @@ type ProviderBuilder func(*config.Config, ...einollm.SecretRegistrar) (
 	[]model.BaseChatModel,
 	map[string]int,
 	map[string]float64,
+	map[string]einollm.TruncationSpec,
 	error,
 )
 
@@ -698,6 +700,16 @@ func Build(opts Options) (*App, error) {
 	// one so a per-model catalog/config threshold reaches both compaction
 	// paths (see CLAUDE.md's compaction section on why both must be wired).
 	var providerThresholds map[string]float64
+	// providerTruncationPolicies (M-4) mirrors providerWindows/
+	// providerThresholds for W-C-09's tool-output truncation policy — same
+	// registry key, forwarded to orchestrator.Config.ProviderTruncationPolicies
+	// so a turn running on a NON-primary provider (reached via /model) gets
+	// that provider's own truncation_policy override/catalog entry instead of
+	// the primary provider's, which is all `truncationPolicy` below (the
+	// single-value fallback) ever resolves. Before this map existed,
+	// ProviderConfig.TruncationPolicy's doc comment documented a per-provider
+	// override that only ever took effect for cfg.LLM.Providers[0].
+	var providerTruncationPolicies map[string]einollm.TruncationSpec
 	// providerFallbacks (W-C-10) maps registry key -> resolved compaction-
 	// summary fallback chain, computed once by buildProviderFallbacks from
 	// providerModels + the embedded catalog and forwarded to both the
@@ -734,7 +746,7 @@ func Build(opts Options) (*App, error) {
 		// redactor (B-2): the SAME instance APIKey/Headers were just
 		// registered with above, so an auth.command-produced token gets
 		// identical protection — see ProviderBuilder's doc comment.
-		named, chain, windows, thresholds, err := providerBuilder(cfg, redactor)
+		named, chain, windows, thresholds, truncations, err := providerBuilder(cfg, redactor)
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap: build providers: %w", err)
 		}
@@ -770,6 +782,7 @@ func Build(opts Options) (*App, error) {
 		providerModels = named
 		providerWindows = windows
 		providerThresholds = thresholds
+		providerTruncationPolicies = truncations
 		providerFallbacks = buildProviderFallbacks(named)
 		// M9: warn about a model name the provider does not list, naming the
 		// nearest matches. Non-blocking by construction — see RunPreflight.
@@ -1442,13 +1455,17 @@ func Build(opts Options) (*App, error) {
 
 	// W-C-09: resolve the tool-output head/tail truncation policy once, from
 	// the primary (first-configured) provider's override / the model
-	// catalog, and hand orchestrator.New the single resolved value it binds
-	// unconditionally onto every turn's ctx (see Orchestrator.truncationPolicy).
-	// A malformed override does NOT fail boot — internal/config.Config's
-	// TruncationPolicy field is deliberately unvalidated at load time (import
-	// cycle; see that field's doc comment) — so a typo degrades to the
-	// catalog/default here, observably, via this warning rather than by
-	// refusing to start.
+	// catalog, and hand orchestrator.New the single resolved value as the
+	// DEFAULT (see Orchestrator.truncationPolicy) — the policy a turn falls
+	// back to when its active model has no entry in providerTruncationPolicies
+	// below (M-4's per-provider map, the fix for the mismatch this comment
+	// used to describe: a config with providers[1].truncation_policy set had
+	// that value resolved by nothing, because this block only ever read
+	// providers[0]). A malformed override does NOT fail boot —
+	// internal/config.Config's TruncationPolicy field is deliberately
+	// unvalidated at load time (import cycle; see that field's doc comment)
+	// — so a typo degrades to the catalog/default here, observably, via this
+	// warning rather than by refusing to start.
 	truncationPolicy := einollm.DefaultTruncationSpec
 	if len(cfg.LLM.Providers) > 0 {
 		primary := cfg.LLM.Providers[0]
@@ -1461,17 +1478,18 @@ func Build(opts Options) (*App, error) {
 	}
 
 	orchConfig := orchestrator.Config{
-		Model:            chatModel,
-		Tools:            allTools,
-		Profile:          profile,
-		Instruction:      instruction,
-		SkillMetaPrompt:  registry.MetaPrompt(),
-		MemorySuffix:     memorySuffix,
-		WorkRoot:         workRoot,
-		TruncationPolicy: truncationPolicy,
-		TaskManager:      workMgr,
-		SubagentManager:  subagentManager,
-		AvailableModels:  availableModels,
+		Model:                      chatModel,
+		Tools:                      allTools,
+		Profile:                    profile,
+		Instruction:                instruction,
+		SkillMetaPrompt:            registry.MetaPrompt(),
+		MemorySuffix:               memorySuffix,
+		WorkRoot:                   workRoot,
+		TruncationPolicy:           truncationPolicy,
+		ProviderTruncationPolicies: providerTruncationPolicies,
+		TaskManager:                workMgr,
+		SubagentManager:            subagentManager,
+		AvailableModels:            availableModels,
 		// T3: the process-wide background manager. Bound into every turn ctx
 		// by bindExecutionContext; without it the three background_* tools
 		// find no manager and offload has no registry to record runs in.

@@ -41,7 +41,7 @@ func TestBuildProviders_WindowsAreResolvedNotCopied(t *testing.T) {
 		{Name: "unknown", Kind: "openai", Model: "inhouse-v7", APIKey: "k"},
 	}
 
-	_, _, windows, _, err := BuildProviders(cfg)
+	_, _, windows, _, _, err := BuildProviders(cfg)
 	require.NoError(t, err)
 
 	assert.Equal(t, 128_000, windows["gpt-4o"],
@@ -73,7 +73,7 @@ func TestBuildProviders_LocalProviderDoesNotInheritCloudWindow(t *testing.T) {
 		{Name: "cloud-qwen", Kind: "openai", Model: "qwen3-max", APIKey: "k"},
 	}
 
-	_, _, windows, _, err := BuildProviders(cfg)
+	_, _, windows, _, _, err := BuildProviders(cfg)
 	require.NoError(t, err)
 
 	assert.Equal(t, LocalContextWindow, windows["qwen3-coder"],
@@ -93,7 +93,7 @@ func TestBuildProviders_ExplicitLocalOverride(t *testing.T) {
 		{Name: "lan-gateway", Kind: "openai", Model: "claude-sonnet-5", APIKey: "k", BaseURL: "http://10.1.2.3:8080/v1", Local: &no},
 	}
 
-	_, _, windows, _, err := BuildProviders(cfg)
+	_, _, windows, _, _, err := BuildProviders(cfg)
 	require.NoError(t, err)
 
 	assert.Equal(t, LocalContextWindow, windows["gpt-4o"])

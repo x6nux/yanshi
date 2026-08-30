@@ -36,15 +36,16 @@ import (
 // retry to do usefully. http.DefaultTransport still provides connection reuse
 // and proper protocol-level behavior.
 //
-// Returns (models, chain, windows, thresholds, err): models keys each entry
-// by the provider's REAL model id (with fallbacks — see chooseKey); chain is
-// the same models in config order (for NewResilientModel); windows maps the
-// SAME registry key → p.ContextWindow for every provider that sets one, so
-// the http layer's per-model window lookup (contextWindowFor) hits when the
-// session queries it with the registry key (cs.model / req.Model — the model
-// id, not the config name). Bootstrap forwards `windows` directly; do NOT
-// rebuild it from cfg.LLM.Providers by p.Name (the historical bug — keys did
-// not match the registry's model-id keys, so the per-model window was dead).
+// Returns (models, chain, windows, thresholds, truncations, err): models
+// keys each entry by the provider's REAL model id (with fallbacks — see
+// chooseKey); chain is the same models in config order (for
+// NewResilientModel); windows maps the SAME registry key → p.ContextWindow
+// for every provider that sets one, so the http layer's per-model window
+// lookup (contextWindowFor) hits when the session queries it with the
+// registry key (cs.model / req.Model — the model id, not the config name).
+// Bootstrap forwards `windows` directly; do NOT rebuild it from
+// cfg.LLM.Providers by p.Name (the historical bug — keys did not match the
+// registry's model-id keys, so the per-model window was dead).
 //
 // W-C-01 (INF2): thresholds mirrors windows for the auto-compact threshold —
 // same registry key, same "only present when something resolved a value"
@@ -55,19 +56,32 @@ import (
 // caller's own CompactionConfig.Threshold applies unchanged (see
 // ResolveAutoCompactThreshold, modelcatalog.go).
 //
+// M-4: truncations mirrors windows/thresholds for W-C-09's truncation
+// policy, same registry key, same "only present when something resolved a
+// value" shape — ResolveTruncationPolicy(p.TruncationPolicy, p.Model) per
+// provider, present only when its second return is true. Before this field
+// existed, ProviderConfig.TruncationPolicy's own doc comment documented it
+// as a PER-PROVIDER override while bootstrap.go only ever resolved
+// cfg.LLM.Providers[0] once at boot and bound that single value
+// unconditionally for every turn — a config with providers[1].truncation_policy
+// set had that value read by ResolveTruncationPolicy's doc comment and
+// nothing else; see orchestrator.Config.ProviderTruncationPolicies, the
+// consumer this map now feeds.
+//
 // registrars is optional (variadic, so the many existing call sites that do
 // not exercise W-C-12's B-2 credential registration keep compiling
 // unchanged) — the first non-nil element, if any, is forwarded to every
 // provider's auth.command token source so a command-produced credential is
 // scrubbed from logs/WS/SSE/SQLite the same way a config api_key or header
 // already is. See SecretRegistrar's doc comment (cmdauth.go).
-func BuildProviders(cfg *config.Config, registrars ...SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, error) {
+func BuildProviders(cfg *config.Config, registrars ...SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, map[string]TruncationSpec, error) {
 	ctx := context.Background()
 	registrar := firstRegistrar(registrars)
 	chain := make([]model.BaseChatModel, 0, len(cfg.LLM.Providers))
 	models := make(map[string]model.BaseChatModel, len(cfg.LLM.Providers))
 	windows := make(map[string]int, len(cfg.LLM.Providers))
 	thresholds := make(map[string]float64, len(cfg.LLM.Providers))
+	truncations := make(map[string]TruncationSpec, len(cfg.LLM.Providers))
 	// The registry is keyed by the provider's REAL model id (config `model`),
 	// so /model lists and switches on the concrete model name (e.g.
 	// "claude-opus-4-8") rather than the config label (e.g. "claude"). When the
@@ -86,7 +100,7 @@ func BuildProviders(cfg *config.Config, registrars ...SecretRegistrar) (map[stri
 	for i, p := range cfg.LLM.Providers {
 		m, err := buildOne(ctx, p, registrar)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("eino: build provider %q (kind=%q): %w", p.Name, p.Kind, err)
+			return nil, nil, nil, nil, nil, fmt.Errorf("eino: build provider %q (kind=%q): %w", p.Name, p.Kind, err)
 		}
 		chain = append(chain, m)
 		key := chooseKey(p, i)
@@ -120,8 +134,11 @@ func BuildProviders(cfg *config.Config, registrars ...SecretRegistrar) (map[stri
 		if t, ok := ResolveAutoCompactThreshold(providerShape(p)); ok {
 			thresholds[key] = t
 		}
+		if spec, ok := ResolveTruncationPolicy(p.TruncationPolicy, p.Model); ok {
+			truncations[key] = spec
+		}
 	}
-	return models, chain, windows, thresholds, nil
+	return models, chain, windows, thresholds, truncations, nil
 }
 
 // providerShape projects a config.ProviderConfig onto the minimal shape

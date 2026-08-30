@@ -51,18 +51,37 @@ type Config struct {
 	Profile         guard.PermissionProfile
 	VCSScope        tools.VCSScope
 	WorkRoot        string
-	// TruncationPolicy (W-C-09) is the head/tail line-retention policy for
-	// oversized tool results, resolved ONCE by bootstrap from the primary
-	// provider's ProviderConfig.TruncationPolicy override / the model
-	// catalog (einollm.ResolveTruncationPolicy), falling back to
+	// TruncationPolicy (W-C-09) is the DEFAULT head/tail line-retention
+	// policy for oversized tool results, resolved ONCE by bootstrap from the
+	// primary provider's ProviderConfig.TruncationPolicy override / the
+	// model catalog (einollm.ResolveTruncationPolicy), falling back to
 	// einollm.DefaultTruncationSpec. bindExecutionContext binds it
 	// unconditionally (like WorkRoot) via tools.WithTruncationPolicy — see
 	// that injector's doc comment for why a zero value is never the right
-	// "absent" sentinel here.
+	// "absent" sentinel here. withTurnContext overrides it with
+	// ProviderTruncationPolicies' entry for the turn's actual model, when
+	// one resolves; this field remains the answer for a turn whose model is
+	// absent or unresolved (headless calls, an unrecognised model id).
 	TruncationPolicy einollm.TruncationSpec
-	Compaction       CompactionConfig
-	Sandbox          sandbox.Sandbox
-	NetworkPolicy    *netpolicy.Policy
+	// ProviderTruncationPolicies (M-4) maps a registry model name to that
+	// model's W-C-09 truncation policy — config.ProviderConfig.TruncationPolicy
+	// override or model-catalog entry — keyed exactly as TurnOpts.ModelID,
+	// the CompactionConfig.ProviderWindows/ProviderThresholds sibling for
+	// tool-output truncation (see CompactionConfig's doc comments for why
+	// the map is keyed this way). A turn whose model is absent from this map
+	// falls back to TruncationPolicy above.
+	//
+	// Before this field existed, TruncationPolicy was the ONLY resolution:
+	// bootstrap read cfg.LLM.Providers[0] once at boot and every turn got
+	// that single value regardless of which provider it actually ran on —
+	// switching providers mid-session via /model kept every subsequent
+	// turn's tool-output truncation pinned to whichever provider booted
+	// first, even though ProviderConfig.TruncationPolicy's own doc comment
+	// documents a per-provider override.
+	ProviderTruncationPolicies map[string]einollm.TruncationSpec
+	Compaction                 CompactionConfig
+	Sandbox                    sandbox.Sandbox
+	NetworkPolicy              *netpolicy.Policy
 	// Redactor 是进程级 secrets redactor。绑进每个 turn 的执行 context，
 	// 供 GuardedTool.InvokableRun 在结果交给模型之前收口（W-A-02）。
 	// nil 表示不脱敏，行为与引入前逐字节一致。
@@ -216,9 +235,12 @@ type Orchestrator struct {
 	profile  guard.PermissionProfile
 	vcsScope tools.VCSScope
 	workRoot string
-	// truncationPolicy is the resolved head/tail line-retention policy for
-	// oversized tool results (W-C-09) — see Config.TruncationPolicy.
+	// truncationPolicy is the resolved DEFAULT head/tail line-retention
+	// policy for oversized tool results (W-C-09) — see Config.TruncationPolicy.
 	truncationPolicy einollm.TruncationSpec
+	// providerTruncationPolicies is the per-model override map (M-4) — see
+	// Config.ProviderTruncationPolicies.
+	providerTruncationPolicies map[string]einollm.TruncationSpec
 	// rawModel is the default model (UNWRAPPED, straight from Config.Model)
 	// so runnerFor can build mode-specific agents with the same unwrapped model.
 	rawModel model.BaseChatModel
@@ -381,36 +403,37 @@ func New(cfg Config) (*Orchestrator, error) {
 	rawModel := cfg.Model
 
 	return &Orchestrator{
-		model:              wrapCompaction(cfg.Model, cfg.Compaction, 0, 0, nil),
-		rawModel:           rawModel,
-		profile:            profile,
-		vcsScope:           cfg.VCSScope,
-		workRoot:           cfg.WorkRoot,
-		truncationPolicy:   truncationPolicy,
-		instruction:        instruction,
-		baseInstruction:    baseInstruction,
-		memorySuffix:       cfg.MemorySuffix,
-		agentTools:         agentTools,
-		toolNames:          toolNames,
-		maxIters:           maxIters,
-		compaction:         cfg.Compaction,
-		taskManager:        cfg.TaskManager,
-		approvals:          cfg.Approvals,
-		sandbox:            cfg.Sandbox,
-		networkPolicy:      cfg.NetworkPolicy,
-		redactor:           cfg.Redactor,
-		secureFactory:      cfg.SecureFactory,
-		shellManager:       cfg.ShellManager,
-		subagentMgr:        cfg.SubagentManager,
-		lspMgr:             cfg.LSP,
-		mcpMgr:             cfg.MCP,
-		multimodalMap:      cfg.MultimodalMap,
-		imageStore:         cfg.ImageStore,
-		visionAuxAvailable: cfg.VisionAuxAvailable,
-		availableModels:    cfg.AvailableModels,
-		loopGuard:          cfg.LoopGuard,
-		background:         cfg.Background,
-		sessionRules:       make(map[string]*guard.RuleSet),
+		model:                      wrapCompaction(cfg.Model, cfg.Compaction, 0, 0, nil),
+		rawModel:                   rawModel,
+		profile:                    profile,
+		vcsScope:                   cfg.VCSScope,
+		workRoot:                   cfg.WorkRoot,
+		truncationPolicy:           truncationPolicy,
+		providerTruncationPolicies: cfg.ProviderTruncationPolicies,
+		instruction:                instruction,
+		baseInstruction:            baseInstruction,
+		memorySuffix:               cfg.MemorySuffix,
+		agentTools:                 agentTools,
+		toolNames:                  toolNames,
+		maxIters:                   maxIters,
+		compaction:                 cfg.Compaction,
+		taskManager:                cfg.TaskManager,
+		approvals:                  cfg.Approvals,
+		sandbox:                    cfg.Sandbox,
+		networkPolicy:              cfg.NetworkPolicy,
+		redactor:                   cfg.Redactor,
+		secureFactory:              cfg.SecureFactory,
+		shellManager:               cfg.ShellManager,
+		subagentMgr:                cfg.SubagentManager,
+		lspMgr:                     cfg.LSP,
+		mcpMgr:                     cfg.MCP,
+		multimodalMap:              cfg.MultimodalMap,
+		imageStore:                 cfg.ImageStore,
+		visionAuxAvailable:         cfg.VisionAuxAvailable,
+		availableModels:            cfg.AvailableModels,
+		loopGuard:                  cfg.LoopGuard,
+		background:                 cfg.Background,
+		sessionRules:               make(map[string]*guard.RuleSet),
 	}, nil
 }
 
@@ -531,6 +554,22 @@ func (o *Orchestrator) ProfileForTest() guard.PermissionProfile { return o.profi
 // bootstrap.go as text (F-2; see internal/bootstrap/wiring_test.go).
 func (o *Orchestrator) CompactionForTest() CompactionConfig { return o.compaction }
 
+// truncationPolicyFor returns the resolved head/tail truncation policy
+// (W-C-09) for modelID, or the orchestrator's default (o.truncationPolicy)
+// when modelID is empty or has no entry in providerTruncationPolicies.
+// Mirrors CompactionConfig.windowFor/thresholdFor (W-C-01/INF2) — bootstrap
+// resolves the per-provider map once from config + the model catalog, and
+// this is the per-turn read side, keyed exactly as TurnOpts.ModelID (M-4).
+func (o *Orchestrator) truncationPolicyFor(modelID string) einollm.TruncationSpec {
+	if modelID == "" || o.providerTruncationPolicies == nil {
+		return o.truncationPolicy
+	}
+	if spec, ok := o.providerTruncationPolicies[modelID]; ok {
+		return spec
+	}
+	return o.truncationPolicy
+}
+
 // bindExecutionContext threads every orchestrator-owned security value into ctx.
 func (o *Orchestrator) bindExecutionContext(ctx context.Context, connectionSessionID string) context.Context {
 	// S9: the acting profile is the orchestrator's profile PLUS whatever this
@@ -636,6 +675,16 @@ func (o *Orchestrator) withTurnContext(ctx context.Context, opts TurnOpts) conte
 	// to go — an empty ModelID resolves to false, i.e. hint text, which is the
 	// fail-safe answer for the entry points that do not select a model.
 	ctx = tools.WithTurnImages(ctx, tools.NewTurnImages(o.IsMultimodal(opts.ModelID)))
+	// M-4: bindExecutionContext above bound the DEFAULT truncation policy
+	// (primary provider's override / o.truncationPolicy); rebind here with
+	// the ACTIVE turn's model, so a turn running on a provider other than
+	// the primary one gets THAT provider's truncation_policy, not the
+	// primary's. opts.ModelID (not opts.Model) is deliberate here, the same
+	// choice IsMultimodal above makes and for the same reason: ModelID is
+	// populated unconditionally (sorted-first fallback included), so a
+	// caller that never ran /model still resolves against a real key
+	// instead of silently landing on the empty-string case every time.
+	ctx = tools.WithTruncationPolicy(ctx, o.truncationPolicyFor(opts.ModelID))
 	// The volatile half of the system prompt reads the turn's model from here.
 	// Bound next to WithTurnImages because both answer questions about the SAME
 	// selection, one turn late otherwise: runnerFor's cache would hand a /model
@@ -687,6 +736,16 @@ func (o *Orchestrator) withTurnContext(ctx context.Context, opts TurnOpts) conte
 	// that as "not available" rather than erroring.
 	ctx = einollm.WithContextBudgetSignal(ctx)
 	return o.bindManagedRunner(ctx)
+}
+
+// WithTurnContextForTest 暴露 withTurnContext 给组合根的接线测试，与
+// BindExecutionContextForTest 同一个存在理由：GOV6 只证明注入器有调用点，
+// 证明不了真实装配出的 App 在一次真实 turn（而不是子集 bindExecutionContext）
+// 里确实读到了按 TurnOpts.ModelID 解析出的每模型覆盖值——M-4 的
+// truncationPolicyFor(opts.ModelID) 正是这样一个只在 withTurnContext 里才
+// 生效的读法，bindExecutionContext 单独看不到它。
+func (o *Orchestrator) WithTurnContextForTest(ctx context.Context, opts TurnOpts) context.Context {
+	return o.withTurnContext(ctx, opts)
 }
 
 // ensureTurnIDs fills in correlation IDs when the caller hasn't already bound

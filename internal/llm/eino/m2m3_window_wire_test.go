@@ -38,7 +38,7 @@ func windowFor(t *testing.T, p config.ProviderConfig) int {
 	t.Helper()
 	cfg := &config.Config{}
 	cfg.LLM.Providers = []config.ProviderConfig{p}
-	_, _, windows, _, err := BuildProviders(cfg)
+	_, _, windows, _, _, err := BuildProviders(cfg)
 	if err != nil {
 		t.Fatalf("BuildProviders(%+v): %v", p, err)
 	}
@@ -216,7 +216,7 @@ func TestM2_WindowsMapIsKeyedLikeTheRegistry(t *testing.T) {
 		{Name: "first", Kind: "openai", Model: "gpt-4o", APIKey: "k", BaseURL: "https://a.example/v1"},
 		{Name: "second", Kind: "openai", Model: "", APIKey: "k", BaseURL: "https://b.example/v1"},
 	}
-	named, _, windows, _, err := BuildProviders(cfg)
+	named, _, windows, _, _, err := BuildProviders(cfg)
 	if err != nil {
 		t.Fatalf("BuildProviders: %v", err)
 	}

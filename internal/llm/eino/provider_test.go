@@ -19,7 +19,7 @@ func TestBuildProviders_BuildsPerConfig(t *testing.T) {
 			{Name: "ollama", Model: "gpt-4o-mini", APIKey: "k", BaseURL: "http://localhost:11434/v1"},
 		}},
 	}
-	models, chain, _, _, err := BuildProviders(cfg)
+	models, chain, _, _, _, err := BuildProviders(cfg)
 	// If version-compat (Task 1) failed, skip with a clear reason rather than
 	// failing the suite. Task 1 confirmed compat, so we expect a real chain.
 	if err != nil {
@@ -48,7 +48,7 @@ func TestBuildProviders_FallsBackToNameOnDuplicateModel(t *testing.T) {
 			{Name: "openai", Model: "auto", APIKey: "k2"},
 		}},
 	}
-	models, _, _, _, err := BuildProviders(cfg)
+	models, _, _, _, _, err := BuildProviders(cfg)
 	if err != nil {
 		t.Skipf("eino-ext openai provider unavailable in this eino version: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestBuildProviders_EmptyProviders(t *testing.T) {
 	cfg := &config.Config{
 		LLM: config.LLMConfig{Providers: nil},
 	}
-	models, chain, _, _, err := BuildProviders(cfg)
+	models, chain, _, _, _, err := BuildProviders(cfg)
 	require.NoError(t, err)
 	assert.Empty(t, chain)
 	assert.Empty(t, models)
@@ -76,7 +76,7 @@ func TestBuildProvidersKindDispatch(t *testing.T) {
 		{Name: "oa", Kind: "openai", Model: "gpt-4o", APIKey: "k"},
 		{Name: "cl", Kind: "anthropic", Model: "claude-opus-4-8", APIKey: "k"},
 	}}}
-	models, chain, _, _, err := BuildProviders(cfg)
+	models, chain, _, _, _, err := BuildProviders(cfg)
 	// eino-ext openai provider may be unavailable in the pinned eino version;
 	// skip rather than fail in that case (same pattern as the tests above).
 	if err != nil {
@@ -102,7 +102,7 @@ func TestBuildProvidersKindResponses(t *testing.T) {
 	cfg := &config.Config{LLM: config.LLMConfig{Providers: []config.ProviderConfig{
 		{Name: "r", Kind: "openai-responses", Model: "gpt-4o", APIKey: "k"},
 	}}}
-	models, chain, _, _, err := BuildProviders(cfg)
+	models, chain, _, _, _, err := BuildProviders(cfg)
 	if err != nil {
 		t.Fatalf("期望成功，实际 err=%v", err)
 	}
@@ -148,7 +148,7 @@ func TestBuildProviders_WindowsKeyedByRegistryId(t *testing.T) {
 		{Name: "openai", Model: "gpt-4o", APIKey: "k", ContextWindow: 128000},
 		{Name: "claude", Model: "claude-opus-4-8", APIKey: "k", ContextWindow: 200000},
 	}}}
-	models, _, windows, _, err := BuildProviders(cfg)
+	models, _, windows, _, _, err := BuildProviders(cfg)
 	if err != nil {
 		t.Skipf("eino-ext openai provider unavailable in this eino version: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestBuildProviders_UnknownModelLogsDegradationWarningAndDoesNotError(t *tes
 	cfg := &config.Config{LLM: config.LLMConfig{Providers: []config.ProviderConfig{
 		{Name: "cl", Kind: "anthropic", Model: unknown, APIKey: "k"},
 	}}}
-	models, chain, windows, _, err := BuildProviders(cfg)
+	models, chain, windows, _, _, err := BuildProviders(cfg)
 	require.NoError(t, err, "an unrecognised model must not block startup")
 	require.Len(t, chain, 1)
 	assert.Contains(t, models, unknown)
