@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 )
 
 // SpillThreshold is the single uniform cap on any GuardedTool's output (64 KiB,
@@ -26,9 +28,17 @@ const spillDir = ".yanshi/tmp/spillover"
 // info (shell exit code, final JSON fields) stays visible alongside the head.
 // The byte budgets keep the preview well under SpillThreshold even for inputs
 // with a few very long lines.
+//
+// The LINE counts (how many head/tail lines to keep) are W-C-09's
+// configurable policy — see einollm.TruncationSpec and
+// einollm.DefaultTruncationSpec, whose {15, 10} values this constant pair
+// used to BE before this ticket and which spillPreview now falls back to via
+// tools.TruncationPolicyFromContext, so an unconfigured deployment's
+// behavior is byte-identical to before. The BYTE budgets stay fixed
+// constants here — see TruncationSpec's doc comment for why they are
+// deliberately excluded from that struct (a safety cap, not a per-model
+// editorial opinion).
 const (
-	spillHeadLines  = 15
-	spillTailLines  = 10
 	spillHeadBudget = 16 * 1024
 	spillTailBudget = 8 * 1024
 )
@@ -48,7 +58,7 @@ func spillIfTooLong(ctx context.Context, toolName, result string) string {
 	if !ok {
 		return degradedSpill(result, errSpillWriteFailed)
 	}
-	return spillPreview(result, rel)
+	return spillPreview(ctx, result, rel)
 }
 
 // errSpillWriteFailed is the cause degradedSpill reports when spillFullText
@@ -105,22 +115,35 @@ func degradedSpill(result string, cause error) string {
 // result. rel is the path surfaced to the model (relative to the work root so it
 // can be passed back to fs_read). Head and tail are byte-capped so the preview
 // stays under SpillThreshold even for pathological inputs. When the input has
-// only a few lines (total ≤ spillHeadLines) the whole thing fits in the head and
-// no tail is appended; when total is between head and head+tail, the tail is the
-// remainder rather than duplicating head lines.
-func spillPreview(result, rel string) string {
+// only a few lines (total ≤ the resolved policy's HeadLines) the whole thing
+// fits in the head and no tail is appended; when total is between head and
+// head+tail, the tail is the remainder rather than duplicating head lines.
+//
+// The head/tail LINE counts come from tools.TruncationPolicyFromContext
+// (W-C-09) — the orchestrator resolves this once at bootstrap from
+// ProviderConfig.TruncationPolicy / the model catalog and binds it via
+// WithTruncationPolicy alongside WithWorkRoot. When ctx carries no policy (a
+// sub-agent path, a test that never bound one), this falls back to
+// einollm.DefaultTruncationSpec — the same {15, 10} this function hardcoded
+// before this ticket, so an unconfigured deployment's output is unchanged.
+func spillPreview(ctx context.Context, result, rel string) string {
+	policy, ok := TruncationPolicyFromContext(ctx)
+	if !ok {
+		policy = einollm.DefaultTruncationSpec
+	}
+
 	lines := strings.Split(result, "\n")
 	total := len(lines)
 
 	headSrc := lines
-	if len(headSrc) > spillHeadLines {
-		headSrc = headSrc[:spillHeadLines]
+	if len(headSrc) > policy.HeadLines {
+		headSrc = headSrc[:policy.HeadLines]
 	}
-	headEnd := len(headSrc) // = min(total, spillHeadLines)
+	headEnd := len(headSrc) // = min(total, policy.HeadLines)
 	head := capLines(headSrc, spillHeadBudget)
 
-	// Tail starts spillTailLines before EOF, but never overlaps the head.
-	tailStart := total - spillTailLines
+	// Tail starts policy.TailLines before EOF, but never overlaps the head.
+	tailStart := total - policy.TailLines
 	if tailStart < headEnd {
 		tailStart = headEnd
 	}

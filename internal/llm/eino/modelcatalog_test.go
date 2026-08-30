@@ -70,12 +70,19 @@ func TestMustParseModelCatalog_ProductionFileParsedAtInit(t *testing.T) {
 // documents (id / aliases / context_window / max_output / pricing{in,out,
 // cached} / modalities / reasoning_efforts / truncation_policy /
 // auto_compact_threshold / priority) parses without being dropped, including
-// the five fields (max_output, modalities, reasoning_efforts,
-// truncation_policy, priority) no Go code consumes yet in this ticket. A
-// yaml-tag typo on any of those would silently discard operator data with no
-// test noticing until a LATER ticket tries to read it — this test is what
-// makes that later ticket's job "read a field", not "discover the tag never
-// worked".
+// the four fields (max_output, modalities, reasoning_efforts, priority) no Go
+// code consumes yet in this ticket. A yaml-tag typo on any of those would
+// silently discard operator data with no test noticing until a LATER ticket
+// tries to read it — this test is what makes that later ticket's job "read a
+// field", not "discover the tag never worked".
+//
+// truncation_policy graduated out of that list under W-C-09: it is now
+// parsed AND semantically consumed (see KnownTruncationPolicy), so its value
+// here must be one mustParseModelCatalog's ParseTruncationPolicy validation
+// actually accepts ("head=20,tail=12") rather than an arbitrary placeholder
+// string — this file's own row-level validation would panic on a fixture
+// carrying "auto", which is what this test used before that validation
+// existed.
 func TestParse_AllSchemaFieldsRoundTrip(t *testing.T) {
 	const raw = `
 models:
@@ -89,7 +96,7 @@ models:
       output_per_m: 15
     modalities: [text, image]
     reasoning_efforts: [low, medium, high]
-    truncation_policy: auto
+    truncation_policy: "head=20,tail=12"
     auto_compact_threshold: 0.75
     priority: 7
 `
@@ -107,7 +114,7 @@ models:
 	assert.Equal(t, 15.0, row.Pricing.OutputPerM)
 	assert.Equal(t, []string{"text", "image"}, row.Modalities)
 	assert.Equal(t, []string{"low", "medium", "high"}, row.ReasoningEfforts)
-	assert.Equal(t, "auto", row.TruncationPolicy)
+	assert.Equal(t, "head=20,tail=12", row.TruncationPolicy)
 	assert.Equal(t, 0.75, row.AutoCompactThreshold)
 	assert.Equal(t, 7, row.Priority)
 }
@@ -368,4 +375,178 @@ models:
 	assert.False(t, ok, "a row that never set auto_compact_threshold must not appear in the derived table")
 	_, ok = got["explicit-zero-model"]
 	assert.False(t, ok, "an explicit 0 must be excluded, not stored as a literal 0% threshold")
+}
+
+// ---------------------------------------------------------------------------
+// W-C-09 — ParseTruncationPolicy / KnownTruncationPolicy / ResolveTruncationPolicy
+// ---------------------------------------------------------------------------
+
+// TestParseTruncationPolicy_ValidFormats pins the accepted "head=<N>,tail=<M>"
+// shapes: both keys, either key alone (the other keeps DefaultTruncationSpec's
+// value), case-insensitive keys, whitespace tolerance around commas/"="/
+// values, and an empty segment from a stray comma being skipped rather than
+// rejecting the whole string.
+func TestParseTruncationPolicy_ValidFormats(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want TruncationSpec
+	}{
+		{"both keys", "head=15,tail=10", TruncationSpec{HeadLines: 15, TailLines: 10}},
+		{"head only keeps default tail", "head=30", TruncationSpec{HeadLines: 30, TailLines: DefaultTruncationSpec.TailLines}},
+		{"tail only keeps default head", "tail=5", TruncationSpec{HeadLines: DefaultTruncationSpec.HeadLines, TailLines: 5}},
+		{"whitespace tolerated", " head = 20 , tail = 8 ", TruncationSpec{HeadLines: 20, TailLines: 8}},
+		{"case-insensitive keys", "HEAD=12,TAIL=6", TruncationSpec{HeadLines: 12, TailLines: 6}},
+		{"empty segment skipped", "head=10,,tail=5", TruncationSpec{HeadLines: 10, TailLines: 5}},
+		{"later key wins over earlier same key", "head=1,head=2", TruncationSpec{HeadLines: 2, TailLines: DefaultTruncationSpec.TailLines}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := ParseTruncationPolicy(tc.in)
+			require.True(t, ok, "input %q should have parsed", tc.in)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestParseTruncationPolicy_InvalidRejected pins the doc comment's "no
+// partial success" rule: empty/blank input, a segment with no "=", an
+// unparsable or non-positive value, and an unknown key all report false
+// (and the zero TruncationSpec) rather than a spec with some fields parsed
+// and others silently defaulted.
+func TestParseTruncationPolicy_InvalidRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"empty string", ""},
+		{"blank string", "   "},
+		{"no equals sign", "auto"},
+		{"non-numeric value", "head=abc"},
+		{"zero is not positive", "head=0"},
+		{"negative value", "head=-5"},
+		{"unknown key", "foo=10"},
+		{"bare key no equals mixed with valid", "head=10,bogus"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := ParseTruncationPolicy(tc.in)
+			assert.False(t, ok, "input %q should have been rejected", tc.in)
+			assert.Equal(t, TruncationSpec{}, got, "a rejected input must report the zero value, not a partially-applied spec")
+		})
+	}
+}
+
+// withTruncationPolicies swaps the package-level catalog-derived table for
+// the duration of one test and restores the original afterwards, mirroring
+// withAutoCompactThresholds above for the same reason: the shipped
+// models.yaml currently populates ZERO truncation_policy rows (Ruling RC-9),
+// so this is the only way to exercise KnownTruncationPolicy's /
+// ResolveTruncationPolicy's catalog-hit branch against a known value instead
+// of always taking the "nothing had an opinion" branch.
+func withTruncationPolicies(t *testing.T, fixture map[string]TruncationSpec) {
+	t.Helper()
+	prev := truncationPolicies
+	truncationPolicies = fixture
+	t.Cleanup(func() { truncationPolicies = prev })
+}
+
+// TestKnownTruncationPolicy_ExactMatchOnly pins the empty-modelID guard and
+// the EXACT (not boundary-substring) matching KnownTruncationPolicy's doc
+// comment claims: a family-prefix substring of a known id must NOT match,
+// unlike KnownContextWindow's boundary-substring behavior.
+func TestKnownTruncationPolicy_ExactMatchOnly(t *testing.T) {
+	withTruncationPolicies(t, map[string]TruncationSpec{
+		"gpt-5-preview": {HeadLines: 25, TailLines: 15},
+	})
+
+	v, ok := KnownTruncationPolicy("gpt-5-preview")
+	require.True(t, ok)
+	assert.Equal(t, TruncationSpec{HeadLines: 25, TailLines: 15}, v)
+
+	// Case/whitespace normalization still applies, exactly like the lookup key.
+	v, ok = KnownTruncationPolicy("  GPT-5-Preview  ")
+	require.True(t, ok)
+	assert.Equal(t, TruncationSpec{HeadLines: 25, TailLines: 15}, v)
+
+	// A substring of a known id must not match: this table is exact-match,
+	// not boundary-substring.
+	_, ok = KnownTruncationPolicy("gpt-5")
+	assert.False(t, ok, "a prefix of a cataloged id must not match under exact-match semantics")
+
+	// Empty/blank modelID is guarded before the map lookup.
+	_, ok = KnownTruncationPolicy("")
+	assert.False(t, ok)
+	_, ok = KnownTruncationPolicy("   ")
+	assert.False(t, ok)
+
+	// A model with no opinion in the table.
+	_, ok = KnownTruncationPolicy("nobody-has-an-opinion")
+	assert.False(t, ok)
+}
+
+// TestResolveTruncationPolicy_OverrideOutranksCatalog pins the precedence
+// ResolveTruncationPolicy's doc comment documents: a valid override string
+// wins outright over a catalog hit; a malformed or empty override falls
+// through to the catalog (NOT a load error — see the doc comment's cycle
+// explanation); and when neither has an opinion the function reports false
+// so the caller's own fallback (DefaultTruncationSpec) applies unchanged.
+func TestResolveTruncationPolicy_OverrideOutranksCatalog(t *testing.T) {
+	withTruncationPolicies(t, map[string]TruncationSpec{
+		"catalog-model": {HeadLines: 40, TailLines: 20},
+	})
+
+	// Both override and catalog have an opinion: override wins.
+	v, ok := ResolveTruncationPolicy("head=5,tail=5", "catalog-model")
+	require.True(t, ok)
+	assert.Equal(t, TruncationSpec{HeadLines: 5, TailLines: 5}, v, "a valid override must outrank the catalog")
+
+	// Only the catalog has an opinion (empty override): catalog wins.
+	v, ok = ResolveTruncationPolicy("", "catalog-model")
+	require.True(t, ok)
+	assert.Equal(t, TruncationSpec{HeadLines: 40, TailLines: 20}, v)
+
+	// A malformed override degrades to the catalog rather than failing:
+	// "configured wrong" and "not configured" are the same signal.
+	v, ok = ResolveTruncationPolicy("not-a-policy", "catalog-model")
+	require.True(t, ok, "a malformed override must fall through to the catalog, not report false")
+	assert.Equal(t, TruncationSpec{HeadLines: 40, TailLines: 20}, v)
+
+	// Neither has an opinion: caller's own fallback applies (signaled by ok=false).
+	v, ok = ResolveTruncationPolicy("", "nobody-has-an-opinion")
+	assert.False(t, ok)
+	assert.Equal(t, TruncationSpec{}, v)
+
+	// A malformed override AND no catalog opinion: still false, not a partial
+	// application of the malformed override.
+	v, ok = ResolveTruncationPolicy("garbage", "nobody-has-an-opinion")
+	assert.False(t, ok)
+	assert.Equal(t, TruncationSpec{}, v)
+}
+
+// TestBuildTruncationPolicies_TableSourcedFromCatalog proves
+// buildTruncationPolicies is driven entirely by the parsed fixture (no
+// Go-coded per-model constant), mirroring
+// TestAcceptance4_ThresholdIsARatioNotAnAbsoluteTokenCount's shape for
+// auto_compact_threshold, and that a row with an unparsable
+// truncation_policy would have already panicked in mustParseModelCatalog
+// before reaching this function (so every row this function sees is either
+// empty or valid, per its own doc comment).
+func TestBuildTruncationPolicies_TableSourcedFromCatalog(t *testing.T) {
+	const raw = `
+models:
+  - id: policy-model
+    context_window: 128000
+    truncation_policy: "head=22,tail=11"
+  - id: no-policy-model
+    context_window: 128000
+`
+	cat := mustParseModelCatalog([]byte(raw))
+	got := buildTruncationPolicies(cat)
+	spec, ok := got["policy-model"]
+	require.True(t, ok)
+	assert.Equal(t, TruncationSpec{HeadLines: 22, TailLines: 11}, spec)
+
+	_, ok = got["no-policy-model"]
+	assert.False(t, ok, "a row that never set truncation_policy must not appear in the derived table")
 }

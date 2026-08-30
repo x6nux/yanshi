@@ -1440,17 +1440,38 @@ func Build(opts Options) (*App, error) {
 		Snapshot: shellSnapshot,
 	}
 
+	// W-C-09: resolve the tool-output head/tail truncation policy once, from
+	// the primary (first-configured) provider's override / the model
+	// catalog, and hand orchestrator.New the single resolved value it binds
+	// unconditionally onto every turn's ctx (see Orchestrator.truncationPolicy).
+	// A malformed override does NOT fail boot — internal/config.Config's
+	// TruncationPolicy field is deliberately unvalidated at load time (import
+	// cycle; see that field's doc comment) — so a typo degrades to the
+	// catalog/default here, observably, via this warning rather than by
+	// refusing to start.
+	truncationPolicy := einollm.DefaultTruncationSpec
+	if len(cfg.LLM.Providers) > 0 {
+		primary := cfg.LLM.Providers[0]
+		if spec, ok := einollm.ResolveTruncationPolicy(primary.TruncationPolicy, primary.Model); ok {
+			truncationPolicy = spec
+		} else if primary.TruncationPolicy != "" {
+			slog.Warn("truncation_policy is set but could not be resolved; falling back to the default policy",
+				"provider", primary.Name, "truncation_policy", primary.TruncationPolicy)
+		}
+	}
+
 	orchConfig := orchestrator.Config{
-		Model:           chatModel,
-		Tools:           allTools,
-		Profile:         profile,
-		Instruction:     instruction,
-		SkillMetaPrompt: registry.MetaPrompt(),
-		MemorySuffix:    memorySuffix,
-		WorkRoot:        workRoot,
-		TaskManager:     workMgr,
-		SubagentManager: subagentManager,
-		AvailableModels: availableModels,
+		Model:            chatModel,
+		Tools:            allTools,
+		Profile:          profile,
+		Instruction:      instruction,
+		SkillMetaPrompt:  registry.MetaPrompt(),
+		MemorySuffix:     memorySuffix,
+		WorkRoot:         workRoot,
+		TruncationPolicy: truncationPolicy,
+		TaskManager:      workMgr,
+		SubagentManager:  subagentManager,
+		AvailableModels:  availableModels,
 		// T3: the process-wide background manager. Bound into every turn ctx
 		// by bindExecutionContext; without it the three background_* tools
 		// find no manager and offload has no registry to record runs in.

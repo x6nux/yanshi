@@ -912,6 +912,84 @@ func TestProviderThresholdsReachBothCompactionConfigs(t *testing.T) {
 		"a provider the builder left unresolved must not spuriously acquire an entry")
 }
 
+// buildAppWithTruncationPolicy builds a real App (FakeModel:true, so no
+// network client construction) whose first provider carries the given
+// truncation_policy override string (possibly empty). It exercises the REAL
+// providerBuilder path (no ProviderBuilder override), because W-C-09's
+// resolution in bootstrap.go reads cfg.LLM.Providers[0] directly rather than
+// going through the einollm.BuildProviders return values the ladder fixtures
+// above stub out.
+func buildAppWithTruncationPolicy(t *testing.T, override string) *bootstrap.App {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
+	policyLine := ""
+	if override != "" {
+		policyLine = "      truncation_policy: " + override + "\n"
+	}
+	yamlBytes := fmt.Appendf(nil, `
+llm:
+  providers:
+    - name: literal
+      kind: openai
+      model: gpt-fake
+      api_key: sk-fake
+%sstorage:
+  sqlite_path: %q
+`, policyLine, dbPath)
+	require.NoError(t, os.WriteFile(cfgPath, yamlBytes, 0o644))
+	app, err := bootstrap.Build(bootstrap.Options{ConfigPath: cfgPath, FakeModel: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { app.Shutdown(context.Background()) })
+	return app
+}
+
+// TestTruncationPolicyOverrideReachesOrchestratorContext (W-C-09) is the full
+// wire: a ProviderConfig.TruncationPolicy override in config.yaml must reach
+// spillover.go's consumer via bootstrap's resolution -> orchestrator.Config
+// -> Orchestrator.truncationPolicy -> bindExecutionContext's unconditional
+// tools.WithTruncationPolicy bind. Read off BindExecutionContextForTest (the
+// same landing pattern TestOrchestratorReceivesSecuritySubsystems uses)
+// rather than a text match on bootstrap.go, so a wrong-variable or
+// forgotten-field regression that still compiles is caught.
+func TestTruncationPolicyOverrideReachesOrchestratorContext(t *testing.T) {
+	app := buildAppWithTruncationPolicy(t, `"head=22,tail=13"`)
+	ctx := app.Orch.BindExecutionContextForTest(context.Background(), "")
+	spec, ok := tools.TruncationPolicyFromContext(ctx)
+	require.True(t, ok, "bindExecutionContext must bind a truncation policy unconditionally")
+	require.Equal(t, einollm.TruncationSpec{HeadLines: 22, TailLines: 13}, spec,
+		"the config.yaml override must reach spillPreview's consumer, not the catalog/default")
+}
+
+// TestTruncationPolicyFallsBackToDefaultWhenUnset pins the "no override, no
+// catalog opinion" branch: RC-9 ships zero catalog rows, so an unconfigured
+// deployment must resolve to einollm.DefaultTruncationSpec end to end, not a
+// zero-value TruncationSpec (which would mean spillPreview keeps NOTHING).
+func TestTruncationPolicyFallsBackToDefaultWhenUnset(t *testing.T) {
+	app := buildAppWithTruncationPolicy(t, "")
+	ctx := app.Orch.BindExecutionContextForTest(context.Background(), "")
+	spec, ok := tools.TruncationPolicyFromContext(ctx)
+	require.True(t, ok, "bindExecutionContext must bind a truncation policy unconditionally even with no override")
+	require.Equal(t, einollm.DefaultTruncationSpec, spec,
+		"an unconfigured deployment must resolve to the default, not a zero-value spec")
+}
+
+// TestTruncationPolicyMalformedOverrideFallsBackToDefaultWithoutFailingBoot
+// pins the load-time-unvalidated half of W-C-09: internal/config.Config
+// cannot validate ProviderConfig.TruncationPolicy's format without importing
+// internal/llm/eino back (an import cycle — see that field's doc comment), so
+// a typo must degrade to the default at resolution time rather than refusing
+// to boot.
+func TestTruncationPolicyMalformedOverrideFallsBackToDefaultWithoutFailingBoot(t *testing.T) {
+	app := buildAppWithTruncationPolicy(t, `"not-a-valid-policy"`)
+	ctx := app.Orch.BindExecutionContextForTest(context.Background(), "")
+	spec, ok := tools.TruncationPolicyFromContext(ctx)
+	require.True(t, ok, "a malformed override must still resolve to SOME policy, not leave ctx unbound")
+	require.Equal(t, einollm.DefaultTruncationSpec, spec,
+		"a malformed override falls back to the default exactly as if it were empty")
+}
+
 // TestUnregisteredCompactionModelIsReported pins the warning for a
 // compaction.model that names nothing.
 //

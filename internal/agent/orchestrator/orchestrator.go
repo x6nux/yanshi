@@ -51,9 +51,18 @@ type Config struct {
 	Profile         guard.PermissionProfile
 	VCSScope        tools.VCSScope
 	WorkRoot        string
-	Compaction      CompactionConfig
-	Sandbox         sandbox.Sandbox
-	NetworkPolicy   *netpolicy.Policy
+	// TruncationPolicy (W-C-09) is the head/tail line-retention policy for
+	// oversized tool results, resolved ONCE by bootstrap from the primary
+	// provider's ProviderConfig.TruncationPolicy override / the model
+	// catalog (einollm.ResolveTruncationPolicy), falling back to
+	// einollm.DefaultTruncationSpec. bindExecutionContext binds it
+	// unconditionally (like WorkRoot) via tools.WithTruncationPolicy — see
+	// that injector's doc comment for why a zero value is never the right
+	// "absent" sentinel here.
+	TruncationPolicy einollm.TruncationSpec
+	Compaction       CompactionConfig
+	Sandbox          sandbox.Sandbox
+	NetworkPolicy    *netpolicy.Policy
 	// Redactor 是进程级 secrets redactor。绑进每个 turn 的执行 context，
 	// 供 GuardedTool.InvokableRun 在结果交给模型之前收口（W-A-02）。
 	// nil 表示不脱敏，行为与引入前逐字节一致。
@@ -207,6 +216,9 @@ type Orchestrator struct {
 	profile  guard.PermissionProfile
 	vcsScope tools.VCSScope
 	workRoot string
+	// truncationPolicy is the resolved head/tail line-retention policy for
+	// oversized tool results (W-C-09) — see Config.TruncationPolicy.
+	truncationPolicy einollm.TruncationSpec
 	// rawModel is the default model (UNWRAPPED, straight from Config.Model)
 	// so runnerFor can build mode-specific agents with the same unwrapped model.
 	rawModel model.BaseChatModel
@@ -324,6 +336,17 @@ func New(cfg Config) (*Orchestrator, error) {
 		maxIters = math.MaxInt
 	}
 
+	// W-C-09: unlike WorkRoot, TruncationSpec has no meaningful zero value —
+	// {HeadLines:0, TailLines:0} would mean "keep nothing", not "unset". A
+	// caller that never set Config.TruncationPolicy (bootstrap always does;
+	// tests and callers built before this ticket do not) gets
+	// einollm.DefaultTruncationSpec here instead, so bindExecutionContext's
+	// unconditional bind always carries a real policy.
+	truncationPolicy := cfg.TruncationPolicy
+	if truncationPolicy == (einollm.TruncationSpec{}) {
+		truncationPolicy = einollm.DefaultTruncationSpec
+	}
+
 	instruction := cfg.Instruction
 	if instruction == "" {
 		instruction = DefaultInstruction
@@ -363,6 +386,7 @@ func New(cfg Config) (*Orchestrator, error) {
 		profile:            profile,
 		vcsScope:           cfg.VCSScope,
 		workRoot:           cfg.WorkRoot,
+		truncationPolicy:   truncationPolicy,
 		instruction:        instruction,
 		baseInstruction:    baseInstruction,
 		memorySuffix:       cfg.MemorySuffix,
@@ -517,6 +541,10 @@ func (o *Orchestrator) bindExecutionContext(ctx context.Context, connectionSessi
 	// rather than a widening.
 	ctx = tools.WithProfile(ctx, o.profileForSession(connectionSessionID))
 	ctx = tools.WithWorkRoot(ctx, o.workRoot)
+	// W-C-09: bound unconditionally, like WorkRoot — New() already substituted
+	// einollm.DefaultTruncationSpec for a caller that left Config.TruncationPolicy
+	// zero, so o.truncationPolicy is always a real policy here.
+	ctx = tools.WithTruncationPolicy(ctx, o.truncationPolicy)
 	ctx = tools.WithTaskManager(ctx, o.taskManager)
 	// S8: the names that actually exist in THIS execution scope. Bound here,
 	// alongside the profile, because the two are read at the same moment and

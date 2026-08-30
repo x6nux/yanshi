@@ -753,6 +753,29 @@ type ProviderConfig struct {
 	// supplied as a static APIKey. Nil means "use APIKey as usual". See
 	// ProviderAuthConfig.
 	Auth *ProviderAuthConfig `yaml:"auth"`
+
+	// TruncationPolicy (W-C-09) overrides the head/tail line-retention policy
+	// internal/tools/spillover.go applies to an oversized tool result before
+	// it reaches the model, as "head=<N>,tail=<M>" (either key may be
+	// omitted; see einollm.ParseTruncationPolicy for the exact grammar).
+	// Empty (the zero value) means "no override": resolution falls through
+	// to the model catalog (einollm.KnownTruncationPolicy), then to
+	// einollm.DefaultTruncationSpec — see einollm.ResolveTruncationPolicy,
+	// the mirror of ResolveAutoCompactThreshold above.
+	//
+	// UNLIKE AutoCompactThreshold, this field's FORMAT is deliberately NOT
+	// validated here at load time. AutoCompactThreshold's check (validate's
+	// "> 1" rejection below) is a plain numeric range test with no
+	// dependency outside this package; validating a truncation_policy string
+	// needs einollm.ParseTruncationPolicy, and internal/llm/eino already
+	// imports internal/config (provider.go's providerShape) — importing it
+	// back from here would be an import cycle (GOV1/R1). A malformed value
+	// therefore does not fail config load: ResolveTruncationPolicy falls
+	// through to the catalog/default exactly as if the field were empty, and
+	// bootstrap.go logs a warning at boot time so a typo is still observable,
+	// just not a refused start. See ResolveTruncationPolicy's doc comment for
+	// the full reasoning.
+	TruncationPolicy string `yaml:"truncation_policy"`
 }
 
 // ProviderAuthConfig configures W-C-12 command-based token authentication for

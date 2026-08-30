@@ -69,12 +69,23 @@ llm:
     # 0 is a real setting (temperature: 0 for deterministic judge calls) and is
     # sent to the API. Raise max_tokens when the model must emit whole files —
     # the built-in 4096 default truncates long patches.
+    #
+    # truncation_policy (W-C-09) is OPTIONAL and overrides how many head/tail
+    # lines of an oversized tool result are kept verbatim before the rest is
+    # replaced with an explicit "[... N lines omitted ...]" marker. Format is
+    # "head=<N>,tail=<M>" (either key may be omitted). Omit the whole field
+    # and yanshi resolves the policy from the built-in model catalog (falls
+    # back to a conservative head=15,tail=10 default when the catalog has no
+    # opinion either — unlike auto_compact_threshold above, an unparsable
+    # value here does NOT fail startup; it degrades the same way an absent
+    # value would, with a warning logged at boot).
     - name: "openai"
       kind: "openai"
       model: "gpt-4o"
       api_key: "${OPENAI_API_KEY}"
       context_window: 128000      # this model's token window; compaction sizes against it
       # auto_compact_threshold: 0.75  # fraction of context_window; omit to use the catalog/global default
+      # truncation_policy: "head=20,tail=15"  # per-model tool-output retention; omit to use the catalog/default
       # max_tokens: 32000         # cap per response; omit to keep the 4096 default
       # temperature: 0.2          # omit to keep the provider default; 0 is a valid setting
       # top_p: 0.95               # tune this OR temperature, not both

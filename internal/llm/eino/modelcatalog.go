@@ -3,6 +3,7 @@ package eino
 import (
 	_ "embed"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -33,9 +34,11 @@ type modelCatalogFile struct {
 // (context_window only) or a specific snapshot (pricing only), per that
 // file's "two kinds of row" design. A row may also carry both, or neither
 // meaningful field yet (the max_output/modalities/reasoning_efforts/
-// truncation_policy/priority fields are schema-only in this ticket — parsed
-// so a future W-C ticket can populate them without a schema migration, not
-// consumed by any Go code yet).
+// priority fields are schema-only in this ticket — parsed so a future W-C
+// ticket can populate them without a schema migration, not consumed by any
+// Go code yet. truncation_policy USED to be on this list — W-C-09 wired it
+// up; see KnownTruncationPolicy for the same "mechanism real, data empty"
+// shape RC-3 shipped auto_compact_threshold under, now Ruling RC-9).
 type modelCatalogRow struct {
 	ID                   string   `yaml:"id"`
 	Aliases              []string `yaml:"aliases"`
@@ -78,7 +81,8 @@ type modelPricingRow struct {
 var modelCatalog = mustParseModelCatalog(modelsYAML)
 
 // mustParseModelCatalog parses raw models.yaml bytes and panics on a
-// malformed file, an empty id, or a duplicate id.
+// malformed file, an empty id, a duplicate id, or a truncation_policy string
+// that does not parse.
 //
 // This is a BUILD-TIME defect check, not the runtime-safe "model not found"
 // axis — those are different questions with different answers. A model this
@@ -88,6 +92,16 @@ var modelCatalog = mustParseModelCatalog(modelsYAML)
 // different values, is a mistake in the data THIS BINARY SHIPS WITH, caught
 // at package init exactly like a syntax error would be caught at compile
 // time — before any request depends on which of the two rows won.
+//
+// The truncation_policy check is the same reasoning applied to one field: a
+// row that sets it to something ParseTruncationPolicy rejects is a typo in
+// data this binary ships with, not a value that reached us from an operator
+// (that path — ProviderConfig.TruncationPolicy — degrades instead of
+// panicking; see ResolveTruncationPolicy's doc comment for why the two
+// sources get different failure modes). The shipped file currently has zero
+// rows setting this field (Ruling RC-9), so this branch is presently
+// unreachable in production; it exists so the first row that DOES set it
+// gets the same load-bearing scrutiny id/duplicate already get.
 func mustParseModelCatalog(raw []byte) modelCatalogFile {
 	var file modelCatalogFile
 	if err := yaml.Unmarshal(raw, &file); err != nil {
@@ -101,6 +115,11 @@ func mustParseModelCatalog(raw []byte) modelCatalogFile {
 		}
 		if seen[id] {
 			panic(fmt.Sprintf("eino: models.yaml has a duplicate id %q", id))
+		}
+		if row.TruncationPolicy != "" {
+			if _, ok := ParseTruncationPolicy(row.TruncationPolicy); !ok {
+				panic(fmt.Sprintf("eino: models.yaml row %q has an unparsable truncation_policy %q (want e.g. \"head=15,tail=10\")", id, row.TruncationPolicy))
+			}
 		}
 		seen[id] = true
 	}
@@ -214,6 +233,27 @@ func buildFallbackModels(cat modelCatalogFile) map[string][]string {
 	return out
 }
 
+// buildTruncationPolicies projects the rows that carry a (parsable)
+// truncation_policy into an exact-match id/alias -> TruncationSpec table,
+// mirroring buildAutoCompactThresholds. A row whose string fails to parse
+// contributes nothing here — mustParseModelCatalog already panicked on that
+// row before this function runs, so in practice every row reaching this loop
+// either has an empty TruncationPolicy (skipped, ok==false) or one
+// ParseTruncationPolicy accepts.
+func buildTruncationPolicies(cat modelCatalogFile) map[string]TruncationSpec {
+	out := make(map[string]TruncationSpec)
+	for _, row := range cat.Models {
+		spec, ok := ParseTruncationPolicy(row.TruncationPolicy)
+		if !ok {
+			continue
+		}
+		for _, alias := range catalogAliases(row) {
+			out[alias] = spec
+		}
+	}
+	return out
+}
+
 // autoCompactThresholds is the catalog-sourced auto-compact-threshold table,
 // built once at package init from the same modelCatalog parse everything
 // else in this file reads.
@@ -223,6 +263,11 @@ var autoCompactThresholds = buildAutoCompactThresholds(modelCatalog)
 // once at package init from the same modelCatalog parse everything else in
 // this file reads.
 var fallbackModels = buildFallbackModels(modelCatalog)
+
+// truncationPolicies is the catalog-sourced tool-output truncation-policy
+// table (W-C-09), built once at package init from the same modelCatalog
+// parse everything else in this file reads.
+var truncationPolicies = buildTruncationPolicies(modelCatalog)
 
 // KnownFallbackModels returns the ordered list of model ids modelID falls
 // back to when its own compaction summary call fails, and whether the
@@ -305,4 +350,147 @@ func ResolveAutoCompactThreshold(p ProviderShape) (float64, bool) {
 		return p.AutoCompactThreshold, true
 	}
 	return KnownAutoCompactThreshold(p.Model)
+}
+
+// TruncationSpec (W-C-09) is the resolved head/tail line-retention policy
+// for an oversized tool result. internal/tools/spillover.go's spillPreview
+// is the sole consumer: it keeps the first HeadLines and last TailLines of
+// an over-threshold result, with everything between them replaced by an
+// explicit "[... N lines omitted ...]" marker (spillover.go already had that
+// marker before this ticket — W-C-09's acceptance criterion for it was
+// already met, this type only makes the LINE COUNTS configurable).
+//
+// Byte budgets (spillover.go's spillHeadBudget/spillTailBudget) are
+// deliberately NOT part of this struct: they exist to keep a preview well
+// under SpillThreshold even when a few lines are pathologically long, a
+// safety cap rather than a per-model editorial opinion, so they stay fixed
+// constants in the one package that enforces SpillThreshold.
+type TruncationSpec struct {
+	// HeadLines is how many lines from the start of an oversized result to
+	// keep verbatim (before any byte-budget capping).
+	HeadLines int
+	// TailLines is how many lines from the end of an oversized result to
+	// keep verbatim (before any byte-budget capping).
+	TailLines int
+}
+
+// DefaultTruncationSpec is applied when neither ProviderConfig.TruncationPolicy
+// nor the model catalog has an opinion. It reproduces the exact head/tail
+// line counts internal/tools/spillover.go hardcoded before this ticket
+// (spillHeadLines=15, spillTailLines=10), so an unconfigured deployment's
+// tool-output truncation behaves byte-identically to before W-C-09.
+var DefaultTruncationSpec = TruncationSpec{HeadLines: 15, TailLines: 10}
+
+// ParseTruncationPolicy parses the "head=<N>,tail=<M>" string format shared
+// by ProviderConfig.TruncationPolicy (the operator-facing override) and
+// models.yaml's truncation_policy rows (the catalog). Keys are
+// case-insensitive, order-independent, and either may be omitted — an
+// omitted key keeps DefaultTruncationSpec's value for that side, so
+// "head=30" alone only changes the head retention. Whitespace around commas,
+// "=", and values is tolerated.
+//
+// A false second return means s did not describe a policy this function
+// understands: empty/blank input, a segment with no "=", an unknown key, or
+// a value that is not a positive integer. There is no partial-success case —
+// one bad segment invalidates the whole string, rather than silently mixing
+// a parsed head with a default tail, because that would make the SAME
+// malformed input produce two different-looking but equally silent
+// failures depending on which key came first.
+//
+// The false case is intentionally UNDIFFERENTIATED from "s was empty": both
+// mean "this input has no opinion", so callers (KnownTruncationPolicy's
+// empty-modelID guard, ResolveTruncationPolicy's override branch) can treat
+// "not configured" and "configured wrong" as the same "fall through to the
+// next rung" signal — see ResolveTruncationPolicy's doc comment for why an
+// operator typo degrades instead of failing closed.
+func ParseTruncationPolicy(s string) (TruncationSpec, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return TruncationSpec{}, false
+	}
+	spec := DefaultTruncationSpec
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		key, val, ok := strings.Cut(part, "=")
+		if !ok {
+			return TruncationSpec{}, false
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(val))
+		if err != nil || n <= 0 {
+			return TruncationSpec{}, false
+		}
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "head":
+			spec.HeadLines = n
+		case "tail":
+			spec.TailLines = n
+		default:
+			return TruncationSpec{}, false
+		}
+	}
+	return spec, true
+}
+
+// KnownTruncationPolicy returns the cataloged head/tail retention policy for
+// modelID and whether the catalog knew it. A false second return means "not
+// in the table" — the caller keeps its own fallback (DefaultTruncationSpec),
+// exactly like KnownAutoCompactThreshold's false case.
+//
+// The shipped models.yaml currently populates ZERO truncation_policy rows
+// (Ruling RC-9, W-C-09): the field is live and consumed — unlike the four
+// genuinely schema-only fields (max_output/modalities/reasoning_efforts/
+// priority) models.yaml's header comment names — it just has no data yet,
+// the same "mechanism real, data empty" shape RC-3 shipped
+// auto_compact_threshold under. Until a future ticket adds rows, this always
+// returns (TruncationSpec{}, false) and the only way to reach a non-default
+// policy is ProviderConfig.TruncationPolicy.
+//
+// Matching is EXACT against id/aliases (see catalogAliases), mirroring
+// KnownAutoCompactThreshold rather than KnownContextWindow's boundary-
+// substring matching — how much tool output a model's own turns should keep
+// is a per-model editorial opinion, not something that should leak across a
+// whole gateway-prefixed family.
+func KnownTruncationPolicy(modelID string) (TruncationSpec, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(modelID))
+	if normalized == "" {
+		return TruncationSpec{}, false
+	}
+	v, ok := truncationPolicies[normalized]
+	return v, ok
+}
+
+// ResolveTruncationPolicy returns the truncation policy for one model and
+// whether anything (the operator override or the catalog) had an opinion. A
+// false second return means the caller's own fallback (DefaultTruncationSpec)
+// applies unchanged — this function never invents a value, matching every
+// other Resolve* function in this file.
+//
+// override is ProviderConfig.TruncationPolicy verbatim (NOT projected
+// through ProviderShape, unlike ResolveContextWindow/
+// ResolveAutoCompactThreshold): this function only ever reads two scalars
+// (a string and a model id), so threading Kind/BaseURL/Local through a
+// ProviderShape just to satisfy the sibling functions' call shape would bind
+// unused fields for no reason — see the file's other Resolve* functions for
+// where those fields actually matter (the local/cloud heuristic).
+//
+// A malformed override (ParseTruncationPolicy's false case) is NOT a load
+// error: it falls through to the catalog exactly like an EMPTY override
+// would. This differs from ProviderConfig.AutoCompactThreshold, which IS
+// validated at config load (Config.validateProfiles rejects a value > 1) —
+// that check is a plain numeric range test with no dependency on this
+// package. A truncation_policy string's validity depends on
+// ParseTruncationPolicy, and internal/config cannot import this package
+// (internal/llm/eino already imports internal/config for provider shaping;
+// the reverse import would be a cycle). The bootstrap call site
+// (internal/bootstrap/bootstrap.go) logs a warning when override is
+// non-empty but this function's second return is false, so a typo is still
+// observable — just at boot-time log level, not a refused start.
+func ResolveTruncationPolicy(override string, modelID string) (TruncationSpec, bool) {
+	if spec, ok := ParseTruncationPolicy(override); ok {
+		return spec, true
+	}
+	return KnownTruncationPolicy(modelID)
 }

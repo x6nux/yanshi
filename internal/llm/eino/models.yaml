@@ -65,8 +65,25 @@
 #   reasoning_efforts       reserved for a future W-C ticket (valid
 #                           reasoning-effort values per model). Parsed but
 #                           not consumed yet.
-#   truncation_policy       reserved for a future W-C ticket (B32). Parsed
-#                           but not consumed yet.
+#   truncation_policy       optional override for the head/tail line-count
+#                           policy internal/tools/spillover.go applies to an
+#                           oversized tool result before it reaches the
+#                           model. Format is "head=<N>,tail=<M>" (either key
+#                           may be omitted; the other keeps
+#                           DefaultTruncationSpec's value) — see
+#                           ParseTruncationPolicy in modelcatalog.go, which
+#                           this file's loader (mustParseModelCatalog) also
+#                           uses to reject an unparsable row at package init
+#                           rather than let it surface as a silent
+#                           always-default. Absent = the operator's
+#                           configured ProviderConfig.TruncationPolicy, or
+#                           failing that DefaultTruncationSpec, applies
+#                           unchanged (see ResolveTruncationPolicy's doc
+#                           comment, W-C-09). Ruling RC-9: this ticket ships
+#                           ZERO rows with this field populated — see the
+#                           note before the `models:` list below for why; do
+#                           not treat its absence from every row here as an
+#                           oversight to "fill in".
 #   priority                reserved for a future W-C ticket (provider
 #                           selection ordering). Parsed but not consumed yet.
 #
@@ -84,11 +101,12 @@
 #     file gives pricing to: dollar amounts genuinely differ per snapshot
 #     while the context window usually does not.
 #
-# Pricing and auto_compact_threshold resolution is EXACT-match against
-# id/aliases (see catalogAliases in modelcatalog.go) — NOT boundary-substring
-# like context_window. A price quietly applying to every gateway-prefixed
-# variant of a model id would be a bigger behavior change than this ticket's
-# job of transcribing two existing Go literal tables into data.
+# Pricing, auto_compact_threshold, fallback_models, and truncation_policy
+# resolution are all EXACT-match against id/aliases (see catalogAliases in
+# modelcatalog.go) — NOT boundary-substring like context_window. A price (or
+# a truncation policy) quietly applying to every gateway-prefixed variant of
+# a model id would be a bigger behavior change than this ticket's job of
+# transcribing two existing Go literal tables into data.
 #
 # Values below are transcribed unchanged from the two Go literal tables this
 # file replaces (contextwindow.go's former contextWindowCatalog var,
@@ -119,6 +137,22 @@
 # was made. Until a future ticket adds real rows, KnownFallbackModels always
 # returns (nil, false) and every consumer of it is a no-op — byte-identical
 # to pre-W-C-10 behavior.
+#
+# truncation_policy has ZERO rows below (Ruling RC-9, W-C-09 — the same
+# "mechanism real, data empty" shape RC-3 and RC-8 shipped above). The field,
+# its parser (ParseTruncationPolicy), its load-time validation
+# (mustParseModelCatalog panics on a row that sets this to something
+# unparsable), its table builder (buildTruncationPolicies), and its resolver
+# (KnownTruncationPolicy / ResolveTruncationPolicy) are all real and tested
+# this round; so is the consumer (internal/tools/spillover.go's
+# spillPreview, reading TruncationPolicyFromContext). What is missing is the
+# DATA: no researched, per-model editorial judgment about how many head/tail
+# lines a given model's own turns should keep exists yet, and inventing
+# plausible-looking numbers here would misrepresent an editorial call as
+# researched guidance when none was made. Until a future ticket adds real
+# rows, KnownTruncationPolicy always returns (TruncationSpec{}, false) and
+# the only way to reach a non-default policy today is the operator-facing
+# ProviderConfig.TruncationPolicy override.
 
 models:
   # --- Anthropic -----------------------------------------------------------

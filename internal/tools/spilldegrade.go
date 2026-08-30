@@ -116,7 +116,7 @@ func DegradeToolResult(ctx context.Context, toolName, body string) (string, bool
 	if !ok {
 		return body, false
 	}
-	out := degradePreview(body, rel)
+	out := degradePreview(ctx, body, rel)
 	if len(out) >= len(body) {
 		// Pathological input (very few, very long lines) where the preview did
 		// not actually shrink anything. The disk copy is harmless and the
@@ -134,8 +134,8 @@ func DegradeToolResult(ctx context.Context, toolName, body string) (string, bool
 // The final cut is byte-wise on a rune boundary rather than line-wise: the
 // budget is already small, and a preview whose tail was dropped to hit the
 // budget still ends with the elision marker that says so.
-func degradePreview(body, rel string) string {
-	preview := spillPreview(body, rel)
+func degradePreview(ctx context.Context, body, rel string) string {
+	preview := spillPreview(ctx, body, rel)
 	if len(preview) <= DegradeMaxBytes {
 		return preview
 	}
