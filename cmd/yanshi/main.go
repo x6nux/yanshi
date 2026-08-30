@@ -55,8 +55,9 @@ Usage:
   yanshi daemon  status|stop|reload [-root DIR] [-json] [-config FILE] [-timeout 20s]
   yanshi schedule list|show|pause|resume|run-now|delete [ID] [-root DIR] [-json]
   yanshi provider add|list [-config FILE] [-name N] [-kind K] [-model M] [-api-key K] [-replace] [-json]
+  yanshi models  pull|preheat -model NAME [-base-url URL]
   yanshi acp     [-config config.yaml] [-fake-model]
-  yanshi doctor [-config FILE] [-json] [-release] [-fix] [-fix-only LIST] [-fix-dry-run]
+  yanshi doctor [-config FILE] [-json] [-release] [-offline] [-fix] [-fix-only LIST] [-fix-dry-run]
   yanshi pr      <PR-number> | <full-URL>
   yanshi enqueue [-config FILE] <session-id> <message...> | -list <session-id>
   yanshi auth    status|logout|device [-provider NAME] [-account NAME]
@@ -106,6 +107,10 @@ Subcommands:
            secrets backend and only a secret:// reference is written to the
            config, so the file stays safe to copy and to attach to a report.
            Providers are bound at boot, so a new one needs a restart.
+  models   Explicitly pull an Ollama model or preheat (cold-load) an LM
+           Studio model. Unlike doctor, which only ever probes, these have a
+           real side effect the operator asked for, and force-refresh the
+           local discovery cache afterward.
   acp      Speak the Agent Client Protocol as the AGENT on stdio, exposing
            yanshi's own orchestrator to an ACP host such as Zed. Protocol
            frames go to stdout and diagnostics to stderr, the same contract
@@ -247,6 +252,8 @@ func dispatch(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runSchedule(argv[2:], stdout, stderr)
 	case "provider":
 		return runProvider(argv[2:], stdin, stdout, stderr)
+	case "models":
+		return runModels(argv[2:], stdout, stderr)
 	case "acp":
 		return runACPServer(argv[2:], stdin, stdout)
 	case "enqueue":
