@@ -60,6 +60,14 @@ type DoctorOptions struct {
 	// config-version anomalies). Used by the release runbook: `yanshi doctor
 	// --release` must exit 0 before cutting a release. Docs: upgrade-guide.md.
 	Release bool
+	// Offline makes checkLocalRuntimes read the on-disk discovery cache
+	// (eino.RefreshCacheOnly) instead of contacting Ollama/LM Studio over
+	// loopback (eino.RefreshAuto) — for a sandboxed CI box with no loopback
+	// egress at all, where even attempting the TCP connect is undesirable.
+	// See doctorlocalruntimes.go's checkLocalRuntimes doc comment
+	// (review-whole.md M-1: RefreshCacheOnly's only production call site).
+	// Every other check ignores this field.
+	Offline bool
 }
 
 // ExitCode maps the report to a process exit code: 0 when every check is ok, 1
@@ -165,7 +173,7 @@ func RunDoctor(ctx context.Context, opts DoctorOptions) DoctorReport {
 	// internal/llm/eino's local-runtime discovery package. See
 	// doctorlocalruntimes.go's package comment for why it lives here and
 	// why it never fails/warns on its own account.
-	checks = append(checks, checkLocalRuntimes(ctx))
+	checks = append(checks, checkLocalRuntimes(ctx, opts.Offline))
 	checks = append(checks, checkPermissions(cfg, cfgErr))
 	// S3: is the file that decides what the agent may do sitting where the
 	// agent can write it? See doctorpolicy.go for why this is a warn and not a

@@ -1403,13 +1403,14 @@ func runDoctor(ctx context.Context, args []string, out, errOut io.Writer) int {
 	configPath := fs.String("config", "config.yaml", "path to configuration file")
 	asJSON := fs.Bool("json", false, "emit machine-readable JSON instead of human-readable text")
 	release := fs.Bool("release", false, "promote release-blocking warns to fails (release runbook; see docs/upgrade-guide.md)")
+	offline := fs.Bool("offline", false, "check local-runtime discovery from the on-disk cache only, never over the network (for sandboxes with no loopback egress)")
 	fix := fs.Bool("fix", false, "repair an allowlisted set of problems after reporting (see -fix-only for the list)")
 	fixOnly := fs.String("fix-only", "", "comma-separated subset of repairs to run (default: all allowlisted)")
 	fixDryRun := fs.Bool("fix-dry-run", false, "with -fix, report what would be repaired without touching anything")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	report := cli.RunDoctor(ctx, cli.DoctorOptions{ConfigPath: *configPath, Release: *release})
+	report := cli.RunDoctor(ctx, cli.DoctorOptions{ConfigPath: *configPath, Release: *release, Offline: *offline})
 	if *asJSON {
 		if err := report.RenderJSON(out); err != nil {
 			fmt.Fprintf(errOut, "yanshi doctor: render json: %v\n", err)

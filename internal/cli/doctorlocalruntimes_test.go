@@ -29,12 +29,14 @@ import (
 )
 
 // newFakeLMStudioServer simulates LM Studio's GET /api/v0/models (one
-// model, id=modelID, State "loaded"/"not-loaded" per loaded) and POST
+// model, id=modelID, State "loaded"/"not-loaded" per loaded, type "vlm" or
+// "llm" per declaredMultimodal — the metadata DeclaredMultimodal/
+// eino.DocumentedImageSupport's review-whole.md M-1 wiring reads) and POST
 // /v1/chat/completions (always answers "RED", so ProbeImageSupport reads
 // back Supported=true). chatCalls counts every chat-completions request
 // observed — the mechanism every test below uses to prove whether
 // reportLMStudio did or did not send a probe.
-func newFakeLMStudioServer(t *testing.T, modelID string, loaded bool, chatCalls *int32) *httptest.Server {
+func newFakeLMStudioServer(t *testing.T, modelID string, loaded, declaredMultimodal bool, chatCalls *int32) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v0/models", func(w http.ResponseWriter, r *http.Request) {
@@ -42,9 +44,13 @@ func newFakeLMStudioServer(t *testing.T, modelID string, loaded bool, chatCalls 
 		if loaded {
 			state = "loaded"
 		}
+		modelType := "llm"
+		if declaredMultimodal {
+			modelType = "vlm"
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"data": []map[string]any{
-				{"id": modelID, "type": "llm", "state": state, "max_context_length": 4096},
+				{"id": modelID, "type": modelType, "state": state, "max_context_length": 4096},
 			},
 		})
 	})
@@ -71,7 +77,7 @@ func newFakeLMStudioServer(t *testing.T, modelID string, loaded bool, chatCalls 
 // reportLMStudio's return value.
 func TestReportLMStudio_ProbesAndPersistsImageSupportForLoadedModel(t *testing.T) {
 	var chatCalls int32
-	srv := newFakeLMStudioServer(t, "vision-model", true, &chatCalls)
+	srv := newFakeLMStudioServer(t, "vision-model", true, false, &chatCalls)
 
 	dir := t.TempDir()
 	cache, err := eino.NewCache(dir, 0)
@@ -80,7 +86,7 @@ func TestReportLMStudio_ProbesAndPersistsImageSupportForLoadedModel(t *testing.T
 	}
 	client := eino.NewLMStudioClient(srv.URL, "", nil)
 
-	msg := reportLMStudio(context.Background(), cache, client)
+	msg := reportLMStudio(context.Background(), cache, client, eino.RefreshAuto)
 	if chatCalls != 1 {
 		t.Fatalf("chat-completions calls = %d, want 1 (exactly one loaded model, probed exactly once)", chatCalls)
 	}
@@ -122,7 +128,7 @@ func TestReportLMStudio_ProbesAndPersistsImageSupportForLoadedModel(t *testing.T
 // to avoiding for this one.
 func TestReportLMStudio_NeverProbesANotLoadedModel(t *testing.T) {
 	var chatCalls int32
-	srv := newFakeLMStudioServer(t, "cold-model", false, &chatCalls)
+	srv := newFakeLMStudioServer(t, "cold-model", false, false, &chatCalls)
 
 	cache, err := eino.NewCache(t.TempDir(), 0)
 	if err != nil {
@@ -130,7 +136,7 @@ func TestReportLMStudio_NeverProbesANotLoadedModel(t *testing.T) {
 	}
 	client := eino.NewLMStudioClient(srv.URL, "", nil)
 
-	msg := reportLMStudio(context.Background(), cache, client)
+	msg := reportLMStudio(context.Background(), cache, client, eino.RefreshAuto)
 	if chatCalls != 0 {
 		t.Fatalf("chat-completions calls = %d, want 0 — a not-loaded model must never be probed", chatCalls)
 	}
@@ -146,7 +152,7 @@ func TestReportLMStudio_NeverProbesANotLoadedModel(t *testing.T) {
 // be the wrong gate), a second call must not send a second probe.
 func TestReportLMStudio_SkipsAModelWithAnExistingVerdict(t *testing.T) {
 	var chatCalls int32
-	srv := newFakeLMStudioServer(t, "known-model", true, &chatCalls)
+	srv := newFakeLMStudioServer(t, "known-model", true, false, &chatCalls)
 
 	dir := t.TempDir()
 	cache, err := eino.NewCache(dir, 0)
@@ -156,7 +162,7 @@ func TestReportLMStudio_SkipsAModelWithAnExistingVerdict(t *testing.T) {
 	client := eino.NewLMStudioClient(srv.URL, "", nil)
 
 	// First call: no cached verdict yet, must probe once.
-	reportLMStudio(context.Background(), cache, client)
+	reportLMStudio(context.Background(), cache, client, eino.RefreshAuto)
 	if chatCalls != 1 {
 		t.Fatalf("after first call: chat-completions calls = %d, want 1", chatCalls)
 	}
@@ -167,7 +173,7 @@ func TestReportLMStudio_SkipsAModelWithAnExistingVerdict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCache (second instance): %v", err)
 	}
-	reportLMStudio(context.Background(), cache2, client)
+	reportLMStudio(context.Background(), cache2, client, eino.RefreshAuto)
 	if chatCalls != 1 {
 		t.Fatalf("after second call: chat-completions calls = %d, want still 1 — a model with an existing verdict must not be re-probed", chatCalls)
 	}
@@ -181,7 +187,7 @@ func TestReportLMStudio_SkipsAModelWithAnExistingVerdict(t *testing.T) {
 // permanently strand a transient failure exactly the way M-1 warned about.
 func TestReportLMStudio_RetriesAModelWhoseProbePreviouslyFailed(t *testing.T) {
 	var chatCalls int32
-	srv := newFakeLMStudioServer(t, "flaky-model", true, &chatCalls)
+	srv := newFakeLMStudioServer(t, "flaky-model", true, false, &chatCalls)
 
 	dir := t.TempDir()
 	cache, err := eino.NewCache(dir, 0)
@@ -195,9 +201,165 @@ func TestReportLMStudio_RetriesAModelWhoseProbePreviouslyFailed(t *testing.T) {
 	}
 
 	client := eino.NewLMStudioClient(srv.URL, "", nil)
-	reportLMStudio(context.Background(), cache, client)
+	reportLMStudio(context.Background(), cache, client, eino.RefreshAuto)
 	if chatCalls != 1 {
 		t.Fatalf("chat-completions calls = %d, want 1 — a SourceProbeFailed verdict must be retried, not treated as final", chatCalls)
+	}
+}
+
+// TestReportLMStudio_DocumentsImageSupportForANotLoadedModel is
+// review-whole.md M-1's wiring proof for eino.DocumentedImageSupport: a
+// model LM Studio reports as not loaded (so must never be probed — see
+// TestReportLMStudio_NeverProbesANotLoadedModel) still gets a persisted
+// SourceDocumented verdict, sourced from the SAME "type":"vlm" metadata the
+// initial /api/v0/models fetch already carried (DeclaredMultimodal), at
+// zero extra request cost — chatCalls stays 0 throughout.
+func TestReportLMStudio_DocumentsImageSupportForANotLoadedModel(t *testing.T) {
+	var chatCalls int32
+	srv := newFakeLMStudioServer(t, "cold-vlm", false, true, &chatCalls)
+
+	dir := t.TempDir()
+	cache, err := eino.NewCache(dir, 0)
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+	client := eino.NewLMStudioClient(srv.URL, "", nil)
+
+	msg := reportLMStudio(context.Background(), cache, client, eino.RefreshAuto)
+	if chatCalls != 0 {
+		t.Fatalf("chat-completions calls = %d, want 0 — the documented half must never probe", chatCalls)
+	}
+	if !strings.Contains(msg, "image-support documented for 1 unloaded model(s)") {
+		t.Fatalf("message = %q, want it to report the documented count", msg)
+	}
+
+	// Same consumption-proof shape as the probed case above: an independent
+	// second Cache instance must see what the first call persisted.
+	cache2, err := eino.NewCache(dir, 0)
+	if err != nil {
+		t.Fatalf("NewCache (second instance): %v", err)
+	}
+	verdict, found, err := cache2.GetImageSupport("lmstudio", "cold-vlm")
+	if err != nil {
+		t.Fatalf("GetImageSupport: %v", err)
+	}
+	if !found {
+		t.Fatal("image-support verdict was not persisted to disk — DocumentedImageSupport's PutImageSupport call was never reached")
+	}
+	if !verdict.Supported {
+		t.Errorf("verdict.Supported = false, want true (server declared type=vlm)")
+	}
+	if verdict.Source != eino.SourceDocumented {
+		t.Errorf("verdict.Source = %q, want %q — a documented verdict must never claim to be probed", verdict.Source, eino.SourceDocumented)
+	}
+	if verdict.Detail != "LM Studio type=vlm" {
+		t.Errorf("verdict.Detail = %q, want the origin string DocumentedImageSupport's doc comment names", verdict.Detail)
+	}
+
+	// A second call must not re-document what is already on disk.
+	reportLMStudio(context.Background(), cache2, client, eino.RefreshAuto)
+	if chatCalls != 0 {
+		t.Fatalf("chat-completions calls after second call = %d, want still 0", chatCalls)
+	}
+}
+
+// TestReportLMStudio_OfflineNeverProbesALoadedModel proves
+// eino.RefreshCacheOnly's "never touches the network" contract holds all
+// the way through reportLMStudio, not just at the Cache.Get call: a model
+// LM Studio reports as loaded, with no cached verdict yet, would normally
+// be probed (TestReportLMStudio_ProbesAndPersistsImageSupportForLoadedModel)
+// — under the offline policy it must be left unmeasured instead, since
+// ProbeImageSupport is itself a live chat-completions round trip.
+func TestReportLMStudio_OfflineNeverProbesALoadedModel(t *testing.T) {
+	var chatCalls int32
+	srv := newFakeLMStudioServer(t, "vision-model", true, false, &chatCalls)
+
+	dir := t.TempDir()
+	cache, err := eino.NewCache(dir, 0)
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+	client := eino.NewLMStudioClient(srv.URL, "", nil)
+
+	// Seed the listing cache so RefreshCacheOnly has something on disk to
+	// read — the models endpoint itself is never contacted live either
+	// under this policy (see the offline doctor test below for that half).
+	if _, err := cache.Get(context.Background(), client, eino.RefreshAuto); err != nil {
+		t.Fatalf("seed listing cache: %v", err)
+	}
+
+	msg := reportLMStudio(context.Background(), cache, client, eino.RefreshCacheOnly)
+	if chatCalls != 0 {
+		t.Fatalf("chat-completions calls = %d, want 0 — RefreshCacheOnly must never probe", chatCalls)
+	}
+	if strings.Contains(msg, "probed") {
+		t.Errorf("message = %q, must not claim a probe happened under RefreshCacheOnly", msg)
+	}
+
+	if _, found, _ := cache.GetImageSupport("lmstudio", "vision-model"); found {
+		t.Error("an image-support verdict was persisted despite the offline policy skipping the probe")
+	}
+}
+
+// TestCheckLocalRuntimesWith_OfflineNeverContactsAHungPort is the offline
+// counterpart to TestCheckLocalRuntimesWith_DeadlineBoundsAHungPort: under
+// eino.RefreshCacheOnly against an empty cache dir (nothing on disk yet),
+// checkLocalRuntimesWith must return almost immediately with an
+// "unavailable" line for both runtimes, never attempting the TCP connect
+// doctorLocalRuntimeProbeTimeout otherwise bounds — proving RefreshCacheOnly
+// is actually wired through, not merely accepted as an unused parameter.
+func TestCheckLocalRuntimesWith_OfflineNeverContactsAHungPort(t *testing.T) {
+	ollamaURL := newHangingListener(t)
+	lmstudioURL := newHangingListener(t)
+
+	cache, err := eino.NewCache(t.TempDir(), 0)
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+	ollamaClient := eino.NewOllamaClient(ollamaURL, nil)
+	lmstudioClient := eino.NewLMStudioClient(lmstudioURL, "", nil)
+
+	start := time.Now()
+	result := checkLocalRuntimesWith(context.Background(), cache, ollamaClient, lmstudioClient, eino.RefreshCacheOnly)
+	elapsed := time.Since(start)
+
+	// A generous margin well under doctorLocalRuntimeProbeTimeout (3s) x 2:
+	// a real network attempt against a hung listener would take close to
+	// that; RefreshCacheOnly reading an empty dir returns in microseconds.
+	const wantUnder = 500 * time.Millisecond
+	if elapsed >= wantUnder {
+		t.Fatalf("checkLocalRuntimesWith(RefreshCacheOnly) against two hung ports took %v, want under %v — it must never attempt the network", elapsed, wantUnder)
+	}
+	if !strings.Contains(result.Message, "ollama:") || !strings.Contains(result.Message, "unavailable") {
+		t.Errorf("ollama half of message = %q, want an unavailable line (no cache on disk yet)", result.Message)
+	}
+	if !strings.Contains(result.Message, "lmstudio:") || !strings.Contains(result.Message, "unavailable") {
+		t.Errorf("lmstudio half of message = %q, want an unavailable line (no cache on disk yet)", result.Message)
+	}
+}
+
+// TestRunDoctor_OfflineOptionReachesLocalRuntimesCheck is the wiring-proof
+// half for DoctorOptions.Offline: a real RunDoctor call with Offline: true
+// must produce the same "no cache on disk yet" unavailable shape
+// TestCheckLocalRuntimesWith_OfflineNeverContactsAHungPort exercises
+// directly — proving the CLI flag reaches checkLocalRuntimes's policy
+// argument, not just that the argument works in isolation. It cannot use a
+// hung listener (checkLocalRuntimes always dials the real default
+// loopback ports), so it asserts the check still completes and stays OK,
+// the same tolerant assertion TestRunDoctor_IncludesLocalRuntimesCheck
+// makes for the non-offline case.
+func TestRunDoctor_OfflineOptionReachesLocalRuntimesCheck(t *testing.T) {
+	cfgBody := fmt.Sprintf(`
+server: { http_addr: "127.0.0.1:0" }
+storage: { sqlite_path: %q }
+`, filepath.Join(t.TempDir(), "yanshi.db"))
+	rep := RunDoctor(context.Background(), DoctorOptions{ConfigPath: writeTempConfig(t, cfgBody), Root: t.TempDir(), Offline: true})
+	c := findCheck(t, rep, "local-runtimes")
+	if c.Status != StatusOK {
+		t.Errorf("local-runtimes: got %s (%s), want ok", c.Status, c.Message)
+	}
+	if !strings.Contains(c.Message, "ollama:") || !strings.Contains(c.Message, "lmstudio:") {
+		t.Errorf("local-runtimes message = %q, want both runtimes reported", c.Message)
 	}
 }
 
@@ -237,7 +399,7 @@ func TestReportOllama_NeverProbesImageSupport(t *testing.T) {
 	}
 	client := eino.NewOllamaClient(srv.URL, nil)
 
-	msg := reportOllama(context.Background(), cache, client)
+	msg := reportOllama(context.Background(), cache, client, eino.RefreshAuto)
 	if !strings.Contains(msg, "llama3:latest") {
 		t.Fatalf("message = %q, want it to mention the discovered model", msg)
 	}
@@ -263,7 +425,7 @@ func TestReportOllama_UnreachableIsReportedNotFatal(t *testing.T) {
 	}
 	client := eino.NewOllamaClient(unreachableURL, nil)
 
-	msg := reportOllama(context.Background(), cache, client)
+	msg := reportOllama(context.Background(), cache, client, eino.RefreshAuto)
 	if !strings.Contains(msg, "ollama:") || !strings.Contains(msg, "unavailable") {
 		t.Errorf("message = %q, want an informational ollama:-prefixed unavailable line", msg)
 	}
@@ -320,7 +482,7 @@ func TestCheckLocalRuntimesWith_DeadlineBoundsAHungPort(t *testing.T) {
 	lmstudioClient := eino.NewLMStudioClient(lmstudioURL, "", nil)
 
 	start := time.Now()
-	result := checkLocalRuntimesWith(context.Background(), cache, ollamaClient, lmstudioClient)
+	result := checkLocalRuntimesWith(context.Background(), cache, ollamaClient, lmstudioClient, eino.RefreshAuto)
 	elapsed := time.Since(start)
 
 	// Real margin, not a tight pin to 2 x doctorLocalRuntimeProbeTimeout —

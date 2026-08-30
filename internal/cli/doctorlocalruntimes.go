@@ -72,7 +72,18 @@ const doctorLocalRuntimeProbeTimeout = 3 * time.Second
 // without binding to the two hardcoded default ports (127.0.0.1:11434 /
 // 127.0.0.1:1234), which would either collide with a real Ollama/LM Studio
 // running on the dev machine or assume those ports are free on CI.
-func checkLocalRuntimes(ctx context.Context) CheckResult {
+//
+// offline selects eino.RefreshCacheOnly instead of eino.RefreshAuto — the
+// review-whole.md M-1 wiring for RefreshCacheOnly, whose own doc comment
+// names "the offline startup uses cache" acceptance bullet's tier. Before
+// this, RefreshCacheOnly had zero production callers; RefreshAuto's
+// existing stale-fallback path (listing.FetchError != "") already satisfies
+// that acceptance bullet when a runtime merely becomes unreachable
+// mid-session, but never as a matter of policy the OPERATOR can ask for
+// ahead of time (a sandboxed CI run with no loopback egress at all, where
+// even attempting the TCP connect is undesirable, not just tolerable when
+// it fails).
+func checkLocalRuntimes(ctx context.Context, offline bool) CheckResult {
 	cache, err := eino.NewCache("", 0)
 	if err != nil {
 		// DefaultCacheDir failing (os.UserCacheDir with no HOME/XDG_CACHE_HOME
@@ -83,20 +94,26 @@ func checkLocalRuntimes(ctx context.Context) CheckResult {
 		return CheckResult{Name: "local-runtimes", Status: StatusWarn,
 			Message: fmt.Sprintf("discovery cache unavailable: %v", err)}
 	}
-	return checkLocalRuntimesWith(ctx, cache, eino.NewOllamaClient("", nil), eino.NewLMStudioClient("", "", nil))
+	policy := eino.RefreshAuto
+	if offline {
+		policy = eino.RefreshCacheOnly
+	}
+	return checkLocalRuntimesWith(ctx, cache, eino.NewOllamaClient("", nil), eino.NewLMStudioClient("", "", nil), policy)
 }
 
 // checkLocalRuntimesWith is checkLocalRuntimes' body, parameterized by cache
 // and clients so a test can point it at a real (fake-protocol or hung)
-// listener instead of the production default addresses.
-func checkLocalRuntimesWith(ctx context.Context, cache *eino.Cache, ollamaClient *eino.OllamaClient, lmstudioClient *eino.LMStudioClient) CheckResult {
+// listener instead of the production default addresses, and by policy so a
+// test can exercise eino.RefreshCacheOnly without threading a DoctorOptions
+// all the way through.
+func checkLocalRuntimesWith(ctx context.Context, cache *eino.Cache, ollamaClient *eino.OllamaClient, lmstudioClient *eino.LMStudioClient, policy eino.RefreshPolicy) CheckResult {
 	ollamaCtx, cancelOllama := context.WithTimeout(ctx, doctorLocalRuntimeProbeTimeout)
 	defer cancelOllama()
-	ollama := reportOllama(ollamaCtx, cache, ollamaClient)
+	ollama := reportOllama(ollamaCtx, cache, ollamaClient, policy)
 
 	lmstudioCtx, cancelLMStudio := context.WithTimeout(ctx, doctorLocalRuntimeProbeTimeout)
 	defer cancelLMStudio()
-	lmstudio := reportLMStudio(lmstudioCtx, cache, lmstudioClient)
+	lmstudio := reportLMStudio(lmstudioCtx, cache, lmstudioClient, policy)
 
 	return CheckResult{Name: "local-runtimes", Status: StatusOK, Message: ollama + "; " + lmstudio}
 }
@@ -118,8 +135,8 @@ func checkLocalRuntimesWith(ctx context.Context, cache *eino.Cache, ollamaClient
 // asked to load (Ollama JIT-loads a model to answer a chat-completions
 // request), which is exactly the side effect checkMCP's doc comment says a
 // diagnostic command must never have.
-func reportOllama(ctx context.Context, cache *eino.Cache, client *eino.OllamaClient) string {
-	listing, err := cache.Get(ctx, client, eino.RefreshAuto)
+func reportOllama(ctx context.Context, cache *eino.Cache, client *eino.OllamaClient, policy eino.RefreshPolicy) string {
+	listing, err := cache.Get(ctx, client, policy)
 	if err != nil {
 		return fmt.Sprintf("ollama: unavailable (%v)", err)
 	}
@@ -130,15 +147,20 @@ func reportOllama(ctx context.Context, cache *eino.Cache, client *eino.OllamaCli
 }
 
 // reportLMStudio reports what Cache.Get found for LM Studio, the same way
-// reportOllama does for Ollama, and additionally probes+persists a W-C-15
-// image-support verdict for every model LM Studio's own /api/v0/models
-// response already reports State=="loaded" (DiscoveredModel.Loaded) — never
-// for a not-loaded one. ProbeImageSupport sends a real chat-completions
+// reportOllama does for Ollama, and additionally records a W-C-15
+// image-support verdict for every model in the listing: a PROBED one for
+// every model LM Studio's own /api/v0/models response already reports
+// State=="loaded" (DiscoveredModel.Loaded), a DOCUMENTED one (review-whole.md
+// M-1: eino.DocumentedImageSupport's only production call site) for every
+// model it does not. ProbeImageSupport sends a real chat-completions
 // request, and LM Studio JIT-loads whatever model a chat-completions
-// request names if it is not already resident; gating on Loaded is what
-// keeps this check to Probe-only (see checkLocalRuntimes' package comment)
-// instead of using a diagnostic command to cold-load models behind the
-// operator's back.
+// request names if it is not already resident; gating the probe on Loaded
+// is what keeps this check to Probe-only (see checkLocalRuntimes' package
+// comment) instead of using a diagnostic command to cold-load models behind
+// the operator's back. A not-loaded model carries no such risk for the
+// DOCUMENTED half: DeclaredMultimodal is LM Studio's own "type":"vlm"
+// metadata, already sitting in the listing this function fetched — turning
+// it into an ImageSupport verdict costs no extra request.
 //
 // A model that already carries ANY cached verdict is skipped, UNLESS that
 // verdict is SourceProbeFailed — repeating an identical measurement on every
@@ -158,21 +180,40 @@ func reportOllama(ctx context.Context, cache *eino.Cache, client *eino.OllamaCli
 // retry later", not a negative result, and retrying on the next doctor run
 // is exactly the "later" that comment asks for — and sanitizeLoadedListing
 // does NOT touch SourceProbeFailed entries, so this value round-trips
-// through disk unchanged and stays visible to this gate.
-func reportLMStudio(ctx context.Context, cache *eino.Cache, client *eino.LMStudioClient) string {
-	listing, err := cache.Get(ctx, client, eino.RefreshAuto)
+// through disk unchanged and stays visible to this gate. This gate now
+// applies BEFORE the Loaded branch (it used to guard only the probe path),
+// so a documented verdict is equally durable across runs.
+//
+// Under eino.RefreshCacheOnly (checkLocalRuntimes' offline argument), the
+// probe half is skipped even for a loaded, unmeasured model:
+// ProbeImageSupport is itself a live network round trip, and
+// RefreshCacheOnly's whole contract (see its own doc comment) is "never
+// touches the network" — an unmeasured loaded model is left unmeasured
+// rather than silently reaching out anyway just because Cache.Get already
+// happened to have a listing on disk. The documented half is unaffected: it
+// reads only the listing already in hand, no network call either way.
+func reportLMStudio(ctx context.Context, cache *eino.Cache, client *eino.LMStudioClient, policy eino.RefreshPolicy) string {
+	listing, err := cache.Get(ctx, client, policy)
 	if err != nil {
 		return fmt.Sprintf("lmstudio: unavailable (%v)", err)
 	}
 	if listing.FetchError != "" {
 		return fmt.Sprintf("lmstudio: unreachable, showing stale cache (%s)", listing.FetchError)
 	}
-	probed := 0
+	probed, documented := 0, 0
 	for _, m := range listing.Models {
-		if !m.Loaded {
+		if v, found, _ := cache.GetImageSupport("lmstudio", m.ID); found && v.Source != eino.SourceProbeFailed {
 			continue
 		}
-		if v, found, _ := cache.GetImageSupport("lmstudio", m.ID); found && v.Source != eino.SourceProbeFailed {
+		if !m.Loaded {
+			verdict := eino.DocumentedImageSupport(m.DeclaredMultimodal, "LM Studio type=vlm")
+			if err := cache.PutImageSupport("lmstudio", m.ID, verdict); err != nil {
+				continue // best-effort: a persist failure here does not fail the whole check.
+			}
+			documented++
+			continue
+		}
+		if policy == eino.RefreshCacheOnly {
 			continue
 		}
 		verdict := client.ProbeImageSupport(ctx, m.ID)
@@ -184,6 +225,9 @@ func reportLMStudio(ctx context.Context, cache *eino.Cache, client *eino.LMStudi
 	msg := fmt.Sprintf("lmstudio: %d model(s) (%s)", len(listing.Models), modelIDSummary(listing.Models))
 	if probed > 0 {
 		msg += fmt.Sprintf(", image-support probed for %d loaded model(s)", probed)
+	}
+	if documented > 0 {
+		msg += fmt.Sprintf(", image-support documented for %d unloaded model(s)", documented)
 	}
 	return msg
 }
