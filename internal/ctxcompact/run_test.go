@@ -139,6 +139,40 @@ func TestRun_ModelFailurePreservesEveryPinCategory(t *testing.T) {
 	}
 }
 
+// TestRun_ConfigFailureIsNotFallback is M-3 (2026-08-29 review): a
+// credential/wiring failure — the summarizer never sent a request because it
+// could not obtain its own auth.command credential — must NOT take the same
+// W-C-04 pins-only fallback path TestRun_ModelFailureFallsBackToPinsOnly
+// (above) proves an ordinary model failure takes. The review's own warning
+// was that this package had previously let two different failure causes
+// collapse into "the same code" (an earlier finding, unrelated to this one);
+// this test is the mechanical check that they no longer do: the ONLY
+// difference between this fixture and TestRun_ModelFailureFallsBackToPinsOnly
+// is the error text the fake model returns (an auth.command marker here vs.
+// "model down" there), and that difference alone must flip every one of
+// require.Error/Fallback/onChunk. Deleting isConfigOrWiringFailure's check in
+// run.go (reverting to the pre-M-3 unconditional fallback) turns this test's
+// require.Error into a failure, since Run would then return (result, nil)
+// exactly like the model-failure case.
+func TestRun_ConfigFailureIsNotFallback(t *testing.T) {
+	fm := einollm.NewFakeModel(nil, errors.New(
+		"eino: fetching auth.command credential: eino: auth.command launch: secproc: no Factory in context (fail-closed)"))
+	msgs := []*schema.Message{
+		{Role: schema.User, Content: "task"},
+		{Role: schema.Assistant, Content: strings.Repeat("noise ", 100)},
+		{Role: schema.Assistant, Content: strings.Repeat("more ", 100)},
+		{Role: schema.User, Content: "recent"},
+	}
+	var chunks []string
+	res, err := ctxcompact.Run(context.Background(), msgs, ctxcompact.PlanOpts{KeepRecent: 1},
+		ctxcompact.RunOpts{ModelWindow: 10000, ChunkThreshold: 0.9}, fm,
+		func(s string) { chunks = append(chunks, s) })
+	require.Error(t, err, "a credential/wiring failure must be reported, not silently swallowed into a fallback")
+	assert.Nil(t, res, "no Result on this path — callers must fall back to their OWN original history, not a partial one")
+	assert.Contains(t, err.Error(), "auth.command", "the underlying cause must still be legible in the returned error")
+	assert.Empty(t, chunks, "no FallbackNotice — this path never reaches the W-C-04 onChunk call")
+}
+
 func TestRun_NoOpWhenNothingToSummarize(t *testing.T) {
 	fm := einollm.NewFakeModel([]string{"UNUSED"}, nil)
 	// 2 msgs, KeepRecent=2 -> everything pinned -> nothing to summarize -> model never called.

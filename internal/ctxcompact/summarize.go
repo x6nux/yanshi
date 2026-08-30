@@ -389,3 +389,49 @@ func isTransient(err error) bool {
 	}
 	return false
 }
+
+// isConfigOrWiringFailure reports whether err represents a failure that
+// happened BEFORE any request reached the summary model, rather than a
+// request that reached the model and failed there. Run (run.go) uses this
+// to decide whether a RunSummary error may take the W-C-04 pins-only
+// fallback path.
+//
+// The distinction matters because the two failure shapes have opposite
+// recovery behavior. A genuine model failure (overload, exhausted retries,
+// a stream drop) is the case W-C-04 was built for: it is expected to
+// happen occasionally and to clear up on a LATER compaction, so silently
+// discarding the summarize-set once and opening a fresh window is an
+// acceptable trade. A credential/wiring failure — the summarizer could not
+// even authenticate, e.g. internal/llm/eino's auth.command machinery
+// (cmdauth.go) had no secproc.Factory bound in the calling context — is
+// not transient in that sense: it will fail IDENTICALLY on every single
+// compaction for the rest of the session, because nothing about the next
+// turn changes the wiring. Routing it through the same silent fallback
+// means every pre-turn compaction against that provider quietly drops
+// conversation history forever, with only a one-line activity notice (see
+// FallbackNotice) to show for it — this is the review's M-3 finding.
+//
+// Matches on the literal "auth.command" marker every error cmdauth.go
+// returns carries somewhere in its chain ("auth.command has no program to
+// run", ".. launch: ..", ".. %q failed: ..", ".. produced an empty
+// credential", and the transport-level "fetching auth.command credential:
+// .." wrapper) rather than importing that package's error type or a
+// sentinel from internal/secproc: ctxcompact is a pure package with no
+// internal dependencies (ADR-0015), and importing internal/llm/eino here
+// would create the exact import cycle that package's own doc comment
+// (cmdauth.go, runAuthCommand) already had to route around once for
+// internal/tools. This mirrors isTransient's precedent directly above —
+// same package, same "avoid pointing the dependency arrow outward"
+// rationale, same style of narrow keyword match — rather than introducing
+// a second classification mechanism.
+//
+// A genuine model failure would not coincidentally contain this text: the
+// marker is specific to the credential-fetch subsystem, never emitted by a
+// provider's own HTTP error body or by this package's own retry/quality
+// error strings.
+func isConfigOrWiringFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "auth.command")
+}

@@ -47,6 +47,15 @@ const NewWindowNotice = "[compaction-new-window] "
 // the model-failure fallback would silently launder an illegible summary into
 // "we simply had no summary". See pinsOnlyResult for what the fallback keeps.
 //
+// It is narrower still (M-3, 2026-08-29 review): a RunSummary error whose
+// text carries isConfigOrWiringFailure's marker never reached the model at
+// all — the call could not get a credential — and also returns a real
+// error rather than the fallback, for the same reason the EMPTY/QUALITY
+// gates do: a config/wiring failure recurs identically on every future
+// call, so silently discarding history for it is strictly worse than
+// costing one failed compaction and keeping the original history. See
+// isConfigOrWiringFailure for the full argument.
+//
 // Two gates stand between the model's reply and the replacement of history, and
 // both fail in the SAME direction — no replacement, error out, let the caller
 // keep the original history. That direction is not a style choice: a compaction
@@ -115,6 +124,23 @@ func Run(ctx context.Context, msgs []*schema.Message, planOpts PlanOpts, runOpts
 
 	summary, err := RunSummary(ctx, toSummarize, runOpts, m, onChunk)
 	if err != nil {
+		// M-3 (2026-08-29 review): a credential/wiring failure — the
+		// summarizer never sent a request at all — is not the failure
+		// W-C-04's fallback below exists for, and must not take the same
+		// path. See isConfigOrWiringFailure's doc comment for the full
+		// argument; short version: a model failure recovers on its own next
+		// turn, a wiring failure repeats identically forever, so folding it
+		// into the silent fallback means every future pre-turn compaction on
+		// that provider quietly and permanently drops history. Returning a
+		// real error here instead routes back through the SAME gate the
+		// EMPTY/QUALITY errors above already use: MaybeCompactWithOptions's
+		// err != nil branch (compact.go) keeps the original, uncompacted
+		// history rather than replacing it. TestRun_ConfigFailureIsNotFallback
+		// (run_test.go) is the red assertion — deleting this branch turns
+		// that test's require.Error into require.NoError-shaped failure.
+		if isConfigOrWiringFailure(err) {
+			return nil, fmt.Errorf("compaction summary unavailable: %w", err)
+		}
 		// W-C-04: the model never gave us a summary — don't call it again,
 		// open a new window directly. onChunk still fires (with a DIFFERENT
 		// text than a normal summary delta) so the fallback is observable on
