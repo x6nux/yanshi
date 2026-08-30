@@ -106,7 +106,39 @@ var (
 	mdRenderer   *glamour.TermRenderer
 	mdWidth      int
 	mdRendererMu sync.Mutex
+
+	// activeProfile is the terminal color profile applied via
+	// ApplyColorProfile (see that function's doc comment). It defaults to
+	// ANSI256 — the profile this file hardcoded before W-E-01 — so any code
+	// path that renders before NewProgram calls ApplyColorProfile (tests,
+	// helpers invoked outside a running program) keeps today's behavior.
+	activeProfile = termenv.ANSI256
 )
+
+// ApplyColorProfile sets the terminal color profile used by every lipgloss
+// style declared in this package and by the glamour markdown renderer built
+// by renderer(). Call it once at startup, before any rendering happens (see
+// model.NewProgram, which derives the profile from cli.DetectCapability).
+//
+// lipgloss styles here are package-level vars, but Style.Render reads the
+// color profile from lipgloss's shared renderer at render time rather than
+// at var-declaration time, so a single lipgloss.SetColorProfile call
+// retroactively governs all of them without touching each var individually.
+//
+// Changing the profile also invalidates the cached glamour renderer:
+// renderer() keys its cache on width only, so without this the cache would
+// keep serving markdown rendered under the previous profile after a switch
+// (e.g. after /model changes the detected capability, or in tests that probe
+// more than one profile).
+func ApplyColorProfile(p termenv.Profile) {
+	lipgloss.SetColorProfile(p)
+	mdRendererMu.Lock()
+	defer mdRendererMu.Unlock()
+	if activeProfile != p {
+		activeProfile = p
+		mdRenderer = nil
+	}
+}
 
 func renderer(width int) *glamour.TermRenderer {
 	mdRendererMu.Lock()
@@ -133,7 +165,7 @@ func renderer(width int) *glamour.TermRenderer {
 	style.Code.StylePrimitive.Color = strPtr("51")
 	r, err := glamour.NewTermRenderer(
 		glamour.WithStyles(style),
-		glamour.WithColorProfile(termenv.ANSI256),
+		glamour.WithColorProfile(activeProfile),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {

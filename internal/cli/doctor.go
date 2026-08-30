@@ -194,6 +194,11 @@ func RunDoctor(ctx context.Context, opts DoctorOptions) DoctorReport {
 	checks = append(checks, checkLocaleConfig(cfg, cfgErr))
 	checks = append(checks, checkKeymapConfig(cfg, cfgErr))
 	checks = append(checks, checkHighContrastConfig(cfg, cfgErr))
+	// W-E-01 (INF5): surface the detected terminal color profile / alt-screen
+	// posture so a degraded rendering choice (e.g. NO_COLOR forcing Ascii, or
+	// TERM=dumb suppressing alt-screen) is visible without reading source.
+	// See termcap.go for DetectCapability.
+	checks = append(checks, checkTerminalCapability())
 	return DoctorReport{Checks: checks}
 }
 

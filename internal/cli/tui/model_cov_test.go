@@ -5,6 +5,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -66,6 +67,15 @@ func TestCov_ApplyEvent_NestedResultSegments(t *testing.T) {
 // constructs the program (it starts on Run), so a zero-value *cli.Session is
 // sufficient to exercise the entry.
 func TestCov_NewProgram(t *testing.T) {
+	// NewProgram applies the process's real terminal capability (W-E-01) via
+	// ApplyColorProfile, which mutates lipgloss's package-level shared
+	// renderer with no auto-detect-mode-restoring API (see
+	// capability_test.go's withColorProfile doc comment). Left unrestored,
+	// this leaks whatever this test machine's TERM/COLORTERM happen to be
+	// into every later test in the package that renders a lipgloss style.
+	prev := lipgloss.ColorProfile()
+	t.Cleanup(func() { ApplyColorProfile(prev) })
+
 	p := NewProgram(&cli.Session{}, "/proj", Preferences{})
 	assert.NotNil(t, p)
 }

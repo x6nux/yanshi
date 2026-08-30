@@ -450,7 +450,18 @@ func newModelWithPrefs(sess tuiSession, root string, project Preferences) model 
 // which is what lets cmd/yanshi stay the only place that knows both halves.
 func NewProgram(sess *cli.Session, root string, project Preferences) *tea.Program {
 	m := newModelWithPrefs(sess, root, project)
-	return tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	// W-E-01 (INF5): detect terminal capability from the environment before
+	// anything renders, and apply it to every lipgloss/glamour style in this
+	// package (see ApplyColorProfile's doc comment for why one call suffices
+	// for all of them). TERM=dumb additionally suppresses the alt-screen
+	// switch — see TermCapability.AltScreen.
+	cap := cli.DetectCapability(os.Getenv)
+	ApplyColorProfile(cap.Profile)
+	opts := []tea.ProgramOption{tea.WithMouseCellMotion()}
+	if cap.AltScreen {
+		opts = append(opts, tea.WithAltScreen())
+	}
+	return tea.NewProgram(m, opts...)
 }
 
 func (m model) Init() tea.Cmd {
