@@ -79,6 +79,15 @@ var (
 	diffDelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(hueRed))   // red
 	diffCtxStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))    // grey
 
+	// diffGutterStyle renders the old/new line-number gutter W-E-02 adds in
+	// front of each diff line. It is deliberately a step darker (238) than
+	// diffCtxStyle's context grey (245) — both live on the 232-255 grayscale
+	// ramp, where a lower index is darker — so the four diff roles read as a
+	// genuine depth-graded tier (gutter < context < add/del in visual
+	// weight), not just three same-weight hues with numbers bolted on. This
+	// is the "调色板...按色深分档" requirement the spec calls out by name.
+	diffGutterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
+
 	inputBorder = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
 
 	// footerThinkStyle is used by colorizeActivity to render the "Thinking…"

@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/x6nux/yanshi/internal/difflib"
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/task/work"
 )
@@ -667,14 +668,14 @@ func (e *toolEntry) renderDiff(sp spinner.Model) string {
 			// still surfaces the result rather than rendering empty.
 			return e.renderNormal(sp)
 		}
-		diff := unifiedDiff(oldS, newS)
-		if diff == "" {
+		ops := difflib.Compute(oldS, newS)
+		if len(ops) == 0 {
 			return out + "\n"
 		}
 		if e.expanded {
-			out += renderColoredDiff(diff) + "\n\n"
+			out += renderColoredDiff(ops) + "\n\n"
 		} else {
-			add, del := countDiffAddDel(diff)
+			add, del := countOps(ops)
 			hint := fmt.Sprintf("+%d -%d 行", add, del) + "  " + warnStyle.Render("(ctrl+o expand)")
 			out += "  " + toolMeta.Render(hint) + "\n\n"
 		}
@@ -684,44 +685,23 @@ func (e *toolEntry) renderDiff(sp spinner.Model) string {
 		lines := lineCount(content)
 		footprint := "wrote " + pluralCount(lines, "line")
 		if e.expanded && content != "" {
-			preview := truncate(firstLine(content), 80)
-			footprint += "  " + warnStyle.Render("(ctrl+o expand)")
+			// W-E-02: a brand-new file has no "old" to diff against, but that
+			// is not a reason to show only a first-line preview — render it
+			// as an all-Insert diff (every line numbered and green) so the
+			// expanded view shows the actual content, matching fs_edit's
+			// expanded behavior instead of a separate, weaker code path.
 			out += "  " + toolMeta.Render(footprint) + "\n"
-			out += "  " + diffCtxStyle.Render(preview) + "\n\n"
+			out += renderColoredDiff(difflib.Compute("", content)) + "\n\n"
 		} else {
-			out += "  " + toolMeta.Render(footprint) + "\n\n"
+			hint := ""
+			if content != "" {
+				hint = "  " + warnStyle.Render("(ctrl+o expand)")
+			}
+			out += "  " + toolMeta.Render(footprint) + hint + "\n\n"
 		}
 		return out
 	}
 	return out
-}
-
-// renderColoredDiff renders a unified diff (as produced by unifiedDiff) with
-// each line colored by its sigil and indented by 4 spaces so the diff visually
-// nests under the tool-call header like the ⎿ result line of renderNormal.
-// The bare sigil byte is preserved inside the colored output so a reader can
-// still distinguish + / - / " at a glance.
-func renderColoredDiff(diff string) string {
-	const pad = "    "
-	var b strings.Builder
-	for i, ln := range strings.Split(diff, "\n") {
-		if i > 0 {
-			b.WriteByte('\n')
-		}
-		if ln == "" {
-			b.WriteString(pad)
-			continue
-		}
-		switch ln[0] {
-		case '-':
-			b.WriteString(pad + diffDelStyle.Render(ln))
-		case '+':
-			b.WriteString(pad + diffAddStyle.Render(ln))
-		default:
-			b.WriteString(pad + diffCtxStyle.Render(ln))
-		}
-	}
-	return b.String()
 }
 
 // lineCount counts the lines in s using the convention that a trailing "\n"
