@@ -292,6 +292,21 @@ type SeamInfo struct {
 	CreatedAt   int64  `json:"created_at,omitempty"`
 }
 
+// WorkspaceDiffFile carries one path's pending (uncommitted) change for the
+// workspace_diff reply (W-E-13's /diff command). It mirrors
+// vcs.UncommittedFile on the wire rather than importing internal/vcs
+// directly — proto has no internal dependencies (see the package doc), and
+// keeping the wire shape a plain struct means the client renders it without
+// ever needing to link the vcs package. OldText is empty for Op=="added",
+// NewText is empty for Op=="deleted"; either can also be empty for a binary
+// path (vcs.UncommittedDiff leaves non-UTF8 content out of the text fields).
+type WorkspaceDiffFile struct {
+	Path    string `json:"path"`
+	Op      string `json:"op"` // added | modified | deleted
+	OldText string `json:"old_text,omitempty"`
+	NewText string `json:"new_text,omitempty"`
+}
+
 // ServerFrame is a server->client frame.
 //
 //	type                fields
@@ -484,6 +499,12 @@ type ServerFrame struct {
 	// reconnecting client can render the current snapshot. omitempty keeps the
 	// legacy status shape when no flag table is configured.
 	Features []FeatureRow `json:"features,omitempty"`
+	// WorkspaceDiff carries the current workspace's pending (uncommitted)
+	// changeset, reply to list_workspace_diff (W-E-13's /diff command). Empty
+	// when VCS is unconfigured or nothing is pending — the client cannot and
+	// need not distinguish those two cases, both render as "no pending
+	// changes".
+	WorkspaceDiff []WorkspaceDiffFile `json:"workspace_diff,omitempty"`
 }
 
 // FeatureRow is the on-the-wire shape of one entry in the features table
@@ -930,6 +951,26 @@ func NewSeams(items []SeamInfo, commitShort, head string) ServerFrame {
 // human-readable summary for the TUI entry.
 func NewSeamRestored(undoSeamID, commitShort, head, text string) ServerFrame {
 	return ServerFrame{Type: "seam_restored", ID: undoSeamID, CommitShort: commitShort, Head: head, Text: text}
+}
+
+// --- W-E-13 workspace diff frames ---
+//
+// list_workspace_diff / workspace_diff follow the same request/reply naming
+// as list_seams / seams: a no-argument client request, a server reply
+// carrying the full current snapshot (no incremental/delta protocol — the
+// changeset is small enough, and per-file diffing already happens client
+// side in internal/cli/tui, reusing W-E-02's renderColoredDiff).
+
+// NewListWorkspaceDiff requests the current workspace's pending (uncommitted)
+// changes for W-E-13's /diff command (reply: workspace_diff).
+func NewListWorkspaceDiff() ClientFrame { return ClientFrame{Type: "list_workspace_diff"} }
+
+// NewWorkspaceDiff replies with the pending changeset's per-file old/new
+// text (W-E-13). files is empty (never nil on the wire, thanks to
+// omitempty+nil-slice both marshaling to nothing) when VCS is unconfigured or
+// nothing is pending.
+func NewWorkspaceDiff(files []WorkspaceDiffFile) ServerFrame {
+	return ServerFrame{Type: "workspace_diff", WorkspaceDiff: files}
 }
 
 // --- V09 fork frames ---

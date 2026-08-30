@@ -87,6 +87,7 @@ var commandTable = []command{
 	{name: "plan", help: "enter read-only plan mode (WS only)", run: cmdPlan},
 	{name: "plan-off", help: "exit plan mode, restore previous permission mode", run: cmdPlanOff},
 	{name: "restore-turn", help: "list main seams or revert to a prior turn", run: cmdRestoreTurn},
+	{name: "diff", help: "show pending workspace changes (WS only)", run: cmdDiff},
 	{name: "memory", help: "show active memory file path", run: cmdMemory},
 	{name: "distill", help: "merge redundant memories", helpKey: "tui.command.help.distill", run: cmdDistill},
 	{name: "memory-clear", help: "delete memories: /memory-clear <session|agent <id>|all> yes", run: cmdMemoryClear},
@@ -910,6 +911,30 @@ func cmdRestoreTurn(m model, args []string) (tea.Model, tea.Cmd) {
 		m.pendingSeamRestore = &pendingSeamRestoreState{seamID: args[0]}
 		return m.sendControlFrame(proto.NewRestoreTurn(args[0], m.lastKnownHead))
 	}
+}
+
+// cmdDiff implements /diff (W-E-13): shows the pending (uncommitted) main-scope
+// workspace changeset without switching windows — the reply is rendered by
+// workspaceDiffEntry, which reuses W-E-02's renderColoredDiff. Takes no
+// arguments. SSE is rejected for the same reason cmdRestoreTurn rejects it:
+// list_workspace_diff is a control frame with no SSE-side handling (SSE has
+// no persistent server-side history/session state to query).
+func cmdDiff(m model, args []string) (tea.Model, tea.Cmd) {
+	if m.sess.Mode() == "sse" {
+		m.entries = append(m.entries, errorEntry{
+			text: "/diff requires the WebSocket transport (SSE is stateless)",
+		})
+		m.refresh()
+		m.viewport.GotoBottom()
+		return m, nil
+	}
+	if len(args) != 0 {
+		m.entries = append(m.entries, errorEntry{text: "usage: /diff"})
+		m.refresh()
+		m.viewport.GotoBottom()
+		return m, nil
+	}
+	return m.sendControlFrame(proto.NewListWorkspaceDiff())
 }
 
 // cmdPermissions: /permissions                  → list all approval rules

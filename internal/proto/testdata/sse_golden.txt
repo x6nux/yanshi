@@ -109,3 +109,6 @@ data: {"type":"memories_cleared","text":"cleared 3 memories"}
 event: checkpoint_result
 data: {"type":"checkpoint_result","text":"checkpoint abc123 taken"}
 
+event: workspace_diff
+data: {"type":"workspace_diff"}
+

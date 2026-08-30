@@ -184,6 +184,34 @@ func (e seamRestoredEntry) render(_ int, _ spinner.Model) string {
 	return b.String()
 }
 
+// workspaceDiffEntry (W-E-13) renders the /diff command's reply: the
+// workspace's pending (uncommitted) main-scope changeset, one file at a time.
+// Per file it feeds difflib.Compute(OldText, NewText) into renderColoredDiff
+// (W-E-02's function, diff.go) — the same line-numbered, tiered-color diff a
+// tool-call block shows — rather than a separate, weaker rendering path.
+// Op=="added" naturally renders all-Insert (OldText is ""), Op=="deleted"
+// naturally renders all-Delete (NewText is ""); no special-casing needed.
+type workspaceDiffEntry struct {
+	files []proto.WorkspaceDiffFile
+}
+
+func (e workspaceDiffEntry) render(_ int, _ spinner.Model) string {
+	if len(e.files) == 0 {
+		return toolMeta.Render("  (no pending workspace changes)") + "\n"
+	}
+	var b strings.Builder
+	b.WriteString(okStyle.Render(fmt.Sprintf("  workspace changes (%s):", pluralCount(len(e.files), "file"))) + "\n")
+	for _, f := range e.files {
+		b.WriteString(fmt.Sprintf("  %s %s\n", toolMeta.Render("["+f.Op+"]"), f.Path))
+		ops := difflib.Compute(f.OldText, f.NewText)
+		if len(ops) == 0 {
+			continue
+		}
+		b.WriteString(renderColoredDiff(ops) + "\n\n")
+	}
+	return b.String()
+}
+
 // permissionsEntry renders a /permissions list reply: a header followed by one
 // line per rule (id, action, TTL, scope JSON). Empty list renders as "(none)"
 // so the user sees an explicit confirmation rather than a blank block.

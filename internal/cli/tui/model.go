@@ -1276,6 +1276,12 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 			undoID:  ev.UndoSeamID,
 			summary: text,
 		})
+	case "workspace_diff":
+		// W-E-13: /diff reply. Unlike "seams" there is no Kind filtering and
+		// no head to cache — it is a plain snapshot of the pending main-scope
+		// changeset, rendered in full by workspaceDiffEntry.
+		m.flushAssistant()
+		m.entries = append(m.entries, workspaceDiffEntry{files: ev.WorkspaceDiff})
 	case "compact_chunk":
 		// bug⑧: compaction is a meta-op; its status lives on the activity line
 		// (the "Running…" row rendered separately from the transcript), NOT as a

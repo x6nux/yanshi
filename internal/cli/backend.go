@@ -124,6 +124,11 @@ type StreamEvent struct {
 	CommitShort string
 	Head        string
 	UndoSeamID  string
+
+	// WorkspaceDiff (W-E-13) carries the /diff command's reply: the pending
+	// (uncommitted) main-scope changeset, populated by toStreamEvent for the
+	// workspace_diff control reply.
+	WorkspaceDiff []proto.WorkspaceDiffFile
 }
 
 // MessageStub is a lightweight message role+content pair for session restoration.
