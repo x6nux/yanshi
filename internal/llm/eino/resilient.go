@@ -309,6 +309,16 @@ func (r *ResilientChatModel) runStream(ctx context.Context, in []*schema.Message
 		// alone, and provider 1 would inherit whatever was left rather than
 		// its own configured ceiling.
 		curIdx = -1
+		// nextOpenStart (W-C-13) is the chain index the NEXT openStreamChain
+		// call should start searching from. It is 0 on every ordinary retry
+		// (a retryable open/mid-stream error means "try again", and trying
+		// again means giving provider 0 another chance first, exactly the
+		// pre-W-C-13 behavior — see the reset right after each open call
+		// below). It is only ever set to a nonzero value by the streamErr
+		// case's non-retryable-class branch, which advances it past the
+		// provider that just refused so openStreamChain does not immediately
+		// re-open the same provider that will just refuse again.
+		nextOpenStart = 0
 	)
 	for {
 		// attemptCtx is a per-attempt child of ctx so the watchdog can cancel
@@ -328,7 +338,16 @@ func (r *ResilientChatModel) runStream(ctx context.Context, in []*schema.Message
 		// OUR side calls, closes an unrelated channel recv() never selects
 		// on).
 		attemptCtx, cancelAttempt := context.WithCancel(ctx)
-		sr, openIdx, openErr := r.openStreamChain(attemptCtx, in, opts)
+		sr, openIdx, openErr := r.openStreamChain(attemptCtx, in, opts, nextOpenStart)
+		// Every open call consumes the advance requested by the previous
+		// iteration's failover, if any: the NEXT retry (whether triggered by
+		// this open failing, or by a later mid-stream error) goes back to
+		// preferring provider 0 unless a fresh non-retryable-class mid-stream
+		// error requests another advance below. This keeps every existing
+		// retryable-error code path (W-C-07's per-provider budgets, the
+		// openErr branch's shared-budget fallback) searching the chain
+		// exactly as it did before nextOpenStart existed.
+		nextOpenStart = 0
 		if openErr != nil {
 			cancelAttempt()
 			lastErr = openErr
@@ -405,22 +424,78 @@ func (r *ResilientChatModel) runStream(ctx context.Context, in []*schema.Message
 				}
 				continue
 			}
+			// W-C-13: a mid-stream error that classifies as non-retryable
+			// (real 4xx, context overflow, content-safety refusal — see
+			// isNonRetryableClientErr) means THIS provider will keep saying no
+			// to the same request; it does not mean the whole chain should
+			// give up. Before this branch existed, only OPEN-time errors ever
+			// advanced past a provider (openStreamChain's unconditional loop),
+			// so a provider that accepted the connection and only failed once
+			// the request itself was inspected (e.g. a 404 on an unknown
+			// model, or a content-policy rejection) terminated the entire
+			// call even with healthy providers left in the chain — the gap
+			// TestResilientModel_StreamFailoverOnNonRetryableMidStreamErr
+			// pins closed. Scoped to isNonRetryableClientErr specifically
+			// (not "any non-retryable outcome") so this never fires for a
+			// provider that is merely out of its own retry budget on an
+			// otherwise-retryable error — that case is unaffected and still
+			// terminates here, exactly as before this branch existed.
+			if !deliveredTools && curIdx+1 < len(r.chain) && isNonRetryableClientErr(recvErr) {
+				// No RecordFallback call here: the next iteration's
+				// openStreamChain call will land on some provider >=
+				// curIdx+1, and its openIdx != curIdx branch above already
+				// records curIdx -> (the provider that ACTUALLY served the
+				// retry) using lastErr (== recvErr, untouched since the
+				// assignment above). Recording here too would double-count
+				// the fallback, and — if curIdx+1 itself fails to open and
+				// the search cascades further — would record the wrong
+				// target index.
+				//
+				// sleepRetry IS still called here, purely for its onRetry
+				// side effect: Stream's "Overwrite" contract (see its doc
+				// comment) requires every mid-stream retry — same-provider or
+				// not — to arm the consumer's discard-partial signal before a
+				// regenerated stream is re-fed, or the WS handler's saved
+				// transcript concatenates this provider's abandoned partial
+				// with curIdx+1's full answer instead of replacing it
+				// (TestResilientModel_StreamFailoverArmsPartialDiscard
+				// pins this). attempt/maxAttempts are both 1: curIdx+1 has
+				// never been tried this round, so there is no same-provider
+				// budget to report — "1/1" names this hand-off, not a retry
+				// count.
+				if !r.sleepRetry(ctx, sw, onRetry, 1, 1, recvErr) {
+					return
+				}
+				nextOpenStart = curIdx + 1
+				errAttempts = 0
+				continue
+			}
 			_ = sw.Send(nil, recvErr)
 			return
 		}
 	}
 }
 
-// openStreamChain opens a stream from the first provider whose setup succeeds,
-// failing over across the chain. Returns the last setup error when all fail.
+// openStreamChain opens a stream from the first provider at or after start
+// whose setup succeeds, failing over across the rest of the chain. Returns
+// the last setup error when all of them fail.
+//
+// start exists for W-C-13: runStream's streamErr case sets it past a provider
+// that just gave a non-retryable-class mid-stream refusal (a real 4xx,
+// content overflow, or content-safety rejection — see isNonRetryableClientErr)
+// so this search does not immediately re-open the same provider that will
+// just refuse again. Every OTHER caller of this method passes 0 — the
+// pre-W-C-13 "always search from the top" behavior — so start does not change
+// how any existing retryable-error path resolves its next provider.
 //
 // The returned int is the chain index of the provider that actually served
 // the stream (-1 on total failure), so the caller (runStream) can resolve
 // that provider's own retry ceiling (W-C-07's maxRetriesFor) instead of the
 // single shared cfg.MaxRetries every open used before this field existed.
-func (r *ResilientChatModel) openStreamChain(ctx context.Context, in []*schema.Message, opts []model.Option) (*schema.StreamReader[*schema.Message], int, error) {
+func (r *ResilientChatModel) openStreamChain(ctx context.Context, in []*schema.Message, opts []model.Option, start int) (*schema.StreamReader[*schema.Message], int, error) {
 	var lastErr error
-	for i, p := range r.chain {
+	for i := start; i < len(r.chain); i++ {
+		p := r.chain[i]
 		sr, err := p.Stream(ctx, in, opts...)
 		if err == nil {
 			return sr, i, nil
@@ -588,11 +663,16 @@ func isRetryableStreamErr(ctx context.Context, err error) bool {
 	switch ClassifyError(err).Class {
 	case ClassTransient, ClassRateLimit:
 		return true
-	case ClassClientError, ClassContextOverflow:
-		// Real 4xx client error (bad key, unknown model, malformed request) or
-		// an over-long prompt: retry is pointless and masks the root cause.
-		// Overflow additionally needs compaction to shrink the context first —
-		// an unchanged retry reproduces the same prompt.
+	case ClassClientError, ClassContextOverflow, ClassContentSafety:
+		// Real 4xx client error (bad key, unknown model, malformed request), an
+		// over-long prompt, or a content-policy rejection (W-C-13): retry is
+		// pointless and masks the root cause. Overflow additionally needs
+		// compaction to shrink the context first — an unchanged retry
+		// reproduces the same prompt. Content-safety is listed explicitly here
+		// (rather than left to fall through to the legacy marker floor below)
+		// so it can never accidentally match a legacy transient marker by
+		// coincidence — the same reason ClassClientError/ClassContextOverflow
+		// are listed explicitly instead of falling through.
 		return false
 	}
 	// ClassUnknown: fall back to the historical loose markers so nothing that
@@ -613,10 +693,14 @@ func isRetryableStreamErr(ctx context.Context, err error) bool {
 	return false
 }
 
-// isNonRetryableClientErr reports whether err is a real 4xx client error or a
-// context overflow — the two conditions on which retry wastes time and masks
-// the underlying problem. Shared by the Generate (retry) and Stream
-// (isRetryableStreamErr) paths so both agree by construction.
+// isNonRetryableClientErr reports whether err is a real 4xx client error, a
+// context overflow, or a content-safety rejection (W-C-13) — the conditions on
+// which retry wastes time and masks the underlying problem. Shared by the
+// Generate (retry) and Stream (isRetryableStreamErr) paths so both agree by
+// construction, and now also by runStream's mid-stream failover decision (see
+// the streamErr case in runStream): a non-retryable-by-class mid-stream error
+// is exactly the signal that means "this provider will keep saying no, try
+// the next one" rather than "this provider is having a bad moment."
 //
 // It delegates to ClassifyError rather than scanning text itself; see
 // isRetryableStreamErr for what that fixed.
@@ -625,7 +709,7 @@ func isNonRetryableClientErr(err error) bool {
 		return false
 	}
 	c := ClassifyError(err).Class
-	return c == ClassClientError || c == ClassContextOverflow
+	return c == ClassClientError || c == ClassContextOverflow || c == ClassContentSafety
 }
 
 // legacyTransientMarkers are the pre-classifier substrings that marked a

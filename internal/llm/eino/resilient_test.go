@@ -1122,3 +1122,210 @@ func TestResilientModel_StreamFailoverResetsPerProviderBudget(t *testing.T) {
 	assert.Equal(t, int32(3), atomic.LoadInt32(&aCalls), "call1 mid-stream fail + retry(call2 dial-fail) + round-3 retry(call3 dial-fail)")
 	assert.Equal(t, int32(2), atomic.LoadInt32(&bCalls), "call1 mid-stream fail (fresh budget lets it retry) + call2 succeeds")
 }
+
+// ---------------------------------------------------------------------------
+// W-C-13: mid-stream non-retryable-class errors (404, content-safety) must
+// fail over to the next provider instead of terminating the call.
+// ---------------------------------------------------------------------------
+
+// TestResilientModel_StreamFailoverOnNonRetryableMidStreamErr is W-C-13's core
+// pin: before runStream's streamErr case grew a failover branch, only
+// OPEN-time errors ever advanced past a provider — openStreamChain's own,
+// separate loop tries every provider unconditionally, but only for errors
+// from p.Stream() itself. A provider that accepted the connection and only
+// failed once the request was inspected (a 404 on an unknown model, here)
+// terminated the ENTIRE call even with a healthy provider left in the chain.
+// Provider A opens fine and then fails mid-stream with a classified 404
+// (ClassClientError; isRetryableStreamErr returns false for it, exactly the
+// classification errclass_test.go's "go-openai style status phrase" case
+// pins); provider B is untouched and must serve the call. A is called
+// exactly once — 404 is not retryable, so there must be no same-provider
+// retry before the failover kicks in.
+func TestResilientModel_StreamFailoverOnNonRetryableMidStreamErr(t *testing.T) {
+	var aCalls, bCalls int32
+	notFound := errors.New("error, status code: 404, status: 404 Not Found, message: no such model")
+	require.Equal(t, ClassClientError, ClassifyError(notFound).Class,
+		"premise: this text must classify as a non-retryable client error")
+	a := &errorThenOKModel{calls: &aCalls, err: notFound}
+	b := newScriptedModel([]bool{false}, &bCalls)
+	r, err := NewResilientModel([]model.BaseChatModel{a, b}, fastEinoCfg())
+	require.NoError(t, err)
+
+	sr, err := r.Stream(context.Background(), []*schema.Message{schema.UserMessage("x")})
+	require.NoError(t, err)
+	defer sr.Close()
+
+	var got string
+	for {
+		msg, e := sr.Recv()
+		if errors.Is(e, io.EOF) {
+			break
+		}
+		require.NoError(t, e, "a 404 on provider A must fail over to provider B, not surface")
+		got += msg.Content
+	}
+	assert.Contains(t, got, "ok", "provider B's content must reach the consumer")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&aCalls), "404 is non-retryable: exactly 1 call to A, no same-provider retry")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&bCalls), "B succeeds on its first call")
+}
+
+// TestResilientModel_StreamFailoverArmsPartialDiscard proves the failover
+// branch still honors Stream's "Overwrite" contract (see Stream's doc
+// comment): the raw stream literally concatenates A's abandoned "hel" with
+// B's full "ok", exactly like any other mid-stream retry (compare
+// TestResilientModel_StreamRetriesMidStreamEOFThenSucceeds, which asserts the
+// same shape for a same-provider retry) — it is the onRetry callback's job to
+// tell the WS handler to discard the partial before the replacement is
+// re-fed. Without the sleepRetry call inside the failover branch, a real turn
+// would show "helok" in the transcript instead of "ok".
+func TestResilientModel_StreamFailoverArmsPartialDiscard(t *testing.T) {
+	var aCalls, bCalls int32
+	notFound := errors.New("error, status code: 404, status: 404 Not Found, message: no such model")
+	a := &errorThenOKModel{calls: &aCalls, err: notFound}
+	b := newScriptedModel([]bool{false}, &bCalls)
+	r, err := NewResilientModel([]model.BaseChatModel{a, b}, fastEinoCfg())
+	require.NoError(t, err)
+
+	var fired bool
+	var gotErr error
+	ctx := WithRetryCallback(context.Background(), func(_, _ int, err error, _ time.Duration) {
+		fired = true
+		gotErr = err
+	})
+	sr, err := r.Stream(ctx, []*schema.Message{schema.UserMessage("x")})
+	require.NoError(t, err)
+	defer sr.Close()
+	for {
+		_, e := sr.Recv()
+		if e != nil {
+			break
+		}
+	}
+	assert.True(t, fired, "the failover must arm the WS handler's discard-partial signal, same as any other mid-stream retry")
+	require.NotNil(t, gotErr)
+	assert.Contains(t, gotErr.Error(), "404")
+}
+
+// TestResilientModel_StreamContentSafetyAlsoFailsOver proves the failover
+// branch is not 404-specific: any ClassContentSafety mid-stream error (the
+// other class W-C-13 names explicitly) fails over the same way, via the
+// shared isNonRetryableClientErr chokepoint.
+func TestResilientModel_StreamContentSafetyAlsoFailsOver(t *testing.T) {
+	var aCalls, bCalls int32
+	rejected := errors.New("error, status code: 400, status: 400 Bad Request, message: Your request was rejected as a result of our safety system.")
+	require.Equal(t, ClassContentSafety, ClassifyError(rejected).Class, "premise")
+	a := &errorThenOKModel{calls: &aCalls, err: rejected}
+	b := newScriptedModel([]bool{false}, &bCalls)
+	r, err := NewResilientModel([]model.BaseChatModel{a, b}, fastEinoCfg())
+	require.NoError(t, err)
+
+	sr, err := r.Stream(context.Background(), []*schema.Message{schema.UserMessage("x")})
+	require.NoError(t, err)
+	defer sr.Close()
+
+	var got string
+	var sawEOF bool
+	for {
+		msg, e := sr.Recv()
+		if errors.Is(e, io.EOF) {
+			sawEOF = true
+			break
+		}
+		require.NoError(t, e, "a content-safety refusal on provider A must fail over to provider B, not surface")
+		got += msg.Content
+	}
+	assert.True(t, sawEOF, "the call must still succeed via B")
+	assert.Contains(t, got, "ok")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&aCalls), "content-safety is non-retryable: exactly 1 call to A")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&bCalls))
+}
+
+// TestResilientModel_StreamNoFailoverPastLastProvider proves the failover
+// branch's curIdx+1 < len(r.chain) guard: when the failing provider is the
+// last (only) one in the chain, there is nothing to fail over TO, so the
+// non-retryable error must surface exactly as it did before this branch
+// existed — not loop, not retry the same provider, not hang.
+func TestResilientModel_StreamNoFailoverPastLastProvider(t *testing.T) {
+	var calls int32
+	notFound := errors.New("error, status code: 404, status: 404 Not Found, message: no such model")
+	a := &errorThenOKModel{calls: &calls, err: notFound}
+	r, err := NewResilientModel([]model.BaseChatModel{a}, fastEinoCfg())
+	require.NoError(t, err)
+
+	sr, err := r.Stream(context.Background(), []*schema.Message{schema.UserMessage("x")})
+	require.NoError(t, err)
+	defer sr.Close()
+
+	var sawErr error
+	for {
+		_, e := sr.Recv()
+		if e != nil {
+			sawErr = e
+			break
+		}
+	}
+	require.Error(t, sawErr)
+	assert.False(t, errors.Is(sawErr, io.EOF), "the sole provider's non-retryable error must surface, not a clean EOF")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&calls), "no failover target exists: exactly 1 call, no same-provider retry either")
+}
+
+// toolThenClientErrModel delivers a tool call, then errors mid-stream with a
+// non-retryable-class error. Used to prove the failover branch's
+// !deliveredTools guard: even though the error would otherwise qualify for
+// failover, once a tool call has gone out, failing over to another provider
+// would duplicate it exactly as a same-provider retry would (see
+// toolThenDropModel above, and TestResilientModel_StreamNoRetryAfterToolCall)
+// — so it must not fail over either.
+type toolThenClientErrModel struct {
+	calls *int32
+	err   error
+}
+
+func (m *toolThenClientErrModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	return schema.AssistantMessage("ok", nil), nil
+}
+
+func (m *toolThenClientErrModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	atomic.AddInt32(m.calls, 1)
+	withTool := schema.AssistantMessage("", []schema.ToolCall{
+		{ID: "c1", Type: "function", Function: schema.FunctionCall{Name: "fs_read"}},
+	})
+	return streamReaderFrom([]*schema.Message{withTool}, m.err), nil
+}
+
+var _ model.BaseChatModel = (*toolThenClientErrModel)(nil)
+
+// TestResilientModel_StreamNoFailoverAfterToolCall proves the failover
+// branch's !deliveredTools guard: provider A delivers a tool call and then
+// hits a non-retryable-class mid-stream error; even though provider B is
+// healthy and available, failing over would re-issue the tool call against a
+// different provider. The error must propagate instead, and B must never be
+// called.
+func TestResilientModel_StreamNoFailoverAfterToolCall(t *testing.T) {
+	var aCalls, bCalls int32
+	notFound := errors.New("error, status code: 404, status: 404 Not Found, message: no such model")
+	a := &toolThenClientErrModel{calls: &aCalls, err: notFound}
+	b := newScriptedModel([]bool{false}, &bCalls)
+	r, err := NewResilientModel([]model.BaseChatModel{a, b}, fastEinoCfg())
+	require.NoError(t, err)
+
+	sr, err := r.Stream(context.Background(), []*schema.Message{schema.UserMessage("x")})
+	require.NoError(t, err)
+	defer sr.Close()
+
+	var sawTool, sawErr bool
+	for {
+		msg, e := sr.Recv()
+		if e != nil {
+			sawErr = true
+			break
+		}
+		if len(msg.ToolCalls) > 0 {
+			sawTool = true
+		}
+	}
+	assert.True(t, sawTool, "the tool call must have been delivered")
+	assert.True(t, sawErr, "the error must propagate, not be swallowed by a failover")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&aCalls))
+	assert.Equal(t, int32(0), atomic.LoadInt32(&bCalls), "B must never be called: failing over after a delivered tool call would duplicate it")
+}

@@ -177,6 +177,56 @@ func TestClassifyError(t *testing.T) {
 			status: 400,
 		},
 
+		// --- content safety (W-C-13) ------------------------------------------
+		{
+			// OpenAI's documented APIError.Code for this condition, embedded in
+			// the message text an adapter would produce (see error.go's Code
+			// field in the vendored go-openai client this package imports —
+			// APIError.Error() never prints Code itself, only Message, so a
+			// real classifier can only see this if it is echoed into the text,
+			// exactly as OpenAI's own Message field does).
+			name:   "OpenAI content_policy_violation code",
+			err:    errors.New("error, status code: 400, status: 400 Bad Request, message: content_policy_violation: the prompt was rejected"),
+			class:  ClassContentSafety,
+			status: 400,
+		},
+		{
+			// OpenAI's documented message text for the same rejection.
+			name:   "OpenAI safety-system rejection message",
+			err:    errors.New("error, status code: 400, status: 400 Bad Request, message: Your request was rejected as a result of our safety system."),
+			class:  ClassContentSafety,
+			status: 400,
+		},
+		{
+			// Azure OpenAI's documented content-filter message. No status
+			// pattern this phrasing anchors on, so this also proves the
+			// keyword path (no c.Status > 0) reaches ClassContentSafety.
+			name:  "Azure content management policy filter",
+			err:   errors.New("The response was filtered due to the prompt triggering Azure OpenAI's content management policy. Please modify your prompt and retry."),
+			class: ClassContentSafety,
+		},
+		{
+			// Azure OpenAI's documented InnerError.Code for the same condition
+			// (error.go's InnerError.Code field), as it appears once echoed
+			// into the outer message text.
+			name:   "Azure ResponsibleAIPolicyViolation inner code",
+			err:    errors.New(`status code: 400, message: {"innererror":{"code":"ResponsibleAIPolicyViolation"}}`),
+			class:  ClassContentSafety,
+			status: 400,
+		},
+		{
+			// The exact ambiguity the spec calls out by name: an unrelated 502
+			// (gateway trouble) is ClassTransient (see the "500 whose body
+			// mentions 404" case above for the same shape at a different
+			// status), but a 502 whose body is a gateway FRONTING a content
+			// filter must still resolve to ClassContentSafety — status alone
+			// cannot tell these two 502s apart, only the marker can.
+			name:   "502 fronting a content filter is content_safety, not transient",
+			err:    errors.New(`gateway error (HTTP 502): upstream rejected: content_policy_violation`),
+			class:  ClassContentSafety,
+			status: 502,
+		},
+
 		// --- degenerate -------------------------------------------------------
 		{name: "nil error", err: nil, class: ClassUnknown},
 		{name: "unrecognised error", err: errors.New("something went sideways"), class: ClassUnknown},
@@ -365,6 +415,7 @@ func TestIsRetryableClass(t *testing.T) {
 		{ClassRateLimit, true},
 		{ClassClientError, false},
 		{ClassContextOverflow, false},
+		{ClassContentSafety, false},
 		{ClassUnknown, false},
 	}
 	for _, tc := range cases {

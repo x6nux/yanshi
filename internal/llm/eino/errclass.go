@@ -44,6 +44,12 @@ import (
 //	ClassContextOverflow→ do NOT retry as-is. Retrying an over-long prompt
 //	                      reproduces it verbatim; compaction has to shrink the
 //	                      context first (C9/C6).
+//	ClassContentSafety  → do NOT retry, ever (W-C-13). The request itself was
+//	                      judged unsafe; retrying reproduces the same verdict.
+//	                      Kept distinct from ClassClientError so telemetry and
+//	                      the resilient layer's mid-stream failover (see
+//	                      resilient.go's isNonRetryableClientErr) can name the
+//	                      real cause instead of a generic "client error".
 //	ClassUnknown        → no evidence either way; the caller keeps its previous
 //	                      behavior (retry only if the error was explicitly
 //	                      wrapped as retryable).
@@ -67,6 +73,15 @@ const (
 	// ClassContextOverflow means the prompt exceeded the model's window;
 	// retrying unchanged reproduces it, so compaction must run first.
 	ClassContextOverflow ErrorClass = "context_overflow"
+	// ClassContentSafety means the provider refused the REQUEST outright on
+	// content-policy grounds (W-C-13) — distinct from ClassClientError even
+	// though providers report it as an ordinary 4xx (OpenAI's
+	// content_policy_violation code, Azure OpenAI's content-management-policy
+	// filter): a config bug is fixable by changing the request, a content
+	// rejection is not, and folding the two together would make the two
+	// human-facing remedies indistinguishable in logs/telemetry. Never
+	// retried, same as ClassClientError — see IsRetryableClass.
+	ClassContentSafety ErrorClass = "content_safety"
 )
 
 // Classification is the full verdict on one provider error.
@@ -160,6 +175,31 @@ var contextOverflowMarkers = []string{
 	"input length and `max_tokens` exceed",
 }
 
+// contentSafetyMarkers are lowercase substrings that identify a genuine
+// content-policy rejection: the provider refused to generate at all because
+// it judged the REQUEST unsafe, not because of a transport, quota, or config
+// problem. They are checked ahead of the status branch in ClassifyError, the
+// same position contextOverflowMarkers uses and for the identical reason the
+// task spec calls out explicitly: providers report this condition behind an
+// ordinary status (a plain 400, or — behind a gateway fronting a content
+// filter — a 5xx that has nothing to do with the origin being down), so
+// StatusCode alone cannot tell it apart from an unrelated error sharing that
+// same status. Each marker is real provider vocabulary, not invented:
+//   - "content_policy_violation" is OpenAI's documented APIError.Code for
+//     this condition (see error.go's Code field in the vendored
+//     meguminnnnnnnnn/go-openai client this package imports).
+//   - "rejected as a result of our safety system" is OpenAI's documented
+//     message text for the same rejection.
+//   - "content management policy" and "responsibleaipolicyviolation" are
+//     Azure OpenAI's documented content-filter message and InnerError.Code
+//     respectively (error.go's InnerError.Code field).
+var contentSafetyMarkers = []string{
+	"content_policy_violation",
+	"rejected as a result of our safety system",
+	"content management policy",
+	"responsibleaipolicyviolation",
+}
+
 // clientErrorMarkers are lowercase substrings that identify a non-retryable
 // client error by NAME rather than by status. They cover the families whose
 // status is often absent from the wrapped text (a provider returning a bare
@@ -224,6 +264,16 @@ func ClassifyError(err error) Classification {
 	// instead of "this configuration is broken".
 	if containsAny(text, contextOverflowMarkers) {
 		c.Class = ClassContextOverflow
+		return c
+	}
+
+	// W-C-13: content-safety markers are checked before the status branch for
+	// the same reason context-overflow is — see contentSafetyMarkers' doc
+	// comment. A 400 that also matches clientErrorMarkers below would
+	// otherwise be indistinguishable from a plain client error once c.Status
+	// selects classForStatus's generic status>=400 branch.
+	if containsAny(text, contentSafetyMarkers) {
+		c.Class = ClassContentSafety
 		return c
 	}
 
