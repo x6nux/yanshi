@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -29,6 +30,14 @@ func TestCov_HandleWorkspaceDiff_VcsNil(t *testing.T) {
 // TestCov_HandleWorkspaceDiff_StoreError covers the UncommittedDiff error
 // branch by closing the DB before the call — mirrors
 // TestCov_ListSeams_StoreError's technique for the seam handler.
+//
+// Asserts sf.Type == "error" specifically, not just Contains(msg,
+// "workspace_diff") — that substring is present on BOTH the error branch
+// ("workspace_diff: "+err.Error(), proto.NewError) and the success branch
+// ({"type":"workspace_diff",...}, proto.NewWorkspaceDiff), so the old
+// assertion could not tell a store failure from an empty-but-successful
+// reply. Proven by mutation: swapping the error-branch write for
+// conn.write(proto.NewWorkspaceDiff(nil)) still passed the old assertion.
 func TestCov_HandleWorkspaceDiff_StoreError(t *testing.T) {
 	db, err := store.Open(":memory:")
 	require.NoError(t, err)
@@ -42,7 +51,10 @@ func TestCov_HandleWorkspaceDiff_StoreError(t *testing.T) {
 
 	_, msg, err := client.ReadMessage()
 	require.NoError(t, err)
-	assert.Contains(t, string(msg), "workspace_diff")
+	var sf proto.ServerFrame
+	require.NoError(t, json.Unmarshal(msg, &sf))
+	require.Equal(t, "error", sf.Type)
+	assert.Contains(t, sf.Text, "workspace_diff")
 }
 
 // TestWS_WorkspaceDiff_EndToEnd drives the real dispatch path (ws.go's
