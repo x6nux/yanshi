@@ -40,9 +40,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/x6nux/yanshi/internal/config"
+	"github.com/x6nux/yanshi/internal/ctxcompact"
 	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/sandbox"
 	"github.com/x6nux/yanshi/internal/secproc"
@@ -543,6 +545,109 @@ func TestRunAuthCommand_EmptyStdoutErrors(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "empty credential") {
 		t.Fatalf("err = %v, want an \"empty credential\" error", err)
 	}
+}
+
+// brokenStreamFactory is a secproc.Factory test double whose Stdout stream
+// errors on read. It exists to drive runAuthCommand's WaitDrained/drainErr
+// site — the one authCommandErrf call site none of this file's other test
+// doubles can reach, because specCapturingFactory's Stdout/Stderr are always
+// strings.Reader, which never fails a read.
+type brokenStreamFactory struct{}
+
+func (brokenStreamFactory) Start(context.Context, secproc.SecureProcessSpec) (*secproc.StartedProcess, error) {
+	return &secproc.StartedProcess{
+		Wait:   func() error { return nil },
+		Stdout: iotest.ErrReader(errors.New("broken stdout stream (test)")),
+		Stderr: strings.NewReader(""),
+	}, nil
+}
+
+var _ secproc.Factory = brokenStreamFactory{}
+
+// TestCmdAuthErrorsCarryConfigOrWiringSentinel drives all six of
+// authCommandErrf's call sites (see its doc comment for the list) through
+// the real production functions that produce them — never a hand-written
+// error string standing in for one — and checks two things about each
+// resulting error:
+//
+//  1. errors.Is(err, ctxcompact.ErrConfigOrWiring) — the mechanism
+//     internal/ctxcompact's isConfigOrWiringFailure actually classifies on.
+//     This is the fix under test: it must survive ANY future rewording of
+//     this file's error text, including the exact mutation the W-C
+//     model-runtime review used to prove the previous
+//     strings.Contains(err.Error(), "auth.command")-based classifier was
+//     silently unprotected — renaming every occurrence of the literal
+//     "eino: auth.command" in this file to "eino: credential command".
+//  2. err.Error() still contains "auth.command" — a wording pin, checked
+//     separately from (1) on purpose. Unlike (1), this assertion is NOT
+//     meant to survive that mutation: it is supposed to go red the moment
+//     someone makes that exact rename, so a human notices the observable
+//     error text changed and updates it on purpose rather than by accident.
+//     A green (1) with a red (2) after that mutation is the correct
+//     outcome for this test, not a regression in it.
+func TestCmdAuthErrorsCarryConfigOrWiringSentinel(t *testing.T) {
+	check := func(t *testing.T, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatal("err = nil, want a config-or-wiring error")
+		}
+		if !errors.Is(err, ctxcompact.ErrConfigOrWiring) {
+			t.Errorf("errors.Is(err, ctxcompact.ErrConfigOrWiring) = false for err = %v", err)
+		}
+		if !strings.Contains(err.Error(), "auth.command") {
+			t.Errorf("err.Error() = %q, does not contain %q", err.Error(), "auth.command")
+		}
+	}
+
+	t.Run("no program to run", func(t *testing.T) {
+		_, err := runAuthCommand(context.Background(), nil)
+		check(t, err)
+	})
+
+	t.Run("launch fails without a Factory", func(t *testing.T) {
+		withSwappedAuthorizer(t, allowAuthCommandAuthorizer)
+		_, err := runAuthCommand(context.Background(), []string{"get-token"})
+		check(t, err)
+	})
+
+	t.Run("drain fails on a broken stdout stream", func(t *testing.T) {
+		withSwappedAuthorizer(t, allowAuthCommandAuthorizer)
+		ctx := secproc.WithFactory(context.Background(), brokenStreamFactory{})
+		_, err := runAuthCommand(ctx, []string{"aws-get-token"})
+		check(t, err)
+	})
+
+	t.Run("non-zero exit", func(t *testing.T) {
+		t.Setenv(cmdauthHelperEnvFlag, "1")
+		t.Setenv(cmdauthHelperStdoutFile, "")
+		t.Setenv("YANSHI_CMDAUTH_HELPER_STDERR_MSG", "boom (sentinel test)")
+		t.Setenv("YANSHI_CMDAUTH_HELPER_EXIT", "1")
+		withSwappedAuthorizer(t, allowAuthCommandAuthorizer)
+		ctx := secproc.WithFactory(context.Background(), shell.UnsandboxedSecureFactory())
+		argv := []string{os.Args[0], "-test.run=^TestCmdAuthHelperExitProcess$", "--"}
+		_, err := DefaultAuthCommandRunner(ctx, argv)
+		check(t, err)
+	})
+
+	t.Run("empty stdout", func(t *testing.T) {
+		withSwappedAuthorizer(t, allowAuthCommandAuthorizer)
+		factory := &specCapturingFactory{stdout: "   \n  "}
+		ctx := secproc.WithFactory(context.Background(), factory)
+		_, err := runAuthCommand(ctx, []string{"aws-get-token"})
+		check(t, err)
+	})
+
+	t.Run("token refresh fetch fails", func(t *testing.T) {
+		fake := newFakeAuthCommandRunner() // no canned results: run() errors on first call
+		source := NewCommandTokenSource([]string{"get-token"}, time.Hour, fake.run)
+		transport := &authRefreshTransport{source: source, header: "Authorization", bearer: true}
+		req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1.invalid/", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = transport.attempt(req, nil, http.DefaultTransport, false)
+		check(t, err)
+	})
 }
 
 // ---- runAuthCommand against a REAL OS subprocess ----

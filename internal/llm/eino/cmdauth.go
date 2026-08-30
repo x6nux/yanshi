@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/x6nux/yanshi/internal/config"
+	"github.com/x6nux/yanshi/internal/ctxcompact"
 	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/sandbox"
 	"github.com/x6nux/yanshi/internal/secproc"
@@ -99,6 +100,31 @@ func authCommandProfile() guard.PermissionProfile {
 	return guard.PermissionProfile{Tools: guard.ToolsPerm{Allow: []string{authCommandTool}}}
 }
 
+// authCommandErrf builds an error for a failure in the credential-fetch
+// pipeline itself (config or wiring: no secproc.Factory, the program is
+// missing, it exited non-zero, its stdout was empty) as opposed to a failure
+// from the chat model the credential is FOR. It wraps
+// ctxcompact.ErrConfigOrWiring via fmt.Errorf's "%w" (Go 1.20+ allows more
+// than one %w in one call, so this composes with an existing "%w" for an
+// underlying cause without disturbing it) so internal/ctxcompact's
+// isConfigOrWiringFailure can classify the error with errors.Is instead of
+// matching this function's wording — see ErrConfigOrWiring's doc comment for
+// why that distinction is load-bearing (W-C model-runtime review, finding
+// under M-3: the previous string-match classifier broke silently the moment
+// this file's wording changed, and no test caught it because the only test
+// exercising the classifier constructed its fixture error by hand instead of
+// routing a real error through this file).
+//
+// All six of this file's credential-pipeline error sites go through this
+// helper rather than calling fmt.Errorf directly, so there is exactly one
+// place that attaches the sentinel — a seventh site that forgot to wrap it
+// would be the only way to reopen the gap, and TestCmdAuthErrorsCarryConfigOrWiringSentinel
+// (cmdauth_test.go) drives each of them through the real function and checks
+// errors.Is on the result, not on hand-written error text.
+func authCommandErrf(format string, args ...any) error {
+	return fmt.Errorf(format+": %w", append(args, ctxcompact.ErrConfigOrWiring)...)
+}
+
 // runAuthCommand is DefaultAuthCommandRunner's implementation, split into a
 // named function so the var above stays swappable in tests.
 //
@@ -147,7 +173,7 @@ func authCommandProfile() guard.PermissionProfile {
 // AllowEnv/UseSandboxTier come from the spec below, not from context.
 func runAuthCommand(ctx context.Context, argv []string) (string, error) {
 	if len(argv) == 0 {
-		return "", fmt.Errorf("eino: auth.command has no program to run")
+		return "", authCommandErrf("eino: auth.command has no program to run")
 	}
 
 	spawnCtx, cancel := context.WithTimeout(context.Background(), authCommandTimeout)
@@ -180,7 +206,7 @@ func runAuthCommand(ctx context.Context, argv []string) (string, error) {
 		UseSandboxTier: sandbox.FullAccess,
 	})
 	if err != nil {
-		return "", fmt.Errorf("eino: auth.command launch: %w", err)
+		return "", authCommandErrf("eino: auth.command launch: %w", err)
 	}
 
 	// B-1: drain BOTH stdout and stderr to EOF concurrently, BEFORE Wait.
@@ -200,17 +226,17 @@ func runAuthCommand(ctx context.Context, argv []string) (string, error) {
 	stderr := secproc.NewBoundedCapture(secproc.CaptureLimit)
 	waitErr, drainErr := secproc.WaitDrained(started, stdout, stderr)
 	if drainErr != nil {
-		return "", fmt.Errorf("eino: auth.command %q: %w", argv[0], drainErr)
+		return "", authCommandErrf("eino: auth.command %q: %w", argv[0], drainErr)
 	}
 	stdoutText, _, _ := stdout.Snapshot()
 	stderrText, _, _ := stderr.Snapshot()
 	if waitErr != nil {
-		return "", fmt.Errorf("eino: auth.command %q failed: %w (stderr: %s)",
+		return "", authCommandErrf("eino: auth.command %q failed: %w (stderr: %s)",
 			argv[0], waitErr, strings.TrimSpace(stderrText))
 	}
 	token := strings.TrimSpace(stdoutText)
 	if token == "" {
-		return "", fmt.Errorf("eino: auth.command %q produced an empty credential", argv[0])
+		return "", authCommandErrf("eino: auth.command %q produced an empty credential", argv[0])
 	}
 	return token, nil
 }
@@ -340,7 +366,7 @@ func (t *authRefreshTransport) RoundTrip(req *http.Request) (*http.Response, err
 func (t *authRefreshTransport) attempt(req *http.Request, body []byte, next http.RoundTripper, force bool) (*http.Response, error) {
 	tok, err := t.source.fetch(req.Context(), force)
 	if err != nil {
-		return nil, fmt.Errorf("eino: fetching auth.command credential: %w", err)
+		return nil, authCommandErrf("eino: fetching auth.command credential: %w", err)
 	}
 	clone := req.Clone(req.Context())
 	if body != nil {

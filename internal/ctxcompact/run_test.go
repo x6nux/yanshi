@@ -4,6 +4,7 @@ package ctxcompact_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -148,15 +149,27 @@ func TestRun_ModelFailurePreservesEveryPinCategory(t *testing.T) {
 // collapse into "the same code" (an earlier finding, unrelated to this one);
 // this test is the mechanical check that they no longer do: the ONLY
 // difference between this fixture and TestRun_ModelFailureFallsBackToPinsOnly
-// is the error text the fake model returns (an auth.command marker here vs.
-// "model down" there), and that difference alone must flip every one of
-// require.Error/Fallback/onChunk. Deleting isConfigOrWiringFailure's check in
-// run.go (reverting to the pre-M-3 unconditional fallback) turns this test's
-// require.Error into a failure, since Run would then return (result, nil)
-// exactly like the model-failure case.
+// is the sentinel the fake model's error wraps (ctxcompact.ErrConfigOrWiring
+// here vs. a plain "model down" there), and that difference alone must flip
+// every one of require.Error/Fallback/onChunk. Deleting isConfigOrWiringFailure's
+// check in run.go (reverting to the pre-M-3 unconditional fallback) turns
+// this test's require.Error into a failure, since Run would then return
+// (result, nil) exactly like the model-failure case.
+//
+// The fixture wraps ctxcompact.ErrConfigOrWiring with %w rather than
+// constructing a bare errors.New with the literal string "auth.command" in
+// it (the pre-fix version of this test did exactly that, and a follow-up
+// finding on the review that added this test pointed out it proved nothing
+// about the real coupling: isConfigOrWiringFailure used to string-match on
+// "auth.command", and this fixture's hand-written text would keep matching
+// that string forever regardless of what internal/llm/eino/cmdauth.go
+// actually produces — see internal/llm/eino's
+// TestCmdAuthErrorsCarryConfigOrWiringSentinel for the test that exercises
+// cmdauth.go's REAL error text instead of a hand-rolled fixture).
 func TestRun_ConfigFailureIsNotFallback(t *testing.T) {
-	fm := einollm.NewFakeModel(nil, errors.New(
-		"eino: fetching auth.command credential: eino: auth.command launch: secproc: no Factory in context (fail-closed)"))
+	fm := einollm.NewFakeModel(nil, fmt.Errorf(
+		"eino: fetching auth.command credential: eino: auth.command launch: secproc: no Factory in context (fail-closed): %w",
+		ctxcompact.ErrConfigOrWiring))
 	msgs := []*schema.Message{
 		{Role: schema.User, Content: "task"},
 		{Role: schema.Assistant, Content: strings.Repeat("noise ", 100)},
