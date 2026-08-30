@@ -112,3 +112,58 @@ func TestApplyColorProfile_InvalidatesGlamourCache(t *testing.T) {
 		t.Fatal("renderer(80) returned the same cached instance after ApplyColorProfile changed the profile")
 	}
 }
+
+// TestRenderMarkdown_AsciiStripsAllEscapes pins RE-A: glamour.WithColorProfile
+// correctly drops COLOR under Ascii, but glamour v1.0.0's bold/underline
+// styling goes through termenv.String(s).Styled(), and termenv@v0.16.0's
+// Style.String() constructor hardcodes profile=ANSI internally — so Ascii's
+// "suppress all styling" early-return in Styled() never fires for glamour,
+// regardless of the profile passed to glamour.WithColorProfile. renderMarkdown
+// now strips the result post-hoc; this test is the regression pin for that.
+func TestRenderMarkdown_AsciiStripsAllEscapes(t *testing.T) {
+	withColorProfile(t, termenv.Ascii)
+	out := renderMarkdown(80, "**bold** and _italic_ text")
+	if strings.ContainsRune(out, '\x1b') {
+		t.Fatalf("Ascii profile: glamour-rendered markdown still contains an ANSI escape byte: %q", out)
+	}
+}
+
+// TestRenderMarkdown_ColorProfilePropagates pins RE-C: renderer(width)'s
+// glamour.WithColorProfile(activeProfile) call (styles.go) actually reaches
+// glamour's rendered output — not just the cache-pointer-identity that
+// TestApplyColorProfile_InvalidatesGlamourCache above pins. Mutating that
+// call back to a hardcoded profile (e.g. glamour.WithColorProfile(termenv.
+// ANSI256)) leaves every other test in this file green; this one goes red
+// because the ANSI case would then still emit "38;5;" (an 8-bit palette
+// index has no business surviving a 16-color downgrade).
+//
+// ANSI256 and TrueColor are asserted identical here (both "38;5;") — that is
+// not a bug in this propagation path: glamour's own style colors
+// (styles.DarkStyleConfig, and this file's "51" code-span override in
+// renderer()) are declared as bare ANSI-256 index strings, not hex, and
+// termenv.Profile.Convert never upgrades an already-8-bit color to 24-bit
+// (see TestApplyColorProfile_TrueColorEmits24Bit's doc comment) — it is
+// glamour's own color literals staying 8-bit under TrueColor, tracked
+// separately as RE-F.
+func TestRenderMarkdown_ColorProfilePropagates(t *testing.T) {
+	cases := []struct {
+		profile termenv.Profile
+		want256 bool
+	}{
+		{termenv.ANSI, false},
+		{termenv.ANSI256, true},
+		{termenv.TrueColor, true},
+	}
+	for _, c := range cases {
+		t.Run(c.profile.Name(), func(t *testing.T) {
+			withColorProfile(t, c.profile)
+			out := renderMarkdown(80, "`code span`")
+			if has := strings.Contains(out, "38;5;"); has != c.want256 {
+				t.Errorf("%s: \"38;5;\" present=%v, want %v: %q", c.profile.Name(), has, c.want256, out)
+			}
+			if !strings.ContainsRune(out, '\x1b') {
+				t.Errorf("%s: expected an ANSI escape sequence, got none: %q", c.profile.Name(), out)
+			}
+		})
+	}
+}
