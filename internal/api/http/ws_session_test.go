@@ -282,6 +282,130 @@ func TestChatWS_ForkSession_RejectsNegativeOtherThanMinusOne(t *testing.T) {
 	assert.Equal(t, "error", f.Type)
 }
 
+// seedRollbackSession creates a session with two user turns (seq 0 and 2,
+// each followed by an assistant reply) — the fixture every
+// resolveRollbackSeq/rollback-fork test below shares.
+func seedRollbackSession(t *testing.T, st *store.Store) string {
+	t.Helper()
+	sid, err := st.CreateSession("orig")
+	require.NoError(t, err)
+	require.NoError(t, st.AppendMessage(sid, 0, "user", "first"))
+	require.NoError(t, st.AppendMessage(sid, 1, "assistant", "reply1"))
+	require.NoError(t, st.AppendMessage(sid, 2, "user", "second"))
+	require.NoError(t, st.AppendMessage(sid, 3, "assistant", "reply2"))
+	return sid
+}
+
+// TestResolveRollbackSeq_TargetsMostRecentUserTurn proves turnsBack=1 walks
+// from the END of the transcript: it targets the LAST user message ("second",
+// seq=2), not the first, resolving to seq-1=1 (fork ends right before it).
+func TestResolveRollbackSeq_TargetsMostRecentUserTurn(t *testing.T) {
+	st, _ := newSessionTestServer(t)
+	sid := seedRollbackSession(t, st)
+
+	seq, err := resolveRollbackSeq(st, sid, 1)
+	require.NoError(t, err)
+	assert.Equal(t, 1, seq)
+}
+
+// TestResolveRollbackSeq_FirstTurnYieldsEmptyForkSentinel proves the W-E-11
+// edge case: rolling back to before the session's very first message (seq=0)
+// cannot resolve to seq-1=-1 (store.ForkSession's "copy everything"
+// sentinel) — it must resolve to -2, ForkSession's dedicated empty-fork
+// sentinel, or a rollback to the first turn would silently duplicate the
+// whole session instead of producing an empty one.
+func TestResolveRollbackSeq_FirstTurnYieldsEmptyForkSentinel(t *testing.T) {
+	st, _ := newSessionTestServer(t)
+	sid := seedRollbackSession(t, st)
+
+	seq, err := resolveRollbackSeq(st, sid, 2)
+	require.NoError(t, err)
+	assert.Equal(t, -2, seq)
+}
+
+// TestResolveRollbackSeq_ExceedsAvailableTurnsErrors proves the fail-closed
+// stance (mirroring GB5's out-of-range rejection for plain seq forks):
+// asking to roll back further than the session has user turns is an error,
+// not a silent clamp to the empty-fork sentinel.
+func TestResolveRollbackSeq_ExceedsAvailableTurnsErrors(t *testing.T) {
+	st, _ := newSessionTestServer(t)
+	sid := seedRollbackSession(t, st)
+
+	_, err := resolveRollbackSeq(st, sid, 3)
+	require.Error(t, err)
+}
+
+// TestChatWS_ForkSession_RollbackByTurnsBack proves the end-to-end wire path:
+// fork_session{turns_back:1} reaches resolveRollbackSeq and lands on the same
+// seq a manually-computed fork_session{seq:1} would.
+func TestChatWS_ForkSession_RollbackByTurnsBack(t *testing.T) {
+	st, s := newSessionTestServer(t)
+	sid := seedRollbackSession(t, st)
+
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.NewRestoreSession(sid)))
+	rf := readFrame(t, c)
+	require.Equal(t, "session_restored", rf.Type)
+
+	require.NoError(t, c.WriteJSON(proto.NewForkSessionRollback(1)))
+	f := readFrame(t, c)
+	require.Equal(t, "session_forked", f.Type)
+	msgs, err := st.Messages(f.SessionID)
+	require.NoError(t, err)
+	require.Len(t, msgs, 2)
+	assert.Equal(t, "first", msgs[0].Content)
+	assert.Equal(t, "reply1", msgs[1].Content)
+}
+
+// TestChatWS_ForkSession_RollbackBeforeFirstMessage proves the empty-fork
+// edge case survives the full wire round trip: turns_back covering the
+// session's very first turn produces a session_forked reply for a session
+// with ZERO messages, not an error and not a full-history duplicate.
+func TestChatWS_ForkSession_RollbackBeforeFirstMessage(t *testing.T) {
+	st, s := newSessionTestServer(t)
+	sid := seedRollbackSession(t, st)
+
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.NewRestoreSession(sid)))
+	rf := readFrame(t, c)
+	require.Equal(t, "session_restored", rf.Type)
+
+	require.NoError(t, c.WriteJSON(proto.NewForkSessionRollback(2)))
+	f := readFrame(t, c)
+	require.Equal(t, "session_forked", f.Type)
+	msgs, err := st.Messages(f.SessionID)
+	require.NoError(t, err)
+	assert.Empty(t, msgs)
+}
+
+// TestChatWS_ForkSession_RollbackExceedingTurnsErrors mirrors
+// TestChatWS_ForkSession_SeqOutOfBoundsRejected for the turns_back path.
+func TestChatWS_ForkSession_RollbackExceedingTurnsErrors(t *testing.T) {
+	st, s := newSessionTestServer(t)
+	sid := seedRollbackSession(t, st)
+
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	c := dial(t, dialWSURL(t, ts))
+	defer c.Close()
+
+	require.NoError(t, c.WriteJSON(proto.NewRestoreSession(sid)))
+	rf := readFrame(t, c)
+	require.Equal(t, "session_restored", rf.Type)
+
+	require.NoError(t, c.WriteJSON(proto.NewForkSessionRollback(5)))
+	f := readFrame(t, c)
+	assert.Equal(t, "error", f.Type)
+}
+
 // TestChatWS_ForkSession_DisabledWhenNoStore proves store=nil returns an error.
 // No session here, so no restore_session precondition (GB1 does not apply).
 func TestChatWS_ForkSession_DisabledWhenNoStore(t *testing.T) {

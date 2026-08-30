@@ -15,11 +15,22 @@ import (
 //
 //	-1      = copy ALL messages.
 //	>=0     = copy messages with seq <= fromSeq (inclusive upper bound).
-//	<-1     = invalid; return an error and create no fork (GB5).
+//	-2      = copy ZERO messages (explicit empty fork; see below).
+//	<-2     = invalid; return an error and create no fork (GB5).
 //
 // For fromSeq >=0, only values greater than the source's maximum seq are out
 // of range; an upper bound that falls in a seq gap still copies every row with
 // seq <= fromSeq. An empty source can only be forked with -1 (all/zero rows).
+//
+// -2 exists for the case -1 cannot express: seq is 0-based (see
+// context_events.go's maxMessageSeq), so "roll back to before the source's
+// very first message" is targetSeq = 0-1 = -1 — which collides with -1's
+// existing "copy everything" meaning and would silently duplicate the whole
+// session instead of producing an empty one (W-E-11). -2 is reserved for that
+// internal caller (ws_handlers.go's resolveRollbackSeq): it is never produced
+// by a plain client-supplied fork_session.seq, which the WS handler continues
+// to validate as >= -1 before it ever reaches this function — see
+// handleForkSession's doc comment.
 //
 // GB6: the current schema has no per-message usage, so we cannot compute a
 // faithful prefix sum. To avoid crediting the fork with the source's full
@@ -31,9 +42,10 @@ import (
 // The local variable name `forkID` is deliberately NOT `newID` — that would
 // shadow the package-level newID() function and break compilation.
 func (s *Store) ForkSession(srcID string, fromSeq int) (string, error) {
-	// GB5: reject anything other than -1 (all) or >=0 (inclusive upper bound).
-	if fromSeq < -1 {
-		return "", fmt.Errorf("ForkSession: invalid fromSeq %d (want -1 for all, or >=0 for inclusive upper bound)", fromSeq)
+	// GB5: reject anything other than -1 (all), -2 (empty), or >=0 (inclusive
+	// upper bound).
+	if fromSeq < -2 {
+		return "", fmt.Errorf("ForkSession: invalid fromSeq %d (want -1 for all, -2 for empty, or >=0 for inclusive upper bound)", fromSeq)
 	}
 	var forkID string
 	err := s.WriteTx(context.Background(), func(tx *sql.Tx) error {
@@ -100,6 +112,8 @@ func (s *Store) ForkSession(srcID string, fromSeq int) (string, error) {
 		switch {
 		case fromSeq == -1:
 			toCopy = allMsgs
+		case fromSeq == -2:
+			toCopy = nil // explicit empty fork; no maxSeq bound check applies.
 		default: // fromSeq >= 0
 			maxSeq := -1
 			for _, m := range allMsgs {

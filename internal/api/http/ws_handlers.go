@@ -274,14 +274,32 @@ func handleRestoreSession(s *Server, conn *wsConn, cs *connSession, sessionID st
 // SAME connSession to the fork before acknowledging it. This keeps TUI and
 // server persistence aligned: the next user turn writes to forkID.
 //
-// seq semantics (unified with store.ForkSession):
+// Two ways to pick the target, mutually exclusive (W-E-11):
 //
-//	-1  = fork all messages.
-//	>=0 = fork messages[0..seq] (inclusive).
-//	<-1 or > max source seq = error; no fork created.
-func handleForkSession(s *Server, conn *wsConn, cs *connSession, seq int) {
+//   - turnsBack > 0: resolved via resolveRollbackSeq into a concrete seq,
+//     which may land on store.ForkSession's -2 "empty fork" sentinel (rolling
+//     back to before the session's very first message — see that function's
+//     doc comment for why -1 cannot express this). seq is ignored.
+//   - turnsBack == 0: seq is used directly, unified with store.ForkSession:
+//     -1  = fork all messages.
+//     >=0 = fork messages[0..seq] (inclusive).
+//     Anything else — including -2, the resolver-only empty-fork sentinel —
+//     is rejected right here. A plain client-supplied seq must never reach
+//     -2's store-level meaning; only resolveRollbackSeq may produce it.
+func handleForkSession(s *Server, conn *wsConn, cs *connSession, seq, turnsBack int) {
 	if s.store == nil || cs.sessionID == "" {
 		conn.write(proto.NewError("session recording is disabled"))
+		return
+	}
+	if turnsBack > 0 {
+		resolved, err := resolveRollbackSeq(s.store, cs.sessionID, turnsBack)
+		if err != nil {
+			conn.write(proto.NewError("fork: " + err.Error()))
+			return
+		}
+		seq = resolved
+	} else if seq < -1 {
+		conn.write(proto.NewError(fmt.Sprintf("fork: invalid seq %d (want -1 for all, or >=0 for inclusive upper bound)", seq)))
 		return
 	}
 	forkID, err := s.store.ForkSession(cs.sessionID, seq)
@@ -296,6 +314,40 @@ func handleForkSession(s *Server, conn *wsConn, cs *connSession, seq int) {
 		return
 	}
 	conn.write(proto.NewSessionForked(forkID))
+}
+
+// resolveRollbackSeq translates "roll back turnsBack user turns" (W-E-11)
+// into the seq handleForkSession/store.ForkSession need: the seq immediately
+// BEFORE the target turn's own row, so the fork's history ends right where
+// that turn began. turnsBack=1 targets the most recent user message,
+// turnsBack=2 the one before it, and so on.
+//
+// Walking from the end (not the start) is what makes "N-th user turn back"
+// well-defined without the caller having to know how many turns exist.
+//
+// The target's Seq-1 collides with store.ForkSession's -1 ("copy all") when
+// the target is the session's very first message (Seq==0, so Seq-1==-1) —
+// that must mean "copy nothing", not "copy everything", so this returns -2,
+// ForkSession's dedicated empty-fork sentinel, for that one case.
+func resolveRollbackSeq(st *store.Store, sessionID string, turnsBack int) (int, error) {
+	msgs, err := st.Messages(sessionID)
+	if err != nil {
+		return 0, fmt.Errorf("resolveRollbackSeq: %w", err)
+	}
+	remaining := turnsBack
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != store.RoleUser {
+			continue
+		}
+		remaining--
+		if remaining == 0 {
+			if msgs[i].Seq == 0 {
+				return -2, nil
+			}
+			return msgs[i].Seq - 1, nil
+		}
+	}
+	return 0, fmt.Errorf("resolveRollbackSeq: turnsBack %d exceeds the session's %d user turn(s)", turnsBack, turnsBack-remaining)
 }
 
 // runDistillPass runs one memory-consolidation pass over dims and reports the

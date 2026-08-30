@@ -58,8 +58,17 @@ type ClientFrame struct {
 	MCPServer     string `json:"mcp_server,omitempty"`
 	MCPAction     string `json:"mcp_action,omitempty"`
 	// Seq selects the inclusive upper bound for fork_session (-1 = all messages,
-	// >=0 = up to that seq). Other frames leave it zero.
+	// >=0 = up to that seq). Other frames leave it zero. Ignored by fork_session
+	// when TurnsBack > 0 — the two are mutually exclusive ways of picking the
+	// same target, kept as separate fields rather than overloading Seq with a
+	// second meaning (W-E-11).
 	Seq int `json:"seq,omitempty"`
+	// TurnsBack requests a fork_session that rolls back N user turns (W-E-11's
+	// Esc-Esc picker): the server resolves it to a concrete Seq via
+	// resolveRollbackSeq (ws_handlers.go) before calling store.ForkSession.
+	// Zero (the default) means "not a rollback fork, use Seq as before" — fully
+	// additive, existing fork_session{seq} callers are unaffected.
+	TurnsBack int `json:"turns_back,omitempty"`
 	// Source carries the install source for skill install requests
 	// (e.g. "github:owner/repo"). Other frames leave it empty.
 	Source string `json:"source,omitempty"`
@@ -981,6 +990,15 @@ func NewWorkspaceDiff(files []WorkspaceDiffFile) ServerFrame {
 // range is rejected by the server. Reply: session_forked{session_id: forkID}.
 func NewForkSession(seq int) ClientFrame {
 	return ClientFrame{Type: "fork_session", Seq: seq}
+}
+
+// NewForkSessionRollback requests a fork_session that rolls back turnsBack
+// user turns (W-E-11's Esc-Esc picker), letting the server resolve the target
+// seq instead of the client having to know row seq numbers. turnsBack must be
+// >0; the server rejects it otherwise (same "reuse fork_session, don't invent
+// a frame type" shape as NewForkSession — see reply, still session_forked).
+func NewForkSessionRollback(turnsBack int) ClientFrame {
+	return ClientFrame{Type: "fork_session", TurnsBack: turnsBack}
 }
 
 // NewSessionForked is the reply to fork_session, carrying the new session id.
