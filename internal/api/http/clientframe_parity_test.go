@@ -61,6 +61,7 @@ var clientControlOnlyFields = map[string]string{
 	"MCPServer":     "mcp_action",
 	"MCPAction":     "mcp_action",
 	"Seq":           "restore_session addresses a message index",
+	"TurnsBack":     "fork_session addresses a target by turn count (W-E-11's Esc-Esc picker), same role as Seq",
 	"Source":        "install_skill",
 	"FeaturesSet":   "features_set",
 	"Dim":           "checkpoint names which of session/memory/files to plan or restore",
