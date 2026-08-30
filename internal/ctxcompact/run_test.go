@@ -152,3 +152,61 @@ func TestRun_NoOpWhenNothingToSummarize(t *testing.T) {
 	assert.Equal(t, 0, fm.GenerateCalls+fm.StreamCalls, "no summary call when nothing to summarize")
 	assert.Equal(t, len(msgs), len(res.Messages))
 }
+
+// TestOpenNewWindow_NeverCallsAModel is W-C-14's structural pin: unlike
+// Run/RunSummary, OpenNewWindow's signature takes no ModelSummarizer
+// argument at all — there is nothing here that COULD call a model, which is
+// the whole acceptance criterion ("模型可不摘要直接开新窗"). The fixture is
+// deliberately the exact same shape as TestRun_ModelFailureFallsBackToPinsOnly
+// (same pin categories, same summarize-only noise), proving OpenNewWindow
+// produces the identical fallback SHAPE by construction (it shares
+// pinsOnlyResult) without needing a model to fail first.
+func TestOpenNewWindow_NeverCallsAModel(t *testing.T) {
+	msgs := []*schema.Message{
+		{Role: schema.User, Content: "task"},                                 // 0 user (pin)
+		{Role: schema.Assistant, Content: strings.Repeat("noise ", 100)},     // 1 summarize (DROPPED)
+		{Role: schema.Assistant, Content: strings.Repeat("more ", 100)},      // 2 summarize (DROPPED)
+		{Role: schema.Assistant, Content: strings.Repeat("even more ", 100)}, // 3 summarize (DROPPED)
+		{Role: schema.User, Content: "recent"},                               // 4 user+tail (pin)
+	}
+	res := ctxcompact.OpenNewWindow(msgs, ctxcompact.PlanOpts{KeepRecent: 1},
+		ctxcompact.RunOpts{ModelWindow: 10000, ChunkThreshold: 0.9})
+	assert.True(t, res.Fallback, "OpenNewWindow shares the W-C-04 fallback Result shape")
+	assert.Less(t, res.TokensAfter, res.TokensBefore, "the summarize-only messages are dropped, not kept")
+	for _, m := range res.Messages {
+		assert.False(t, ctxcompact.IsSummaryMessage(m), "no summary was ever produced — there was no model call to produce one")
+	}
+}
+
+// TestOpenNewWindow_PreservesEveryPinCategory is TestRun_ModelFailurePreservesEveryPinCategory's
+// twin for the proactive path: same five pin categories (tail, user
+// original, working-set path, error marker, diff marker), same survival
+// requirement, reached without a failing model — proving W-C-14's guarantee
+// ("模型可不摘要直接开新窗" must not cost the pinned messages) independently
+// of W-C-04's model-failure fixture.
+func TestOpenNewWindow_PreservesEveryPinCategory(t *testing.T) {
+	msgs := []*schema.Message{
+		{Role: schema.User, Content: "edit internal/ctxcompact/compact.go please"}, // 0 working-set (pin)
+		{Role: schema.User, Content: "first request, please keep this"},            // 1 user original (pin)
+		{Role: schema.Assistant, Content: "error: undefined: Foo"},                 // 2 error marker (pin)
+		{Role: schema.Assistant, Content: "--- a/x.go\n+++ b/x.go\n@@ -1 +1 @@"},   // 3 diff marker (pin)
+		{Role: schema.Assistant, Content: strings.Repeat("noise ", 100)},           // 4 summarize (DROPPED)
+		{Role: schema.Assistant, Content: strings.Repeat("more noise ", 100)},      // 5 tail (pin)
+		{Role: schema.User, Content: "recent"},                                     // 6 tail (pin)
+	}
+	res := ctxcompact.OpenNewWindow(msgs, ctxcompact.PlanOpts{KeepRecent: 1},
+		ctxcompact.RunOpts{ModelWindow: 10000, ChunkThreshold: 0.9})
+	require.True(t, res.Fallback)
+
+	contents := make([]string, len(res.Messages))
+	for i, m := range res.Messages {
+		contents[i] = m.Content
+	}
+	assert.Contains(t, contents, msgs[0].Content, "working-set path mention survives")
+	assert.Contains(t, contents, msgs[1].Content, "user original intent survives")
+	assert.Contains(t, contents, msgs[2].Content, "error marker survives")
+	assert.Contains(t, contents, msgs[3].Content, "diff marker survives")
+	assert.Contains(t, contents, msgs[5].Content, "tail (KeepRecent) survives")
+	assert.Contains(t, contents, msgs[6].Content, "tail (KeepRecent) survives")
+	assert.NotContains(t, contents, msgs[4].Content, "summarize-only content is actually discarded, not merely un-erred")
+}

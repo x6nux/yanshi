@@ -19,14 +19,15 @@ import (
 // instruments are bound to the real provider rather than the no-op default.
 // The sync.Once guarantee ensures exactly one creation per process lifetime.
 var instruments struct {
-	once            sync.Once
-	sessionLatency  metric.Float64Histogram
-	turnLatency     metric.Float64Histogram
-	toolLatency     metric.Float64Histogram
-	tokenCounter    metric.Int64Counter
-	retryCounter    metric.Int64Counter
-	fallbackCounter metric.Int64Counter
-	errorCounter    metric.Int64Counter
+	once             sync.Once
+	sessionLatency   metric.Float64Histogram
+	turnLatency      metric.Float64Histogram
+	toolLatency      metric.Float64Histogram
+	tokenCounter     metric.Int64Counter
+	retryCounter     metric.Int64Counter
+	fallbackCounter  metric.Int64Counter
+	newWindowCounter metric.Int64Counter
+	errorCounter     metric.Int64Counter
 }
 
 func ensureInstruments() {
@@ -44,6 +45,8 @@ func ensureInstruments() {
 		instruments.retryCounter, err = m.Int64Counter("yanshi.llm.retry", metric.WithUnit("{attempt}"))
 		instrumentMust(err)
 		instruments.fallbackCounter, err = m.Int64Counter("yanshi.llm.fallback", metric.WithUnit("{fallback}"))
+		instrumentMust(err)
+		instruments.newWindowCounter, err = m.Int64Counter("yanshi.llm.new_window", metric.WithUnit("{window}"))
 		instrumentMust(err)
 		instruments.errorCounter, err = m.Int64Counter("yanshi.operation.errors", metric.WithUnit("{error}"))
 		instrumentMust(err)
@@ -213,4 +216,17 @@ func RecordFallback(ctx context.Context, from, to int, err error) {
 		attribute.Int("fallback.to", to),
 		attribute.String("error.type", obslog.SafeErrorType(err)),
 	))
+}
+
+// RecordNewWindow emits a yanshi.llm.new_window counter marking a W-C-14
+// proactive window open: the MODEL asked (via the context_new_window tool)
+// to skip summarization and start fresh, as opposed to RecordFallback's
+// signal of a summary-model call that itself failed. Deliberately carries
+// no attribute derived from the model-supplied reason text — same
+// safe-attribute discipline as RecordRetry/RecordFallback's error.type
+// (a type name, never the error body): a freeform string an LLM wrote is
+// not something this package attaches to a metric label.
+func RecordNewWindow(ctx context.Context) {
+	ensureInstruments()
+	instruments.newWindowCounter.Add(ctx, 1)
 }

@@ -832,6 +832,16 @@ func Build(opts Options) (*App, error) {
 		allTools = append(allTools, t)
 	}
 
+	// W-C-14: context_new_window — the model-driven counterpart to C2's
+	// read-back tools above. Both exist because compaction is lossy in
+	// different directions: C2 lets the model recover detail AFTER it was
+	// evicted, this lets the model skip straight to a trimmed window BEFORE
+	// the threshold gate would ever fire, when it already knows it does not
+	// need what is about to be dropped.
+	for _, t := range tools.NewContextWindowTools().Tools() {
+		allTools = append(allTools, t)
+	}
+
 	// S6: give permission decisions a durable sink. Before this they reached
 	// slog only, so under yolo/auto "what did it approve last night" was
 	// unanswerable once the terminal scrolled. A write failure is swallowed by

@@ -164,6 +164,15 @@ func DefaultOrchestratorProfile() guard.PermissionProfile {
 			// label after the underlying turns are evicted. Writes one row
 			// scoped to the current conversation by context, never by argument.
 			"milestone_set",
+			// W-C-14: the model asks to skip straight to a trimmed context
+			// window instead of waiting for automatic compaction. It writes
+			// nothing durable — only a one-shot flag on THIS turn's own
+			// context (einollm.RequestNewWindow), consumed at most once by
+			// the next model call on the same turn — so it widens nothing a
+			// dialog would meaningfully gate: worst case is an early,
+			// unnecessary context trim, the same outcome an over-eager
+			// automatic compaction threshold already produces silently.
+			"context_new_window",
 			// T3 background offload. background_list and background_result are
 			// READ-ONLY over this process's own offload registry, and
 			// background_cancel only takes capability away. Withholding them

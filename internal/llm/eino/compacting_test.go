@@ -1235,3 +1235,121 @@ func TestHardForceBypassesCooldown_SoArmingOnFailureIsSafe(t *testing.T) {
 	assert.Equal(t, 2, inner.callCount(), "the retry happened, exactly once")
 	assert.Less(t, len(out), len(big), "and it really compacted")
 }
+
+// TestRequestNewWindow_NoSignalBound proves the write side is a safe no-op
+// (not a panic, not a silent context.WithValue on a key nobody reads) when
+// the turn never bound a signal — e.g. a sub-agent context, or any call site
+// that predates W-C-14's orchestrator wiring. This is what
+// internal/tools/contextwindow.go's run() relies on to report an error
+// instead of claiming a request landed that nothing will ever read.
+func TestRequestNewWindow_NoSignalBound(t *testing.T) {
+	ok := RequestNewWindow(context.Background(), "done exploring")
+	assert.False(t, ok, "no signal bound on this context")
+}
+
+// TestRequestNewWindow_ConsumedOnce pins the one-shot contract directly, at
+// the signal layer, independent of CompactingModel: a request survives
+// exactly one read. A second read on the same turn context — e.g. a second
+// maybeCompact call within the same ReAct loop after the model already got
+// its fresh window — must not re-trigger.
+func TestRequestNewWindow_ConsumedOnce(t *testing.T) {
+	ctx := WithNewWindowSignal(context.Background())
+
+	ok := RequestNewWindow(ctx, "finished reading the big file")
+	require.True(t, ok, "signal is bound, so the write must succeed")
+
+	reason, got := consumeNewWindowRequest(ctx)
+	assert.True(t, got)
+	assert.Equal(t, "finished reading the big file", reason)
+
+	_, got = consumeNewWindowRequest(ctx)
+	assert.False(t, got, "a second read on the same request must find nothing — one-shot")
+}
+
+// TestCompactingModel_NewWindowRequestBypassesThreshold is W-C-14's core
+// behavioral pin: a pending request wins even on a history shouldCompact
+// would otherwise leave alone (huge ContextWindow, small history), AND it
+// never calls the inner model at all — the tool's whole point is skipping
+// summarization, not merely rushing it forward.
+func TestCompactingModel_NewWindowRequestBypassesThreshold(t *testing.T) {
+	inner := &recordingModel{reply: "answer", streamOK: true}
+	cm := &CompactingModel{
+		Inner:         inner,
+		Threshold:     0.8,
+		ContextWindow: 1_000_000, // shouldCompact would say no on this history
+		KeepRecent:    2,
+	}
+	msgs := []*schema.Message{
+		{Role: schema.User, Content: "task"},
+		bigMessage(200),
+		bigMessage(200),
+		{Role: schema.User, Content: "recent"},
+	}
+	require.False(t, cm.shouldCompact(msgs), "premise: the threshold gate alone would say no")
+
+	ctx := WithNewWindowSignal(context.Background())
+	require.True(t, RequestNewWindow(ctx, "finished the exploratory read"))
+
+	out, did := cm.maybeCompact(ctx, msgs)
+	assert.True(t, did, "a pending request bypasses the threshold gate")
+	assert.Less(t, len(out), len(msgs), "history actually shrank")
+	assert.Equal(t, 0, inner.callCount(), "no summary call — that is the entire point of this path")
+}
+
+// TestCompactingModel_NewWindowRequestIsOneShot proves the bypass in
+// TestCompactingModel_NewWindowRequestBypassesThreshold does not linger: the
+// NEXT maybeCompact call on the same turn context, with the same
+// under-threshold history and no new request, must fall through to the
+// ordinary threshold gate (which still says no) rather than re-triggering.
+func TestCompactingModel_NewWindowRequestIsOneShot(t *testing.T) {
+	inner := &recordingModel{reply: "answer", streamOK: true}
+	cm := &CompactingModel{
+		Inner:         inner,
+		Threshold:     0.8,
+		ContextWindow: 1_000_000,
+		KeepRecent:    2,
+	}
+	msgs := []*schema.Message{
+		{Role: schema.User, Content: "task"},
+		bigMessage(200),
+		bigMessage(200),
+		{Role: schema.User, Content: "recent"},
+	}
+	ctx := WithNewWindowSignal(context.Background())
+	require.True(t, RequestNewWindow(ctx, "reason"))
+
+	_, did := cm.maybeCompact(ctx, msgs)
+	require.True(t, did, "premise: the first call consumes the request")
+
+	out, did := cm.maybeCompact(ctx, msgs)
+	assert.False(t, did, "the request was already consumed — this call must fall through to shouldCompact")
+	assert.Len(t, out, len(msgs), "and shouldCompact still says no on this history")
+}
+
+// TestCompactingModel_NewWindowRequestFiresNoticeOnCallback proves the
+// client-visible half of "开窗被记录": a bound OnCompact callback receives
+// exactly ctxcompact.NewWindowNotice — not ctxcompact.FallbackNotice, not
+// silence — so internal/cli/tui/model.go's compact_chunk switch can render
+// the model-requested wording rather than the model-failure wording.
+func TestCompactingModel_NewWindowRequestFiresNoticeOnCallback(t *testing.T) {
+	inner := &recordingModel{reply: "answer", streamOK: true}
+	cm := &CompactingModel{
+		Inner:         inner,
+		Threshold:     0.8,
+		ContextWindow: 1_000_000,
+		KeepRecent:    1,
+	}
+	msgs := []*schema.Message{
+		{Role: schema.User, Content: "task"},
+		bigMessage(200),
+		{Role: schema.User, Content: "recent"},
+	}
+	ctx := WithNewWindowSignal(context.Background())
+	require.True(t, RequestNewWindow(ctx, "reason"))
+	var got []string
+	ctx = WithCompactCallback(ctx, func(chunk string) { got = append(got, chunk) })
+
+	_, did := cm.maybeCompact(ctx, msgs)
+	require.True(t, did)
+	assert.Equal(t, []string{ctxcompact.NewWindowNotice}, got)
+}

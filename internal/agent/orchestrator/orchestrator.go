@@ -639,6 +639,17 @@ func (o *Orchestrator) withTurnContext(ctx context.Context, opts TurnOpts) conte
 	// instance) serves every turn on that model, so any counter living there
 	// would be process-wide.
 	ctx = WithLoopGuard(ctx, o.loopGuard)
+	// W-C-14: a fresh new-window signal per turn, same reasoning as the
+	// loop-guard bind immediately above — this is the pointer the
+	// context_new_window tool writes and the NEXT CompactingModel.Generate/
+	// Stream call (inside this same turn's ReAct loop) reads. Bound
+	// unconditionally, even when compaction is disabled or the resolved
+	// model isn't wrapped in a CompactingModel at all (wrapCompaction
+	// returns the bare model when cc.Threshold<=0) — the tool call then
+	// still succeeds at RequestNewWindow's context-binding check, and simply
+	// has nothing downstream to consume it, the same shape as any other
+	// context value bound for a code path that turns out not to run.
+	ctx = einollm.WithNewWindowSignal(ctx)
 	return o.bindManagedRunner(ctx)
 }
 

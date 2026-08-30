@@ -9,6 +9,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/x6nux/yanshi/internal/ctxcompact"
+	otelobs "github.com/x6nux/yanshi/internal/observe/otel"
 )
 
 // compactCallbackKey is the context key for the optional OnCompact progress
@@ -37,6 +38,79 @@ func WithCompactCallback(ctx context.Context, cb func(string)) context.Context {
 func compactCallback(ctx context.Context) func(string) {
 	cb, _ := ctx.Value(compactCallbackKey{}).(func(string))
 	return cb
+}
+
+// newWindowKey is the context key for the W-C-14 per-turn new-window signal.
+type newWindowKey struct{}
+
+// newWindowSignal is the pointer WithNewWindowSignal binds once per turn and
+// that a mid-turn tool call and the next maybeCompact call both see — the
+// same context-carried-mutable-pointer idiom orchestrator.go's
+// WithLoopGuard/turnGuard already uses for the identical shape of problem
+// ("a tool call needs to leave a mark the NEXT model call reads"). A tool
+// handler and a model wrapper never share a call stack — the tool result
+// returns to the ADK ReAct loop, which THEN calls Generate/Stream again —
+// so the only channel between them is a value both sides can reach by
+// walking the same turn's context, which is exactly what context.WithValue
+// gives when the value is a pointer bound once at the turn root.
+type newWindowSignal struct {
+	mu        sync.Mutex
+	requested bool
+	reason    string
+}
+
+// WithNewWindowSignal binds a fresh, empty W-C-14 signal onto ctx. Call once
+// per turn (mirroring WithLoopGuard) — a signal shared across turns would let
+// a request from one turn silently consume itself on the next.
+func WithNewWindowSignal(ctx context.Context) context.Context {
+	return context.WithValue(ctx, newWindowKey{}, &newWindowSignal{})
+}
+
+// newWindowSignalFromContext returns the bound signal, or (nil, false) when
+// none is bound — sub-agents and most tests, matching compactCallback's own
+// "absent means the feature is off" shape.
+func newWindowSignalFromContext(ctx context.Context) (*newWindowSignal, bool) {
+	s, ok := ctx.Value(newWindowKey{}).(*newWindowSignal)
+	return s, ok
+}
+
+// RequestNewWindow is the context_new_window tool's write side: it marks
+// this turn's next compaction check as "open a new window, don't
+// summarize" and returns whether the request was recorded. false means no
+// signal is bound on ctx (compaction disabled entirely, or the turn context
+// predates W-C-14's wiring) — the tool handler surfaces that as an error
+// rather than silently pretending the request landed.
+func RequestNewWindow(ctx context.Context, reason string) bool {
+	s, ok := newWindowSignalFromContext(ctx)
+	if !ok {
+		return false
+	}
+	s.mu.Lock()
+	s.requested = true
+	s.reason = reason
+	s.mu.Unlock()
+	return true
+}
+
+// consumeNewWindowRequest is maybeCompact's read side: it reports whether a
+// new-window request is pending and, if so, clears it — a request is
+// good for exactly ONE upcoming model call, not every call for the rest of
+// the turn, the same one-shot shape RunSummary's fallback already has (one
+// failure, one fallback, not a sticky mode).
+func consumeNewWindowRequest(ctx context.Context) (string, bool) {
+	s, ok := newWindowSignalFromContext(ctx)
+	if !ok {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.requested {
+		return "", false
+	}
+	reason := s.reason
+	s.requested = false
+	s.reason = ""
+	return reason, true
 }
 
 // CompactingModel wraps a model.BaseChatModel and transparently compresses its
@@ -200,6 +274,14 @@ func (c *CompactingModel) Stream(ctx context.Context, msgs []*schema.Message, op
 // TestHardForceBypassesCooldown_SoArmingOnFailureIsSafe guards the coupling and
 // names it; read it before changing either gate.
 func (c *CompactingModel) maybeCompact(ctx context.Context, msgs []*schema.Message) ([]*schema.Message, bool) {
+	// W-C-14: a pending tool-set request wins over the threshold gate — the
+	// model asked for this explicitly, so it fires even when shouldCompact
+	// would say no (under threshold, in cooldown). Checked BEFORE
+	// shouldCompact, not after, precisely so a short history the threshold
+	// gate would never touch can still be proactively reset.
+	if reason, ok := consumeNewWindowRequest(ctx); ok {
+		return c.openNewWindow(ctx, msgs, reason)
+	}
 	if !c.shouldCompact(msgs) {
 		return msgs, false
 	}
@@ -233,6 +315,52 @@ func (c *CompactingModel) maybeCompact(ctx context.Context, msgs []*schema.Messa
 	if err != nil || res.TokensAfter >= res.TokensBefore {
 		// best-effort: forward the original history. If it's over-window, the
 		// real inner call surfaces the error rather than aborting mid-turn.
+		return msgs, false
+	}
+	return res.Messages, true
+}
+
+// openNewWindow is W-C-14's proactive counterpart to the RunSummary-failure
+// path inside maybeCompact's main call to ctxcompact.Run: same pins-only
+// shape (ctxcompact.OpenNewWindow shares pinsOnlyResult with Run's own
+// fallback), reached by the model asking rather than the summary model
+// erroring. ContextWindow is reused as-is — already sourced from the INF2
+// provider-window table by wrapCompaction, so "新窗口大小取自 INF2 表"
+// requires no new plumbing here.
+//
+// Recording (the onChunk notice and the otel counter) fires whenever the
+// request was ACTED on, regardless of whether pins-only turned out smaller
+// than the input — "the model asked and this ran" is the fact being
+// recorded, not "and it helped". Cooldown bookkeeping is armed the same way
+// the main path arms it on every outcome (see maybeCompact's doc comment on
+// why arming can't be success-only): a proactive reset is itself a reason
+// the next threshold-triggered compaction should wait.
+//
+// reason is accepted but not attached anywhere below — RecordNewWindow's
+// doc comment explains why a model-authored freeform string does not become
+// a metric attribute. It is threaded this far only so a future consumer
+// (a log line, not a metric) has it without re-plumbing the call chain; that
+// is not speculative scaffolding since consumeNewWindowRequest already
+// carries it as its return value regardless.
+func (c *CompactingModel) openNewWindow(ctx context.Context, msgs []*schema.Message, reason string) ([]*schema.Message, bool) {
+	attempted := ctxcompact.EstimateTokens(msgs)
+
+	if cb := compactCallback(ctx); cb != nil {
+		cb(ctxcompact.NewWindowNotice)
+	}
+	otelobs.RecordNewWindow(ctx)
+
+	res := ctxcompact.OpenNewWindow(msgs,
+		ctxcompact.PlanOpts{KeepRecent: c.planKeepRecent()},
+		ctxcompact.RunOpts{ModelWindow: c.ContextWindow, ChunkThreshold: 0.9, Redactor: c.Redactor})
+
+	c.cmMu.Lock()
+	c.lastCompactTokens = attempted
+	c.didCompact = true
+	c.lastCompactAt = time.Now()
+	c.cmMu.Unlock()
+
+	if res.TokensAfter >= res.TokensBefore {
 		return msgs, false
 	}
 	return res.Messages, true

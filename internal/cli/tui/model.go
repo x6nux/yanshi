@@ -1211,9 +1211,16 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 		// Run opened a new window directly instead — a materially different
 		// event from an ordinary in-progress summary delta, so it gets its own
 		// activity string rather than silently folding into the generic one.
-		if strings.HasPrefix(ev.Text, ctxcompact.FallbackNotice) {
+		switch {
+		case strings.HasPrefix(ev.Text, ctxcompact.FallbackNotice):
 			m.activity = "Compacting context (fallback: window reset, no summary)…"
-		} else {
+		case strings.HasPrefix(ev.Text, ctxcompact.NewWindowNotice):
+			// W-C-14: the MODEL asked for this (context_new_window), as
+			// opposed to FallbackNotice's "the summary model failed" — a
+			// different enough event to earn its own string rather than
+			// silently reusing the fallback line's wording.
+			m.activity = "Compacting context (model requested a new window)…"
+		default:
 			m.activity = "Compacting context…"
 		}
 	case "retry":

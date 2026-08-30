@@ -584,6 +584,26 @@ func TestS8_RegisteredSetIsBoundPerTurn(t *testing.T) {
 	require.Error(t, toolreg.Check(ctx, ""), "an empty tool name must be refused")
 }
 
+// TestWithTurnContextBindsNewWindowSignal is W-C-14's production-call-site
+// pin (GOV6): withTurnContext must bind einollm.WithNewWindowSignal on every
+// turn, unconditionally — even here, where the orchestrator's Model is a
+// bare FakeModel never wrapped in a CompactingModel — because the tool
+// handler's own success/failure branch (internal/tools/contextwindow.go's
+// run()) is the thing that would silently start reporting failure on every
+// call if this bind were ever dropped or made conditional.
+func TestWithTurnContextBindsNewWindowSignal(t *testing.T) {
+	o, err := New(Config{
+		Model:   einollm.NewFakeModel([]string{"hi"}, nil),
+		Tools:   []BaseTool{&countingTool{name: "fs_read"}},
+		Profile: allowAll(),
+	})
+	require.NoError(t, err)
+
+	ctx := o.withTurnContext(context.Background(), TurnOpts{})
+	assert.True(t, einollm.RequestNewWindow(ctx, "reason"),
+		"withTurnContext must bind a new-window signal every turn publishes into")
+}
+
 // TestS8_HeadlessContextAlsoBinds: `yanshi pr` and the goal loop reach tools
 // through BindHeadlessContext, which must carry the same protection as a turn.
 func TestS8_HeadlessContextAlsoBinds(t *testing.T) {

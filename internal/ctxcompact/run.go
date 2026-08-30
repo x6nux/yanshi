@@ -22,6 +22,16 @@ import (
 // SummarySentinel's existing cross-package pattern.
 const FallbackNotice = "[compaction-fallback] "
 
+// NewWindowNotice is the onChunk text OpenNewWindow's callers send on the
+// W-C-14 proactive path — the MODEL asked for a fresh window (via the
+// context_new_window tool) rather than Run hitting a summary-model failure.
+// Same transport as FallbackNotice (both travel over the compact_chunk
+// frame verbatim), deliberately a DIFFERENT string so
+// internal/cli/tui/model.go can render a distinct activity line: a model
+// choosing to skip summarization is a different event from summarization
+// having failed, even though both land on the same pins-only Result shape.
+const NewWindowNotice = "[compaction-new-window] "
+
 // Run is the unified compaction entry both paths (mid-turn CompactingModel and
 // pre-turn MaybeCompact) delegate to. It Plans, summarizes the summarize set,
 // and assembles the result.
@@ -207,6 +217,22 @@ func pinsOnlyResult(msgs []*schema.Message, plan *PlanResult, before int, runOpt
 		Overflow: checkOverflow(after, runOpts),
 		Fallback: true,
 	}
+}
+
+// OpenNewWindow is W-C-14's entry point: the model asked to open a fresh
+// window directly (via the context_new_window tool), skipping
+// summarization entirely rather than Run hitting a summary-model failure.
+// It shares the exact fallback SHAPE W-C-04 already established — Plan,
+// then keep only what was pinned — because "no summary" is "no summary"
+// regardless of why: pinsOnlyResult does not know or care whether the
+// caller is here because the summarizer errored or because nobody asked it
+// to run at all. Exported (unlike pinsOnlyResult) because its caller lives
+// in a different package (einollm.CompactingModel), mirroring Run's own
+// cross-package export.
+func OpenNewWindow(msgs []*schema.Message, planOpts PlanOpts, runOpts RunOpts) *Result {
+	before := EstimateTokens(msgs)
+	plan := Plan(msgs, planOpts)
+	return pinsOnlyResult(msgs, plan, before, runOpts)
 }
 
 // transcriptRunes is the rune length of the text the summarizer is shown. It
