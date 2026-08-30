@@ -718,6 +718,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamMsg:
 		m = m.applyEvent(msg.ev)
 		var cmds []tea.Cmd
+		// RE-16: a permission_request is server-pushed and arrives on this
+		// path regardless of what key state the UI is in — Ctrl+T/Ctrl+E's
+		// handlers.go guard only stops the pager/editor from being OPENED
+		// over an already-pending permission; it can't stop a NEW request
+		// from landing while the pager is already open. renderScreen's
+		// pagerVisible branch is the one modal that returns early and skips
+		// every other block including the permission popup, and the
+		// pagerVisible key-handling block (handlers.go) forwards every rune
+		// — including y/a/n — to the viewport, never to respondPermission.
+		// Left alone, that combination hides an approval prompt AND makes it
+		// unanswerable until the user thinks to press Ctrl+T themselves.
+		// Force-closing the pager the moment a permission actually goes
+		// pending restores both: the popup renders on the very next frame,
+		// and y/a/n reach it again immediately.
+		if m.pagerVisible && m.pendingPermission() != nil {
+			cmds = append(cmds, m.closePager())
+		}
 		// C07: when a turn ends with queued messages waiting, drain per
 		// queueMode. drainQueue's Cmd (from dispatchSend) arms waitForEvent +
 		// activityTick for the next turn, so on a real drain we skip the

@@ -535,7 +535,15 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		// current input text. Blocked while a modal owns the keyboard,
 		// matching Ctrl+S's guard — the editor takes over the whole
 		// terminal, which no popup can survive being drawn under.
-		if m.paletteOpen() || m.pickerKind != "" || m.action != nil || m.helpVisible {
+		//
+		// pendingPermission() is in this guard (RE-16) even though it isn't
+		// one of the modal-priority `if` blocks above: the permission popup
+		// is rendered as an ordinary block inside renderScreen, not behind
+		// its own early-return block, so nothing else stopped Ctrl+E from
+		// shelling out to $EDITOR over an unresolved permission prompt —
+		// the prompt would still be queued in m.pendingPermissions but
+		// invisible and unanswerable until the editor exited.
+		if m.paletteOpen() || m.pickerKind != "" || m.action != nil || m.helpVisible || m.pendingPermission() != nil {
 			return m, nil, true
 		}
 		cmd, err := startExternalEditor(m.input.Value())
@@ -555,7 +563,14 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		// Blocked while another modal owns the keyboard, matching Ctrl+E's
 		// guard — the pager takes over the whole screen, which no popup can
 		// survive being drawn under.
-		if m.paletteOpen() || m.pickerKind != "" || m.action != nil || m.helpVisible {
+		//
+		// pendingPermission() is in this guard for the same reason it's in
+		// Ctrl+E's (RE-16): the permission popup has no early-return modal
+		// block of its own, so without this check the pager could take the
+		// whole screen over a request the user still has to answer — the
+		// prompt keeps waiting in m.pendingPermissions but is drawn nowhere
+		// and unreachable by `y`/`a`/`n` until Ctrl+T is pressed again.
+		if m.paletteOpen() || m.pickerKind != "" || m.action != nil || m.helpVisible || m.pendingPermission() != nil {
 			return m, nil, true
 		}
 		m.pagerVisible = true

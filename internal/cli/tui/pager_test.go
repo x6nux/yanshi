@@ -7,6 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/muesli/termenv"
+
+	"github.com/x6nux/yanshi/internal/cli"
 )
 
 // sized returns m after a WindowSizeMsg, the same setup TestModel_WindowSize-
@@ -58,6 +60,67 @@ func TestCtrlT_BlockedWhileModalOpen(t *testing.T) {
 	}
 	if mm.pagerVisible {
 		t.Fatalf("pager must not open while another modal owns the keyboard")
+	}
+}
+
+// TestCtrlT_BlockedWhilePermissionPending is RE-16's first half: unlike
+// helpVisible/pickerKind/action, a pending permission is not one of the
+// modal-priority `if` blocks at the top of handleKeyMsg — it is only
+// checked ad hoc inside individual switch cases (KeyUp/KeyDown/KeyTab/
+// KeyEnter/KeyRunes). Before this fix, Ctrl+T's own case never looked at
+// it, so the pager could open right over an unresolved approval prompt and
+// hide it (renderScreen's pagerVisible branch skips the permission popup
+// entirely — see the reflow/renderScreen comments in view.go).
+func TestCtrlT_BlockedWhilePermissionPending(t *testing.T) {
+	m := sized(t, newTestModel(t))
+	m.pendingPermissions = []*permissionEntry{{id: "p1", tool: "shell_run"}}
+
+	mm, cmd, handled := m.handleKeyMsg(tea.KeyMsg{Type: tea.KeyCtrlT})
+	if !handled {
+		t.Fatalf("Ctrl+T should be handled (consumed) while a permission is pending")
+	}
+	if cmd != nil {
+		t.Fatalf("Ctrl+T should be a pure no-op while a permission is pending, got a non-nil Cmd")
+	}
+	if mm.pagerVisible {
+		t.Fatalf("pager must not open over an unresolved permission prompt")
+	}
+}
+
+// TestPermissionRequest_ForceClosesPager is RE-16's second half: opening the
+// pager is guarded (TestCtrlT_BlockedWhilePermissionPending), but a
+// permission_request is server-pushed and can land at any time, including
+// while the pager is ALREADY open — no keypress-time guard can stop that.
+// model.go's streamMsg handler force-closes the pager the instant one goes
+// pending, so the popup starts rendering (and y/a/n start reaching
+// respondPermission again) on the very next frame instead of staying hidden
+// and unanswerable until the user happens to press Ctrl+T themselves. The
+// pagerRawCopy=true setup also proves closePager's mouse-mode Cmd rides
+// along, not just the state flip.
+func TestPermissionRequest_ForceClosesPager(t *testing.T) {
+	m := wsModel(newScriptedSession(nil))
+	m.pagerVisible = true
+	m.mouseEnabled = true
+	m.pagerRawCopy = true
+
+	mmRaw, cmd := m.Update(streamMsg{ev: cli.StreamEvent{
+		Kind: "permission_request", ID: "p1", ToolName: "shell_run", Reason: "dangerous",
+	}})
+	mm := mmRaw.(model)
+
+	if mm.pagerVisible {
+		t.Fatalf("a pending permission must force-close the pager, not stay hidden behind it")
+	}
+	if mm.pendingPermission() == nil {
+		t.Fatalf("closing the pager must not lose the permission request itself")
+	}
+	if mm.pagerRawCopy {
+		// closePager's own contract: pagerRawCopy resets alongside
+		// pagerVisible, not left dangling true on a closed pager.
+		t.Fatalf("closing the pager must also clear pagerRawCopy (closePager's normal close contract)")
+	}
+	if cmd == nil {
+		t.Fatalf("closing a raw-copy pager must re-enable mouse cell motion, got a nil Cmd")
 	}
 }
 

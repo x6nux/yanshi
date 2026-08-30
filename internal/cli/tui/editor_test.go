@@ -235,3 +235,26 @@ func TestCtrlE_BlockedWhileModalOpen(t *testing.T) {
 		t.Fatalf("input.Value() = %q, want unchanged %q", got, original)
 	}
 }
+
+// TestCtrlE_BlockedWhilePermissionPending is RE-16's Ctrl+E half (see
+// pager_test.go's TestCtrlT_BlockedWhilePermissionPending for the full
+// reasoning): a pending permission is not one of the modal-priority `if`
+// blocks at the top of handleKeyMsg, so without this check $EDITOR could
+// take the whole terminal over an unresolved approval prompt.
+func TestCtrlE_BlockedWhilePermissionPending(t *testing.T) {
+	m := newTestModel(t)
+	m.pendingPermissions = []*permissionEntry{{id: "p1", tool: "shell_run"}}
+	const original = "unchanged while a permission is pending"
+	m.input.SetValue(original)
+
+	mm, cmd, handled := m.handleKeyMsg(tea.KeyMsg{Type: tea.KeyCtrlE})
+	if !handled {
+		t.Fatalf("Ctrl+E should be handled (consumed) while a permission is pending")
+	}
+	if cmd != nil {
+		t.Fatalf("Ctrl+E should be a pure no-op while a permission is pending, got a non-nil Cmd")
+	}
+	if got := mm.input.Value(); got != original {
+		t.Fatalf("input.Value() = %q, want unchanged %q", got, original)
+	}
+}

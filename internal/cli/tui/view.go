@@ -196,10 +196,20 @@ func (m *model) reflow() {
 	m.viewport.Width = m.width
 	if m.pagerVisible {
 		// W-E-03: fullscreen takeover. Skip every other block's reserved
-		// height (they cannot be showing — the guard that opens the pager
-		// in handlers.go refuses while any of them is already open) and
-		// give the whole screen to the shared viewport except the pager's
-		// own one-line control hint.
+		// height and give the whole screen to the shared viewport except
+		// the pager's own one-line control hint.
+		//
+		// RE-16: this used to claim the skipped blocks "cannot be showing"
+		// because Ctrl+T's guard in handlers.go refuses to open the pager
+		// while any of them is already open — true for every OTHER modal
+		// (palette/picker/action/help), but false for the permission popup,
+		// which has no early-return modal block of its own and can go
+		// pending asynchronously (server push) at any time, including while
+		// the pager is already open. That gap is closed at the source
+		// instead: model.go's streamMsg case force-closes the pager the
+		// instant a permission goes pending, so by the time reflow ever
+		// runs with m.pagerVisible still true, no permission can be
+		// pending — pinned by TestPermissionRequest_ForceClosesPager.
 		m.viewport.Height = max(3, m.height-blockHeight(m.pagerHint(), m.width))
 	} else {
 		m.viewport.Height = max(3, m.height-footerH-inputH-statusH-paletteH-permH-yoloH-pickerH-cmdPickerH-queueH-toastH-actionH-helpH-historyH-rollbackH)
@@ -328,9 +338,16 @@ func (m *model) refresh() {
 // footer too, not just the transcript).
 func (m model) renderScreen() string {
 	// W-E-03: fullscreen pager takeover — bypass every other block (toasts,
-	// input, footer, all popups) entirely. handlers.go's guard keeps this
-	// from opening while any of them already is, so nothing is lost by
-	// skipping them here.
+	// input, footer, all popups) entirely.
+	//
+	// RE-16: that bypass is only safe for modals handlers.go's Ctrl+T guard
+	// keeps from opening under the pager (palette/picker/action/help) — the
+	// permission popup is not one of them (see reflow's matching comment
+	// above). model.go's streamMsg handler force-closes the pager as soon
+	// as a permission goes pending, so this branch never actually runs
+	// while one is — but that invariant lives in model.go, not here; if it
+	// ever stops holding, this is where a pending permission would silently
+	// stop rendering.
 	if m.pagerVisible {
 		return lipgloss.JoinVertical(lipgloss.Left, m.viewport.View(), m.pagerHint())
 	}
