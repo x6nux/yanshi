@@ -1,7 +1,6 @@
 package difflib
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -82,29 +81,6 @@ func TestCompact_OmitsContext(t *testing.T) {
 // TestCompact_NoChange proves Compact returns "" when nothing differs.
 func TestCompact_NoChange(t *testing.T) {
 	assert.Equal(t, "", Compact(Compute("same\nsame\n", "same\nsame\n")))
-}
-
-// TestUnified_KeepsContext proves Unified renders every line, context
-// included, with the leading sigil byte per line.
-func TestUnified_KeepsContext(t *testing.T) {
-	got := Unified(Compute("a\nb\nc", "a\nx\nc"))
-	if !strings.Contains(got, "-b") || !strings.Contains(got, "+x") {
-		t.Fatalf("diff missing add/remove lines:\n%s", got)
-	}
-	if !strings.Contains(got, " a") || !strings.Contains(got, " c") {
-		t.Fatalf("diff missing context lines:\n%s", got)
-	}
-}
-
-// TestUnified_Identical proves an all-equal diff renders only context (" ")
-// lines, never + or -.
-func TestUnified_Identical(t *testing.T) {
-	got := Unified(Compute("a\nb", "a\nb"))
-	for _, ln := range strings.Split(got, "\n") {
-		if len(ln) == 0 || ln[0] != ' ' {
-			t.Fatalf("identical inputs should be all-context: got %q in %q", ln, got)
-		}
-	}
 }
 
 // TestSplitLines_TrailingNewline proves SplitLines drops exactly one trailing

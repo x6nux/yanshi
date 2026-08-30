@@ -117,29 +117,6 @@ func Compact(ops []Op) string {
 	return b.String()
 }
 
-// Unified renders ops as a full-context diff: every line is present, prefixed
-// with " " (context), "-" (removed) or "+" (added), joined by "\n" with no
-// trailing newline — the format internal/cli/tui has always rendered inside a
-// tool-call block. The bare sigil byte lets a caller color each line by
-// inspecting its first byte.
-func Unified(ops []Op) string {
-	var b strings.Builder
-	for i, o := range ops {
-		if i > 0 {
-			b.WriteByte('\n')
-		}
-		switch o.Kind {
-		case Delete:
-			b.WriteString("-" + o.Line)
-		case Insert:
-			b.WriteString("+" + o.Line)
-		default:
-			b.WriteString(" " + o.Line)
-		}
-	}
-	return b.String()
-}
-
 // SplitLines splits s into lines: \r\n and lone \r fold to \n first, then
 // exactly one trailing \n is dropped (not TrimRight — a second trailing \n is
 // a genuine blank last line and must survive as an empty element) before
