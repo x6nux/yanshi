@@ -678,7 +678,13 @@ type ProviderConfig struct {
 	// ContextWindow is this model's token window; 0 means fall back to
 	// CompactionConfig.ContextWindow via ContextWindowFor. Setting it per
 	// provider lets compaction size against the actual model in a multi-
-	// provider session instead of guessing one global budget.
+	// provider session instead of guessing one global budget. Negative is
+	// rejected by validateProviderThresholds (review-whole.md I-1): unlike
+	// AutoCompactThreshold, this field has no "negative means explicitly
+	// disabled" reading — ResolveContextWindow's judge is `> 0`, so a
+	// negative value silently fell through to the catalog/128K default
+	// with no diagnostic, the one dimension out of four the review found
+	// still silent.
 	ContextWindow int `yaml:"context_window"`
 	// Multimodal declares native image support (Tier G).
 	// When the main model is non-multimodal, bootstrap auto-selects
@@ -1137,7 +1143,10 @@ func (c *Config) validate() error {
 }
 
 // validateProviderThresholds rejects a per-provider auto_compact_threshold
-// (F-3) greater than 1. The field is a FRACTION of the resolved context
+// (F-3) greater than 1, and a per-provider context_window (review-whole.md
+// I-1) that is negative.
+//
+// auto_compact_threshold: the field is a FRACTION of the resolved context
 // window, never an absolute token count (ADR-0024 C3); a value above 1 is
 // the tell-tale shape of an operator who wrote an absolute token budget
 // instead (e.g. 8000, meant as "8000 tokens"). That mistake used to be
@@ -1153,10 +1162,24 @@ func (c *Config) validate() error {
 // ProviderConfig.AutoCompactThreshold's doc) are both valid and intentionally
 // NOT rejected here: only the positive-override lane has an upper bound,
 // because only that lane is a ratio someone could mistake for a token count.
+//
+// context_window: unlike the threshold field, negative has no "explicit
+// disable" reading here — ResolveContextWindow/ContextWindowFor both judge
+// on `> 0`, so a negative value was previously indistinguishable from unset
+// and fell through to the catalog/128K default with zero diagnostic. The
+// review found this was the only one of four adjacent zero/negative/invalid
+// provider-config readings (context_window, auto_compact_threshold,
+// truncation_policy, max_retries) that was completely silent; the other
+// three already reject, warn, or have a documented and deliberate meaning.
+// This closes that gap the same way max_retries < 0 is already closed, by
+// validateProviderRetriesAndAuth, in this same file.
 func (c *Config) validateProviderThresholds() error {
 	for i, p := range c.LLM.Providers {
 		if p.AutoCompactThreshold > 1 {
 			return fmt.Errorf("llm.providers[%d] (name=%q): auto_compact_threshold must be a fraction of the context window (<= 1), got %v — this looks like an absolute token count, not a ratio", i, p.Name, p.AutoCompactThreshold)
+		}
+		if p.ContextWindow < 0 {
+			return fmt.Errorf("llm.providers[%d] (name=%q): context_window must be >= 0, got %d", i, p.Name, p.ContextWindow)
 		}
 	}
 	return nil

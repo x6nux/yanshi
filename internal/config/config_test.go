@@ -337,6 +337,44 @@ llm:
 	assert.Equal(t, -1.0, cfg.LLM.Providers[1].AutoCompactThreshold)
 }
 
+// TestValidate_NegativeContextWindowIsRejected pins review-whole.md I-1: a
+// negative context_window used to be silently indistinguishable from unset
+// (ResolveContextWindow/ContextWindowFor both judge on `> 0`), the one
+// dimension out of four adjacent provider-config zero/negative/invalid
+// readings the review found with no diagnostic at all. It must now be
+// refused at load time, the same way max_retries < 0 already is.
+func TestValidate_NegativeContextWindowIsRejected(t *testing.T) {
+	yaml := []byte(`
+llm:
+  providers:
+    - name: broken
+      kind: anthropic
+      model: claude-opus
+      context_window: -1
+`)
+	_, err := LoadBytes(yaml)
+	require.Error(t, err, "a negative context_window must be rejected at load time, not silently fall through to the catalog/128K default")
+	assert.Contains(t, err.Error(), "context_window")
+}
+
+// TestValidate_ZeroContextWindowIsAccepted pins the value
+// validateProviderThresholds must NOT reject: 0 (unset, falls through to
+// CompactionConfig.ContextWindow via ContextWindowFor) is a legitimate,
+// intentional reading — only negative is a malformed value with no meaning.
+func TestValidate_ZeroContextWindowIsAccepted(t *testing.T) {
+	yaml := []byte(`
+llm:
+  providers:
+    - name: unset
+      kind: anthropic
+      model: claude-opus
+`)
+	cfg, err := LoadBytes(yaml)
+	require.NoError(t, err)
+	require.Len(t, cfg.LLM.Providers, 1)
+	assert.Equal(t, 0, cfg.LLM.Providers[0].ContextWindow)
+}
+
 func TestLoadBytesDefaultsSubagents(t *testing.T) {
 	yaml := []byte("{}")
 	cfg, err := LoadBytes(yaml)

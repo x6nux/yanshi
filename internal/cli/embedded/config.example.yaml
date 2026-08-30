@@ -54,6 +54,9 @@ llm:
     # whose num_ctx you raised. Unknown models fall back to a deliberately
     # CONSERVATIVE default: guessing the window too high means compaction never
     # fires and the request dies, guessing low only costs one extra compaction.
+    # A negative value is rejected at load time (review-whole.md I-1) -- unlike
+    # auto_compact_threshold below, negative has no "explicitly disabled"
+    # reading here.
     #
     # auto_compact_threshold is OPTIONAL and mirrors context_window's role for
     # W-C-01's data-driven model catalog: it is a FRACTION of the resolved
