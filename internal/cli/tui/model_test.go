@@ -1824,3 +1824,102 @@ func TestModel_StartupBannerAsyncTools(t *testing.T) {
 	m = mm2.(model)
 	assert.Equal(t, prev, m.startupBanner.info, "empty rows must not mutate the banner")
 }
+
+// ---- RE-J (fix-e1 review of W-E-01): server-sent tool-output text must not
+// carry escape sequences into the terminal ----
+//
+// applyEvent's doc comment names the four toolEntry fields this covers
+// (result, progress, nestedText, nestedThought); these tests exercise each
+// one THROUGH applyEvent (not by constructing a toolEntry directly and
+// calling stripANSI by hand) so a future edit that reorders or drops one of
+// the seven ev.Text assignment sites fails here, not just in a unit test of
+// stripANSI itself. escPayload mirrors the review's named example
+// ("ls --color=always" emitting live SGR codes: ESC [ 3 1 m ... ESC [ 0 m).
+const escPayload = "before\x1b[31mRED\x1b[0mafter"
+
+// TestApplyEvent_StripsANSIFromToolResult proves a finished tool's plain-text
+// result (the toolDispNormal / toolDispTail-while-JSON-fails shape) has its
+// ESC bytes removed before landing in toolEntry.result, so renderNormal's
+// direct resultStyle.Render(e.result) (entries.go) never sees them.
+func TestApplyEvent_StripsANSIFromToolResult(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	m = m.applyEvent(cli.StreamEvent{Kind: "tool_call", ToolName: "memory_save", ToolStatus: "running"})
+	m = m.applyEvent(cli.StreamEvent{Kind: "tool_result", ToolName: "memory_save", Text: escPayload, ToolStatus: "ok"})
+	got := m.entries[len(m.entries)-1].(*toolEntry).result
+	assert.NotContains(t, got, "\x1b", "tool_result text must be stripped of ESC bytes")
+	assert.Equal(t, "beforeREDafter", got)
+}
+
+// TestApplyEvent_StripsANSIFromStandaloneToolResult covers the same field via
+// the OTHER assignment site (model.go's "no preceding tool_call" fallback
+// branch, used for out-of-order frame delivery) — a fix that only touched
+// the primary branch would leave this one live.
+func TestApplyEvent_StripsANSIFromStandaloneToolResult(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	m = m.applyEvent(cli.StreamEvent{Kind: "tool_result", ToolName: "memory_save", Text: escPayload, ToolStatus: "ok"})
+	got := m.entries[len(m.entries)-1].(*toolEntry).result
+	assert.NotContains(t, got, "\x1b", "standalone tool_result text must be stripped of ESC bytes")
+	assert.Equal(t, "beforeREDafter", got)
+}
+
+// TestApplyEvent_StripsANSIFromToolProgress proves a RUNNING shell_run's live
+// stdout chunks (tool_progress events) are stripped before landing in
+// toolEntry.progress — this is the primary RE-J surface: renderTail joins
+// e.progress and renders it through renderToolOutput while the command is
+// still running, well before any JSON envelope exists to decode.
+func TestApplyEvent_StripsANSIFromToolProgress(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	m = m.applyEvent(cli.StreamEvent{Kind: "tool_call", ToolName: "shell_run", ToolStatus: "running"})
+	m = m.applyEvent(cli.StreamEvent{Kind: "tool_progress", ToolName: "shell_run", Text: escPayload})
+	got := m.entries[len(m.entries)-1].(*toolEntry).progress
+	require.Len(t, got, 1)
+	assert.NotContains(t, got[0], "\x1b", "tool_progress text must be stripped of ESC bytes")
+	assert.Equal(t, "beforeREDafter", got[0])
+}
+
+// TestApplyEvent_StripsANSIFromToolChunk covers tool_chunk's two branches
+// (Overwrite=true replaces progress wholesale; Overwrite=false appends) —
+// both are separate assignment sites in model.go and both must strip.
+func TestApplyEvent_StripsANSIFromToolChunk(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	m = m.applyEvent(cli.StreamEvent{Kind: "tool_call", ToolName: "workflow_start", ToolStatus: "running"})
+
+	m = m.applyEvent(cli.StreamEvent{Kind: "tool_chunk", ToolName: "workflow_start", Text: escPayload, Overwrite: true})
+	e := m.entries[len(m.entries)-1].(*toolEntry)
+	require.Len(t, e.progress, 1)
+	assert.NotContains(t, e.progress[0], "\x1b", "overwrite tool_chunk text must be stripped of ESC bytes")
+	assert.Equal(t, "beforeREDafter", e.progress[0])
+
+	m = m.applyEvent(cli.StreamEvent{Kind: "tool_chunk", ToolName: "workflow_start", Text: escPayload, Overwrite: false})
+	e = m.entries[len(m.entries)-1].(*toolEntry)
+	require.Len(t, e.progress, 2)
+	assert.NotContains(t, e.progress[1], "\x1b", "appended tool_chunk text must be stripped of ESC bytes")
+	assert.Equal(t, "beforeREDafter", e.progress[1])
+}
+
+// TestApplyEvent_StripsANSIFromNestedText proves a sub-agent's streamed
+// answer text (agent_chunk while a nested agent tool is running, routed into
+// nestedText) is stripped — this feeds renderAgent's expanded body, which
+// funnels into the same renderToolOutput/resultStyle.Render consumer as
+// shell_run's output.
+func TestApplyEvent_StripsANSIFromNestedText(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	m = startRunningAnalysis(m)
+	m = m.applyEvent(cli.StreamEvent{Kind: "agent_chunk", Text: escPayload})
+	nt := findNestedTool(t, m)
+	assert.NotContains(t, nt.nestedText, "\x1b", "nestedText must be stripped of ESC bytes")
+	assert.Equal(t, "beforeREDafter", nt.nestedText)
+}
+
+// TestApplyEvent_StripsANSIFromNestedThought mirrors
+// TestApplyEvent_StripsANSIFromNestedText for the "thinking" branch's
+// nestedThought field (rendered as the expanded-body fallback in renderAgent
+// when neither activity nor nestedText is present).
+func TestApplyEvent_StripsANSIFromNestedThought(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	m = startRunningAnalysis(m)
+	m = m.applyEvent(cli.StreamEvent{Kind: "thinking", Text: escPayload})
+	nt := findNestedTool(t, m)
+	assert.NotContains(t, nt.nestedThought, "\x1b", "nestedThought must be stripped of ESC bytes")
+	assert.Equal(t, "beforeREDafter", nt.nestedThought)
+}

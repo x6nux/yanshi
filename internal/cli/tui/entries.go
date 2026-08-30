@@ -868,6 +868,17 @@ func renderToolOutput(s string) string {
 // Returns just the output string (the exit code and duration are LLM metadata,
 // not shown to the TUI user). When the JSON is not parseable it falls back to
 // the raw result string so nothing is silently lost.
+//
+// v.Output is run through stripANSI here, separately from applyEvent's
+// ingestion-time strip on the raw event text (RE-J, fix-e1 review of W-E-01):
+// a literal ESC byte cannot survive inside valid JSON text (encoding/json
+// escapes it to the 6-byte sequence backslash, u, 0, 0, 1, b on the wire),
+// so applyEvent's strip on the still-JSON-encoded result is a no-op for this
+// field — the byte only becomes a real 0x1b again right here, when
+// json.Unmarshal decodes the "output" string, which is why the strip has to
+// be repeated at this second decode point rather than relying on the first
+// one. The plain-result fallback below does not need its own strip: it
+// returns the same string applyEvent already stripped, unparsed.
 func toolResultOutput(result string) string {
 	if result == "" {
 		return ""
@@ -876,7 +887,7 @@ func toolResultOutput(result string) string {
 		Output string `json:"output"`
 	}
 	if json.Unmarshal([]byte(result), &v) == nil {
-		return v.Output
+		return stripANSI(v.Output)
 	}
 	return result
 }

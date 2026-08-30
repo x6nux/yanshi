@@ -742,6 +742,40 @@ func (m model) waitForEvent() tea.Cmd {
 	}
 }
 
+// applyEvent folds one server-sent StreamEvent into the model. Every ev.Text
+// assignment into a toolEntry field below (result, progress, nestedText,
+// nestedThought) goes through stripANSI first — RE-J (fix-e1 review of
+// W-E-01): ev.Text is server-controlled and, for shell_run in particular,
+// carries the target command's raw stdout verbatim (e.g. "ls --color=always"
+// emits live SGR codes); entries.go's renderTail/renderNormal/renderAgent all
+// eventually funnel these fields into resultStyle.Render (renderToolOutput)
+// unmodified, so an unstripped assignment here is an escape-sequence
+// injection into the user's real terminal, not just a display glitch.
+// Stripping at ingestion — the one place all these fields are written —
+// covers every downstream renderer in one edit, including the ones that
+// don't call renderToolOutput (renderNormal's direct resultStyle.Render(e.
+// result), renderAgent's errStyle.Render(e.result) error line): a per-call-
+// site fix would have to be repeated at each one and would silently miss the
+// next new consumer. It is applied unconditionally (not gated on color
+// profile, unlike RE-A's renderMarkdown fix) because this is a terminal-
+// injection concern, not a profile-downgrade leak — the byte sequence is
+// unsafe to emit under any profile, including TrueColor.
+//
+// This intentionally does NOT cover colorProgressLines' own output
+// (entries.go): that closure runs AFTER these fields are read back out in
+// renderAgent, wrapping already-stripped text in okStyle/errStyle — its SGR
+// codes are yanshi's own, added downstream of this boundary, not part of the
+// untrusted input being neutralized here.
+//
+// shell_run's FINISHED result is the one field this boundary cannot reach:
+// t.result there is a JSON envelope ({"output":"...","exit":N}), and a raw
+// ESC byte cannot appear literally inside valid JSON text (encoding/json
+// always escapes control bytes as the literal 6-byte sequence backslash-u-0-0-1-b,
+// never a raw 0x1b byte — stripANSI's regex (anchored on the raw ESC byte)
+// is therefore a no-op on it here. The literal ESC byte reappears only after
+// json.Unmarshal decodes the "output" field back into a plain string, which
+// happens later, inside entries.go's toolResultOutput — that function strips
+// its own return value for the same reason, after its own decode.
 func (m model) applyEvent(ev cli.StreamEvent) model {
 	// lastEventAt threads the "previous non-thinking event" timestamp through to
 	// appendThinkingDelta, which stamps a new thinkingEntry.startedAt from it. It
@@ -769,7 +803,7 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 		// inverted (the child's reasoning would appear above the parent's call).
 		m.retryAttempt = 0 // a pending retry resolved (content is flowing again)
 		if t := m.lastRunningNestedTool(); t != nil {
-			t.nestedThought += ev.Text
+			t.nestedThought += stripANSI(ev.Text)
 		} else {
 			m.appendThinkingDelta(ev.Text)
 		}
@@ -788,7 +822,7 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 			// Accumulate as continuous text (natural \n splits lines), not one
 			// progress line per chunk — chunks are short text deltas, so
 			// per-chunk lines produced "two chars per line" breakage.
-			nt.nestedText += ev.Text
+			nt.nestedText += stripANSI(ev.Text)
 		} else {
 			m.pending += ev.Text
 			// Assistant text is streaming → we're thinking, not running a tool.
@@ -839,7 +873,7 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 		// block instead of appending to its nestedProgress.
 		if t := m.lastRunningTool(ev.ToolName); t != nil {
 			m.flushAssistant()
-			t.result = ev.Text
+			t.result = stripANSI(ev.Text)
 			t.status = ev.ToolStatus
 			// Stamp endedAt to bracket the block's lifetime for the done
 			// summary's "Mm Ss" duration (startedAt was set on the tool_call).
@@ -886,7 +920,7 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 			m.entries = append(m.entries, &toolEntry{
 				name:      ev.ToolName,
 				root:      m.sess.Root(),
-				result:    ev.Text,
+				result:    stripANSI(ev.Text),
 				status:    ev.ToolStatus,
 				nested:    toolDisplayFor(ev.ToolName) == toolDispAgent,
 				endedAt:   time.Now(),
@@ -895,7 +929,7 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 		}
 	case "tool_progress":
 		if t := m.lastRunningTool(ev.ToolName); t != nil {
-			t.progress = append(t.progress, ev.Text)
+			t.progress = append(t.progress, stripANSI(ev.Text))
 		}
 	case "tool_chunk":
 		// Stream chunk from a tool's Stream channel (Lane 4). Text is appended to
@@ -905,10 +939,10 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 		// error path.
 		if t := m.lastRunningTool(ev.ToolName); t != nil {
 			if ev.Overwrite {
-				t.progress = []string{ev.Text}
+				t.progress = []string{stripANSI(ev.Text)}
 				t.progressOverwrite = true
 			} else if ev.Text != "" {
-				t.progress = append(t.progress, ev.Text)
+				t.progress = append(t.progress, stripANSI(ev.Text))
 			}
 			if ev.ToolStatus != "" {
 				t.statusPanel = ev.ToolStatus
