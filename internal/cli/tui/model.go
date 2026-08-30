@@ -378,6 +378,22 @@ type model struct {
 	// NewProgram; zero value (false) in every test that builds a model
 	// directly, which is the safe default (no mouse escapes fire).
 	mouseEnabled bool
+
+	// W-E-11: Esc-Esc rollback/fork. lastEsc timestamps the most recent Esc
+	// press so handlers.go's bottom KeyEscape case can detect a second press
+	// within escDoublePressWindow (rollback.go) without disturbing what a
+	// LONE Esc does — see that case's comment. rollback is non-nil while the
+	// picker popup is open (nil the rest of the time, matching action/
+	// historySearch's "nil means closed" convention). pendingRollback +
+	// pendingRollbackText/Index are set by rollbackConfirm right before
+	// sending the fork_session{turns_back} request and consumed by
+	// applyEvent's case "session_forked", which cannot be reached any other
+	// way — the fields only carry state across that one round trip.
+	lastEsc              time.Time
+	rollback             *rollbackState
+	pendingRollback      bool
+	pendingRollbackText  string
+	pendingRollbackIndex int
 }
 
 // newModel builds a model with no project preference layer. Kept as the
@@ -1119,15 +1135,32 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 			text: formatSessionAck(ev.Action, ev.SessionID, ev.Text),
 		})
 	case "session_forked":
-		// Reply to /fork: Task 7 already switched the SAME server connSession
-		// to forkID before sending this frame. Mirror that active id locally;
-		// no extra /restore is needed and the next turn persists only to the
-		// fork.
+		// Reply to /fork or the Esc-Esc rollback picker (W-E-11): Task 7
+		// already switched the SAME server connSession to forkID before
+		// sending this frame. Mirror that active id locally; no extra
+		// /restore is needed and the next turn persists only to the fork.
 		m.flushAssistant()
+		if m.pendingRollback && m.pendingRollbackIndex >= 0 && m.pendingRollbackIndex <= len(m.entries) {
+			// W-E-11: the server's forkID has no messages from the picked
+			// user turn onward — truncate the LOCAL transcript to match,
+			// using the index rollbackConfirm captured when the picker
+			// opened, before appending the ack below.
+			m.entries = append([]entry(nil), m.entries[:m.pendingRollbackIndex]...)
+		}
 		m.entries = append(m.entries, ackEntry{
 			text: "forked and switched to " + ev.SessionID,
 		})
 		m.sessionID = ev.SessionID
+		if m.pendingRollback {
+			// Refill the original prompt so the user can re-send (or edit)
+			// it without retyping — spec: "确认后 fork 并把原 prompt 自动
+			// 填回编辑框".
+			m.input.SetValue(m.pendingRollbackText)
+			m.growInput()
+			m.pendingRollback = false
+			m.pendingRollbackText = ""
+			m.pendingRollbackIndex = 0
+		}
 	case "memories_distilled", "memories_cleared", "checkpoint_result":
 		// A2/W-A-05, W-D-12 and W-D-06: replies to /distill, /memory-clear and
 		// /checkpoint. Render the server's summary as an ack. Without this case

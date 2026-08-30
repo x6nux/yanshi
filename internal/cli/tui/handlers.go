@@ -10,6 +10,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -139,6 +140,36 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 			return m, nil, true
 		}
 		// All other keys are consumed while picker is active.
+		return m, nil, true
+	}
+
+	// W-E-11: Esc-Esc rollback picker. Capture Up/Down/Enter/Escape like the
+	// restore-session picker above; all other keys are swallowed while it is
+	// open so nothing leaks into the textarea underneath it, and — because
+	// this block runs before the bottom-level KeyEscape case below — no
+	// other modal's own hotkey (Ctrl+T/E/S/K, F1, Alt+R, …) can open while
+	// the picker owns the keyboard.
+	if m.rollback != nil {
+		switch msg.Type {
+		case tea.KeyUp:
+			if m.rollback.cursor > 0 {
+				m.rollback.cursor--
+			}
+			return m, nil, true
+		case tea.KeyDown:
+			if m.rollback.cursor < len(m.rollback.items)-1 {
+				m.rollback.cursor++
+			}
+			return m, nil, true
+		case tea.KeyEnter:
+			mm, cmd := m.rollbackConfirm()
+			return mm.(model), cmd, true
+		case tea.KeyEscape:
+			m.rollback = nil
+			m.reflow()
+			return m, nil, true
+		}
+		// All other keys are consumed while the picker is active.
 		return m, nil, true
 	}
 
@@ -317,6 +348,29 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 
 	switch msg.Type {
 	case tea.KeyEscape:
+		// W-E-11: a second Esc landing within escDoublePressWindow of the
+		// first opens the rollback picker instead of repeating whatever a
+		// lone Esc does. A SINGLE Esc is byte-for-byte unaffected: m.lastEsc
+		// starts zero-valued (and is re-zeroed after every consumed pair),
+		// so the first press of any Esc-Esc pair always takes the
+		// isDouble==false branch below — it only records the timestamp and
+		// falls through to the pre-existing toast-dismiss/no-op logic.
+		now := time.Now()
+		isDouble := !m.lastEsc.IsZero() && now.Sub(m.lastEsc) < escDoublePressWindow
+		m.lastEsc = now
+		if isDouble {
+			m.lastEsc = time.Time{} // consume the pair; a third press starts fresh
+			if items := m.rollbackCandidates(); m.streamCh == nil && len(items) > 0 {
+				m.rollback = &rollbackState{items: items}
+				m.reflow()
+				return m, nil, true
+			}
+			// Nothing to roll back to (no user turns yet), or a turn is
+			// streaming (mirrors /fork's own mid-stream block — submit()
+			// drops slash commands while m.streamCh != nil): fall through to
+			// ordinary single-Esc handling instead of silently swallowing
+			// the keypress.
+		}
 		// C2 — UX7: dismiss the most-recent error toast (if any) on Esc.
 		// Returns immediately when there is no error toast so Esc keeps
 		// its existing meaning elsewhere (close picker, etc.). The toast

@@ -188,6 +188,11 @@ func (m *model) reflow() {
 	if hp := m.historyPopup(); hp != "" {
 		historyH = blockHeight(hp, m.width)
 	}
+	// W-E-11: Esc-Esc rollback picker. Modal; reserve height.
+	rollbackH := 0
+	if rp := m.rollbackPopup(); rp != "" {
+		rollbackH = blockHeight(rp, m.width)
+	}
 	m.viewport.Width = m.width
 	if m.pagerVisible {
 		// W-E-03: fullscreen takeover. Skip every other block's reserved
@@ -197,7 +202,7 @@ func (m *model) reflow() {
 		// own one-line control hint.
 		m.viewport.Height = max(3, m.height-blockHeight(m.pagerHint(), m.width))
 	} else {
-		m.viewport.Height = max(3, m.height-footerH-inputH-statusH-paletteH-permH-yoloH-pickerH-cmdPickerH-queueH-toastH-actionH-helpH-historyH)
+		m.viewport.Height = max(3, m.height-footerH-inputH-statusH-paletteH-permH-yoloH-pickerH-cmdPickerH-queueH-toastH-actionH-helpH-historyH-rollbackH)
 	}
 	m.refresh()
 	// Re-clamp YOffset after a Height change. A GotoBottom from an event that
@@ -364,6 +369,10 @@ func (m model) renderScreen() string {
 	// C2 — UX6: history search popup (Alt+R). Rendered alongside other popups.
 	if hp := m.historyPopup(); hp != "" {
 		blocks = append(blocks, hp)
+	}
+	// W-E-11: Esc-Esc rollback picker. Rendered alongside other popups.
+	if rp := m.rollbackPopup(); rp != "" {
+		blocks = append(blocks, rp)
 	}
 	if pb := m.paletteBlock(); pb != "" {
 		blocks = append(blocks, pb)
