@@ -7,9 +7,11 @@ import (
 )
 
 // TestIsControlReply_WorkspaceDiffFrame verifies isControlReply closes the
-// control channel on the workspace_diff reply (W-E-13) — otherwise
-// SendFrame would hang forever waiting for a done that never comes, since
-// workspace_diff is a single-frame reply like seams/seam_restored.
+// control channel on the workspace_diff reply (W-E-13) — otherwise deliver
+// would never judge the frame terminal, so the channel SendFrame returned
+// would never close and a caller ranging over it would hang forever waiting
+// for a done that never comes, since workspace_diff is a single-frame reply
+// like seams/seam_restored.
 func TestIsControlReply_WorkspaceDiffFrame(t *testing.T) {
 	if !isControlReply("workspace_diff") {
 		t.Error("isControlReply(\"workspace_diff\") = false, want true")
