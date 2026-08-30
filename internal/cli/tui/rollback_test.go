@@ -144,6 +144,28 @@ func TestEscEsc_SSERejected(t *testing.T) {
 	assert.True(t, foundErr, "expected an errorEntry naming the WebSocket requirement, matching /diff's own wording")
 }
 
+// TestEscEsc_AltEscapeCollapsedPairOpensPickerImmediately is RE-17: two ESC
+// bytes landing in the same terminal read() are NOT delivered to
+// handleKeyMsg as two separate tea.KeyMsg calls — bubbletea's own
+// key_sequences.go collapses "\x1b\x1b" into one Key{Type: KeyEscape, Alt:
+// true} before this package ever sees it. Fed as a single call with no
+// prior m.lastEsc at all, this must still open the picker on that one call
+// — the exact scenario TestEscEsc_OpensPickerWithinWindow's two-call
+// sequence can never exercise, since a genuinely fast press never arrives
+// as two calls in the first place.
+func TestEscEsc_AltEscapeCollapsedPairOpensPickerImmediately(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	m.entries = []entry{&userEntry{text: "hello"}}
+
+	mm, ok := handleKey(m, tea.KeyMsg{Type: tea.KeyEscape, Alt: true})
+	assert.True(t, ok, "the collapsed pair must be handled on this single call")
+	if assert.NotNil(t, mm.rollback, "a collapsed Esc-Esc pair must open the picker immediately, not wait for a second call that will never come") {
+		require.Len(t, mm.rollback.items, 1)
+		assert.Equal(t, "hello", mm.rollback.items[0].text)
+	}
+	assert.True(t, mm.lastEsc.IsZero(), "the pair is consumed so a third press starts fresh")
+}
+
 func TestEscEsc_OutsideWindowIsTwoSinglePresses(t *testing.T) {
 	m := newModel(&fakeSession{}, "/proj")
 	m.entries = []entry{&userEntry{text: "hello"}}

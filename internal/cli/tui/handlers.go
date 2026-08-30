@@ -355,8 +355,25 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		// so the first press of any Esc-Esc pair always takes the
 		// isDouble==false branch below — it only records the timestamp and
 		// falls through to the pre-existing toast-dismiss/no-op logic.
+		//
+		// RE-17: a FAST double-press (the exact gesture this feature exists
+		// for) usually never reaches this handler as two separate KeyMsg
+		// calls at all. When both ESC bytes land in the same terminal
+		// read(), bubbletea's own sequence table collapses them into one
+		// message before handleKeyMsg ever sees it: key_sequences.go has
+		// `s["\x1b\x1b"] = Key{Type: KeyEscape, Alt: true}`. The time-diff
+		// state machine below needs two separate calls to ever set
+		// isDouble — fed a single collapsed message it takes the
+		// isDouble==false branch, records one timestamp, and the picker
+		// never opens no matter how fast the user presses. There is also no
+		// real ambiguity to preserve here: a terminal's own encoding of
+		// "Alt+Escape" is the identical byte sequence (Alt is sent as an
+		// ESC prefix), so this collapsed message and a genuine fast
+		// double-press are the same wire event — treating msg.Alt as an
+		// immediate double-press is not a heuristic, it is decoding what
+		// bubbletea already told us.
 		now := time.Now()
-		isDouble := !m.lastEsc.IsZero() && now.Sub(m.lastEsc) < escDoublePressWindow
+		isDouble := msg.Alt || (!m.lastEsc.IsZero() && now.Sub(m.lastEsc) < escDoublePressWindow)
 		m.lastEsc = now
 		if isDouble {
 			m.lastEsc = time.Time{} // consume the pair; a third press starts fresh
