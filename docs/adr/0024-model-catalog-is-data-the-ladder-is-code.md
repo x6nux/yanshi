@@ -29,8 +29,14 @@ Go 代码改动 + 重新构建 —— 对一个新模型发布周期以周计的
 - **JSON 而非 YAML。** 否决：本仓所有面向操作员编辑的数据文件（`config.example.yaml`
   本身）都是 YAML；`gopkg.in/yaml.v3` 已是直接依赖，换格式没有换来任何东西，只换来
   「操作员要在两种语法间切换」。
-- **每个模型一个文件（目录式目录）。** 否决：51 条 context-window 行 + 8 条定价行
-  当前体量下，一个文件比 51 个文件更容易做「新增一行」这个最常见操作的 diff 审查；
+- **每个模型一个文件（目录式目录）。** 否决：本 ADR 落笔时（`models.yaml` 内容见
+  git blame）`context_window`/`pricing` 分别是 51 行、8 行——**这两个数字会随目录增长
+  漂，不要当成当前值抄**，现场核对用：
+  ```sh
+  grep -cE '^\s+context_window:' internal/llm/eino/models.yaml
+  grep -cE '^\s+pricing:' internal/llm/eino/models.yaml
+  ```
+  这一体量下，一个文件比一模型一文件更容易做「新增一行」这个最常见操作的 diff 审查；
   拆分没有解决任何真实存在的问题（YAGNI）。
 - **阈值内嵌进 context_window 行、按 `window * 默认比例` 派生。** 否决：验收第 4 条
   明确要求「取自表」而不是「由窗口计算」——把阈值定义成窗口的一个固定倍数，会让「给
