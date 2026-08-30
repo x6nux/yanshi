@@ -1511,7 +1511,7 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 				case "list_seams":
 					handleListSeams(s, conn, &cs)
 				case "list_workspace_diff":
-					handleWorkspaceDiff(s, conn)
+					handleWorkspaceDiff(s, conn, &cs)
 				case "restore_turn":
 					handleRestoreTurn(s, conn, &cs, cf.ID, cf.ConfirmedHead)
 				default:

@@ -137,6 +137,46 @@ func (v *VCS) FindSeam(seamID string) (Seam, error) {
 	return s, nil
 }
 
+// SessionBaseline returns the commit id recorded on the EARLIEST seam for
+// (repoID, sessionID) — ORDER BY seq ASC LIMIT 1, the mirror image of
+// ListSeams' newest-first ordering. Since pre-turn is always sealed before
+// post-turn within a turn, and a turn's pre-turn seal is always the first
+// seam a fresh session gets, this is that session's first pre-turn seam:
+// main_head as it stood right before the session's first turn began.
+//
+// This is /diff's (W-E-13, RE-1) anchor for "what has this session changed
+// so far": diffing this commit against the CURRENT main_head (via
+// CommitRangeDiff) produces the session's cumulative changeset, computed
+// entirely from durable commits/seams. vcs_uncommitted cannot serve this
+// purpose — SealMainTurnSeam empties it by folding it into a commit both
+// immediately before AND immediately after every turn (see ws.go's
+// sealTurnBoundary), so it is structurally empty at essentially every moment
+// a user could actually type /diff.
+//
+// Returns ("", sql.ErrNoRows) — mirroring FindSeam's own convention — when
+// sessionID has no seam yet at all (no turn has completed for this
+// connection's session), which the caller must treat as "no baseline
+// established, nothing to diff yet" rather than a failure. This is NOT the
+// same outcome as a found seam whose CommitID is itself "" (a session whose
+// very first turn ran before this repo had ever taken a commit): that case
+// returns ("", nil), and the caller diffing "" against the current head
+// correctly shows every path as added — commitTree("") is the empty tree.
+//
+// Read-only — does NOT take the per-repo lock (DB reads are serialized by
+// SetMaxOpenConns(1)).
+func (v *VCS) SessionBaseline(repoID, sessionID string) (string, error) {
+	var commitID string
+	err := v.store.DB.QueryRow(
+		`SELECT commit_id FROM vcs_seams WHERE repo_id = ? AND session_id = ?
+		 ORDER BY seq ASC LIMIT 1`,
+		repoID, sessionID,
+	).Scan(&commitID)
+	if err != nil {
+		return "", err
+	}
+	return commitID, nil
+}
+
 // ListSeams returns seams for repoID newest-first (ORDER BY seq DESC). When
 // sessionID != "" the result is filtered to that session (必修项 J). limit <= 0
 // means a default cap of 50. Read-only — does NOT take the per-repo lock.
