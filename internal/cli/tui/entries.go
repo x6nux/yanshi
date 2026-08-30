@@ -881,7 +881,7 @@ func toolResultOutput(result string) string {
 	return result
 }
 
-var runningNameStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true) // blue
+var runningNameStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(hueCyan)).Bold(true) // blue (see styles.go's palette consts)
 
 // isAsciiDigits reports whether s is non-empty and all ASCII digits (a cheap
 // check that the token before a tab is an fs_read line number, not content).

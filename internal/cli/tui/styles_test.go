@@ -3,8 +3,11 @@ package tui
 
 import (
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/muesli/termenv"
 )
 
 // TestEntryRenderCacheCap proves the entryRenderCache is bounded (review I5):
@@ -65,5 +68,59 @@ func TestEntryRenderCacheCap(t *testing.T) {
 	}
 	if got != "v0" {
 		t.Fatalf("已缓存 key 应返回缓存值 v0，实际 %q", got)
+	}
+}
+
+// TestPaletteHuesEmit24BitUnderTrueColor proves the Palette mechanical
+// replacement's actual purpose: a REAL production style var (roleUser, not
+// an ad-hoc one — contrast capability_test.go's
+// TestApplyColorProfile_TrueColorEmits24Bit, which predates this conversion
+// and deliberately used an ad-hoc hex style because at that commit every
+// production var was still ANSI-256-index-declared) now emits a genuine
+// 24-bit "38;2;r;g;b" sequence under COLORTERM=truecolor. Before the palette
+// const conversion in styles.go, roleUser was
+// lipgloss.NewStyle().Foreground(lipgloss.Color("39")) — an already-8-bit-
+// typed ANSIColor/ANSI256Color, which termenv.Profile.Convert never upgrades
+// (only downgrades) — so this assertion would fail against the pre-Palette
+// declaration.
+func TestPaletteHuesEmit24BitUnderTrueColor(t *testing.T) {
+	withColorProfile(t, termenv.TrueColor)
+	out := roleUser.Render("x")
+	// hueCyan = "#00afff" = rgb(0,175,255).
+	if !strings.Contains(out, "38;2;0;175;255") {
+		t.Fatalf("TrueColor: roleUser (production style) should emit a genuine 24-bit sequence for hueCyan (#00afff), got %q", out)
+	}
+}
+
+// TestPaletteHuesUnchangedUnderANSI256 proves the palette conversion is
+// behavior-preserving under the profile this file hardcoded before W-E-01
+// (ANSI256): each hue constant's hex value round-trips to the exact
+// ANSI-256 index it replaced (see styles.go's palette const block doc
+// comment for the 6×6×6 cube math), so production output under the default
+// profile is byte-identical to before the conversion.
+func TestPaletteHuesUnchangedUnderANSI256(t *testing.T) {
+	withColorProfile(t, termenv.ANSI256)
+	cases := []struct {
+		name string
+		out  string
+		want string // expected "38;5;N" substring
+	}{
+		{"roleUser (was 39)", roleUser.Render("x"), "38;5;39"},
+		{"roleAsst (was 213)", roleAsst.Render("x"), "38;5;213"},
+		{"toolName (was 123)", toolName.Render("x"), "38;5;123"},
+		{"okStyle (was 42)", okStyle.Render("x"), "38;5;42"},
+		{"errStyle (was 203)", errStyle.Render("x"), "38;5;203"},
+		{"warnStyle (was 179)", warnStyle.Render("x"), "38;5;179"},
+		{"warnStylePerm (was 196)", warnStylePerm.Render("x"), "38;5;196"},
+		{"thinkingLiveStyle (was 117)", thinkingLiveStyle.Render("x"), "38;5;117"},
+	}
+	for _, c := range cases {
+		if !strings.Contains(c.out, c.want) {
+			t.Errorf("%s: ANSI256 profile should still produce %q, got %q", c.name, c.want, c.out)
+		}
+	}
+	// selPaletteStyle sets Background, not Foreground (was ANSI-256 "24").
+	if bg := selPaletteStyle.Render("x"); !strings.Contains(bg, "48;5;24") {
+		t.Errorf("selPaletteStyle (was bg 24): ANSI256 profile should still produce \"48;5;24\", got %q", bg)
 	}
 }

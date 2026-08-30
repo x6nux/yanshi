@@ -19,15 +19,54 @@ import (
 	"github.com/muesli/termenv"
 )
 
+// palette holds the hex-RGB equivalents of this file's hue-bearing style
+// colors (W-E-01 follow-up: "所有颜色常量改为从 Palette 取"). They replace the
+// bare ANSI-256 palette-index strings (lipgloss.Color("39") etc.) that this
+// file used before termenv-based profile detection existed.
+//
+// Why hex and not the index string: termenv.Profile.Convert only ever
+// DOWNGRADES an already-typed color (RGBColor→256/16; it never upgrades an
+// ANSI256Color/ANSIColor to 24-bit — see capability_test.go's
+// TestApplyColorProfile_TrueColorEmits24Bit doc comment). A style declared as
+// lipgloss.Color("39") therefore renders identically under ANSI256 and
+// TrueColor profiles; only a hex-declared lipgloss.Color("#…") gets genuine
+// profile-dependent output, including real 24-bit under COLORTERM=truecolor
+// (acceptance criterion 3). Each constant documents the ANSI-256 index it
+// replaces (computed via the standard 6×6×6 xterm cube: index = 16 + 36r +
+// 6g + 1b, level(n) ∈ {0,95,135,175,215,255}) so ANSI256-profile output is
+// byte-identical to before this change — verified by the existing style
+// tests, which assert no output changed.
+//
+// Deliberately excluded: the five grayscale colors this file also uses (245,
+// 250, 252, 238, 255) are NOT converted here. xterm-256 has two disjoint
+// representations for near-gray colors — the 6×6×6 cube's r=g=b diagonal and
+// the dedicated 24-step grayscale ramp (232–255) — and termenv's hex→256
+// nearest-match walks both, so round-tripping e.g. "#8a8a8a" (245's exact
+// ramp value) back through Profile.Color under ANSI256 is not guaranteed to
+// land on index 245 again. Converting the hues (which live solely in the
+// cube, so hex→256 round-trips exactly) gets the TrueColor upgrade without
+// that risk; the grays stay as index literals.
+const (
+	hueCyan       = "#00afff" // was "39"  — roleUser
+	huePink       = "#ff87ff" // was "213" — roleAsst, footerThinkStyle
+	hueBrightCyan = "#87ffff" // was "123" — toolName, stashHeaderStyle
+	hueGreen      = "#00d787" // was "42"  — okStyle, diffAddStyle
+	hueRed        = "#ff5f5f" // was "203" — errStyle, diffDelStyle, errToastStyle
+	hueAmber      = "#d7af5f" // was "179" — warnStyle, warnToastStyle
+	hueBrightRed  = "#ff0000" // was "196" — warnStylePerm
+	hueLightBlue  = "#87d7ff" // was "117" — thinkingLiveStyle
+	hueDarkBlue   = "#005f87" // was "24"  — selPaletteStyle background
+)
+
 // Palette (256-color; degrades gracefully on minimal terminals).
 var (
-	roleUser    = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)  // cyan
-	roleAsst    = lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Bold(true) // pink
-	toolName    = lipgloss.NewStyle().Foreground(lipgloss.Color("123")).Bold(true) // bright cyan
-	toolMeta    = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))            // grey
-	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)  // green
-	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true) // red
-	warnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("179"))            // amber
+	roleUser    = lipgloss.NewStyle().Foreground(lipgloss.Color(hueCyan)).Bold(true)       // cyan
+	roleAsst    = lipgloss.NewStyle().Foreground(lipgloss.Color(huePink)).Bold(true)       // pink
+	toolName    = lipgloss.NewStyle().Foreground(lipgloss.Color(hueBrightCyan)).Bold(true) // bright cyan
+	toolMeta    = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))                    // grey
+	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color(hueGreen)).Bold(true)      // green
+	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color(hueRed)).Bold(true)        // red
+	warnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color(hueAmber))                 // amber
 	resultStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).PaddingLeft(4)
 
 	// diffAddStyle / diffDelStyle / diffCtxStyle color the per-line sigils of
@@ -36,9 +75,9 @@ var (
 	// and dim grey for unchanged context. They are intentionally shared with
 	// the ok/err palette so the diff reads as part of the transcript rather
 	// than a foreign element.
-	diffAddStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))  // green
-	diffDelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("203")) // red
-	diffCtxStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245")) // grey
+	diffAddStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(hueGreen)) // green
+	diffDelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(hueRed))   // red
+	diffCtxStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))    // grey
 
 	inputBorder = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
 
@@ -46,8 +85,8 @@ var (
 	// activity text in pink (213) so it reads consistently with the live
 	// thinkingEntry hue. Despite its "footer" prefix it is NOT a footer-segment
 	// style — the footer's think segment uses the theme system below.
-	footerThinkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("213")) // magenta/pink
-	warnStylePerm    = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+	footerThinkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(huePink)) // magenta/pink
+	warnStylePerm    = lipgloss.NewStyle().Foreground(lipgloss.Color(hueBrightRed)).Bold(true)
 	// queuePreviewStyle renders the queued-messages preview block above the input
 	// composer (C07): dim grey + italic, matching codex's PendingInputPreview so
 	// the backlog reads as pending context rather than part of the live transcript.
@@ -66,7 +105,7 @@ var (
 	// glance whether the displayed reasoning is actively being produced or has
 	// settled. The whole block (header + tail body) shares this style so the
 	// state transition is a single visual shift, not just a header-color tweak.
-	thinkingLiveStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("117")).Italic(true)
+	thinkingLiveStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(hueLightBlue)).Italic(true)
 	// thinkingDoneStyle renders a finalized thinkingEntry (collapsed "Thought
 	// for Xs" line and expanded markdown body). The dim grey (245) italic
 	// matches the historic single thinkingStyle and signals "this reasoning has
@@ -84,7 +123,7 @@ var (
 	// paletteStyle / selPaletteStyle render the command-palette popup rows; the
 	// selected row gets a distinct background + a "▶" marker.
 	paletteStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	selPaletteStyle = lipgloss.NewStyle().Background(lipgloss.Color("24")).Foreground(lipgloss.Color("255")).Bold(true)
+	selPaletteStyle = lipgloss.NewStyle().Background(lipgloss.Color(hueDarkBlue)).Foreground(lipgloss.Color("255")).Bold(true)
 
 	// C2 — UX7 toast styles. Each level keeps a stable colour identity: info
 	// is dim grey (recognition without alarm), warn is amber (matches the
@@ -92,13 +131,13 @@ var (
 	// UI), error is red. Only the body uses these styles — the prefix glyphs
 	// ("[!]", "[X]") still use warnStyle / errStyle for contrast at the glyph.
 	infoToastStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	warnToastStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("179"))
-	errToastStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true)
+	warnToastStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(hueAmber))
+	errToastStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color(hueRed)).Bold(true)
 
 	// C2 — UX5 stash list styles. Header uses the same bold cyan family as
 	// other transcript section headers (e.g. "available models"); items stay
 	// neutral grey so the preview text reads as data, not styling.
-	stashHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("123")).Bold(true)
+	stashHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(hueBrightCyan)).Bold(true)
 	stashItemStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
 )
 
