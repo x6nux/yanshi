@@ -16,12 +16,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/x6nux/yanshi/internal/llm/eino"
 )
@@ -264,6 +266,77 @@ func TestReportOllama_UnreachableIsReportedNotFatal(t *testing.T) {
 	msg := reportOllama(context.Background(), cache, client)
 	if !strings.Contains(msg, "ollama:") || !strings.Contains(msg, "unavailable") {
 		t.Errorf("message = %q, want an informational ollama:-prefixed unavailable line", msg)
+	}
+}
+
+// newHangingListener returns an "http://host:port" URL whose TCP port
+// accepts every connection and then never writes a byte back — the I-2
+// failure shape (a stuck daemon, a firewall DROP after the SYN, an
+// unrelated service squatting on the port) that a closed port
+// (TestReportOllama_UnreachableIsReportedNotFatal's ECONNREFUSED case)
+// cannot reproduce, because ECONNREFUSED returns immediately while this
+// leaves the client's response read blocked indefinitely. Every accepted
+// connection is held open (never closed, never read from beyond the OS
+// socket buffer) until the test's t.Cleanup runs.
+func newHangingListener(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return // listener closed by t.Cleanup.
+			}
+			t.Cleanup(func() { conn.Close() })
+			// Deliberately: read nothing, write nothing, don't close.
+		}
+	}()
+	return "http://" + ln.Addr().String()
+}
+
+// TestCheckLocalRuntimesWith_DeadlineBoundsAHungPort is I-2's acceptance
+// test: it proves doctorLocalRuntimeProbeTimeout, not the two clients'
+// 10s-default http.Client.Timeout (eino.DefaultDiscoveryHTTPTimeout, via
+// NewOllamaClient/NewLMStudioClient's httpClient==nil fallback), is what
+// actually bounds a hung local-runtime port when checkLocalRuntimesWith
+// runs — the exact function checkLocalRuntimes (RunDoctor's real check)
+// calls with production clients. If doctorLocalRuntimeProbeTimeout's
+// context.WithTimeout wrapping were ever removed or miswired, this test
+// would take close to I-2's identified worst case (2 x 10s = 20s) instead
+// of finishing in a few seconds.
+func TestCheckLocalRuntimesWith_DeadlineBoundsAHungPort(t *testing.T) {
+	ollamaURL := newHangingListener(t)
+	lmstudioURL := newHangingListener(t)
+
+	cache, err := eino.NewCache(t.TempDir(), 0)
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+	ollamaClient := eino.NewOllamaClient(ollamaURL, nil)
+	lmstudioClient := eino.NewLMStudioClient(lmstudioURL, "", nil)
+
+	start := time.Now()
+	result := checkLocalRuntimesWith(context.Background(), cache, ollamaClient, lmstudioClient)
+	elapsed := time.Since(start)
+
+	// Real margin, not a tight pin to 2 x doctorLocalRuntimeProbeTimeout —
+	// a tight pin would make this flaky under CI scheduling jitter. The
+	// property under test is "closer to the short deadline than to the
+	// 10s-per-client default", so anything comfortably under half of
+	// I-2's 20s worst case proves the fix and rules out the regression.
+	const wantUnder = 10 * time.Second
+	if elapsed >= wantUnder {
+		t.Fatalf("checkLocalRuntimesWith against two hung ports took %v, want under %v (doctorLocalRuntimeProbeTimeout must bound the request, not eino.DefaultDiscoveryHTTPTimeout)", elapsed, wantUnder)
+	}
+	if !strings.Contains(result.Message, "ollama:") || !strings.Contains(result.Message, "unavailable") {
+		t.Errorf("ollama half of message = %q, want an unavailable line", result.Message)
+	}
+	if !strings.Contains(result.Message, "lmstudio:") || !strings.Contains(result.Message, "unavailable") {
+		t.Errorf("lmstudio half of message = %q, want an unavailable line", result.Message)
 	}
 }
 

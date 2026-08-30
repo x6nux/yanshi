@@ -36,19 +36,42 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/x6nux/yanshi/internal/llm/eino"
 )
+
+// doctorLocalRuntimeProbeTimeout bounds each of checkLocalRuntimesWith's two
+// checks independently (one context.WithTimeout per runtime, not one shared
+// across both — sharing a single deadline would let a hang in the first
+// quietly starve the second's budget too, misreporting a healthy runtime as
+// unavailable just because it was checked second).
+//
+// It is far shorter than eino.DefaultDiscoveryHTTPTimeout (10s, tuned for a
+// real listing/pull operation elsewhere — see that constant's own doc
+// comment) because `yanshi doctor` is a synchronous CLI command a human is
+// waiting on, and review finding I-2 identified the failure shape that
+// timeout does not bound well here: a port that accepts TCP but never
+// answers HTTP (a stuck daemon, a firewall DROP after the SYN, an unrelated
+// service that happens to own the port) leaves a doctor run hanging up to
+// DefaultDiscoveryHTTPTimeout per runtime — up to ~20s total for both —
+// where the far more common case (nothing listening at all) returns in
+// well under a second (ECONNREFUSED is immediate). 3s is long enough that a
+// loopback daemon under load still answers, short enough that a doctor run
+// against I-2's worst case stays at ~6s instead of ~20s.
+const doctorLocalRuntimeProbeTimeout = 3 * time.Second
 
 // checkLocalRuntimes is RunDoctor's I-1 check. It builds a real
 // eino.Cache rooted at the default OS cache directory (the same one a live
 // `yanshi doctor` run and a future model-picker feature would both read)
 // and a real OllamaClient/LMStudioClient pointed at each runtime's default
 // loopback address — this is genuine production wiring, not a test double;
-// reportOllama/reportLMStudio accept the cache and client as parameters
-// specifically so tests can substitute an eino.Cache rooted at a temp dir
-// and a client pointed at an httptest.Server instead, without this function
-// itself needing two code paths.
+// the actual check logic lives in checkLocalRuntimesWith, parameterized by
+// cache and clients the same way reportOllama/reportLMStudio already are,
+// so I-2's deadline can be exercised against a real hung listener in a test
+// without binding to the two hardcoded default ports (127.0.0.1:11434 /
+// 127.0.0.1:1234), which would either collide with a real Ollama/LM Studio
+// running on the dev machine or assume those ports are free on CI.
 func checkLocalRuntimes(ctx context.Context) CheckResult {
 	cache, err := eino.NewCache("", 0)
 	if err != nil {
@@ -60,8 +83,21 @@ func checkLocalRuntimes(ctx context.Context) CheckResult {
 		return CheckResult{Name: "local-runtimes", Status: StatusWarn,
 			Message: fmt.Sprintf("discovery cache unavailable: %v", err)}
 	}
-	ollama := reportOllama(ctx, cache, eino.NewOllamaClient("", nil))
-	lmstudio := reportLMStudio(ctx, cache, eino.NewLMStudioClient("", "", nil))
+	return checkLocalRuntimesWith(ctx, cache, eino.NewOllamaClient("", nil), eino.NewLMStudioClient("", "", nil))
+}
+
+// checkLocalRuntimesWith is checkLocalRuntimes' body, parameterized by cache
+// and clients so a test can point it at a real (fake-protocol or hung)
+// listener instead of the production default addresses.
+func checkLocalRuntimesWith(ctx context.Context, cache *eino.Cache, ollamaClient *eino.OllamaClient, lmstudioClient *eino.LMStudioClient) CheckResult {
+	ollamaCtx, cancelOllama := context.WithTimeout(ctx, doctorLocalRuntimeProbeTimeout)
+	defer cancelOllama()
+	ollama := reportOllama(ollamaCtx, cache, ollamaClient)
+
+	lmstudioCtx, cancelLMStudio := context.WithTimeout(ctx, doctorLocalRuntimeProbeTimeout)
+	defer cancelLMStudio()
+	lmstudio := reportLMStudio(lmstudioCtx, cache, lmstudioClient)
+
 	return CheckResult{Name: "local-runtimes", Status: StatusOK, Message: ollama + "; " + lmstudio}
 }
 
