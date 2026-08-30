@@ -172,6 +172,11 @@ func RunDoctor(ctx context.Context, opts DoctorOptions) DoctorReport {
 	// startup refusal.
 	checks = append(checks, checkPolicyScope(cfg, cfgErr, opts.ConfigPath, root))
 	checks = append(checks, checkPolicyFilePerms(opts.ConfigPath))
+	// B-2 (2026-08-29 review, RC-10): same question as checkPolicyScope, asked
+	// of llm.providers[].auth.command instead of `profiles:`. See
+	// checkAuthCommandScope's doc comment for why it needs its own check
+	// rather than being folded into checkPolicyScope's PolicyActive branch.
+	checks = append(checks, checkAuthCommandScope(cfg, cfgErr))
 	// D3 (S10/O03/I18N1/C15) doctor checks: surface locale, keymap, vim, and
 	// high-contrast posture. Each check returns a fixed safe string; raw error
 	// text or API key values are never echoed because the underlying

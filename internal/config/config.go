@@ -102,10 +102,23 @@ type Config struct {
 	// PolicyNarrowed names the profiles whose local definition was clamped by
 	// the trusted policy. Reported once at boot so a narrowing that did not
 	// take effect is visible then, rather than inferred from a denial later.
-	PolicyNarrowed []string     `yaml:"-"`
-	Skills         SkillsConfig `yaml:"skills"`
-	VCS            VCSConfig    `yaml:"vcs"`
-	Batch          BatchConfig  `yaml:"batch"`
+	PolicyNarrowed []string `yaml:"-"`
+	// PolicyFileActive reports that a trusted policy file (S3, policy.go) was
+	// present at load — regardless of whether it named any profiles. It is
+	// DELIBERATELY not the same signal as PolicyActive, which requires
+	// len(policy.Profiles) > 0: guardian_prompt_file and (B-2)
+	// llm.providers[].auth are both taken over by ApplyPolicy whenever a
+	// trusted file exists at all, even one that names no profiles (see
+	// ApplyPolicy's comments), so a check that only cares about ONE of those
+	// two keys — `yanshi doctor`'s auth-command-scope check, which does not
+	// know or care whether `profiles:` was ever written — needs the coarser
+	// signal. Not a YAML key for the same reason PolicyActive is not: an
+	// agent that could set it from config.yaml could claim to be
+	// policy-governed while governing itself.
+	PolicyFileActive bool         `yaml:"-"`
+	Skills           SkillsConfig `yaml:"skills"`
+	VCS              VCSConfig    `yaml:"vcs"`
+	Batch            BatchConfig  `yaml:"batch"`
 	// Compaction configures automatic context-compaction (Task 35b): when the
 	// estimated token count of the conversation history reaches
 	// Threshold*ContextWindow, the older turns are summarized by a remote model
@@ -819,6 +832,17 @@ type ProviderConfig struct {
 // is threaded onto those contexts too. Nothing in this package enforces
 // that; it is a property of which callers happen to route through
 // bindExecutionContext today.
+//
+// SECURITY (B-2, 2026-08-29 review): the escalation the first paragraph above
+// accepts as a given — config.yaml sits in the agent's own write scope by
+// default, so an fs_write plus a restart chooses this Command — is closed by
+// the trusted policy file the same way it is closed for `profiles:` and
+// security.guardian_prompt_file: when a policy file exists (policy.go), every
+// provider's Auth is replaced by policy.Security.ProviderAuth, keyed by
+// ProviderConfig.Name, and a provider the trusted map does not name has its
+// Auth cleared to nil regardless of what config.yaml says. See
+// PolicySecurity.ProviderAuth's doc comment for the mechanism and
+// ApplyPolicy's for the exact override semantics.
 type ProviderAuthConfig struct {
 	// Command is the argv to run: Command[0] is the program, the rest are
 	// its arguments. The command's stdout, trimmed of trailing whitespace,
@@ -875,6 +899,7 @@ func Load(path string) (*Config, error) {
 	}
 	cfg.PolicyNarrowed = cfg.ApplyPolicy(policy)
 	cfg.PolicyActive = policy != nil && len(policy.Profiles) > 0
+	cfg.PolicyFileActive = policy != nil
 	// ApplyPolicy may have replaced security.guardian_prompt_file with the
 	// trusted one, so the body LoadBytes read from the local value is stale and
 	// was cleared. Re-read from whichever path is now authoritative, through the

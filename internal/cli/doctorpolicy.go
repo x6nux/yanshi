@@ -83,6 +83,55 @@ func checkPolicyScope(cfg *config.Config, cfgErr error, configPath, root string)
 			configPath, remedy)}
 }
 
+// checkAuthCommandScope reports whether any provider configuring
+// llm.providers[].auth.command (W-C-12) does so under a trusted policy file,
+// rather than only the working-directory config.
+//
+// It is the B-2 (2026-08-29 review) sibling of checkPolicyScope: RC-10 ruled
+// that auth.command must be governed by the same trusted-policy mechanism as
+// `profiles:` and security.guardian_prompt_file, because it is the same
+// self-escalation shape (write config.yaml, restart, run under an
+// authorization of your own authorship) applied to a key that runs a program
+// instead of deciding what a permission means. policy.go's ApplyPolicy already
+// closes it — every provider's Auth is replaced by the trusted
+// security.provider_auth entry (nil if that provider is not named) whenever a
+// trusted policy file exists at all — so by the time cfg reaches here the
+// field already holds the governed value. This check only has to say whether
+// that governance was active, using cfg.PolicyFileActive rather than
+// cfg.PolicyActive: the latter requires the trusted file to have named at
+// least one profile, but a policy document that pins ONLY provider_auth (no
+// `profiles:` block) is a legitimate thing to write and must not be reported
+// as unprotected.
+func checkAuthCommandScope(cfg *config.Config, cfgErr error) CheckResult {
+	const name = "auth-command-scope"
+	if cfgErr != nil {
+		return skipped(name, cfgErr)
+	}
+	var configured []string
+	for _, p := range cfg.LLM.Providers {
+		if p.Auth != nil {
+			configured = append(configured, p.Name)
+		}
+	}
+	if len(configured) == 0 {
+		return CheckResult{Name: name, Status: StatusOK,
+			Message: "no provider configures llm.providers[].auth.command"}
+	}
+	if cfg.PolicyFileActive {
+		return CheckResult{Name: name, Status: StatusOK,
+			Message: fmt.Sprintf("auth.command governed by trusted policy for: %s", strings.Join(configured, ", "))}
+	}
+	policyPath, configuredPath := config.PolicyPath()
+	remedy := fmt.Sprintf("add security.provider_auth to %s", policyPath)
+	if !configuredPath {
+		remedy = fmt.Sprintf("set %s to a policy file outside the work root", config.PolicyEnvVar)
+	}
+	return CheckResult{Name: name, Status: StatusWarn,
+		Message: fmt.Sprintf(
+			"llm.providers[].auth.command is configured for %s with no trusted policy governing it, so an agent edit plus a restart could point it at an arbitrary command; %s",
+			strings.Join(configured, ", "), remedy)}
+}
+
 // checkPolicyFilePerms reports policy and config files that are writable by
 // users other than the owner.
 //

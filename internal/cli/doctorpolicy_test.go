@@ -134,6 +134,54 @@ func TestCheckPolicyFilePerms_OKWhenOwnerOnly(t *testing.T) {
 	assert.Equal(t, StatusOK, got.Status)
 }
 
+// TestCheckAuthCommandScope_OKWhenNoProviderConfiguresAuth is the common case:
+// nothing to protect, so nothing to warn about.
+func TestCheckAuthCommandScope_OKWhenNoProviderConfiguresAuth(t *testing.T) {
+	cfg := &config.Config{}
+	got := checkAuthCommandScope(cfg, nil)
+	assert.Equal(t, StatusOK, got.Status)
+	assert.Contains(t, got.Message, "no provider configures")
+}
+
+// TestCheckAuthCommandScope_WarnsWhenUngoverned is B-2's reason to exist: a
+// provider configures auth.command from the working-directory config and no
+// trusted policy file governs it, so an fs_write plus a restart could point
+// that command at anything.
+func TestCheckAuthCommandScope_WarnsWhenUngoverned(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.LLM.Providers = []config.ProviderConfig{
+		{Name: "primary", Auth: &config.ProviderAuthConfig{Command: []string{"/usr/bin/issuer"}}},
+	}
+	got := checkAuthCommandScope(cfg, nil)
+	assert.Equal(t, StatusWarn, got.Status)
+	assert.Contains(t, got.Message, "primary")
+	assert.Contains(t, got.Message, "provider_auth",
+		"the message must name the remedy, not just the problem")
+}
+
+// TestCheckAuthCommandScope_OKWhenPolicyFileGovernsIt pins the OK branch, and
+// specifically that it keys off PolicyFileActive rather than PolicyActive — a
+// policy document that pins ONLY security.provider_auth, naming no `profiles:`
+// block, is a legitimate thing to write (ApplyPolicy applies it regardless of
+// whether any profile was named) and must not be reported as unprotected.
+func TestCheckAuthCommandScope_OKWhenPolicyFileGovernsIt(t *testing.T) {
+	cfg := &config.Config{PolicyFileActive: true}
+	cfg.LLM.Providers = []config.ProviderConfig{
+		{Name: "primary", Auth: &config.ProviderAuthConfig{Command: []string{"/usr/bin/issuer"}}},
+	}
+	got := checkAuthCommandScope(cfg, nil)
+	assert.Equal(t, StatusOK, got.Status)
+	assert.Contains(t, got.Message, "primary")
+}
+
+// TestCheckAuthCommandScope_SkippedOnConfigError follows the same degradation
+// rule as every other check in this file.
+func TestCheckAuthCommandScope_SkippedOnConfigError(t *testing.T) {
+	got := checkAuthCommandScope(nil, assert.AnError)
+	assert.Equal(t, StatusWarn, got.Status)
+	assert.Contains(t, got.Message, "skipped")
+}
+
 // TestRunDoctor_IncludesPolicyChecks pins that the checks are actually WIRED
 // into the report. Both functions could be perfect and unreachable, which is
 // the failure mode the unit tests above cannot see.
@@ -151,4 +199,5 @@ func TestRunDoctor_IncludesPolicyChecks(t *testing.T) {
 	}
 	assert.True(t, names["policy-scope"], "policy-scope must appear in the doctor report")
 	assert.True(t, names["policy-perms"], "policy-perms must appear in the doctor report")
+	assert.True(t, names["auth-command-scope"], "auth-command-scope must appear in the doctor report")
 }
