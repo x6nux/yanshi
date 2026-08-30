@@ -1,8 +1,10 @@
 package secproc_test
 
 import (
+	"bytes"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -29,6 +31,63 @@ func TestWaitDrained_NilWaitFailsClosed(t *testing.T) {
 	}
 	if waitErr != nil {
 		t.Fatalf("waitErr = %v, want nil — Wait was never callable", waitErr)
+	}
+}
+
+// TestWaitDrained_DrainsBeforeWait proves the ordering documented on
+// WaitDrained's own doc comment is load-bearing, not aspirational: draining
+// must start BEFORE started.Wait() is called. A real *exec.Cmd closes its
+// StdoutPipe/StderrPipe once Wait reaps the process — that is the stdlib's
+// own documented behavior ("Wait will close the pipe after seeing the
+// command exit... it is thus incorrect to call Wait before all reads from
+// the pipe have completed"). This test's Wait stub reproduces exactly that
+// close-on-reap behavior against a real os.Pipe, so it captures the full
+// payload under the current drain-then-wait implementation. It would go red
+// under a wait-then-drain reordering: the pipe's read end would already be
+// closed by the time drain() started reading, losing the payload entirely
+// and surfacing a non-nil drainErr instead of the bytes asserted here.
+// Before this test, only caller packages (internal/llm/eino's cmdauth,
+// internal/tools' secproc_capture) exercised this ordering indirectly
+// through their own fakes — internal/secproc's own suite never proved its
+// one load-bearing function actually holds the order its comment promises.
+func TestWaitDrained_DrainsBeforeWait(t *testing.T) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	const payload = "the child already wrote this before anyone called Wait"
+	childExited := make(chan struct{})
+	go func() {
+		io.WriteString(pw, payload)
+		pw.Close()
+		close(childExited)
+	}()
+
+	started := &secproc.StartedProcess{
+		Stdout: pr,
+		Stderr: strings.NewReader(""),
+		Wait: func() error {
+			<-childExited
+			// Reproduces (*exec.Cmd).Wait's documented behavior: it closes
+			// the pipe once the process is reaped. Calling this before the
+			// pipe has been drained is the exact bug this ordering test
+			// guards against — a wait-then-drain WaitDrained would call this
+			// closure, and thus pr.Close(), before drain() ever reads a byte.
+			pr.Close()
+			return nil
+		},
+	}
+
+	var stdout bytes.Buffer
+	waitErr, drainErr := secproc.WaitDrained(started, &stdout, io.Discard)
+	if drainErr != nil {
+		t.Fatalf("drainErr = %v, want nil — draining must finish before Wait closes the pipe", drainErr)
+	}
+	if waitErr != nil {
+		t.Fatalf("waitErr = %v, want nil", waitErr)
+	}
+	if stdout.String() != payload {
+		t.Fatalf("stdout = %q, want %q — drain-then-wait must capture everything the child wrote before Wait tore the pipe down", stdout.String(), payload)
 	}
 }
 
