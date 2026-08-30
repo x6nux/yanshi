@@ -12,6 +12,27 @@ import (
 	"github.com/x6nux/yanshi/internal/proto"
 )
 
+// ---- view.go wiring: reflow()/renderScreen() dual-wiring ----
+
+// TestRollbackPopup_ReflowAndRenderScreenWiring pins the two-sided wiring
+// CLAUDE.md calls out for every new popup: reflow() must subtract its height
+// from the viewport, and renderScreen() must actually append it — missing
+// either produces either viewport overflow or an invisible-but-space-
+// reserved popup.
+func TestRollbackPopup_ReflowAndRenderScreenWiring(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = mm.(model)
+	heightBefore := m.viewport.Height
+
+	m.rollback = &rollbackState{items: []rollbackItem{{text: "hello", turnsBack: 1}}}
+	m.reflow()
+	assert.Less(t, m.viewport.Height, heightBefore, "an open rollback popup must shrink the viewport (reflow wiring)")
+
+	out := m.renderScreen()
+	assert.Contains(t, out, "Rollback", "an open rollback popup must be rendered (renderScreen wiring)")
+}
+
 // ---- rollbackCandidates ----
 
 func TestRollbackCandidates_MixedEntriesMostRecentFirst(t *testing.T) {
