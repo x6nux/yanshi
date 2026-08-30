@@ -360,6 +360,27 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		m.lastEsc = now
 		if isDouble {
 			m.lastEsc = time.Time{} // consume the pair; a third press starts fresh
+			// RE-19: same transport gate cmdDiff (commands.go) uses for
+			// list_workspace_diff, and for the same reason — fork_session
+			// is a control frame SSE has no server-side handling for (SSE
+			// is stateless; there is no persistent session to fork). Gated
+			// BEFORE opening the picker, not after the user picks a turn
+			// to roll back to: RE-13 already stops a rejected fork's
+			// "error" reply from leaking pendingRollback state forever,
+			// but that path still walks the user through picking a
+			// candidate only to fail at the end with a transport-generic
+			// message. This mirrors /diff's UX exactly — refuse
+			// immediately, name the transport, name why — instead of
+			// leaving Esc-Esc as the one gesture in this package that
+			// finds out the hard way.
+			if m.sess.Mode() == "sse" {
+				m.entries = append(m.entries, errorEntry{
+					text: "rollback requires the WebSocket transport (SSE is stateless)",
+				})
+				m.refresh()
+				m.viewport.GotoBottom()
+				return m, nil, true
+			}
 			if items := m.rollbackCandidates(); m.streamCh == nil && len(items) > 0 {
 				m.rollback = &rollbackState{items: items}
 				m.reflow()

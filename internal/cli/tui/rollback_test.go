@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -109,6 +110,38 @@ func TestEscEsc_StreamingFallsThrough(t *testing.T) {
 	mm2, ok := handleKey(mm, tea.KeyMsg{Type: tea.KeyEscape})
 	assert.False(t, ok, "streaming: falls through to ordinary (unhandled) Esc, same as no toast")
 	assert.Nil(t, mm2.rollback, "mirrors /fork's own mid-stream block: no picker while streaming")
+}
+
+// TestEscEsc_SSERejected is RE-19: mirrors TestCmdDiff_SSERejected
+// (workspace_diff_test.go) — fork_session is a control frame SSE has no
+// server-side handling for, the same reason /diff rejects SSE. Before this
+// fix Esc-Esc had no gate at all: the picker would open (there IS a
+// candidate here), the user would pick one, rollbackConfirm would send the
+// frame anyway, and only THEN would the server's rejection surface as a
+// generic "error" reply — RE-13 stops that reply from leaking
+// pendingRollback state forever, but the user still had to walk through a
+// picker for a feature that was never going to work on this transport. The
+// gate now fires on the very first successful double-press, before
+// rollbackCandidates is even consulted — proven here by seeding a real
+// candidate that the gate must never reach.
+func TestEscEsc_SSERejected(t *testing.T) {
+	srec := &sseSession{}
+	m := newModel(srec, "/proj")
+	m.entries = []entry{&userEntry{text: "hello"}}
+
+	mm, _ := handleKey(m, tea.KeyMsg{Type: tea.KeyEscape})
+	mm2, ok := handleKey(mm, tea.KeyMsg{Type: tea.KeyEscape})
+	assert.True(t, ok, "the second Esc of the pair must be handled (consumed), not left to the default input handler")
+	assert.Nil(t, mm2.rollback, "SSE: the picker must never open, even though a candidate exists")
+	assert.Empty(t, srec.frames, "SSE: no fork_session frame may be sent")
+
+	foundErr := false
+	for _, e := range mm2.entries {
+		if ee, ok := e.(errorEntry); ok && strings.Contains(ee.text, "WebSocket") {
+			foundErr = true
+		}
+	}
+	assert.True(t, foundErr, "expected an errorEntry naming the WebSocket requirement, matching /diff's own wording")
 }
 
 func TestEscEsc_OutsideWindowIsTwoSinglePresses(t *testing.T) {
