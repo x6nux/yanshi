@@ -26,9 +26,12 @@ type UncommittedFile struct {
 // from the row's own blob_hash — the same two lookups commitScope folds
 // together when it turns this changeset into a commit, so a path that
 // UncommittedDiff can't read is a path CommitMain/CommitWorktree can't fold
-// either. Returns an empty (non-nil) slice for an unknown or empty scope, and
-// silently skips a row whose blob is missing rather than failing the whole
-// call — one corrupt blob should not hide every other pending edit.
+// either. Returns an empty (non-nil) slice for an unknown or empty scope.
+// A row whose blob is missing or non-UTF8 is never skipped — it is always
+// appended to the result with that side's text left empty, and Op preserved
+// either way (matching UncommittedFile's own doc comment), so a corrupt or
+// binary blob on one path never hides any other pending edit and the caller
+// can always list every path.
 func (v *VCS) UncommittedDiff(scopeType, scopeID string) ([]UncommittedFile, error) {
 	head := v.scopeHeadTree(scopeType, scopeID)
 	rows, err := v.store.DB.Query(
