@@ -161,6 +161,11 @@ func RunDoctor(ctx context.Context, opts DoctorOptions) DoctorReport {
 	checks = append(checks, checkPTY())
 	checks = append(checks, checkMCP(cfg, cfgErr))
 	checks = append(checks, checkLSP(ctx, root))
+	// W-C-08 (C3 remediation): the first production consumer of
+	// internal/llm/eino's local-runtime discovery package. See
+	// doctorlocalruntimes.go's package comment for why it lives here and
+	// why it never fails/warns on its own account.
+	checks = append(checks, checkLocalRuntimes(ctx))
 	checks = append(checks, checkPermissions(cfg, cfgErr))
 	// S3: is the file that decides what the agent may do sitting where the
 	// agent can write it? See doctorpolicy.go for why this is a warn and not a
