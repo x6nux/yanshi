@@ -328,19 +328,29 @@ func TestCompactingModel_InCooldown_TimeBased(t *testing.T) {
 	assert.True(t, cm.inCooldown(tokens), "within time cooldown")
 }
 
-// TestCompactingModel_MaybeCompact_BestEffort proves when summarize fails, original msgs are returned.
+// TestCompactingModel_MaybeCompact_BestEffort proves that a structurally
+// impossible summarization (ContextWindow so tiny RunSummary has no room to
+// even attempt a call — a RunSummary-level failure, same category as an
+// outright model error, not the EMPTY/QUALITY gates run.go keeps as hard
+// errors) goes through W-C-04's fallback rather than being discarded: the
+// pinned tail survives, the unpinned message that would have been
+// summarized is dropped, and maybeCompact reports it as a real compaction
+// (ok=true). Before W-C-04 this asserted the opposite (ok=false, msgs
+// unchanged) — RunSummary's failure used to propagate as a Run error;
+// ctxcompact.Run now absorbs it into a Fallback=true Result instead.
 func TestCompactingModel_MaybeCompact_BestEffort(t *testing.T) {
 	inner := &recordingModel{reply: "ok", streamOK: true}
 	cm := &CompactingModel{
 		Inner:         inner,
 		Threshold:     0.5,
-		ContextWindow: 10, // tiny -> ctxcompact.Run will fail
+		ContextWindow: 10, // tiny -> RunSummary cannot find room -> W-C-04 fallback
 		KeepRecent:    2,
 	}
 	msgs := []*schema.Message{bigMessage(30), bigMessage(30), bigMessage(30)}
 	result, ok := cm.maybeCompact(context.Background(), msgs)
-	assert.False(t, ok, "should not compact when summarization fails")
-	assert.Equal(t, msgs, result, "original messages returned")
+	require.True(t, ok, "a summarization failure now falls back rather than no-op'ing (W-C-04)")
+	assert.Less(t, len(result), len(msgs), "the unpinned message is dropped, not kept")
+	assert.Equal(t, msgs[len(msgs)-1], result[len(result)-1], "the pinned tail survives verbatim")
 }
 
 // ---------------------------------------------------------------------------

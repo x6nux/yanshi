@@ -1023,6 +1023,49 @@ func TestCompactingModel_AFailedCompactionArmsTheCooldown(t *testing.T) {
 		"the failed attempt must not be repeated on every iteration of the turn")
 }
 
+// TestCompactingModel_ModelFailureFallsBackToPinsOnly is the mid-turn half of
+// W-C-04's ladder symmetry (CLAUDE.md's mid-turn/pre-turn requirement): it
+// exercises maybeCompact's OWN copy of the
+// `err != nil || TokensAfter >= TokensBefore` success gate (line 206 above)
+// against a summary model that fails OUTRIGHT — never returns a reply at
+// all — which is a DIFFERENT failure mode from
+// TestCompactingModel_AFailedCompactionArmsTheCooldown just above: that
+// test's model call SUCCEEDS with an oversized summary, rejected by the C10
+// quality gate one layer down inside ctxcompact.Run, and Run still returns an
+// error on THAT path (see run.go's doc comment: EMPTY/QUALITY stay gates).
+// Before W-C-04 an outright model-call failure also propagated as a Run
+// error and maybeCompact returned (msgs, false); now ctxcompact.Run absorbs
+// it into a Fallback=true Result, so did must come back true here — the
+// fixture (NewFakeModel(nil, err) + this msgs slice) is independent from
+// both ctxcompact/run_test.go's fallback fixtures and
+// ctxcompact/compact_test.go's pre-turn fixture, so a regression in any ONE
+// of the three literal gate copies reddens only that layer's test.
+func TestCompactingModel_ModelFailureFallsBackToPinsOnly(t *testing.T) {
+	inner := NewFakeModel(nil, errors.New("model down")) // non-transient -> immediate, no retry cost
+	cm := &CompactingModel{
+		Inner:         inner,
+		Threshold:     0.5,
+		ContextWindow: 200, // 100-token threshold budget, same fixture as TestCompactingModel_CompactsWhenOverThreshold
+		KeepRecent:    2,
+	}
+	// 5 messages, each ~28 tokens → ~140 tokens, well over the 100 budget —
+	// same shape as TestCompactingModel_CompactsWhenOverThreshold, so this
+	// test isolates the model-failure branch rather than a threshold-gate
+	// difference.
+	msgs := []*schema.Message{
+		bigMessage(20),
+		bigMessage(20),
+		bigMessage(20),
+		bigMessage(20),
+		bigMessage(20),
+	}
+	require.True(t, cm.shouldCompact(msgs), "fixture is over threshold")
+
+	out, did := cm.maybeCompact(context.Background(), msgs)
+	require.True(t, did, "model failure is a fallback, not a no-op (W-C-04)")
+	assert.Less(t, len(out), len(msgs), "the summarize-only messages are dropped")
+}
+
 // TestHardForceBypassesCooldown_SoArmingOnFailureIsSafe pins the COUPLING that
 // makes maybeCompact's arm-on-failure safe. Read this before changing either
 // the cooldown or the hard-force branch.

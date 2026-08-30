@@ -178,13 +178,24 @@ func TestForceCompactOnlyReportsRealShrinks(t *testing.T) {
 		}
 	})
 
-	t.Run("a failing summarizer does not claim a shrink", func(t *testing.T) {
+	t.Run("a failing summarizer still recovers via W-C-04's fallback", func(t *testing.T) {
+		// Before W-C-04, RunSummary's failure propagated as a Run error and
+		// forceCompact's `if err != nil { return msgs, false }` fired — a
+		// summarizer outage during an overflow retry meant certain failure,
+		// even though the pinned tail alone might already fit. Now
+		// ctxcompact.Run absorbs the failure into a Fallback=true Result (no
+		// summary, just the pinned messages), err comes back nil, and
+		// forceCompact's own after>=before check is what decides — which is
+		// genuinely smaller here, so this is a real, not a claimed, shrink.
 		broken := NewFakeModel(nil, errors.New("summary model is down"))
 		msgs := longHistory(12)
-		_, shrank := forceCompact(context.Background(), msgs, nil,
+		out, shrank := forceCompact(context.Background(), msgs, nil,
 			OverflowRecoveryConfig{ContextWindow: 4096, Summarizer: broken})
-		if shrank {
-			t.Error("shrank = true after the summarizer failed")
+		if !shrank {
+			t.Error("shrank = false: the fallback still drops the summarize-set, which is a real shrink")
+		}
+		if ctxcompact.EstimateTokens(out) >= ctxcompact.EstimateTokens(msgs) {
+			t.Error("shrank = true but the token count did not fall")
 		}
 	})
 

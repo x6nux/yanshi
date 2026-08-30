@@ -34,9 +34,14 @@ func TestRun_FullPipeline(t *testing.T) {
 	assert.Less(t, res.TokensAfter, res.TokensBefore)
 }
 
-func TestRun_FailureDoesNotProduceEmptySummary(t *testing.T) {
-	// bug⑥: the old path returned an empty summary message on failure. Run must
-	// return an error so callers fall back to the original history instead.
+func TestRun_ModelFailureFallsBackToPinsOnly(t *testing.T) {
+	// W-C-04: a summary MODEL failure (the call itself never produced a
+	// summary) no longer surfaces as an error — Run falls back to the pinned
+	// messages and opens a new window directly. bug⑥'s original guarantee
+	// (never fabricate an EMPTY summary) is unaffected by this: it is still
+	// enforced one layer down, in RunSummary itself — see
+	// TestRunSummary_FailureReturnsError in summarize_test.go, which calls
+	// RunSummary directly and still asserts require.Error.
 	fm := einollm.NewFakeModel(nil, errors.New("model down")) // non-transient -> immediate
 	msgs := []*schema.Message{
 		{Role: schema.User, Content: "task"},                                 // 0 user (pin)
@@ -45,9 +50,93 @@ func TestRun_FailureDoesNotProduceEmptySummary(t *testing.T) {
 		{Role: schema.Assistant, Content: strings.Repeat("even more ", 100)}, // 3 summarize
 		{Role: schema.User, Content: "recent"},                               // 4 user+tail
 	}
-	_, err := ctxcompact.Run(context.Background(), msgs, ctxcompact.PlanOpts{KeepRecent: 1},
+	res, err := ctxcompact.Run(context.Background(), msgs, ctxcompact.PlanOpts{KeepRecent: 1},
 		ctxcompact.RunOpts{ModelWindow: 10000, ChunkThreshold: 0.9}, fm, nil)
-	require.Error(t, err, "failure surfaces as error, never an empty summary (bug⑥)")
+	require.NoError(t, err, "model failure is a fallback, not an error")
+	assert.True(t, res.Fallback, "Result.Fallback must be set on the fallback path")
+	assert.Less(t, res.TokensAfter, res.TokensBefore, "fallback still shrinks the history")
+	for _, m := range res.Messages {
+		assert.False(t, ctxcompact.IsSummaryMessage(m), "fallback path writes no summary message — there is nothing to summarize with")
+	}
+}
+
+// TestRun_ModelFailureFiresFallbackNoticeOnChunk pins the observability half
+// of W-C-04: onChunk must fire with ctxcompact.FallbackNotice so the caller's
+// activity line can distinguish "opened a new window with no summary" from an
+// ordinary summary delta. onChunk is never invoked from inside the failed
+// model call itself here (streamOnce only calls onChunk on a path that
+// produced content — see summarize.go), so every recorded chunk in this test
+// comes from Run's own explicit call, isolating exactly the behaviour W-C-04
+// added.
+func TestRun_ModelFailureFiresFallbackNoticeOnChunk(t *testing.T) {
+	fm := einollm.NewFakeModel(nil, errors.New("model down"))
+	msgs := []*schema.Message{
+		{Role: schema.User, Content: "task"},
+		{Role: schema.Assistant, Content: strings.Repeat("noise ", 100)},
+		{Role: schema.Assistant, Content: strings.Repeat("more ", 100)},
+		{Role: schema.User, Content: "recent"},
+	}
+	var chunks []string
+	_, err := ctxcompact.Run(context.Background(), msgs, ctxcompact.PlanOpts{KeepRecent: 1},
+		ctxcompact.RunOpts{ModelWindow: 10000, ChunkThreshold: 0.9}, fm,
+		func(s string) { chunks = append(chunks, s) })
+	require.NoError(t, err)
+	require.Len(t, chunks, 1, "exactly one onChunk call on the fallback path")
+	assert.Equal(t, ctxcompact.FallbackNotice, chunks[0])
+}
+
+// TestRun_ModelFailurePreservesEveryPinCategory is the W-C-04 pin-preservation
+// guarantee: the spec's own words are "兜底路径不丢 pin 的消息" (the fallback
+// path must not drop pinned messages). It exercises all five categories
+// Plan.PinnedIndices can hold in one fixture — tail (KeepRecent), user
+// original intent, working-set path mention, error marker, and diff marker —
+// under a model that fails outright, and asserts every one of them survives
+// the fallback verbatim, in original order, alongside every summarize-only
+// message being GONE (proving the fallback actually discarded the
+// summarize-set rather than merely declining to error).
+func TestRun_ModelFailurePreservesEveryPinCategory(t *testing.T) {
+	fm := einollm.NewFakeModel(nil, errors.New("model down"))
+	msgs := []*schema.Message{
+		{Role: schema.User, Content: "edit internal/ctxcompact/compact.go please"}, // 0 working-set (pin)
+		{Role: schema.User, Content: "first request, please keep this"},            // 1 user original (pin)
+		{Role: schema.Assistant, Content: "error: undefined: Foo"},                 // 2 error marker (pin)
+		{Role: schema.Assistant, Content: "--- a/x.go\n+++ b/x.go\n@@ -1 +1 @@"},    // 3 diff marker (pin)
+		{Role: schema.Assistant, Content: strings.Repeat("noise ", 100)},           // 4 summarize (DROPPED)
+		{Role: schema.Assistant, Content: strings.Repeat("more noise ", 100)},      // 5 tail (pin)
+		{Role: schema.User, Content: "recent"},                                     // 6 tail (pin)
+	}
+	res, err := ctxcompact.Run(context.Background(), msgs, ctxcompact.PlanOpts{KeepRecent: 1},
+		ctxcompact.RunOpts{ModelWindow: 10000, ChunkThreshold: 0.9}, fm, nil)
+	require.NoError(t, err)
+	require.True(t, res.Fallback)
+
+	contents := make([]string, len(res.Messages))
+	for i, m := range res.Messages {
+		contents[i] = m.Content
+	}
+	assert.Contains(t, contents, msgs[0].Content, "working-set path mention survives")
+	assert.Contains(t, contents, msgs[1].Content, "user original intent survives")
+	assert.Contains(t, contents, msgs[2].Content, "error marker survives")
+	assert.Contains(t, contents, msgs[3].Content, "diff marker survives")
+	assert.Contains(t, contents, msgs[5].Content, "tail (KeepRecent) survives")
+	assert.Contains(t, contents, msgs[6].Content, "tail (KeepRecent) survives")
+	assert.NotContains(t, contents, msgs[4].Content, "summarize-only content is actually discarded by the fallback, not merely un-erred")
+
+	// Original order is preserved, not just presence — pinsOnlyResult reuses
+	// pinnedMessages, whose contract (assemble.go) is ascending PinnedIndices
+	// order.
+	var order []int
+	for _, c := range contents {
+		for i, orig := range msgs {
+			if orig.Content == c {
+				order = append(order, i)
+				break
+			}
+		}
+	}
+	for i := 1; i < len(order); i++ {
+		assert.Less(t, order[i-1], order[i], "pinned messages must stay in original order")
+	}
 }
 
 func TestRun_NoOpWhenNothingToSummarize(t *testing.T) {

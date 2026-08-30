@@ -48,9 +48,17 @@ func compactCallback(ctx context.Context) func(string) {
 // inner model then sees [pinned..., summary-as-user-at-tail], letting the turn
 // continue inside the context window.
 //
-// Compaction is best-effort: if the summarization turn fails, the original
-// messages are forwarded unchanged so the real model call (not the summary)
-// surfaces the error rather than aborting a turn that may still fit.
+// Compaction is best-effort in two different ways, and they now diverge
+// after W-C-04. If the summary MODEL call itself fails (exhausted retries,
+// quota, overload — RunSummary's own error), ctxcompact.Run no longer treats
+// that as a Run-level failure: it falls back to a pins-only Result
+// (Result.Fallback=true) instead of calling the model again, and that result
+// — smaller than the input, just not summarized — is what maybeCompact
+// forwards. Only the two gates ABOVE the model call (an empty summary, or one
+// that fails the quality gate) still make Run return an error; on THAT
+// narrower failure maybeCompact keeps its original behavior of forwarding the
+// unmodified input so the real model call (not the summary) surfaces the
+// error rather than aborting a turn that may still fit.
 //
 // Implements model.BaseChatModel. Only Generate and Stream are real; tool
 // binding flows through model.WithTools options (forwarded unchanged), so no

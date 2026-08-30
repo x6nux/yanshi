@@ -1206,7 +1206,16 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 		// bug⑧: compaction is a meta-op; its status lives on the activity line
 		// (the "Running…" row rendered separately from the transcript), NOT as a
 		// transcript entry. Summary deltas are not shown as chat content.
-		m.activity = "Compacting context…"
+		//
+		// W-C-04: a fallback-tagged chunk means the summary model failed and
+		// Run opened a new window directly instead — a materially different
+		// event from an ordinary in-progress summary delta, so it gets its own
+		// activity string rather than silently folding into the generic one.
+		if strings.HasPrefix(ev.Text, ctxcompact.FallbackNotice) {
+			m.activity = "Compacting context (fallback: window reset, no summary)…"
+		} else {
+			m.activity = "Compacting context…"
+		}
 	case "retry":
 		// Transient-error retry of the model call (a mid-stream "unexpected EOF"
 		// etc.). Overwrite: discard the partial output from the failed attempt
