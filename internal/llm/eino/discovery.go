@@ -103,6 +103,27 @@ func localHTTPClient(timeout time.Duration) *http.Client {
 	}
 }
 
+// noProxyTransport returns t unchanged when non-nil, otherwise a fresh
+// no-proxy *http.Transport equivalent to what localHTTPClient's Transport
+// field holds. OllamaClient.PullModel and LMStudioClient.LoadModel each need
+// a client sharing the caller's transport but with no request Timeout of its
+// own (a pull/load can legitimately run for minutes) — their doc comments
+// used to say the resulting client "still bypasses HTTP_PROXY", which is
+// true only when the caller built c.http with an explicit non-nil Transport.
+// A caller who builds NewOllamaClient(url, &http.Client{Timeout: t}) — a
+// custom client that sets only Timeout — gets a zero-value (nil) Transport
+// field, and `&http.Client{Transport: nil}` falls back to
+// http.DefaultTransport, which honors the operator's HTTP_PROXY: the exact
+// proxy leak localHTTPClient exists to prevent (see its own doc comment),
+// reintroduced silently for every multi-minute pull/load call. This helper
+// is the single place that closes it for both callers (C3 review L-3(b)).
+func noProxyTransport(t http.RoundTripper) http.RoundTripper {
+	if t != nil {
+		return t
+	}
+	return &http.Transport{Proxy: nil}
+}
+
 // DefaultDiscoveryHTTPTimeout bounds one local-runtime request (a probe, a
 // listing, or the non-streaming half of a load). It is longer than
 // discover.go's DefaultDiscoveryTimeout (5s, tuned for a cloud gateway's
@@ -125,9 +146,23 @@ const (
 	// runtime's own self-reported metadata (ProviderConfig.Multimodal, LM
 	// Studio's "type":"vlm") — asserted, never exercised.
 	SourceDocumented MultimodalSource = "documented"
-	// SourceProbed means yanshi sent a real image to the endpoint and
-	// evaluated the response.
+	// SourceProbed means yanshi sent a real image to the endpoint, the round
+	// trip completed, and the model's own answer was read and classified —
+	// this is the only source value that reflects an actual measurement of
+	// the model's behavior, positive or negative.
 	SourceProbed MultimodalSource = "probed"
+	// SourceProbeFailed means the probe never got far enough to observe the
+	// model's behavior at all: encoding the probe image, marshaling the
+	// request, building the HTTP request, the round trip itself, or reading
+	// the response body failed first (C3 review M-1). Before this value
+	// existed, every one of those execution failures was tagged SourceProbed
+	// with Supported=false — a transient network blip and a model that
+	// genuinely said "I cannot see images" were indistinguishable, and
+	// because Cache has no TTL/invalidation for ImageSupport entries (see
+	// discovery_cache.go), one blip became a permanent false verdict. A
+	// caller must treat SourceProbeFailed as "unknown, retry later", never
+	// as a negative result.
+	SourceProbeFailed MultimodalSource = "probe_failed"
 )
 
 // ImageSupport is one verdict about whether a model accepts image input,
@@ -229,7 +264,7 @@ const probeImagePrompt = "Look at the attached image and reply with exactly one 
 func ProbeImageSupport(ctx context.Context, client *http.Client, chatCompletionsURL, apiKey, model string) ImageSupport {
 	imgPNG, err := probeImagePNG()
 	if err != nil {
-		return ImageSupport{Source: SourceProbed, Detail: err.Error()}
+		return ImageSupport{Source: SourceProbeFailed, Detail: err.Error()}
 	}
 	imgB64 := base64.StdEncoding.EncodeToString(imgPNG)
 	reqBody := chatProbeRequest{
@@ -245,11 +280,11 @@ func ProbeImageSupport(ctx context.Context, client *http.Client, chatCompletions
 	}
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
-		return ImageSupport{Source: SourceProbed, Detail: fmt.Sprintf("encode probe request: %v", err)}
+		return ImageSupport{Source: SourceProbeFailed, Detail: fmt.Sprintf("encode probe request: %v", err)}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatCompletionsURL, bytes.NewReader(payload))
 	if err != nil {
-		return ImageSupport{Source: SourceProbed, Detail: fmt.Sprintf("build probe request: %v", err)}
+		return ImageSupport{Source: SourceProbeFailed, Detail: fmt.Sprintf("build probe request: %v", err)}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if apiKey != "" {
@@ -260,12 +295,12 @@ func ProbeImageSupport(ctx context.Context, client *http.Client, chatCompletions
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return ImageSupport{Source: SourceProbed, Detail: fmt.Sprintf("probe request failed: %v", err)}
+		return ImageSupport{Source: SourceProbeFailed, Detail: fmt.Sprintf("probe request failed: %v", err)}
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	if err != nil {
-		return ImageSupport{Source: SourceProbed, Detail: fmt.Sprintf("read probe response: %v", err)}
+		return ImageSupport{Source: SourceProbeFailed, Detail: fmt.Sprintf("read probe response: %v", err)}
 	}
 	var decoded chatProbeResponse
 	_ = json.Unmarshal(body, &decoded) // best-effort: a non-JSON body leaves decoded zero-valued, handled below.

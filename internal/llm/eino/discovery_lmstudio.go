@@ -155,7 +155,7 @@ func (c *LMStudioClient) ListModels(ctx context.Context) ([]DiscoveredModel, err
 // FetchModels implements Fetcher for the disk cache (W-C-06). LM Studio's
 // REST API documents no ETag/Last-Modified header on /api/v0/models, so
 // etag is always empty — Cache substitutes its own content-hash ETag (see
-// discovery_cache.go's putListing).
+// discovery_cache.go's contentHashETag).
 func (c *LMStudioClient) FetchModels(ctx context.Context) (models []DiscoveredModel, etag string, err error) {
 	models, err = c.ListModels(ctx)
 	return models, "", err
@@ -210,10 +210,14 @@ func (c *LMStudioClient) LoadModel(ctx context.Context, model string, opts LoadO
 		return LoadResult{}, fmt.Errorf("lmstudio: build load request: %w", err)
 	}
 	// Loading has no fixed upper bound (see the doc comment above) — like
-	// OllamaClient.PullModel, use a client that shares the transport (still
-	// bypasses HTTP_PROXY) but has no timeout of its own; ctx is the only
-	// deadline.
-	loadClient := &http.Client{Transport: c.http.Transport}
+	// OllamaClient.PullModel, use a client with no timeout of its own (ctx
+	// is the only deadline) whose transport is guaranteed to bypass
+	// HTTP_PROXY via noProxyTransport, not merely "shares c.http.Transport":
+	// a c.http built with only Timeout set (no explicit Transport) has a nil
+	// Transport field, which `&http.Client{Transport: nil}` would silently
+	// resolve to http.DefaultTransport — the proxy leak localHTTPClient's
+	// doc comment says this package never wants for local runtime calls.
+	loadClient := &http.Client{Transport: noProxyTransport(c.http.Transport)}
 	resp, err := loadClient.Do(req)
 	if err != nil {
 		return LoadResult{}, fmt.Errorf("lmstudio: load request failed: %w", err)

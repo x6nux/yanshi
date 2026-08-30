@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestOllamaClient_Probe_BothEndpointsUp is the happy path: both signals
@@ -268,6 +269,80 @@ func TestOllamaClient_PullModel_HTTPError(t *testing.T) {
 	err := c.PullModel(context.Background(), "ghost:latest", nil)
 	if err == nil {
 		t.Fatal("PullModel err = nil, want an error for a 404 response")
+	}
+}
+
+// TestOllamaClient_PullModel_ActuallyStreams is L-4's streaming-defense
+// test. TestOllamaClient_PullModel_StreamsProgress above proves onProgress
+// sees every line and the values are correct, but a handler that writes and
+// flushes all four lines up front (as that test's fake server does) cannot
+// distinguish "PullModel streams progress as it arrives" from "PullModel
+// reads the whole response body first, then parses it line by line" — both
+// implementations would pass that test identically, because by the time
+// PullModel's client sees ANY bytes, the fake server has already written
+// all of them.
+//
+// This test closes that gap by making the *server* wait on the *client*:
+// the handler writes and flushes exactly one line, then blocks on a channel
+// that only PullModel's onProgress callback closes. If PullModel buffered
+// the full response before parsing (json.NewDecoder fed by an io.ReadAll,
+// say, instead of resp.Body directly), onProgress would never fire — the
+// server is still blocked waiting for it, so the response body never
+// finishes, so ReadAll never returns, so onProgress never fires: a real
+// deadlock, not a race that merely usually passes. The test bounds that
+// deadlock with a timeout instead of hanging the suite forever.
+func TestOllamaClient_PullModel_ActuallyStreams(t *testing.T) {
+	proceedAfterFirstLine := make(chan struct{})
+	serverGaveUp := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("ResponseWriter does not support flushing — cannot simulate streaming")
+			return
+		}
+		enc := json.NewEncoder(w)
+		enc.Encode(PullProgress{Status: "pulling manifest"})
+		flusher.Flush()
+
+		select {
+		case <-proceedAfterFirstLine:
+			// The client's onProgress fired for the first line while the
+			// second line was still being withheld — proof PullModel is
+			// parsing the body incrementally, not after buffering it whole.
+		case <-time.After(2 * time.Second):
+			// Nobody consumed the first line in time. Give up waiting and
+			// finish the response so PullModel doesn't hang the test suite
+			// forever; serverGaveUp records that this branch is what
+			// happened, which the assertion below treats as a failure.
+			close(serverGaveUp)
+		}
+		enc.Encode(PullProgress{Status: "success"})
+		flusher.Flush()
+	}))
+	defer srv.Close()
+
+	c := NewOllamaClient(srv.URL, nil)
+	var sawFirstLine bool
+	err := c.PullModel(context.Background(), "llama3", func(p PullProgress) {
+		if p.Status == "pulling manifest" && !sawFirstLine {
+			sawFirstLine = true
+			close(proceedAfterFirstLine)
+		}
+	})
+	if err != nil {
+		t.Fatalf("PullModel err = %v", err)
+	}
+	if !sawFirstLine {
+		t.Fatal("onProgress never fired for the first line at all")
+	}
+	select {
+	case <-serverGaveUp:
+		t.Fatal("server had to give up waiting on its 2s timeout before onProgress fired for the first line — PullModel is not streaming, it buffered the response before parsing it")
+	default:
+		// serverGaveUp was never closed: onProgress reached proceedAfterFirstLine
+		// before the 2s timeout, which is only possible if PullModel handed the
+		// first line to onProgress while the connection was still open and the
+		// server was still waiting on the second — i.e. genuine streaming.
 	}
 }
 

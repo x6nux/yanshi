@@ -181,7 +181,7 @@ func (c *OllamaClient) ListModels(ctx context.Context) ([]DiscoveredModel, error
 // FetchModels implements Fetcher for the disk cache (W-C-06). Ollama's
 // native API has no ETag/Last-Modified concept, so etag is always empty —
 // Cache falls back to its own content-hash ETag in that case (see
-// discovery_cache.go's putListing).
+// discovery_cache.go's contentHashETag).
 func (c *OllamaClient) FetchModels(ctx context.Context) (models []DiscoveredModel, etag string, err error) {
 	models, err = c.ListModels(ctx)
 	return models, "", err
@@ -223,11 +223,17 @@ func (c *OllamaClient) PullModel(ctx context.Context, model string, onProgress f
 	// The pull client has no request timeout of its own (see the doc
 	// comment above) — a bare c.http.Do would still be bound by
 	// c.http.Timeout (DefaultDiscoveryHTTPTimeout, 10s) if it were set on
-	// the shared client, which would abort a real multi-minute pull. Build
-	// a dedicated client that shares the transport (so it still bypasses
-	// any HTTP_PROXY, per localHTTPClient) but has no timeout of its own —
-	// ctx is the only deadline that governs this call.
-	pullClient := &http.Client{Transport: c.http.Transport}
+	// the shared client, which would abort a real multi-minute pull. Build a
+	// dedicated client with no timeout of its own — ctx is the only deadline
+	// that governs this call — whose transport is guaranteed to bypass
+	// HTTP_PROXY via noProxyTransport, not just "shares whatever c.http.
+	// Transport happens to be": a c.http built with an explicit Transport
+	// (the normal case, via NewOllamaClient's own default) shares it as
+	// before, but a c.http built by a caller who only set Timeout has a nil
+	// Transport field, and `&http.Client{Transport: nil}` silently falls
+	// back to http.DefaultTransport — which DOES honor HTTP_PROXY, the exact
+	// leak localHTTPClient exists to prevent (see its doc comment).
+	pullClient := &http.Client{Transport: noProxyTransport(c.http.Transport)}
 	resp, err := pullClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("ollama: pull request failed: %w", err)

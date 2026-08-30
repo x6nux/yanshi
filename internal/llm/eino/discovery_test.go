@@ -3,6 +3,7 @@ package eino
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -148,6 +149,15 @@ func TestProbeImageSupport_NoChoices(t *testing.T) {
 // unsupported verdict with a truthful detail rather than hanging or
 // panicking — the probe itself must degrade gracefully like the Probe
 // methods do.
+//
+// Before M-1 (C3 review), this asserted Source == SourceProbed — the same
+// value a genuine "model looked at the image and said NO_VISION" result
+// carries. That collapse is exactly the M-1 bug: combined with Cache having
+// no TTL/invalidation for ImageSupport entries, one transient connection
+// failure at probe time became a PERMANENT false verdict once written to
+// disk, indistinguishable from a real measurement. A closed port is a
+// probe that never got to ask the model anything, so it must carry
+// SourceProbeFailed instead.
 func TestProbeImageSupport_Unreachable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	closedURL := srv.URL
@@ -157,8 +167,67 @@ func TestProbeImageSupport_Unreachable(t *testing.T) {
 	if got.Supported {
 		t.Fatal("Supported = true against a closed port, want false")
 	}
-	if got.Source != SourceProbed {
-		t.Fatalf("Source = %q, want %q", got.Source, SourceProbed)
+	if got.Source != SourceProbeFailed {
+		t.Fatalf("Source = %q, want %q (M-1: a connection failure is not a measurement)", got.Source, SourceProbeFailed)
+	}
+	if got.Detail == "" {
+		t.Fatal("Detail is empty, want a truthful reason")
+	}
+}
+
+// TestProbeImageSupport_BuildRequestError proves a request the standard
+// library itself refuses to build (a malformed URL, here via an ASCII
+// control character http.NewRequestWithContext's own validation rejects)
+// also carries SourceProbeFailed — this never even reaches the network, so
+// it is even less of a "measurement" than the closed-port case above.
+func TestProbeImageSupport_BuildRequestError(t *testing.T) {
+	got := ProbeImageSupport(context.Background(), nil, "http://\x7f/", "", "some-model")
+	if got.Supported {
+		t.Fatal("Supported = true for a malformed request URL, want false")
+	}
+	if got.Source != SourceProbeFailed {
+		t.Fatalf("Source = %q, want %q (M-1: a request-build failure is not a measurement)", got.Source, SourceProbeFailed)
+	}
+	if got.Detail == "" {
+		t.Fatal("Detail is empty, want a truthful reason")
+	}
+}
+
+// probeBrokenBodyTransport is an http.RoundTripper whose response body
+// fails on Read after headers are already sent — the shape a well-formed
+// 200 response with a connection that drops mid-body produces, exercising
+// ProbeImageSupport's io.ReadAll(resp.Body) failure branch specifically
+// (distinct from BuildRequestError and Unreachable, which fail before any
+// response exists at all).
+type probeBrokenBodyTransport struct{}
+
+type brokenReadCloser struct{}
+
+func (brokenReadCloser) Read(p []byte) (int, error) {
+	return 0, fmt.Errorf("simulated body read failure")
+}
+func (brokenReadCloser) Close() error { return nil }
+
+func (probeBrokenBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       brokenReadCloser{},
+		Header:     make(http.Header),
+	}, nil
+}
+
+// TestProbeImageSupport_ReadResponseError proves a response whose body
+// fails mid-read also carries SourceProbeFailed — the probe got a live HTTP
+// response but never got far enough to read what the model said, so it
+// still hasn't measured anything.
+func TestProbeImageSupport_ReadResponseError(t *testing.T) {
+	client := &http.Client{Transport: probeBrokenBodyTransport{}}
+	got := ProbeImageSupport(context.Background(), client, "http://example.invalid/v1/chat/completions", "", "some-model")
+	if got.Supported {
+		t.Fatal("Supported = true for a response-read failure, want false")
+	}
+	if got.Source != SourceProbeFailed {
+		t.Fatalf("Source = %q, want %q (M-1: a response-read failure is not a measurement)", got.Source, SourceProbeFailed)
 	}
 	if got.Detail == "" {
 		t.Fatal("Detail is empty, want a truthful reason")
@@ -208,18 +277,54 @@ func TestDocumentedImageSupport(t *testing.T) {
 	}
 }
 
-// TestMultimodalSource_DistinctValues locks the two source values as
-// non-empty and distinct from each other, guarding against a future edit
-// collapsing the "documented vs. probed" distinction back into an
-// indistinguishable pair of strings (or worse, a bool) — this is what W-C-15
-// actually requires: the marker must be a real field a caller can branch on,
-// not a note in a log line.
+// TestMultimodalSource_DistinctValues locks the three source values as
+// non-empty and pairwise distinct, guarding against a future edit collapsing
+// the "documented vs. probed vs. probe-failed" distinction back into fewer
+// indistinguishable strings (or worse, a bool) — this is what W-C-15 and M-1
+// (C3 review) actually require: each marker must be a real, distinct value a
+// caller can branch on, not a note in a log line.
 func TestMultimodalSource_DistinctValues(t *testing.T) {
-	if SourceDocumented == "" || SourceProbed == "" {
-		t.Fatalf("source values must be non-empty: documented=%q probed=%q", SourceDocumented, SourceProbed)
+	values := map[MultimodalSource]string{
+		SourceDocumented:  "SourceDocumented",
+		SourceProbed:      "SourceProbed",
+		SourceProbeFailed: "SourceProbeFailed",
 	}
-	if SourceDocumented == SourceProbed {
-		t.Fatalf("SourceDocumented and SourceProbed must be distinct, both are %q", SourceDocumented)
+	if len(values) != 3 {
+		t.Fatalf("only %d distinct source values among SourceDocumented/SourceProbed/SourceProbeFailed, want 3 — two collapsed onto the same string", len(values))
+	}
+	for v, name := range values {
+		if v == "" {
+			t.Fatalf("%s is empty, want a non-empty marker", name)
+		}
+	}
+}
+
+// TestNoProxyTransport_NilFallsBackToNoProxy proves the L-3(b) fix directly:
+// when a caller's http.Client has a nil Transport (built with only Timeout
+// set, e.g. NewOllamaClient(url, &http.Client{Timeout: t})),
+// noProxyTransport must NOT return nil (which `&http.Client{Transport: nil}`
+// would silently resolve to http.DefaultTransport — the operator-proxy leak
+// localHTTPClient's doc comment says this package must never have).
+func TestNoProxyTransport_NilFallsBackToNoProxy(t *testing.T) {
+	got := noProxyTransport(nil)
+	tr, ok := got.(*http.Transport)
+	if !ok {
+		t.Fatalf("noProxyTransport(nil) = %T, want *http.Transport", got)
+	}
+	if tr.Proxy != nil {
+		t.Fatal("noProxyTransport(nil).Proxy is set, want nil")
+	}
+}
+
+// TestNoProxyTransport_NonNilPassthrough proves the other half: a caller
+// that DID set an explicit Transport (the normal case via NewOllamaClient's
+// own default, localHTTPClient) gets that exact instance back unchanged,
+// not silently replaced.
+func TestNoProxyTransport_NonNilPassthrough(t *testing.T) {
+	want := &http.Transport{Proxy: nil}
+	got := noProxyTransport(want)
+	if got != http.RoundTripper(want) {
+		t.Fatalf("noProxyTransport returned a different instance, want the exact one passed in")
 	}
 }
 

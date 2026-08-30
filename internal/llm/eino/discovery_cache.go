@@ -158,7 +158,7 @@ func (c *Cache) Get(ctx context.Context, f Fetcher, policy RefreshPolicy) (Cache
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	existing, found, loadErr := c.load(path)
+	existing, found, loadErr := c.load(path, f.Name())
 
 	if policy == RefreshCacheOnly {
 		if !found {
@@ -202,15 +202,24 @@ func (c *Cache) Get(ctx context.Context, f Fetcher, policy RefreshPolicy) (Cache
 
 // GetImageSupport returns the cached W-C-15 verdict for model under
 // runtime, and whether one exists at all (never probed/documented yet).
-func (c *Cache) GetImageSupport(runtime, model string) (ImageSupport, bool) {
+//
+// The returned error distinguishes "the cache file is corrupt or its
+// Runtime field doesn't match runtime" from "there is no cache file at all,
+// which is a normal never-probed-yet state, not a failure" (C3 review L-1)
+// — mirroring Get's own found/err distinction (see Cache.Get's doc comment)
+// instead of discarding load's error and folding both cases into the same
+// (ImageSupport{}, false). A caller that only checks the bool cannot tell a
+// hand-edited cache file demanding attention from an unremarkable first
+// probe; a caller that also checks the error can.
+func (c *Cache) GetImageSupport(runtime, model string) (ImageSupport, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	existing, found, _ := c.load(c.filePath(runtime))
+	existing, found, err := c.load(c.filePath(runtime), runtime)
 	if !found {
-		return ImageSupport{}, false
+		return ImageSupport{}, false, err
 	}
 	v, ok := existing.ImageSupport[model]
-	return v, ok
+	return v, ok, nil
 }
 
 // PutImageSupport persists a W-C-15 verdict (probed or documented) for
@@ -221,11 +230,11 @@ func (c *Cache) PutImageSupport(runtime, model string, verdict ImageSupport) err
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	path := c.filePath(runtime)
-	// A missing or corrupt existing file degrades to starting a fresh
-	// listing rather than blocking the write: losing a stale/unreadable
-	// cache is not a reason to refuse recording a probe result that just
-	// succeeded.
-	existing, _, _ := c.load(path)
+	// A missing, corrupt, or runtime-mismatched existing file degrades to
+	// starting a fresh listing rather than blocking the write: losing a
+	// stale/unreadable/forged cache is not a reason to refuse recording a
+	// probe result that just succeeded.
+	existing, _, _ := c.load(path, runtime)
 	if existing.Runtime == "" {
 		existing.Runtime = runtime
 	}
@@ -236,12 +245,22 @@ func (c *Cache) PutImageSupport(runtime, model string, verdict ImageSupport) err
 	return c.save(path, existing)
 }
 
-// load reads and parses runtime's cache file. found=false with err=nil
-// means the file simply does not exist yet (a normal first-run state, not
-// an error); found=false with a non-nil err means the file exists but could
-// not be read or parsed — callers distinguish these because RefreshCacheOnly
-// reports the second case as "cache corrupt" rather than "no cache".
-func (c *Cache) load(path string) (listing CachedListing, found bool, err error) {
+// load reads, parses, and sanitizes expectedRuntime's cache file. found=false
+// with err=nil means the file simply does not exist yet (a normal first-run
+// state, not an error); found=false with a non-nil err means the file exists
+// but could not be read, parsed, or trusted — callers distinguish these
+// because RefreshCacheOnly reports the second case as "cache corrupt" rather
+// than "no cache", and GetImageSupport now surfaces it too (C3 review L-1)
+// instead of discarding it.
+//
+// A successfully-parsed listing is never returned verbatim: it passes
+// through sanitizeLoadedListing first, UNLESS its own Runtime field doesn't
+// match expectedRuntime, in which case it is rejected the same way a
+// corrupt/unparsable file is (C3 review M-2's first suggested direction) —
+// a file saved as ollama.json claiming to be a "lmstudio" listing (or one
+// hand-written by an attacker who didn't know to set Runtime at all) is not
+// safe to serve as expectedRuntime's cache.
+func (c *Cache) load(path, expectedRuntime string) (listing CachedListing, found bool, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -252,7 +271,57 @@ func (c *Cache) load(path string) (listing CachedListing, found bool, err error)
 	if err := json.Unmarshal(data, &listing); err != nil {
 		return CachedListing{}, false, fmt.Errorf("parse %s: %w", path, err)
 	}
-	return listing, true, nil
+	if listing.Runtime != expectedRuntime {
+		return CachedListing{}, false, fmt.Errorf("parse %s: runtime mismatch: file claims %q, expected %q", path, listing.Runtime, expectedRuntime)
+	}
+	return sanitizeLoadedListing(listing), true, nil
+}
+
+// sanitizeLoadedListing defends every reader of a disk-loaded CachedListing
+// against a hand-written or stale-forged file (C3 review M-2; the Runtime
+// check that would otherwise belong here lives in load, one level up,
+// because a mismatch must reject the whole file rather than repair it):
+//
+//  1. A FetchedAt in the future is zeroed rather than clamped to now.
+//     Clamping to now would make time.Since(FetchedAt) read ~0 on THIS
+//     load, but the on-disk value itself is never rewritten by a read-only
+//     load, so the very next load would see the same future timestamp and
+//     clamp to a new "now" again — RefreshAuto's staleness check would then
+//     read "just fetched" forever, exactly the "future FetchedAt
+//     permanently suppresses re-fetching" forgery the review flagged,
+//     merely re-armed on every call instead of fixed once. Zeroing makes
+//     time.Since(FetchedAt) enormous instead, which reads as maximally
+//     stale — RefreshAuto correctly falls through to a live fetch, and only
+//     a genuine successful fetch (which sets FetchedAt = time.Now() in Get)
+//     clears the zero value. Fail-safe direction: an untrustworthy
+//     timestamp becomes "refetch to be sure", never "trust indefinitely".
+//  2. Every ImageSupport entry's Source is downgraded from SourceProbed to
+//     SourceDocumented. This is the most substantive check (per the
+//     review): SourceProbed is supposed to mean "this process sent a real
+//     image over the wire THIS SESSION and read the model's answer" — a
+//     disk file cannot make that claim on a new process's behalf no matter
+//     how it was produced, genuinely or by hand. Downgrading unconditionally
+//     on every load (not just when something looks suspicious) means even a
+//     GENUINELY probed verdict correctly reads as secondhand evidence the
+//     moment it round-trips through disk — a hand-written
+//     {"source":"probed","supported":true} for a model that was never
+//     probed can no longer claim first-hand weight, because nothing that
+//     came from disk can.
+func sanitizeLoadedListing(listing CachedListing) CachedListing {
+	if listing.FetchedAt.After(time.Now()) {
+		listing.FetchedAt = time.Time{}
+	}
+	if len(listing.ImageSupport) > 0 {
+		sanitized := make(map[string]ImageSupport, len(listing.ImageSupport))
+		for model, verdict := range listing.ImageSupport {
+			if verdict.Source == SourceProbed {
+				verdict.Source = SourceDocumented
+			}
+			sanitized[model] = verdict
+		}
+		listing.ImageSupport = sanitized
+	}
+	return listing
 }
 
 // save writes listing atomically: encode to a random temp file in the same
@@ -269,6 +338,17 @@ func (c *Cache) save(path string, listing CachedListing) error {
 	if err := os.MkdirAll(c.dir, 0700); err != nil {
 		return err
 	}
+	// MkdirAll is a no-op — including on permissions — when c.dir already
+	// exists (e.g. left over from an older yanshi version that created it
+	// with looser bits, or an operator's umask widening it at creation
+	// time): it never tightens an existing directory's mode, only sets one
+	// on creation. Chmod unconditionally on every save so a cache directory
+	// that already exists gets actively tightened, not just correctly
+	// created once (C3 review L-2). Best-effort: a chmod failure (e.g. this
+	// process doesn't own the directory) is not a reason to abandon an
+	// otherwise-successful write — the atomic tmp+rename below still
+	// protects the file itself with 0600.
+	_ = os.Chmod(c.dir, 0700)
 	data, err := json.MarshalIndent(listing, "", "  ")
 	if err != nil {
 		return err
