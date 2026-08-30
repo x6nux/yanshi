@@ -389,3 +389,67 @@ func isTransient(err error) bool {
 	}
 	return false
 }
+
+// ErrConfigOrWiring is the sentinel isConfigOrWiringFailure matches with
+// errors.Is. A credential/wiring source (e.g. internal/llm/eino's
+// auth.command machinery in cmdauth.go) wraps every error it returns with
+// this sentinel via fmt.Errorf's "%w" verb, so classification survives any
+// future rewording of the wrapped error's own text.
+//
+// This replaces an earlier version of isConfigOrWiringFailure that matched
+// on the literal substring "auth.command" in err.Error(). That was proven
+// fragile by construction, not just in theory: a one-line, completely
+// ordinary wording change to cmdauth.go's six error-producing call sites
+// (renaming the "eino: auth.command ..." prefix) silently made every
+// production auth.command failure classify as an ordinary model failure
+// again — reverting M-3 to "every pre-turn compaction against that provider
+// quietly drops conversation history forever" — while every test in this
+// package's own suite stayed green, because TestRun_ConfigFailureIsNotFallback
+// constructs its fixture error by hand rather than routing a real error
+// through cmdauth.go. errors.Is on a sentinel cannot be defeated by a wording
+// change: only removing the "%w" wrap itself would break it, and
+// internal/llm/eino's TestCmdAuthErrorsCarryConfigOrWiringSentinel (real
+// subprocess failures, not hand-rolled error text) exists precisely to catch
+// that.
+//
+// ctxcompact stays a pure package with no internal dependencies (ADR-0015):
+// this sentinel is exported FROM here so internal/llm/eino (which already
+// imports ctxcompact for CompactingModel) can wrap it, keeping the
+// dependency arrow in the same direction it already points. ctxcompact
+// itself does not, and must not, import internal/llm/eino — the reverse
+// import already exists (compacting.go), so ctxcompact -> eino would be a
+// cycle, which is why the fix lives here as a value to wrap rather than as a
+// classifier eino could call.
+var ErrConfigOrWiring = errors.New("ctxcompact: summarizer failed before any request reached the model (config or wiring problem, not a model failure)")
+
+// isConfigOrWiringFailure reports whether err represents a failure that
+// happened BEFORE any request reached the summary model, rather than a
+// request that reached the model and failed there. Run (run.go) uses this
+// to decide whether a RunSummary error may take the W-C-04 pins-only
+// fallback path.
+//
+// The distinction matters because the two failure shapes have opposite
+// recovery behavior. A genuine model failure (overload, exhausted retries,
+// a stream drop) is the case W-C-04 was built for: it is expected to
+// happen occasionally and to clear up on a LATER compaction, so silently
+// discarding the summarize-set once and opening a fresh window is an
+// acceptable trade. A credential/wiring failure — the summarizer could not
+// even authenticate, e.g. internal/llm/eino's auth.command machinery
+// (cmdauth.go) had no secproc.Factory bound in the calling context — is
+// not transient in that sense: it will fail IDENTICALLY on every single
+// compaction for the rest of the session, because nothing about the next
+// turn changes the wiring. Routing it through the same silent fallback
+// means every pre-turn compaction against that provider quietly drops
+// conversation history forever, with only a one-line activity notice (see
+// FallbackNotice) to show for it — this is the review's M-3 finding.
+//
+// Matches via errors.Is(err, ErrConfigOrWiring) rather than a string
+// substring — see ErrConfigOrWiring's doc comment for why. This still
+// mirrors isTransient's precedent directly above in avoiding a second
+// classification mechanism, and still does not import internal/llm/eino or
+// internal/secproc here: ctxcompact is a pure package with no internal
+// dependencies (ADR-0015), and it is eino's cmdauth.go that imports
+// ctxcompact to wrap this sentinel, not the reverse.
+func isConfigOrWiringFailure(err error) bool {
+	return errors.Is(err, ErrConfigOrWiring)
+}

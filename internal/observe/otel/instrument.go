@@ -19,13 +19,15 @@ import (
 // instruments are bound to the real provider rather than the no-op default.
 // The sync.Once guarantee ensures exactly one creation per process lifetime.
 var instruments struct {
-	once           sync.Once
-	sessionLatency metric.Float64Histogram
-	turnLatency    metric.Float64Histogram
-	toolLatency    metric.Float64Histogram
-	tokenCounter   metric.Int64Counter
-	retryCounter   metric.Int64Counter
-	errorCounter   metric.Int64Counter
+	once             sync.Once
+	sessionLatency   metric.Float64Histogram
+	turnLatency      metric.Float64Histogram
+	toolLatency      metric.Float64Histogram
+	tokenCounter     metric.Int64Counter
+	retryCounter     metric.Int64Counter
+	fallbackCounter  metric.Int64Counter
+	newWindowCounter metric.Int64Counter
+	errorCounter     metric.Int64Counter
 }
 
 func ensureInstruments() {
@@ -41,6 +43,10 @@ func ensureInstruments() {
 		instruments.tokenCounter, err = m.Int64Counter("yanshi.llm.tokens", metric.WithUnit("{token}"))
 		instrumentMust(err)
 		instruments.retryCounter, err = m.Int64Counter("yanshi.llm.retry", metric.WithUnit("{attempt}"))
+		instrumentMust(err)
+		instruments.fallbackCounter, err = m.Int64Counter("yanshi.llm.fallback", metric.WithUnit("{fallback}"))
+		instrumentMust(err)
+		instruments.newWindowCounter, err = m.Int64Counter("yanshi.llm.new_window", metric.WithUnit("{window}"))
 		instrumentMust(err)
 		instruments.errorCounter, err = m.Int64Counter("yanshi.operation.errors", metric.WithUnit("{error}"))
 		instrumentMust(err)
@@ -181,4 +187,46 @@ func RecordRetry(ctx context.Context, attempt, maxAttempts int, err error) {
 		attribute.Int("retry.max", maxAttempts),
 		attribute.String("error.type", obslog.SafeErrorType(err)),
 	))
+}
+
+// RecordFallback emits a yanshi.llm.fallback counter marking a
+// ResilientChatModel chain ADVANCE from provider index from to provider
+// index to (W-C-10) — a genuinely different signal from RecordRetry, which
+// fires on every in-provider retry attempt whether or not the chain ever
+// moves. from/to are chain INDICES, not model names: ResilientChatModel has
+// no naming mechanism for its chain entries (mirroring RecordRetry's use of
+// bare attempt/maxAttempts ints rather than a provider label), and indices
+// are enough to answer "did this chain fail over" without risking a name
+// that collides with RecordUsage's model.name attribute semantics.
+//
+// This fires for ANY resilient chain advancing, not only the compaction
+// summarizer chain W-C-10 introduces — the main turn model has been a
+// ResilientChatModel since before W-C-10, and its failovers were previously
+// unobservable except as a RecordRetry burst with no "did it actually move
+// to a different provider" signal. Widening the coverage this way is
+// additive: no existing caller's behavior changes, only a new metric is now
+// emitted at the point a chain already decided to advance.
+//
+// error.type is the concrete error type (%T) that caused the advance, not
+// the error body — same safe-attribute discipline as RecordRetry.
+func RecordFallback(ctx context.Context, from, to int, err error) {
+	ensureInstruments()
+	instruments.fallbackCounter.Add(ctx, 1, metric.WithAttributes(
+		attribute.Int("fallback.from", from),
+		attribute.Int("fallback.to", to),
+		attribute.String("error.type", obslog.SafeErrorType(err)),
+	))
+}
+
+// RecordNewWindow emits a yanshi.llm.new_window counter marking a W-C-14
+// proactive window open: the MODEL asked (via the context_new_window tool)
+// to skip summarization and start fresh, as opposed to RecordFallback's
+// signal of a summary-model call that itself failed. Deliberately carries
+// no attribute derived from the model-supplied reason text — same
+// safe-attribute discipline as RecordRetry/RecordFallback's error.type
+// (a type name, never the error body): a freeform string an LLM wrote is
+// not something this package attaches to a metric label.
+func RecordNewWindow(ctx context.Context) {
+	ensureInstruments()
+	instruments.newWindowCounter.Add(ctx, 1)
 }

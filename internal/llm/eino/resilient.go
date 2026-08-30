@@ -22,9 +22,24 @@ type ResilientConfig struct {
 	// mid-stream drops (notably the openai acl's "failed to receive stream
 	// chunk: unexpected EOF"), 5xx, rate limits — for BOTH Generate and Stream.
 	// A retry re-issues the model call with exponential backoff. Defaults to 10.
+	//
+	// This is the FALLBACK a provider without its own override falls back to
+	// (W-C-07) — see PerProviderMaxRetries.
 	MaxRetries int
 	BaseDelay  time.Duration
 	MaxDelay   time.Duration
+
+	// PerProviderMaxRetries (W-C-07) overrides MaxRetries independently for
+	// each entry of the chain passed to NewResilientModel, indexed the same
+	// way (chain[i] ↔ PerProviderMaxRetries[i]). A value of -1 (NOT 0, which
+	// is a legitimate "never retry this provider") means "not set, fall back
+	// to MaxRetries" — the same nil-means-omit shape config.ProviderConfig.
+	// MaxRetries uses at the config layer, mirrored here as a sentinel
+	// because a parallel slice cannot hold *int cheaply. nil (the zero
+	// value) or a slice shorter than chain means every index falls back to
+	// MaxRetries, so a chain built without this field behaves exactly as it
+	// did before W-C-07. See maxRetriesFor.
+	PerProviderMaxRetries []int
 
 	// MaxEmptyRetries is the number of times to retry a successful-but-empty
 	// response (Content=="" && no ToolCalls) or an empty stream before giving
@@ -184,6 +199,17 @@ func NewResilientModel(chain []model.BaseChatModel, cfg ResilientConfig) (*Resil
 	return &ResilientChatModel{chain: chain, cfg: cfg}, nil
 }
 
+// maxRetriesFor returns the retry ceiling for r.chain[i]: chain[i]'s own
+// PerProviderMaxRetries override (W-C-07) when the composition root set one
+// (sentinel -1 means "not set"), else the shared cfg.MaxRetries every
+// provider fell back to before this field existed.
+func (r *ResilientChatModel) maxRetriesFor(i int) int {
+	if i >= 0 && i < len(r.cfg.PerProviderMaxRetries) && r.cfg.PerProviderMaxRetries[i] >= 0 {
+		return r.cfg.PerProviderMaxRetries[i]
+	}
+	return r.cfg.MaxRetries
+}
+
 // isEmpty reports whether msg is a successful-but-empty model response: an
 // assistant/user message with no Content and no ToolCalls. Tool messages and
 // nil are NOT empty (nil is absent; tool messages aren't model responses).
@@ -200,12 +226,34 @@ func isEmpty(msg *schema.Message) bool {
 // Generate tries each provider, retrying within a provider on transient errors.
 func (r *ResilientChatModel) Generate(ctx context.Context, in []*schema.Message, opts ...model.Option) (*schema.Message, error) {
 	var lastErr error
-	for _, p := range r.chain {
-		msg, err := r.retry(ctx, func() (*schema.Message, error) { return p.Generate(ctx, in, opts...) })
+	for i, p := range r.chain {
+		msg, err := r.retry(ctx, r.maxRetriesFor(i), func() (*schema.Message, error) { return p.Generate(ctx, in, opts...) })
 		if err == nil {
 			return msg, nil
 		}
 		lastErr = err
+		// Ruling RC-11 (review-whole.md M-5): a content-safety refusal
+		// rejected the REQUEST, not provider i — every other entry in the
+		// chain would receive the exact same content. Advancing anyway would
+		// silently resend it hoping a laxer provider says yes, overriding
+		// provider i's safety judgment instead of surfacing it to the
+		// caller. Return the raw refusal here, unwrapped by the "chain
+		// exhausted" framing below (the chain was not exhausted — only
+		// provider i was ever asked). See isFailoverEligibleErr's doc
+		// comment for the Stream path's symmetric carve-out, and
+		// docs/adr/0026-content-safety-refusals-do-not-fail-over.md for the
+		// ruling itself.
+		if isContentSafetyRefusal(err) {
+			return nil, err
+		}
+		// W-C-10: provider i exhausted its own retry budget and there is a
+		// next entry to try — record the ADVANCE, not the exhaustion (a
+		// failure on the LAST entry is chain exhaustion, reported below via
+		// the wrapped error, not a fallback: there is nowhere left to fall
+		// back to).
+		if i+1 < len(r.chain) {
+			otelobs.RecordFallback(ctx, i, i+1, err)
+		}
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("eino: all providers failed")
@@ -267,6 +315,24 @@ func (r *ResilientChatModel) runStream(ctx context.Context, in []*schema.Message
 		deliveredTools             bool
 		emptyAttempts, errAttempts int
 		lastErr                    error
+		// curIdx is the chain index openStreamChain last resolved to (-1
+		// before the first open). W-C-07: errAttempts is this PROVIDER's
+		// retry count, so a failover to a different provider must reset it
+		// — otherwise a chain of two providers each configured for 1 retry
+		// could be driven to 2 combined retries under provider 0's budget
+		// alone, and provider 1 would inherit whatever was left rather than
+		// its own configured ceiling.
+		curIdx = -1
+		// nextOpenStart (W-C-13) is the chain index the NEXT openStreamChain
+		// call should start searching from. It is 0 on every ordinary retry
+		// (a retryable open/mid-stream error means "try again", and trying
+		// again means giving provider 0 another chance first, exactly the
+		// pre-W-C-13 behavior — see the reset right after each open call
+		// below). It is only ever set to a nonzero value by the streamErr
+		// case's non-retryable-class branch, which advances it past the
+		// provider that just refused so openStreamChain does not immediately
+		// re-open the same provider that will just refuse again.
+		nextOpenStart = 0
 	)
 	for {
 		// attemptCtx is a per-attempt child of ctx so the watchdog can cancel
@@ -286,10 +352,22 @@ func (r *ResilientChatModel) runStream(ctx context.Context, in []*schema.Message
 		// OUR side calls, closes an unrelated channel recv() never selects
 		// on).
 		attemptCtx, cancelAttempt := context.WithCancel(ctx)
-		sr, openErr := r.openStreamChain(attemptCtx, in, opts)
+		sr, openIdx, openErr := r.openStreamChain(attemptCtx, in, opts, nextOpenStart)
+		// Every open call consumes the advance requested by the previous
+		// iteration's failover, if any: the NEXT retry (whether triggered by
+		// this open failing, or by a later mid-stream error) goes back to
+		// preferring provider 0 unless a fresh non-retryable-class mid-stream
+		// error requests another advance below. This keeps every existing
+		// retryable-error code path (W-C-07's per-provider budgets, the
+		// openErr branch's shared-budget fallback) searching the chain
+		// exactly as it did before nextOpenStart existed.
+		nextOpenStart = 0
 		if openErr != nil {
 			cancelAttempt()
 			lastErr = openErr
+			// openIdx is -1 here: EVERY provider's setup failed this round,
+			// so there is no single provider to attribute the budget to —
+			// fall back to the shared cfg.MaxRetries, same as before W-C-07.
 			if isRetryableStreamErr(ctx, openErr) && errAttempts < r.cfg.MaxRetries {
 				errAttempts++
 				if !r.sleepRetry(ctx, sw, onRetry, errAttempts, r.cfg.MaxRetries, lastErr) {
@@ -299,6 +377,21 @@ func (r *ResilientChatModel) runStream(ctx context.Context, in []*schema.Message
 			}
 			_ = sw.Send(nil, openErr)
 			return
+		}
+		if openIdx != curIdx {
+			// A different provider than last attempt served this stream —
+			// either the very first open, or a failover after the previous
+			// provider's setup started failing. Either way, this provider's
+			// retry budget starts fresh (see curIdx's doc above).
+			//
+			// W-C-10: curIdx >= 0 excludes the very first open (nothing was
+			// "fallen back from" yet — recording one there would count every
+			// stream's initial provider choice as a fallback).
+			if curIdx >= 0 {
+				otelobs.RecordFallback(ctx, curIdx, openIdx, lastErr)
+			}
+			curIdx = openIdx
+			errAttempts = 0
 		}
 		// Wrap with the idle watchdog only when at least one budget is set, so
 		// a default (zero, zero) config never allocates the extra goroutine —
@@ -333,11 +426,69 @@ func (r *ResilientChatModel) runStream(ctx context.Context, in []*schema.Message
 			// Retry only while no tool call has been delivered (retrying after a
 			// tool call would duplicate it) and the error is transient.
 			retryable := isRetryableStreamErr(ctx, recvErr) && !deliveredTools
-			if retryable && errAttempts < r.cfg.MaxRetries {
+			// curIdx is well-defined here: the stream that just failed
+			// mid-flight was successfully opened by openStreamChain above,
+			// so this IS a single provider's retry budget (W-C-07), unlike
+			// the openErr branch's forced-global fallback.
+			maxRetries := r.maxRetriesFor(curIdx)
+			if retryable && errAttempts < maxRetries {
 				errAttempts++
-				if !r.sleepRetry(ctx, sw, onRetry, errAttempts, r.cfg.MaxRetries, lastErr) {
+				if !r.sleepRetry(ctx, sw, onRetry, errAttempts, maxRetries, lastErr) {
 					return
 				}
+				continue
+			}
+			// W-C-13: a mid-stream error that classifies as non-retryable
+			// (real 4xx, context overflow — see isNonRetryableClientErr) means
+			// THIS provider will keep saying no to the same request; it does
+			// not mean the whole chain should give up. Before this branch
+			// existed, only OPEN-time errors ever advanced past a provider
+			// (openStreamChain's unconditional loop), so a provider that
+			// accepted the connection and only failed once the request itself
+			// was inspected (e.g. a 404 on an unknown model) terminated the
+			// entire call even with healthy providers left in the chain — the
+			// gap TestResilientModel_StreamFailoverOnNonRetryableMidStreamErr
+			// pins closed. Scoped to isFailoverEligibleErr specifically (not
+			// "any non-retryable outcome") so this never fires for a provider
+			// that is merely out of its own retry budget on an
+			// otherwise-retryable error — that case is unaffected and still
+			// terminates here, exactly as before this branch existed.
+			//
+			// isFailoverEligibleErr, not isNonRetryableClientErr: a
+			// content-safety refusal is ALSO non-retryable (W-C-13 — see
+			// isNonRetryableClientErr's own doc comment), but Ruling RC-11
+			// (review-whole.md M-5) carves it out of failover specifically —
+			// see isFailoverEligibleErr's doc comment for why, and
+			// TestResilientModel_StreamContentSafetyDoesNotFailOver for the
+			// pinning test.
+			if !deliveredTools && curIdx+1 < len(r.chain) && isFailoverEligibleErr(recvErr) {
+				// No RecordFallback call here: the next iteration's
+				// openStreamChain call will land on some provider >=
+				// curIdx+1, and its openIdx != curIdx branch above already
+				// records curIdx -> (the provider that ACTUALLY served the
+				// retry) using lastErr (== recvErr, untouched since the
+				// assignment above). Recording here too would double-count
+				// the fallback, and — if curIdx+1 itself fails to open and
+				// the search cascades further — would record the wrong
+				// target index.
+				//
+				// sleepRetry IS still called here, purely for its onRetry
+				// side effect: Stream's "Overwrite" contract (see its doc
+				// comment) requires every mid-stream retry — same-provider or
+				// not — to arm the consumer's discard-partial signal before a
+				// regenerated stream is re-fed, or the WS handler's saved
+				// transcript concatenates this provider's abandoned partial
+				// with curIdx+1's full answer instead of replacing it
+				// (TestResilientModel_StreamFailoverArmsPartialDiscard
+				// pins this). attempt/maxAttempts are both 1: curIdx+1 has
+				// never been tried this round, so there is no same-provider
+				// budget to report — "1/1" names this hand-off, not a retry
+				// count.
+				if !r.sleepRetry(ctx, sw, onRetry, 1, 1, recvErr) {
+					return
+				}
+				nextOpenStart = curIdx + 1
+				errAttempts = 0
 				continue
 			}
 			_ = sw.Send(nil, recvErr)
@@ -346,21 +497,37 @@ func (r *ResilientChatModel) runStream(ctx context.Context, in []*schema.Message
 	}
 }
 
-// openStreamChain opens a stream from the first provider whose setup succeeds,
-// failing over across the chain. Returns the last setup error when all fail.
-func (r *ResilientChatModel) openStreamChain(ctx context.Context, in []*schema.Message, opts []model.Option) (*schema.StreamReader[*schema.Message], error) {
+// openStreamChain opens a stream from the first provider at or after start
+// whose setup succeeds, failing over across the rest of the chain. Returns
+// the last setup error when all of them fail.
+//
+// start exists for W-C-13: runStream's streamErr case sets it past a provider
+// that just gave a failover-eligible mid-stream refusal (a real 4xx or
+// context overflow — see isFailoverEligibleErr; NOT a content-safety
+// rejection, carved out by Ruling RC-11) so this search does not immediately
+// re-open the same provider that will just refuse again. Every OTHER caller
+// of this method passes 0 — the pre-W-C-13 "always search from the top"
+// behavior — so start does not change how any existing retryable-error path
+// resolves its next provider.
+//
+// The returned int is the chain index of the provider that actually served
+// the stream (-1 on total failure), so the caller (runStream) can resolve
+// that provider's own retry ceiling (W-C-07's maxRetriesFor) instead of the
+// single shared cfg.MaxRetries every open used before this field existed.
+func (r *ResilientChatModel) openStreamChain(ctx context.Context, in []*schema.Message, opts []model.Option, start int) (*schema.StreamReader[*schema.Message], int, error) {
 	var lastErr error
-	for _, p := range r.chain {
+	for i := start; i < len(r.chain); i++ {
+		p := r.chain[i]
 		sr, err := p.Stream(ctx, in, opts...)
 		if err == nil {
-			return sr, nil
+			return sr, i, nil
 		}
 		lastErr = err
 	}
 	if lastErr == nil {
 		lastErr = errors.New("eino: no stream providers")
 	}
-	return nil, lastErr
+	return nil, -1, lastErr
 }
 
 // streamRecver is the one capability consumeStream needs from its source:
@@ -518,11 +685,16 @@ func isRetryableStreamErr(ctx context.Context, err error) bool {
 	switch ClassifyError(err).Class {
 	case ClassTransient, ClassRateLimit:
 		return true
-	case ClassClientError, ClassContextOverflow:
-		// Real 4xx client error (bad key, unknown model, malformed request) or
-		// an over-long prompt: retry is pointless and masks the root cause.
-		// Overflow additionally needs compaction to shrink the context first —
-		// an unchanged retry reproduces the same prompt.
+	case ClassClientError, ClassContextOverflow, ClassContentSafety:
+		// Real 4xx client error (bad key, unknown model, malformed request), an
+		// over-long prompt, or a content-policy rejection (W-C-13): retry is
+		// pointless and masks the root cause. Overflow additionally needs
+		// compaction to shrink the context first — an unchanged retry
+		// reproduces the same prompt. Content-safety is listed explicitly here
+		// (rather than left to fall through to the legacy marker floor below)
+		// so it can never accidentally match a legacy transient marker by
+		// coincidence — the same reason ClassClientError/ClassContextOverflow
+		// are listed explicitly instead of falling through.
 		return false
 	}
 	// ClassUnknown: fall back to the historical loose markers so nothing that
@@ -543,10 +715,18 @@ func isRetryableStreamErr(ctx context.Context, err error) bool {
 	return false
 }
 
-// isNonRetryableClientErr reports whether err is a real 4xx client error or a
-// context overflow — the two conditions on which retry wastes time and masks
-// the underlying problem. Shared by the Generate (retry) and Stream
-// (isRetryableStreamErr) paths so both agree by construction.
+// isNonRetryableClientErr reports whether err is a real 4xx client error, a
+// context overflow, or a content-safety rejection (W-C-13) — the conditions on
+// which retry wastes time and masks the underlying problem. Shared by the
+// Generate (retry) and Stream (isRetryableStreamErr) paths so both agree by
+// construction on the "don't retry THIS provider" question.
+//
+// It is NOT the predicate for "should the chain fail over to the next
+// provider" — that question has a different, narrower answer since Ruling
+// RC-11 (review-whole.md M-5): see isFailoverEligibleErr and Generate's own
+// isContentSafetyRefusal check, both of which exclude ClassContentSafety
+// from failover while this function continues to include it in "don't retry
+// this provider", per W-C-13's unchanged requirement.
 //
 // It delegates to ClassifyError rather than scanning text itself; see
 // isRetryableStreamErr for what that fixed.
@@ -555,7 +735,42 @@ func isNonRetryableClientErr(err error) bool {
 		return false
 	}
 	c := ClassifyError(err).Class
+	return c == ClassClientError || c == ClassContextOverflow || c == ClassContentSafety
+}
+
+// isFailoverEligibleErr reports whether a mid-stream error should advance
+// runStream's streamErr branch to the next provider in the chain, rather
+// than surface directly. It is isNonRetryableClientErr with ClassContentSafety
+// excluded — Ruling RC-11 (review-whole.md M-5): a content-safety refusal
+// means the REQUEST was refused on content-policy grounds, not that this
+// provider is unhealthy. Every other provider in the chain would receive the
+// exact same content; advancing anyway would silently resend it hoping a
+// laxer provider says yes, overriding the refusing provider's safety
+// judgment instead of surfacing it to the caller. isNonRetryableClientErr
+// itself is unchanged — content safety still means "don't retry this
+// provider" (W-C-13), it just no longer also means "try the next one."
+//
+// Generate has its own symmetric carve-out (isContentSafetyRefusal, checked
+// directly in the Generate loop) rather than reusing this function, because
+// Generate's chain loop has no isNonRetryableClientErr gate to subtract
+// from in the first place — every OTHER error class there already advances
+// unconditionally (see Generate's own comment), so only content safety needs
+// an explicit stop, not a "which classes may advance" allowlist.
+func isFailoverEligibleErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	c := ClassifyError(err).Class
 	return c == ClassClientError || c == ClassContextOverflow
+}
+
+// isContentSafetyRefusal reports whether err classifies as ClassContentSafety
+// — the Ruling RC-11 failover carve-out (see isFailoverEligibleErr's doc
+// comment for the full reasoning). Used directly by Generate's chain loop
+// and, via isFailoverEligibleErr's exclusion, indirectly by runStream's
+// streamErr branch.
+func isContentSafetyRefusal(err error) bool {
+	return err != nil && ClassifyError(err).Class == ClassContentSafety
 }
 
 // legacyTransientMarkers are the pre-classifier substrings that marked a
@@ -585,7 +800,13 @@ var legacyTransientMarkers = []string{
 	"retry",
 }
 
-func (r *ResilientChatModel) retry(ctx context.Context, call func() (*schema.Message, error)) (*schema.Message, error) {
+// retry runs call, retrying transient failures with exponential backoff up to
+// maxRetries (W-C-07: the caller resolves this per-provider via
+// maxRetriesFor before calling in). Empty-response retries are independent
+// and always use cfg.MaxEmptyRetries — W-C-07 only scoped the error-retry
+// axis, since the spec's acceptance criterion ("每 provider 独立
+// MaxRetries") names retries, not the separate empty-response cap.
+func (r *ResilientChatModel) retry(ctx context.Context, maxRetries int, call func() (*schema.Message, error)) (*schema.Message, error) {
 	maxEmpty := r.cfg.MaxEmptyRetries
 	var lastErr error
 	// errAttempts / emptyAttempts are independent caps on consecutive retries
@@ -633,7 +854,7 @@ func (r *ResilientChatModel) retry(ctx context.Context, call func() (*schema.Mes
 			return nil, err
 		}
 		errAttempts++
-		if errAttempts > r.cfg.MaxRetries {
+		if errAttempts > maxRetries {
 			return nil, lastErr
 		}
 	}

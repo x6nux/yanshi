@@ -169,4 +169,21 @@ type Result struct {
 	// forwards regardless is doing what the code did before C9; a caller that
 	// refuses now has a typed reason to refuse with, instead of a provider 400.
 	Overflow error
+
+	// Fallback is true when Run could not obtain a summary (RunSummary
+	// returned an error — model call exhausted, quota, overflow, whatever the
+	// underlying provider chain gave up on) and instead discarded the
+	// summarize-set history outright, keeping only the pinned messages
+	// (W-C-04). This is a token-budget-style fallback, not an error: the
+	// caller still gets a valid, strictly smaller history back, exactly like
+	// the ordinary summarization path, so callers that only checked `err`
+	// before W-C-04 keep working unchanged (see maybeCompact's err!=nil ||
+	// TokensAfter>=TokensBefore check, which already treats this result as a
+	// success because TokensAfter<TokensBefore holds structurally).
+	//
+	// It is NOT set by the len(plan.SummarizeIndices)==0 shortcut in Run — that
+	// branch means "Plan found nothing worth summarizing", a normal outcome on
+	// any short turn, not a model failure. Conflating the two would spam a
+	// "fallback" notice on every ordinary compaction.
+	Fallback bool
 }

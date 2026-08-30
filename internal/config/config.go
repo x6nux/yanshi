@@ -102,10 +102,23 @@ type Config struct {
 	// PolicyNarrowed names the profiles whose local definition was clamped by
 	// the trusted policy. Reported once at boot so a narrowing that did not
 	// take effect is visible then, rather than inferred from a denial later.
-	PolicyNarrowed []string     `yaml:"-"`
-	Skills         SkillsConfig `yaml:"skills"`
-	VCS            VCSConfig    `yaml:"vcs"`
-	Batch          BatchConfig  `yaml:"batch"`
+	PolicyNarrowed []string `yaml:"-"`
+	// PolicyFileActive reports that a trusted policy file (S3, policy.go) was
+	// present at load — regardless of whether it named any profiles. It is
+	// DELIBERATELY not the same signal as PolicyActive, which requires
+	// len(policy.Profiles) > 0: guardian_prompt_file and (B-2)
+	// llm.providers[].auth are both taken over by ApplyPolicy whenever a
+	// trusted file exists at all, even one that names no profiles (see
+	// ApplyPolicy's comments), so a check that only cares about ONE of those
+	// two keys — `yanshi doctor`'s auth-command-scope check, which does not
+	// know or care whether `profiles:` was ever written — needs the coarser
+	// signal. Not a YAML key for the same reason PolicyActive is not: an
+	// agent that could set it from config.yaml could claim to be
+	// policy-governed while governing itself.
+	PolicyFileActive bool         `yaml:"-"`
+	Skills           SkillsConfig `yaml:"skills"`
+	VCS              VCSConfig    `yaml:"vcs"`
+	Batch            BatchConfig  `yaml:"batch"`
 	// Compaction configures automatic context-compaction (Task 35b): when the
 	// estimated token count of the conversation history reaches
 	// Threshold*ContextWindow, the older turns are summarized by a remote model
@@ -630,6 +643,15 @@ type LLMConfig struct {
 	// reproducing pre-W-A-06 behaviour byte-for-byte. See
 	// einollm.watchdogReader.
 	StreamIdleTimeout time.Duration `yaml:"stream_idle_timeout"`
+
+	// MaxRetries (W-C-07) is the global per-attempt retry ceiling
+	// ResilientChatModel falls back to for a provider that does not set its
+	// own ProviderConfig.MaxRetries. 0 (the zero value, and therefore what an
+	// absent llm block yields) means "use the resilient layer's own
+	// built-in default" (10, see NewResilientModel) — this field only
+	// becomes an override once the operator sets it, so a config that never
+	// mentions retries behaves exactly as it did before this field existed.
+	MaxRetries int `yaml:"max_retries"`
 }
 
 // RateLimitConfig bounds how fast yanshi issues model calls. It appears both
@@ -656,7 +678,13 @@ type ProviderConfig struct {
 	// ContextWindow is this model's token window; 0 means fall back to
 	// CompactionConfig.ContextWindow via ContextWindowFor. Setting it per
 	// provider lets compaction size against the actual model in a multi-
-	// provider session instead of guessing one global budget.
+	// provider session instead of guessing one global budget. Negative is
+	// rejected by validateProviderThresholds (review-whole.md I-1): unlike
+	// AutoCompactThreshold, this field has no "negative means explicitly
+	// disabled" reading — ResolveContextWindow's judge is `> 0`, so a
+	// negative value silently fell through to the catalog/128K default
+	// with no diagnostic, the one dimension out of four the review found
+	// still silent.
 	ContextWindow int `yaml:"context_window"`
 	// Multimodal declares native image support (Tier G).
 	// When the main model is non-multimodal, bootstrap auto-selects
@@ -670,6 +698,21 @@ type ProviderConfig struct {
 	// into the cloud catalog. *bool so "unset" (heuristic decides) stays
 	// distinguishable from an explicit false. See einollm.IsLocalProvider.
 	Local *bool `yaml:"local"`
+	// AutoCompactThreshold overrides the auto-compact trigger point for THIS
+	// provider's model, as a FRACTION of the resolved context window (e.g.
+	// 0.8), never an absolute token count (ADR-0013's dimensional
+	// constraint — mixing the two units silently mis-sizes the compaction
+	// gate; validate() rejects a value > 1 at load time precisely because
+	// that shape — an operator writing an absolute token budget like 8000 —
+	// silently disables compaction instead of erroring, since the downstream
+	// gate is `tokens < threshold*window`). 0 (the zero value) means "unset":
+	// unlike CompactionConfig.Threshold, applyDefaults never coerces this
+	// field, so 0 reliably means "no explicit override" and resolution falls
+	// through to the model catalog, then to the operator's global
+	// CompactionConfig.Threshold. A NEGATIVE value is a different signal —
+	// an explicit per-provider DISABLE (W-C-04), independent of the global
+	// switch. See einollm.ResolveAutoCompactThreshold (W-C-01 / INF2).
+	AutoCompactThreshold float64 `yaml:"auto_compact_threshold"`
 
 	// --- Generation parameters (M4) ----------------------------------------
 	//
@@ -703,6 +746,151 @@ type ProviderConfig struct {
 	// Burst is this provider's back-to-back allowance after an idle period.
 	// 0 derives it from the effective QPM.
 	Burst int `yaml:"burst"`
+
+	// Headers (W-C-02) are extra HTTP headers sent with every request to this
+	// provider — Azure's `api-key`, an enterprise gateway's auth token, a
+	// tracing header a proxy requires. Values go through the same
+	// os.ExpandEnv pass LoadBytes applies to the whole document before
+	// unmarshal, so `${AZURE_KEY}` resolves like every other config value.
+	//
+	// SECURITY: a header value is exactly as sensitive as APIKey — it is
+	// registered with the secrets.Redactor at boot (bootstrap.go, mirroring
+	// the APIKey registration loop) so it cannot reach a log line, a crash
+	// dump, or a compaction summary in the clear. Do not add a new sink that
+	// reads ProviderConfig.Headers without registering its values first.
+	Headers map[string]string `yaml:"headers"`
+
+	// MaxRetries (W-C-07) overrides LLMConfig.MaxRetries for THIS provider.
+	// nil (unset) inherits the global value — a plain int cannot distinguish
+	// "operator did not say" from "operator explicitly wants 0 retries",
+	// which is the same nil-means-omit convention MaxTokens/Temperature/TopP
+	// already use above (M4). See ResilientConfig.PerProviderMaxRetries.
+	MaxRetries *int `yaml:"max_retries"`
+
+	// Auth (W-C-12) configures command-based token authentication: a
+	// credential produced by running an external command rather than
+	// supplied as a static APIKey. Nil means "use APIKey as usual". See
+	// ProviderAuthConfig.
+	Auth *ProviderAuthConfig `yaml:"auth"`
+
+	// TruncationPolicy (W-C-09) overrides the head/tail line-retention policy
+	// internal/tools/spillover.go applies to an oversized tool result before
+	// it reaches the model, as "head=<N>,tail=<M>" (either key may be
+	// omitted; see einollm.ParseTruncationPolicy for the exact grammar).
+	// Empty (the zero value) means "no override": resolution falls through
+	// to the model catalog (einollm.KnownTruncationPolicy), then to
+	// einollm.DefaultTruncationSpec — see einollm.ResolveTruncationPolicy,
+	// the mirror of ResolveAutoCompactThreshold above.
+	//
+	// UNLIKE AutoCompactThreshold, this field's FORMAT is deliberately NOT
+	// validated here at load time. AutoCompactThreshold's check (validate's
+	// "> 1" rejection below) is a plain numeric range test with no
+	// dependency outside this package; validating a truncation_policy string
+	// needs einollm.ParseTruncationPolicy, and internal/llm/eino already
+	// imports internal/config (provider.go's providerShape) — importing it
+	// back from here would be an import cycle (GOV1/R1). A malformed value
+	// therefore does not fail config load: ResolveTruncationPolicy falls
+	// through to the catalog/default exactly as if the field were empty, and
+	// bootstrap.go logs a warning at boot time so a typo is still observable,
+	// just not a refused start. See ResolveTruncationPolicy's doc comment for
+	// the full reasoning.
+	TruncationPolicy string `yaml:"truncation_policy"`
+
+	// FallbackModels (M-2 / W-C-10) names, in priority order, the registry
+	// model ids (llm.providers[].model — the SAME key context_window /
+	// auto_compact_threshold / truncation_policy resolve against, not the
+	// config `name` label) THIS provider's compaction-summary call falls
+	// back to when it errors. Empty (the zero value) means "no override":
+	// resolution falls through to the model catalog
+	// (einollm.KnownFallbackModels), then to no fallback at all — see
+	// einollm.ResolveFallbackModels, the fourth and last of the four
+	// provider-level resolution ladders (context_window /
+	// auto_compact_threshold / truncation_policy / fallback_models all
+	// share the same "explicit field wins, then catalog, then nothing"
+	// shape).
+	//
+	// Before this field existed, W-C-10 had NO config-level rung: the
+	// shipped models.yaml ships zero fallback_models catalog rows (Ruling
+	// RC-8), so with no override the feature was unreachable by any
+	// deployment — buildProviderFallbacks always returned an empty map,
+	// byte-identical to pre-W-C-10 behavior no matter what an operator
+	// wrote, because there was nowhere to write it.
+	//
+	// An entry naming a model id no configured provider resolves to is
+	// silently dropped (bootstrap's buildProviderFallbacks), not a load-time
+	// error — the same tolerance the catalog path already has, since
+	// validating an id here would need the provider registry this field is
+	// itself an input to.
+	FallbackModels []string `yaml:"fallback_models"`
+}
+
+// ProviderAuthConfig configures W-C-12 command-based token authentication for
+// one provider: the credential is the stdout of running Command, refreshed
+// every RefreshInterval and re-run once after a 401.
+//
+// SECURITY: Command is executed. It is configuration, not model input, but
+// config is not automatically trusted either — a config.yaml can come from a
+// shared template, a team repo, or (since agents write files through the
+// same fs tools that can touch config.yaml) from the agent's own prior edit.
+// The command therefore goes through secproc.Launch exactly like any other
+// untrusted spawn (shell_run, an ACP agent CLI): it is Authorized against a
+// purpose-built minimal profile, its environment is scrubbed of ambient
+// credentials, and it runs under sandbox.FullAccess. It calls secproc.Launch
+// directly rather than through internal/tools.LaunchSecureProcess (a thin,
+// behavior-identical wrapper around the same call) because
+// internal/llm/eino cannot import internal/tools — see runAuthCommand's doc
+// comment in internal/llm/eino/cmdauth.go for the import-cycle this avoids.
+// The Authorize firewall is unaffected either way: internal/tools' init
+// registers internal/tools.Authorize as secproc.Launch's Authorizer
+// process-wide, independent of which package calls Launch.
+//
+// No bootstrap-level wiring is needed for this specifically: the
+// secproc.Factory the command spawns through is whatever the calling
+// request's context already carries. Every orchestrator turn binds one
+// unconditionally (orchestrator's effectiveSecureFactory falls back to
+// shell.UnsandboxedSecureFactory when none is configured) — but that is NOT
+// every caller of a provider's Generate/Stream. At least three production
+// call sites invoke Generate/Stream on a context that never passed through
+// bindExecutionContext, so no Factory is bound there: the SSE pre-turn
+// compaction summarizer call in internal/api/http/chat.go, the WebSocket
+// pre-turn compaction summarizer call in internal/api/http/ws_compaction.go
+// (both call ctxcompact.MaybeCompactWithOptions, which may run the summary
+// model against a provider that has auth.command configured), and the
+// memory-distillation Generate call in internal/agent/upkeep/memory.go. Each
+// of those gets the SAME fail-closed error any other secproc caller gets
+// without a bound Factory (see runAuthCommand's doc comment in
+// internal/llm/eino/cmdauth.go) — not a panic, not a silently-empty
+// credential — but it is a real gap: if the provider chosen for compaction
+// or memory distillation uses auth.command, that call fails until a Factory
+// is threaded onto those contexts too. Nothing in this package enforces
+// that; it is a property of which callers happen to route through
+// bindExecutionContext today.
+//
+// SECURITY (B-2, 2026-08-29 review): the escalation the first paragraph above
+// accepts as a given — config.yaml sits in the agent's own write scope by
+// default, so an fs_write plus a restart chooses this Command — is closed by
+// the trusted policy file the same way it is closed for `profiles:` and
+// security.guardian_prompt_file: when a policy file exists (policy.go), every
+// provider's Auth is replaced by policy.Security.ProviderAuth, keyed by
+// ProviderConfig.Name, and a provider the trusted map does not name has its
+// Auth cleared to nil regardless of what config.yaml says. See
+// PolicySecurity.ProviderAuth's doc comment for the mechanism and
+// ApplyPolicy's for the exact override semantics.
+type ProviderAuthConfig struct {
+	// Command is the argv to run: Command[0] is the program, the rest are
+	// its arguments. The command's stdout, trimmed of trailing whitespace,
+	// becomes the bearer/api-key credential for this provider. Required —
+	// an Auth block with an empty Command is a config error (validate()).
+	Command []string `yaml:"command"`
+
+	// RefreshInterval is how long a cached credential is reused before the
+	// command is re-run. 0 defaults to 15 minutes (applyDefaults) — long
+	// enough that a fast-issuing command is not re-run every turn, short
+	// enough that a typical cloud STS token (usually valid 15-60m) is
+	// refreshed well before it expires. The command is also re-run once,
+	// out of band from this interval, immediately after a 401 (see
+	// CommandTokenSource.Refresh).
+	RefreshInterval time.Duration `yaml:"refresh_interval"`
 }
 
 // AgentConfig configures a named sub-agent.
@@ -744,6 +932,7 @@ func Load(path string) (*Config, error) {
 	}
 	cfg.PolicyNarrowed = cfg.ApplyPolicy(policy)
 	cfg.PolicyActive = policy != nil && len(policy.Profiles) > 0
+	cfg.PolicyFileActive = policy != nil
 	// ApplyPolicy may have replaced security.guardian_prompt_file with the
 	// trusted one, so the body LoadBytes read from the local value is stale and
 	// was cleared. Re-read from whichever path is now authoritative, through the
@@ -925,11 +1114,24 @@ func (c *Config) applyDefaults() {
 	if c.Storage.WALAutoCheckpoint == 0 {
 		c.Storage.WALAutoCheckpoint = 1000
 	}
+	// W-C-12: an Auth block with no explicit refresh_interval gets 15m — see
+	// ProviderAuthConfig.RefreshInterval's doc for why that value.
+	for i := range c.LLM.Providers {
+		if c.LLM.Providers[i].Auth != nil && c.LLM.Providers[i].Auth.RefreshInterval == 0 {
+			c.LLM.Providers[i].Auth.RefreshInterval = 15 * time.Minute
+		}
+	}
 }
 
 func (c *Config) validate() error {
 	if c.Subagents.Limit != 0 && (c.Subagents.Limit < 1 || c.Subagents.Limit > 20) {
 		return errors.New("subagents.limit must be within 1..20")
+	}
+	if err := c.validateProviderThresholds(); err != nil {
+		return err
+	}
+	if err := c.validateProviderRetriesAndAuth(); err != nil {
+		return err
 	}
 	if err := c.loadGuardianPrompt(); err != nil {
 		return err
@@ -938,6 +1140,74 @@ func (c *Config) validate() error {
 		return err
 	}
 	return c.validateProfiles()
+}
+
+// validateProviderThresholds rejects a per-provider auto_compact_threshold
+// (F-3) greater than 1, and a per-provider context_window (review-whole.md
+// I-1) that is negative.
+//
+// auto_compact_threshold: the field is a FRACTION of the resolved context
+// window, never an absolute token count (ADR-0024 C3); a value above 1 is
+// the tell-tale shape of an operator who wrote an absolute token budget
+// instead (e.g. 8000, meant as "8000 tokens"). That mistake used to be
+// silent: the value published straight through to ResolveAutoCompactThreshold
+// / thresholdFor and permanently failed the downstream gate
+// (tokens < threshold*window, e.g. 8000*context_window), which reads as
+// "compaction never fires" with no diagnostic anywhere — the same failure
+// shape ADR-0013 fixed once already for the global threshold, recurring here
+// on the new per-model knob.
+//
+// 0 (unset, falls through to the catalog/global default) and any negative
+// value (an explicit per-provider DISABLE, W-C-04/F-10 — see
+// ProviderConfig.AutoCompactThreshold's doc) are both valid and intentionally
+// NOT rejected here: only the positive-override lane has an upper bound,
+// because only that lane is a ratio someone could mistake for a token count.
+//
+// context_window: unlike the threshold field, negative has no "explicit
+// disable" reading here — ResolveContextWindow/ContextWindowFor both judge
+// on `> 0`, so a negative value was previously indistinguishable from unset
+// and fell through to the catalog/128K default with zero diagnostic. The
+// review found this was the only one of four adjacent zero/negative/invalid
+// provider-config readings (context_window, auto_compact_threshold,
+// truncation_policy, max_retries) that was completely silent; the other
+// three already reject, warn, or have a documented and deliberate meaning.
+// This closes that gap the same way max_retries < 0 is already closed, by
+// validateProviderRetriesAndAuth, in this same file.
+func (c *Config) validateProviderThresholds() error {
+	for i, p := range c.LLM.Providers {
+		if p.AutoCompactThreshold > 1 {
+			return fmt.Errorf("llm.providers[%d] (name=%q): auto_compact_threshold must be a fraction of the context window (<= 1), got %v — this looks like an absolute token count, not a ratio", i, p.Name, p.AutoCompactThreshold)
+		}
+		if p.ContextWindow < 0 {
+			return fmt.Errorf("llm.providers[%d] (name=%q): context_window must be >= 0, got %d", i, p.Name, p.ContextWindow)
+		}
+	}
+	return nil
+}
+
+// validateProviderRetriesAndAuth rejects the two shapes W-C-07 and W-C-12
+// cannot mean anything sensible: a negative retry ceiling (a retry loop
+// cannot run a command a negative number of times, so this is always an
+// operator typo, not a policy) and an auth block with no command to run
+// (nothing would ever produce a credential, so every call would fail closed
+// with a confusing "auth command produced no token" rather than a clear
+// config error at boot).
+func (c *Config) validateProviderRetriesAndAuth() error {
+	if c.LLM.MaxRetries < 0 {
+		return fmt.Errorf("llm.max_retries must be >= 0, got %d", c.LLM.MaxRetries)
+	}
+	for i, p := range c.LLM.Providers {
+		if p.MaxRetries != nil && *p.MaxRetries < 0 {
+			return fmt.Errorf("llm.providers[%d] (name=%q): max_retries must be >= 0, got %d", i, p.Name, *p.MaxRetries)
+		}
+		if p.Auth != nil && len(p.Auth.Command) == 0 {
+			return fmt.Errorf("llm.providers[%d] (name=%q): auth.command must not be empty when auth is configured", i, p.Name)
+		}
+		if p.Auth != nil && p.Auth.RefreshInterval < 0 {
+			return fmt.Errorf("llm.providers[%d] (name=%q): auth.refresh_interval must be >= 0, got %v", i, p.Name, p.Auth.RefreshInterval)
+		}
+	}
+	return nil
 }
 
 // validateNetworkMethods rejects a method rule whose verdict or subject is

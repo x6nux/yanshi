@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -291,6 +292,87 @@ func TestLoadBytesRejectsInvalidSubagentLimit(t *testing.T) {
 	yaml := []byte("subagents:\n  limit: 99\n")
 	_, err := LoadBytes(yaml)
 	require.Error(t, err)
+}
+
+// TestValidate_AutoCompactThresholdAboveOneIsRejected pins F-3: an operator
+// who writes auto_compact_threshold as an absolute token count instead of a
+// window fraction (ADR-0024 C3) — the failure scenario the finding reproduced
+// was auto_compact_threshold: 8000 — must have the mistake refused at load
+// time, not published silently into a threshold that can never fire.
+func TestValidate_AutoCompactThresholdAboveOneIsRejected(t *testing.T) {
+	yaml := []byte(`
+llm:
+  providers:
+    - name: broken
+      kind: anthropic
+      model: claude-opus
+      auto_compact_threshold: 8000
+`)
+	_, err := LoadBytes(yaml)
+	require.Error(t, err, "a threshold > 1 (an absolute token count, not a window fraction) must be rejected at load time")
+	assert.Contains(t, err.Error(), "auto_compact_threshold")
+}
+
+// TestValidate_AutoCompactThresholdBoundaryAndNegativeAreAccepted pins the
+// two values validateProviderThresholds must NOT reject: exactly 1.0 (the
+// inclusive upper bound of a fraction) and a negative value (F-10/W-C-04's
+// explicit per-provider disable sentinel, not a malformed ratio).
+func TestValidate_AutoCompactThresholdBoundaryAndNegativeAreAccepted(t *testing.T) {
+	yaml := []byte(`
+llm:
+  providers:
+    - name: at-the-boundary
+      kind: anthropic
+      model: claude-opus
+      auto_compact_threshold: 1
+    - name: explicitly-disabled
+      kind: anthropic
+      model: claude-haiku
+      auto_compact_threshold: -1
+`)
+	cfg, err := LoadBytes(yaml)
+	require.NoError(t, err)
+	require.Len(t, cfg.LLM.Providers, 2)
+	assert.Equal(t, 1.0, cfg.LLM.Providers[0].AutoCompactThreshold)
+	assert.Equal(t, -1.0, cfg.LLM.Providers[1].AutoCompactThreshold)
+}
+
+// TestValidate_NegativeContextWindowIsRejected pins review-whole.md I-1: a
+// negative context_window used to be silently indistinguishable from unset
+// (ResolveContextWindow/ContextWindowFor both judge on `> 0`), the one
+// dimension out of four adjacent provider-config zero/negative/invalid
+// readings the review found with no diagnostic at all. It must now be
+// refused at load time, the same way max_retries < 0 already is.
+func TestValidate_NegativeContextWindowIsRejected(t *testing.T) {
+	yaml := []byte(`
+llm:
+  providers:
+    - name: broken
+      kind: anthropic
+      model: claude-opus
+      context_window: -1
+`)
+	_, err := LoadBytes(yaml)
+	require.Error(t, err, "a negative context_window must be rejected at load time, not silently fall through to the catalog/128K default")
+	assert.Contains(t, err.Error(), "context_window")
+}
+
+// TestValidate_ZeroContextWindowIsAccepted pins the value
+// validateProviderThresholds must NOT reject: 0 (unset, falls through to
+// CompactionConfig.ContextWindow via ContextWindowFor) is a legitimate,
+// intentional reading — only negative is a malformed value with no meaning.
+func TestValidate_ZeroContextWindowIsAccepted(t *testing.T) {
+	yaml := []byte(`
+llm:
+  providers:
+    - name: unset
+      kind: anthropic
+      model: claude-opus
+`)
+	cfg, err := LoadBytes(yaml)
+	require.NoError(t, err)
+	require.Len(t, cfg.LLM.Providers, 1)
+	assert.Equal(t, 0, cfg.LLM.Providers[0].ContextWindow)
 }
 
 func TestLoadBytesDefaultsSubagents(t *testing.T) {
@@ -1032,4 +1114,139 @@ llm:
 	assert.True(t, *cfg.LLM.Providers[1].Local)
 	require.NotNil(t, cfg.LLM.Providers[2].Local, "an explicit local: false must not read as unset")
 	assert.False(t, *cfg.LLM.Providers[2].Local)
+}
+
+// TestProviderConfig_HeadersExpandEnvVars pins the W-C-02 acceptance clause
+// "${VAR} 展开生效" at the config layer: LoadBytes runs os.ExpandEnv over the
+// whole document before unmarshal, so a header value written as ${VAR} must
+// come out expanded — the same mechanism APIKey already relies on
+// (TestConfig_UnsetEnvVarBecomesEmpty), exercised here for the new field.
+func TestProviderConfig_HeadersExpandEnvVars(t *testing.T) {
+	t.Setenv("W_C_02_GATEWAY_TOKEN", "canary-secret-value")
+	cfg, err := LoadBytes([]byte(`
+llm:
+  providers:
+    - name: "azure"
+      kind: openai
+      model: "gpt-4o"
+      headers:
+        api-key: ${W_C_02_GATEWAY_TOKEN}
+        x-static: "plain-value"
+`))
+	require.NoError(t, err)
+	require.Len(t, cfg.LLM.Providers, 1)
+	assert.Equal(t, "canary-secret-value", cfg.LLM.Providers[0].Headers["api-key"])
+	assert.Equal(t, "plain-value", cfg.LLM.Providers[0].Headers["x-static"])
+}
+
+// TestProviderConfig_MaxRetriesDistinguishesUnsetFromZero pins the W-C-07
+// nil-means-omit convention (same shape as MaxTokens/Temperature/TopP, M4):
+// an explicit 0 (never retry) must not collapse into "not configured".
+func TestProviderConfig_MaxRetriesDistinguishesUnsetFromZero(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+llm:
+  max_retries: 4
+  providers:
+    - name: "capped"
+      model: "a"
+      max_retries: 1
+    - name: "never-retry"
+      model: "b"
+      max_retries: 0
+    - name: "inherits-global"
+      model: "c"
+`))
+	require.NoError(t, err)
+	require.Len(t, cfg.LLM.Providers, 3)
+	assert.Equal(t, 4, cfg.LLM.MaxRetries)
+	require.NotNil(t, cfg.LLM.Providers[0].MaxRetries)
+	assert.Equal(t, 1, *cfg.LLM.Providers[0].MaxRetries)
+	require.NotNil(t, cfg.LLM.Providers[1].MaxRetries, "an explicit max_retries: 0 must not read as unset")
+	assert.Equal(t, 0, *cfg.LLM.Providers[1].MaxRetries)
+	assert.Nil(t, cfg.LLM.Providers[2].MaxRetries, "an omitted key must stay nil so the global value applies")
+}
+
+// TestValidate_NegativeMaxRetriesRejected pins validateProviderRetriesAndAuth's
+// negative-ceiling checks, both the global and the per-provider override.
+func TestValidate_NegativeMaxRetriesRejected(t *testing.T) {
+	_, err := LoadBytes([]byte("llm:\n  max_retries: -1\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "llm.max_retries")
+
+	_, err = LoadBytes([]byte(`
+llm:
+  providers:
+    - name: "broken"
+      model: "a"
+      max_retries: -2
+`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max_retries")
+}
+
+// TestProviderConfig_AuthCommandDefaultsRefreshInterval pins the W-C-12
+// applyDefaults clause: an Auth block with no explicit refresh_interval gets
+// 15 minutes, and Command's argv round-trips unchanged.
+func TestProviderConfig_AuthCommandDefaultsRefreshInterval(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+llm:
+  providers:
+    - name: "sts"
+      model: "a"
+      auth:
+        command: ["aws", "sts", "get-session-token"]
+`))
+	require.NoError(t, err)
+	require.Len(t, cfg.LLM.Providers, 1)
+	require.NotNil(t, cfg.LLM.Providers[0].Auth)
+	assert.Equal(t, []string{"aws", "sts", "get-session-token"}, cfg.LLM.Providers[0].Auth.Command)
+	assert.Equal(t, 15*time.Minute, cfg.LLM.Providers[0].Auth.RefreshInterval)
+}
+
+// TestProviderConfig_AuthCommandExplicitRefreshIntervalPreserved proves a
+// non-zero refresh_interval is left alone by applyDefaults (only the zero
+// value gets the 15m default).
+func TestProviderConfig_AuthCommandExplicitRefreshIntervalPreserved(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+llm:
+  providers:
+    - name: "sts"
+      model: "a"
+      auth:
+        command: ["aws", "sts", "get-session-token"]
+        refresh_interval: 5m
+`))
+	require.NoError(t, err)
+	assert.Equal(t, 5*time.Minute, cfg.LLM.Providers[0].Auth.RefreshInterval)
+}
+
+// TestValidate_AuthCommandEmptyRejected and
+// TestValidate_AuthCommandNegativeRefreshIntervalRejected pin the W-C-12
+// SECURITY-adjacent config-error clauses: an auth block that could never
+// produce a credential must fail at boot, not at first request.
+func TestValidate_AuthCommandEmptyRejected(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+llm:
+  providers:
+    - name: "broken"
+      model: "a"
+      auth:
+        command: []
+`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "auth.command")
+}
+
+func TestValidate_AuthCommandNegativeRefreshIntervalRejected(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+llm:
+  providers:
+    - name: "broken"
+      model: "a"
+      auth:
+        command: ["echo", "token"]
+        refresh_interval: -1m
+`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refresh_interval")
 }

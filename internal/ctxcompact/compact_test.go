@@ -182,9 +182,22 @@ func TestForceCompact_NoShrink(t *testing.T) {
 	assert.Equal(t, len(msgs), len(out), "input returned verbatim")
 }
 
-// TestMaybeCompact_ModelError covers the error path where Run fails and
-// MaybeCompact returns did=false with original messages unchanged.
-func TestMaybeCompact_ModelError(t *testing.T) {
+// TestMaybeCompact_ModelFailureFallsBackToPinsOnly is the pre-turn half of
+// W-C-04's ladder symmetry (CLAUDE.md's mid-turn/pre-turn requirement):
+// MaybeCompact's own copy of the `err != nil || TokensAfter >= TokensBefore`
+// gate (compact.go) must treat a Fallback=true Result exactly like an
+// ordinary successful compaction, because that's what the gate's own two
+// conditions already evaluate to on the fallback path — did must come back
+// true. This test PRE-DATES W-C-04 and used to assert the opposite ("model
+// error -> no compaction, did=false"); that assertion is the RED half (it
+// fails against the current Run, which no longer returns an error here — see
+// git log on this file). Its fixture (errModel + this msgs slice) is kept
+// independent from both run_test.go's fallback fixtures and
+// compacting_test.go's mid-turn fixture, so a break in any ONE of the three
+// gate copies (Run.pinsOnlyResult wiring is shared, but MaybeCompact,
+// ForceCompact and CompactingModel.maybeCompact each carry their OWN literal
+// copy of the success gate) reddens only that layer's test.
+func TestMaybeCompact_ModelFailureFallsBackToPinsOnly(t *testing.T) {
 	errModel := einollm.NewFakeModel(nil, assert.AnError)
 	msgs := []*schema.Message{
 		{Role: schema.User, Content: "task"},
@@ -193,12 +206,13 @@ func TestMaybeCompact_ModelError(t *testing.T) {
 		{Role: schema.Assistant, Content: "reply"},
 	}
 	// cw=250 means 0.8*250=200 threshold — the ~500-token history exceeds it,
-	// so MaybeCompact enters Run, which calls the error model, hitting err!=nil.
+	// so MaybeCompact enters Run, which calls the failing model, hitting
+	// Run's W-C-04 fallback branch instead of returning an error.
 	out, before, after, did := ctxcompact.MaybeCompact(context.Background(), msgs,
 		0.8, 250, 1, errModel, func(string) {})
-	assert.False(t, did, "model error -> no compaction")
-	assert.Equal(t, len(msgs), len(out), "original messages returned unchanged")
-	assert.Equal(t, before, after)
+	require.True(t, did, "model failure is a fallback, not a no-op (W-C-04)")
+	assert.Less(t, len(out), len(msgs), "the summarize-only message is dropped")
+	assert.Greater(t, before, after, "fallback still shrinks the estimate")
 }
 
 // TestMaybeCompact_NoShrink covers the TokensAfter>=TokensBefore noop path
@@ -213,8 +227,16 @@ func TestMaybeCompact_NoShrink(t *testing.T) {
 	assert.Equal(t, before, after)
 }
 
-// TestForceCompact_ErrorPath covers the error path in ForceCompact.
-func TestForceCompact_ErrorPath(t *testing.T) {
+// TestForceCompact_ModelFailureFallsBackToPinsOnly is ForceCompact's copy of
+// TestMaybeCompact_ModelFailureFallsBackToPinsOnly's gate — a SEPARATE
+// literal copy of the same `err != nil || TokensAfter >= TokensBefore`
+// success condition (compact.go's ForceCompactWithOptions), reached from
+// /compact's manual path rather than the auto-compact threshold path. It
+// used to assert did=false on a model error (RED against the current Run);
+// see the sibling test's comment for why that assertion no longer holds.
+// Fixture is independent from the MaybeCompact test above (fewer, shorter
+// messages) so the two do not share a single point of failure.
+func TestForceCompact_ModelFailureFallsBackToPinsOnly(t *testing.T) {
 	errModel := einollm.NewFakeModel(nil, assert.AnError)
 	msgs := []*schema.Message{
 		{Role: schema.User, Content: "task"},
@@ -224,9 +246,9 @@ func TestForceCompact_ErrorPath(t *testing.T) {
 	}
 	out, before, after, did := ctxcompact.ForceCompact(context.Background(), msgs,
 		100000, 1, errModel, func(string) {})
-	assert.False(t, did, "model error -> did=false")
-	assert.Equal(t, len(msgs), len(out), "original messages intact")
-	assert.Equal(t, before, after)
+	require.True(t, did, "model failure is a fallback, not a no-op (W-C-04)")
+	assert.Less(t, len(out), len(msgs), "the summarize-only message is dropped")
+	assert.Greater(t, before, after, "fallback still shrinks the estimate")
 }
 
 // TestMaybeCompact_ZeroContextWindow covers the contextWindow <= 0 gate.

@@ -299,6 +299,55 @@ func TestChat_SSE_AutoCompaction(t *testing.T) {
 		"history_replaced must precede the turn frames")
 }
 
+// TestChat_SSE_GlobalOffStaysOffWithPerModelThreshold pins F-1 on the SSE
+// transport specifically. chat.go's handleSSEInternal calls the exact same
+// package-level thresholdFor as the WS path (ws_compaction.go) — fixing the
+// function fixes both transports — but F-1 requires each transport to carry
+// its own red-turning assertion, since the review found the WS/mid-turn side
+// guarded while the SSE/pre-turn side was not.
+//
+// The operator has explicitly disabled compaction globally
+// (CompactionConfig.Threshold: -1 — internal/config's documented "<=0
+// disables" spelling for turning it off in writing, as opposed to a bare 0
+// which applyDefaults coerces back to 0.8 on a Load()ed config); the
+// request's model nonetheless has a ProviderThresholds entry low enough
+// (0.05) to fire on its own. Before the F-1 fix, thresholdFor never
+// consulted cc.Threshold at all — only whether ProviderThresholds[model] was
+// set and positive — so this per-model entry silently reopened a gate the
+// operator had closed. It must stay closed.
+func TestChat_SSE_GlobalOffStaysOffWithPerModelThreshold(t *testing.T) {
+	fm := einollm.NewFakeModel([]string{"SSE-SUMMARY", "turn-reply"}, nil)
+	o, err := orchestrator.New(orchestrator.Config{Model: fm})
+	require.NoError(t, err)
+	s := New(Config{Token: "t", Compaction: CompactionConfig{
+		Threshold:          -1, // globally OFF
+		ContextWindow:      2000,
+		KeepRecent:         1,
+		ProviderThresholds: map[string]float64{"session-model": 0.05},
+	}})
+	models := map[string]model.BaseChatModel{"session-model": fm}
+	s.Chat(o, models, nil)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	long := strings.Repeat("b", 2200)
+	body := `{"model":"session-model","messages":[` +
+		`{"role":"user","content":"task"},` +
+		`{"role":"assistant","content":"` + long + `"},` +
+		`{"role":"assistant","content":"` + long + `"},` +
+		`{"role":"user","content":"final-turn"}]}`
+	resp, err := ts.Client().Post(ts.URL+"/api/v1/chat", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	bodyStr := string(b)
+
+	assert.NotContains(t, bodyStr, "compact_chunk",
+		"compaction is globally OFF (Threshold<=0); a per-model threshold must not re-enable it")
+	assert.NotContains(t, bodyStr, "history_replaced")
+	assert.NotContains(t, bodyStr, `"compacted":true`)
+}
+
 // TestChat_SSE_NoCompactionWhenDisabled proves that with compaction disabled
 // (threshold 0), an over-long history passes through untouched: no
 // compact_chunk / history_replaced events, just the normal turn stream.

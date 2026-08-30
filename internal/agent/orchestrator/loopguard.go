@@ -50,8 +50,17 @@ func (c LoopGuardConfig) enabled() bool {
 		c.TurnTimeout > 0 || c.MaxTurnTokens > 0
 }
 
-// buildHandler constructs the per-turn gate set described by c.
-func (c LoopGuardConfig) buildHandler() *loopguard.Handler {
+// buildHandler constructs the per-turn gate set described by c, returning the
+// token-budget gate ALSO on its own (not just folded into the handler's
+// opaque gate slice).
+//
+// W-C-11 needs that second return: Handler has no accessor to pull a
+// specific typed gate back out once NewHandler has swallowed it, and the
+// context_budget tool must read the exact instance the middleware enforces
+// MaxTurnTokens with — see loopguard.WithTokenBudgetGate's doc comment for
+// why a second, independently-built gate is the wrong answer even though it
+// would be built from the same config.
+func (c LoopGuardConfig) buildHandler() (*loopguard.Handler, *loopguard.TokenBudgetGate) {
 	var gates []loopguard.Gate
 	if c.RepetitionEnabled {
 		var stages []loopguard.RepetitionStage
@@ -72,13 +81,14 @@ func (c LoopGuardConfig) buildHandler() *loopguard.Handler {
 	// by NewHandler, which is why they can be appended unconditionally --
 	// except that a typed nil inside a non-nil interface is NOT nil, so each
 	// one is checked before it becomes a loopguard.Gate.
-	if g := loopguard.NewTokenBudgetGate(c.MaxTurnTokens); g != nil {
-		gates = append(gates, g)
+	tokenGate := loopguard.NewTokenBudgetGate(c.MaxTurnTokens)
+	if tokenGate != nil {
+		gates = append(gates, tokenGate)
 	}
 	if g := loopguard.NewDeadlineGate(c.TurnTimeout); g != nil {
 		gates = append(gates, g)
 	}
-	return loopguard.NewHandler(gates...)
+	return loopguard.NewHandler(gates...), tokenGate
 }
 
 // buildToolBudget constructs the per-turn tool-call budget described by c, or
@@ -140,8 +150,14 @@ func WithLoopGuard(ctx context.Context, cfg LoopGuardConfig) context.Context {
 	if !cfg.enabled() {
 		return ctx
 	}
+	handler, tokenGate := cfg.buildHandler()
+	// W-C-11: bind the same *TokenBudgetGate instance the handler enforces
+	// MaxTurnTokens with, so the context_budget tool reads live spend rather
+	// than a second accumulator. No-op when MaxTurnTokens is unconfigured
+	// (tokenGate is nil).
+	ctx = loopguard.WithTokenBudgetGate(ctx, tokenGate)
 	return context.WithValue(ctx, loopGuardKey{}, &turnGuard{
-		handler: cfg.buildHandler(),
+		handler: handler,
 		budget:  cfg.buildToolBudget(),
 		started: time.Now(),
 		now:     time.Now,

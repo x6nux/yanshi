@@ -185,6 +185,66 @@ func TestCheckContextLimit_Table(t *testing.T) {
 	})
 }
 
+// TestRemainingBudgetAgreesWithCheckContextLimit pins the property W-C-11's
+// context-remaining tool depends on: RemainingBudget and CheckContextLimit
+// must cross zero at the SAME point, across windows, reserves, and history
+// sizes, because both are computed from budgetFor/effectiveReserve/
+// EstimateTokens and nothing else. A caller that re-implemented either one
+// with its own arithmetic (even arithmetic that looked equivalent) would very
+// likely disagree with the other on at least one of these rows — that
+// disagreement is exactly what "a duplicate computation" looks like from the
+// outside, and this table is the guard against it.
+func TestRemainingBudgetAgreesWithCheckContextLimit(t *testing.T) {
+	msg := func(n int) []*schema.Message {
+		out := make([]*schema.Message, n)
+		for i := range out {
+			out[i] = &schema.Message{Role: schema.User, Content: strings.Repeat("x", 100)}
+		}
+		return out
+	}
+
+	cases := []struct {
+		name string
+		opts RunOpts
+		n    int
+	}{
+		{"comfortably under budget", RunOpts{ModelWindow: 10000}, 5},
+		{"comfortably over budget", RunOpts{ModelWindow: 1000}, 100},
+		{"fits the raw window but not the reserved budget", RunOpts{ModelWindow: 1000, OutputReserve: 400}, 24},
+		{"unbudgeted window", RunOpts{ModelWindow: 0}, 1000},
+		{"empty history", RunOpts{ModelWindow: 1000}, 0},
+		{"exactly at the reserve cap", RunOpts{ModelWindow: 200000}, 10},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msgs := msg(tc.n)
+			remaining := RemainingBudget(msgs, tc.opts)
+			err := CheckContextLimit(msgs, tc.opts)
+
+			if err != nil {
+				assert.Negativef(t, remaining,
+					"CheckContextLimit refused but RemainingBudget says %d tokens are still free", remaining)
+			} else {
+				assert.GreaterOrEqualf(t, remaining, 0,
+					"CheckContextLimit accepted but RemainingBudget reports a %d-token deficit", remaining)
+			}
+
+			// The stronger check: RemainingBudget is not just sign-compatible with
+			// CheckContextLimit, it is the exact number budgetFor/EstimateTokens
+			// produce — reused, not re-derived. An unbudgeted window is the one
+			// exception: RemainingBudget special-cases it to 0 ("nothing
+			// tracked", matching budgetFor's own "0 means unbudgeted"
+			// convention) rather than the large negative deficit the raw
+			// subtraction would otherwise produce.
+			wantExact := budgetFor(tc.opts) - EstimateTokens(msgs)
+			if tc.opts.ModelWindow <= 0 {
+				wantExact = 0
+			}
+			assert.Equal(t, wantExact, remaining)
+		})
+	}
+}
+
 // TestContextOverflowError_Message asserts the rendered text carries every
 // number an operator needs. "Context overflow" alone cannot distinguish a 5%
 // overshoot (compact harder) from a 5x one (the window is wrong).

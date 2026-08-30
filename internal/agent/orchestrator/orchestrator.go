@@ -51,9 +51,37 @@ type Config struct {
 	Profile         guard.PermissionProfile
 	VCSScope        tools.VCSScope
 	WorkRoot        string
-	Compaction      CompactionConfig
-	Sandbox         sandbox.Sandbox
-	NetworkPolicy   *netpolicy.Policy
+	// TruncationPolicy (W-C-09) is the DEFAULT head/tail line-retention
+	// policy for oversized tool results, resolved ONCE by bootstrap from the
+	// primary provider's ProviderConfig.TruncationPolicy override / the
+	// model catalog (einollm.ResolveTruncationPolicy), falling back to
+	// einollm.DefaultTruncationSpec. bindExecutionContext binds it
+	// unconditionally (like WorkRoot) via tools.WithTruncationPolicy — see
+	// that injector's doc comment for why a zero value is never the right
+	// "absent" sentinel here. withTurnContext overrides it with
+	// ProviderTruncationPolicies' entry for the turn's actual model, when
+	// one resolves; this field remains the answer for a turn whose model is
+	// absent or unresolved (headless calls, an unrecognised model id).
+	TruncationPolicy einollm.TruncationSpec
+	// ProviderTruncationPolicies (M-4) maps a registry model name to that
+	// model's W-C-09 truncation policy — config.ProviderConfig.TruncationPolicy
+	// override or model-catalog entry — keyed exactly as TurnOpts.ModelID,
+	// the CompactionConfig.ProviderWindows/ProviderThresholds sibling for
+	// tool-output truncation (see CompactionConfig's doc comments for why
+	// the map is keyed this way). A turn whose model is absent from this map
+	// falls back to TruncationPolicy above.
+	//
+	// Before this field existed, TruncationPolicy was the ONLY resolution:
+	// bootstrap read cfg.LLM.Providers[0] once at boot and every turn got
+	// that single value regardless of which provider it actually ran on —
+	// switching providers mid-session via /model kept every subsequent
+	// turn's tool-output truncation pinned to whichever provider booted
+	// first, even though ProviderConfig.TruncationPolicy's own doc comment
+	// documents a per-provider override.
+	ProviderTruncationPolicies map[string]einollm.TruncationSpec
+	Compaction                 CompactionConfig
+	Sandbox                    sandbox.Sandbox
+	NetworkPolicy              *netpolicy.Policy
 	// Redactor 是进程级 secrets redactor。绑进每个 turn 的执行 context，
 	// 供 GuardedTool.InvokableRun 在结果交给模型之前收口（W-A-02）。
 	// nil 表示不脱敏，行为与引入前逐字节一致。
@@ -130,6 +158,36 @@ type CompactionConfig struct {
 	// HTTP layer; it is passed here rather than resolved locally so the
 	// orchestrator never has to import internal/api/http, which GOV1 forbids.
 	ProviderWindows map[string]int
+	// ProviderThresholds maps a registry model name to that model's
+	// auto-compact threshold (a fraction of its context window, e.g. 0.8),
+	// keyed exactly as TurnOpts.ModelID — the mid-turn sibling of
+	// ProviderWindows (W-C-01 / INF2). A turn whose model is absent falls
+	// back to Threshold. Sourced (by bootstrap) from
+	// config.ProviderConfig.AutoCompactThreshold first, then the embedded
+	// model catalog — see einollm.ResolveAutoCompactThreshold.
+	ProviderThresholds map[string]float64
+	// ProviderFallbacks maps a registry model name to an ordered chain of
+	// stand-in models to retry the COMPACTION SUMMARY call against when that
+	// model's own summary call fails outright — keyed exactly as
+	// TurnOpts.ModelID, the W-C-10 sibling of ProviderWindows/
+	// ProviderThresholds. A turn whose model is absent, or whose entry is
+	// empty, gets no fallback (byte-identical to pre-W-C-10 behavior) — this
+	// is the common case today, since the shipped model catalog declares zero
+	// fallback_models rows (Ruling RC-8, models.yaml's header).
+	//
+	// This is NOT a general turn-answering fallback chain: only the
+	// compaction summarizer (CompactingModel.Summarizer / the pre-turn
+	// compactionModel() path) ever reads it. Silently answering a turn's
+	// actual response with a different model than the one requested is a
+	// much bigger, riskier behavior change than retrying a summarization
+	// call with a different model, and W-C-10 does not do that. Resolved
+	// once by bootstrap from einollm.KnownFallbackModels against the
+	// concrete provider registry (unresolvable declared ids are skipped, not
+	// an error) — sourced here rather than resolved locally for the same
+	// reason ProviderWindows is: bootstrap owns the provider registry, and
+	// the orchestrator must not import the packages that would let it build
+	// one itself.
+	ProviderFallbacks map[string][]model.BaseChatModel
 	// Redactor strips registered secrets from the history handed to the summary
 	// model on the MID-TURN compaction path, and from the summary it returns
 	// (C11). nil disables redaction.
@@ -152,11 +210,37 @@ func (cc CompactionConfig) windowFor(modelID string) int {
 	return cc.ProviderWindows[modelID]
 }
 
+// thresholdFor returns the auto-compact threshold to size a turn's
+// compaction gates against, or 0 when the model is unknown and the caller
+// should fall back to Threshold. Mirrors windowFor exactly (W-C-01 / INF2).
+func (cc CompactionConfig) thresholdFor(modelID string) float64 {
+	if modelID == "" || cc.ProviderThresholds == nil {
+		return 0
+	}
+	return cc.ProviderThresholds[modelID]
+}
+
+// fallbacksFor returns the compaction-summary fallback chain resolved for
+// modelID, or nil when modelID is unknown or has no declared chain. Mirrors
+// windowFor/thresholdFor exactly (W-C-10 / INF2's sibling to W-C-01).
+func (cc CompactionConfig) fallbacksFor(modelID string) []model.BaseChatModel {
+	if modelID == "" || cc.ProviderFallbacks == nil {
+		return nil
+	}
+	return cc.ProviderFallbacks[modelID]
+}
+
 // Orchestrator wraps an Eino ChatModelAgent + Runner.
 type Orchestrator struct {
 	profile  guard.PermissionProfile
 	vcsScope tools.VCSScope
 	workRoot string
+	// truncationPolicy is the resolved DEFAULT head/tail line-retention
+	// policy for oversized tool results (W-C-09) — see Config.TruncationPolicy.
+	truncationPolicy einollm.TruncationSpec
+	// providerTruncationPolicies is the per-model override map (M-4) — see
+	// Config.ProviderTruncationPolicies.
+	providerTruncationPolicies map[string]einollm.TruncationSpec
 	// rawModel is the default model (UNWRAPPED, straight from Config.Model)
 	// so runnerFor can build mode-specific agents with the same unwrapped model.
 	rawModel model.BaseChatModel
@@ -274,6 +358,17 @@ func New(cfg Config) (*Orchestrator, error) {
 		maxIters = math.MaxInt
 	}
 
+	// W-C-09: unlike WorkRoot, TruncationSpec has no meaningful zero value —
+	// {HeadLines:0, TailLines:0} would mean "keep nothing", not "unset". A
+	// caller that never set Config.TruncationPolicy (bootstrap always does;
+	// tests and callers built before this ticket do not) gets
+	// einollm.DefaultTruncationSpec here instead, so bindExecutionContext's
+	// unconditional bind always carries a real policy.
+	truncationPolicy := cfg.TruncationPolicy
+	if truncationPolicy == (einollm.TruncationSpec{}) {
+		truncationPolicy = einollm.DefaultTruncationSpec
+	}
+
 	instruction := cfg.Instruction
 	if instruction == "" {
 		instruction = DefaultInstruction
@@ -308,35 +403,37 @@ func New(cfg Config) (*Orchestrator, error) {
 	rawModel := cfg.Model
 
 	return &Orchestrator{
-		model:              wrapCompaction(cfg.Model, cfg.Compaction, 0),
-		rawModel:           rawModel,
-		profile:            profile,
-		vcsScope:           cfg.VCSScope,
-		workRoot:           cfg.WorkRoot,
-		instruction:        instruction,
-		baseInstruction:    baseInstruction,
-		memorySuffix:       cfg.MemorySuffix,
-		agentTools:         agentTools,
-		toolNames:          toolNames,
-		maxIters:           maxIters,
-		compaction:         cfg.Compaction,
-		taskManager:        cfg.TaskManager,
-		approvals:          cfg.Approvals,
-		sandbox:            cfg.Sandbox,
-		networkPolicy:      cfg.NetworkPolicy,
-		redactor:           cfg.Redactor,
-		secureFactory:      cfg.SecureFactory,
-		shellManager:       cfg.ShellManager,
-		subagentMgr:        cfg.SubagentManager,
-		lspMgr:             cfg.LSP,
-		mcpMgr:             cfg.MCP,
-		multimodalMap:      cfg.MultimodalMap,
-		imageStore:         cfg.ImageStore,
-		visionAuxAvailable: cfg.VisionAuxAvailable,
-		availableModels:    cfg.AvailableModels,
-		loopGuard:          cfg.LoopGuard,
-		background:         cfg.Background,
-		sessionRules:       make(map[string]*guard.RuleSet),
+		model:                      wrapCompaction(cfg.Model, cfg.Compaction, 0, 0, nil),
+		rawModel:                   rawModel,
+		profile:                    profile,
+		vcsScope:                   cfg.VCSScope,
+		workRoot:                   cfg.WorkRoot,
+		truncationPolicy:           truncationPolicy,
+		providerTruncationPolicies: cfg.ProviderTruncationPolicies,
+		instruction:                instruction,
+		baseInstruction:            baseInstruction,
+		memorySuffix:               cfg.MemorySuffix,
+		agentTools:                 agentTools,
+		toolNames:                  toolNames,
+		maxIters:                   maxIters,
+		compaction:                 cfg.Compaction,
+		taskManager:                cfg.TaskManager,
+		approvals:                  cfg.Approvals,
+		sandbox:                    cfg.Sandbox,
+		networkPolicy:              cfg.NetworkPolicy,
+		redactor:                   cfg.Redactor,
+		secureFactory:              cfg.SecureFactory,
+		shellManager:               cfg.ShellManager,
+		subagentMgr:                cfg.SubagentManager,
+		lspMgr:                     cfg.LSP,
+		mcpMgr:                     cfg.MCP,
+		multimodalMap:              cfg.MultimodalMap,
+		imageStore:                 cfg.ImageStore,
+		visionAuxAvailable:         cfg.VisionAuxAvailable,
+		availableModels:            cfg.AvailableModels,
+		loopGuard:                  cfg.LoopGuard,
+		background:                 cfg.Background,
+		sessionRules:               make(map[string]*guard.RuleSet),
 	}, nil
 }
 
@@ -344,20 +441,57 @@ func New(cfg Config) (*Orchestrator, error) {
 // is enabled, else m unchanged.
 //
 // window is the context window resolved for the model m will run against;
-// pass 0 to fall back to cc.ContextWindow. Every gate -- threshold, hard
-// force, and the token cooldown -- is sized from that single number, so a
-// provider with a smaller window than the global default cannot end up with
-// a threshold it can never reach.
-func wrapCompaction(m model.BaseChatModel, cc CompactionConfig, window int) model.BaseChatModel {
+// pass 0 to fall back to cc.ContextWindow. threshold is the auto-compact
+// threshold resolved for that same model (W-C-01 / INF2, e.g. from
+// ProviderConfig.AutoCompactThreshold or the model catalog); pass 0 to fall
+// back to cc.Threshold. Every gate -- threshold, hard force, and the token
+// cooldown -- is sized from window, so a provider with a smaller window than
+// the global default cannot end up with a threshold it can never reach.
+//
+// The GLOBAL on/off switch stays cc.Threshold alone: a per-model threshold
+// only resizes an ALREADY-enabled gate, it never re-enables a feature the
+// operator turned off by setting the global Threshold to 0. Letting a
+// catalog row silently override an explicit "compaction: threshold: 0" would
+// surprise exactly the operator who set it. (This is ADR-0024 C2's pre-turn
+// twin: internal/api/http/ws_compaction.go's thresholdFor gates the same way,
+// checked first, before ProviderThresholds is even consulted — ADR-0024 C1
+// requires the two to stay literally the same check.)
+//
+// A NEGATIVE threshold is a different signal: an explicit PER-PROVIDER
+// disable (W-C-04 / F-10, e.g. ResolveAutoCompactThreshold's negative-sentinel
+// branch). It is checked separately from, and before, the `threshold <= 0`
+// fill-in below — a resolved 0 still means "no per-model opinion, use
+// cc.Threshold" unchanged; only a negative resolved value opts this one
+// provider out, mirroring the global switch one layer down without touching
+// cc.Threshold itself.
+//
+// fallbacks (W-C-10) is the pre-resolved compaction-summary fallback chain
+// for the model m will run against — pass cc.fallbacksFor(modelID) from the
+// call site, exactly like window/threshold are pre-resolved by the caller
+// rather than looked up here. An empty/nil chain leaves
+// CompactingModel.Summarizer unset (nil), which maybeCompact treats as "use
+// Inner", i.e. today's exact pre-W-C-10 behavior. A non-empty chain wraps m
+// together with its fallbacks in a fresh ResilientChatModel used ONLY for
+// the summarizer field — m itself still answers the turn unwrapped, so a
+// failed summary call can retry on a different model without changing which
+// model answers the turn (see CompactingModel.Summarizer's doc comment for
+// why that split is deliberate).
+func wrapCompaction(m model.BaseChatModel, cc CompactionConfig, window int, threshold float64, fallbacks []model.BaseChatModel) model.BaseChatModel {
 	if cc.Threshold <= 0 {
+		return m
+	}
+	if threshold < 0 {
 		return m
 	}
 	if window <= 0 {
 		window = cc.ContextWindow
 	}
-	return &einollm.CompactingModel{
+	if threshold <= 0 {
+		threshold = cc.Threshold
+	}
+	cm := &einollm.CompactingModel{
 		Inner:             m,
-		Threshold:         cc.Threshold,
+		Threshold:         threshold,
 		ContextWindow:     window,
 		KeepRecent:        cc.KeepRecent,
 		CooldownTokens:    int(cc.CooldownFraction * float64(window)),
@@ -365,6 +499,18 @@ func wrapCompaction(m model.BaseChatModel, cc CompactionConfig, window int) mode
 		HardForceFraction: cc.HardForceFraction,
 		Redactor:          cc.Redactor,
 	}
+	if len(fallbacks) > 0 {
+		chain := append([]model.BaseChatModel{m}, fallbacks...)
+		if resilient, err := einollm.NewResilientModel(chain, einollm.ResilientConfig{}); err == nil {
+			cm.Summarizer = resilient
+		}
+		// err is only non-nil for an empty chain (see NewResilientModel), which
+		// chain cannot be here — it always has m as its first entry. No error
+		// path reaches production; cm.Summarizer stays nil (== Inner) if it
+		// somehow did, which is the same fail-safe "no fallback" default as an
+		// unresolved model id.
+	}
+	return cm
 }
 
 // collectToolNames returns registered tool Info names (best-effort).
@@ -401,6 +547,29 @@ func (o *Orchestrator) WorkRoot() string { return o.workRoot }
 // ProfileForTest exposes the resolved profile for tests.
 func (o *Orchestrator) ProfileForTest() guard.PermissionProfile { return o.profile }
 
+// CompactionForTest exposes the mid-turn CompactionConfig — including the
+// per-provider ProviderWindows/ProviderThresholds maps bootstrap resolved
+// from config + the embedded model catalog (W-C-01/INF2) — so composition-root
+// wiring tests can assert against a really-built App instead of re-parsing
+// bootstrap.go as text (F-2; see internal/bootstrap/wiring_test.go).
+func (o *Orchestrator) CompactionForTest() CompactionConfig { return o.compaction }
+
+// truncationPolicyFor returns the resolved head/tail truncation policy
+// (W-C-09) for modelID, or the orchestrator's default (o.truncationPolicy)
+// when modelID is empty or has no entry in providerTruncationPolicies.
+// Mirrors CompactionConfig.windowFor/thresholdFor (W-C-01/INF2) — bootstrap
+// resolves the per-provider map once from config + the model catalog, and
+// this is the per-turn read side, keyed exactly as TurnOpts.ModelID (M-4).
+func (o *Orchestrator) truncationPolicyFor(modelID string) einollm.TruncationSpec {
+	if modelID == "" || o.providerTruncationPolicies == nil {
+		return o.truncationPolicy
+	}
+	if spec, ok := o.providerTruncationPolicies[modelID]; ok {
+		return spec
+	}
+	return o.truncationPolicy
+}
+
 // bindExecutionContext threads every orchestrator-owned security value into ctx.
 func (o *Orchestrator) bindExecutionContext(ctx context.Context, connectionSessionID string) context.Context {
 	// S9: the acting profile is the orchestrator's profile PLUS whatever this
@@ -411,6 +580,10 @@ func (o *Orchestrator) bindExecutionContext(ctx context.Context, connectionSessi
 	// rather than a widening.
 	ctx = tools.WithProfile(ctx, o.profileForSession(connectionSessionID))
 	ctx = tools.WithWorkRoot(ctx, o.workRoot)
+	// W-C-09: bound unconditionally, like WorkRoot — New() already substituted
+	// einollm.DefaultTruncationSpec for a caller that left Config.TruncationPolicy
+	// zero, so o.truncationPolicy is always a real policy here.
+	ctx = tools.WithTruncationPolicy(ctx, o.truncationPolicy)
 	ctx = tools.WithTaskManager(ctx, o.taskManager)
 	// S8: the names that actually exist in THIS execution scope. Bound here,
 	// alongside the profile, because the two are read at the same moment and
@@ -502,6 +675,16 @@ func (o *Orchestrator) withTurnContext(ctx context.Context, opts TurnOpts) conte
 	// to go — an empty ModelID resolves to false, i.e. hint text, which is the
 	// fail-safe answer for the entry points that do not select a model.
 	ctx = tools.WithTurnImages(ctx, tools.NewTurnImages(o.IsMultimodal(opts.ModelID)))
+	// M-4: bindExecutionContext above bound the DEFAULT truncation policy
+	// (primary provider's override / o.truncationPolicy); rebind here with
+	// the ACTIVE turn's model, so a turn running on a provider other than
+	// the primary one gets THAT provider's truncation_policy, not the
+	// primary's. opts.ModelID (not opts.Model) is deliberate here, the same
+	// choice IsMultimodal above makes and for the same reason: ModelID is
+	// populated unconditionally (sorted-first fallback included), so a
+	// caller that never ran /model still resolves against a real key
+	// instead of silently landing on the empty-string case every time.
+	ctx = tools.WithTruncationPolicy(ctx, o.truncationPolicyFor(opts.ModelID))
 	// The volatile half of the system prompt reads the turn's model from here.
 	// Bound next to WithTurnImages because both answer questions about the SAME
 	// selection, one turn late otherwise: runnerFor's cache would hand a /model
@@ -533,7 +716,36 @@ func (o *Orchestrator) withTurnContext(ctx context.Context, opts TurnOpts) conte
 	// instance) serves every turn on that model, so any counter living there
 	// would be process-wide.
 	ctx = WithLoopGuard(ctx, o.loopGuard)
+	// W-C-14: a fresh new-window signal per turn, same reasoning as the
+	// loop-guard bind immediately above — this is the pointer the
+	// context_new_window tool writes and the NEXT CompactingModel.Generate/
+	// Stream call (inside this same turn's ReAct loop) reads. Bound
+	// unconditionally, even when compaction is disabled or the resolved
+	// model isn't wrapped in a CompactingModel at all (wrapCompaction
+	// returns the bare model when cc.Threshold<=0) — the tool call then
+	// still succeeds at RequestNewWindow's context-binding check, and simply
+	// has nothing downstream to consume it, the same shape as any other
+	// context value bound for a code path that turns out not to run.
+	ctx = einollm.WithNewWindowSignal(ctx)
+	// W-C-11: a fresh context-budget signal per turn, same reasoning as the
+	// new-window bind immediately above but with the roles reversed — this is
+	// the pointer CompactingModel.maybeCompact WRITES on every iteration and
+	// the context_budget tool READS. Bound unconditionally for the same
+	// reason: turns whose model isn't wrapped in a CompactingModel simply
+	// never get a snapshot published, and ContextBudgetFromContext reports
+	// that as "not available" rather than erroring.
+	ctx = einollm.WithContextBudgetSignal(ctx)
 	return o.bindManagedRunner(ctx)
+}
+
+// WithTurnContextForTest 暴露 withTurnContext 给组合根的接线测试，与
+// BindExecutionContextForTest 同一个存在理由：GOV6 只证明注入器有调用点，
+// 证明不了真实装配出的 App 在一次真实 turn（而不是子集 bindExecutionContext）
+// 里确实读到了按 TurnOpts.ModelID 解析出的每模型覆盖值——M-4 的
+// truncationPolicyFor(opts.ModelID) 正是这样一个只在 withTurnContext 里才
+// 生效的读法，bindExecutionContext 单独看不到它。
+func (o *Orchestrator) WithTurnContextForTest(ctx context.Context, opts TurnOpts) context.Context {
+	return o.withTurnContext(ctx, opts)
 }
 
 // ensureTurnIDs fills in correlation IDs when the caller hasn't already bound
@@ -642,7 +854,7 @@ func (o *Orchestrator) runnerFor(chatModel model.BaseChatModel, plan bool, model
 	names := collectToolNames(registered)
 
 	agent, err := adk.NewChatModelAgent(context.Background(), &adk.ChatModelAgentConfig{
-		Model:         wrapCompaction(chatModel, o.compaction, o.compaction.windowFor(modelID)),
+		Model:         wrapCompaction(chatModel, o.compaction, o.compaction.windowFor(modelID), o.compaction.thresholdFor(modelID), o.compaction.fallbacksFor(modelID)),
 		Instruction:   o.instruction,
 		MaxIterations: o.maxIters,
 		ToolsConfig: adk.ToolsConfig{

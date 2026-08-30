@@ -455,7 +455,7 @@ func TestCov_MemoryWriteEmptyKind(t *testing.T) {
 // =============================================================================
 
 func TestCov_SpillPreviewFewLines(t *testing.T) {
-	preview := spillPreview("line1\nline2\nline3", "test.txt")
+	preview := spillPreview(context.Background(), "line1\nline2\nline3", "test.txt")
 	assert.Contains(t, preview, "line1")
 	assert.Contains(t, preview, "Use summarize")
 }
@@ -465,7 +465,7 @@ func TestCov_SpillPreviewManyLines(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		fmt.Fprintf(&b, "line%d\n", i)
 	}
-	preview := spillPreview(b.String(), "test.txt")
+	preview := spillPreview(context.Background(), b.String(), "test.txt")
 	assert.Contains(t, preview, "spilled")
 	assert.Contains(t, preview, "lines omitted")
 }

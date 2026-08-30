@@ -15,17 +15,22 @@ import (
 	otelobs "github.com/x6nux/yanshi/internal/observe/otel"
 )
 
-type profileKey struct{}
-
 // WithProfile binds a PermissionProfile to ctx (the acting agent's profile).
+//
+// Thin re-export: the key/getter/setter actually live in guard.WithProfile
+// (internal/guard/profilectx.go) so a leaf caller that must not import tools
+// (internal/llm/eino's W-C-12 auth.command runtime) can still bind a profile
+// that this package's own Authorize will read back. See that file's doc
+// comment for why the move was forced (an import cycle through eino's
+// FakeModel, only visible to `go vet`/`go test`, not `go build`). Every
+// existing call site keeps working unchanged.
 func WithProfile(ctx context.Context, p guard.PermissionProfile) context.Context {
-	return context.WithValue(ctx, profileKey{}, p)
+	return guard.WithProfile(ctx, p)
 }
 
 // ProfileFromContext returns the bound profile, if any.
 func ProfileFromContext(ctx context.Context) (guard.PermissionProfile, bool) {
-	p, ok := ctx.Value(profileKey{}).(guard.PermissionProfile)
-	return p, ok
+	return guard.ProfileFromContext(ctx)
 }
 
 // DenyErr is returned when the guard rejects a tool call.

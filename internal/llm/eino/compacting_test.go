@@ -231,6 +231,83 @@ func TestCompactingModel_CompactsWhenOverThreshold(t *testing.T) {
 	assert.Equal(t, msgs[4], last[1])
 }
 
+// TestCompactingModel_SummarizerPreferredOverInnerForCompaction pins the
+// W-C-10 field split: when Summarizer is set, maybeCompact's ctxcompact.Run
+// call must use IT for the summarize call, not Inner — while Inner still
+// performs the real (post-compaction) turn-answering call, unaffected. This
+// is deliberately NOT the same model doing both: silently answering a turn
+// with a different model would be a much bigger behavior change than retrying
+// just the summarization call with a fallback, and W-C-10 does only the
+// latter (see the field's doc comment and wrapCompaction in
+// internal/agent/orchestrator).
+func TestCompactingModel_SummarizerPreferredOverInnerForCompaction(t *testing.T) {
+	inner := &recordingModel{reply: "answer", streamOK: true}
+	summarizer := &recordingModel{summary: "SUMMARY", streamOK: true}
+	cm := &CompactingModel{
+		Inner:         inner,
+		Summarizer:    summarizer,
+		Threshold:     0.5,
+		ContextWindow: 200, // 100-token threshold budget; ≥177 keeps RunSummary single-path
+		KeepRecent:    2,
+	}
+	msgs := []*schema.Message{
+		bigMessage(20),
+		bigMessage(20),
+		bigMessage(20),
+		bigMessage(20),
+		bigMessage(20),
+	}
+	require.True(t, cm.shouldCompact(msgs), "fixture is over threshold")
+
+	_, err := cm.Generate(context.Background(), msgs)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, summarizer.callCount(), "Summarizer, not Inner, must perform the summarize call")
+	assert.Equal(t, 1, inner.callCount(), "Inner still performs the real (post-compaction) call")
+
+	// Prove Inner's call carries the COMPACTED set produced by Summarizer's
+	// output, not the original 5 messages — i.e. the summary really flowed
+	// from Summarizer into the history Inner then answered.
+	ins := inner.inputsSnapshot()
+	require.Len(t, ins, 1)
+	last := ins[0]
+	assert.Len(t, last, 3, "compacted = KeepRecent tail (2) + summary at tail")
+	assert.Contains(t, last[2].Content, "SUMMARY")
+
+	// Inner must never have been asked to summarize.
+	summIns := summarizer.inputsSnapshot()
+	require.Len(t, summIns, 1, "summarizer performed exactly the summarize call")
+}
+
+// TestCompactingModel_NilSummarizerUsesInner pins the default (nil Summarizer)
+// behavior explicitly, as a companion to
+// TestCompactingModel_SummarizerPreferredOverInnerForCompaction: with no
+// Summarizer configured, Inner performs BOTH the summarize call and the real
+// call — byte-identical to pre-W-C-10 CompactingModel, which had no
+// Summarizer field at all.
+func TestCompactingModel_NilSummarizerUsesInner(t *testing.T) {
+	inner := &recordingModel{summary: "SUMMARY", reply: "answer", streamOK: true}
+	cm := &CompactingModel{
+		Inner:         inner,
+		Threshold:     0.5,
+		ContextWindow: 200,
+		KeepRecent:    2,
+	}
+	msgs := []*schema.Message{
+		bigMessage(20),
+		bigMessage(20),
+		bigMessage(20),
+		bigMessage(20),
+		bigMessage(20),
+	}
+	require.True(t, cm.shouldCompact(msgs))
+
+	_, err := cm.Generate(context.Background(), msgs)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, inner.callCount(), "with no Summarizer, Inner alone performs both the summarize and real calls")
+}
+
 // TestCompactingModel_StreamCompacts proves Stream mirrors Generate's compaction
 // (the ADK takes the Stream path under EnableStreaming).
 //
@@ -1023,6 +1100,49 @@ func TestCompactingModel_AFailedCompactionArmsTheCooldown(t *testing.T) {
 		"the failed attempt must not be repeated on every iteration of the turn")
 }
 
+// TestCompactingModel_ModelFailureFallsBackToPinsOnly is the mid-turn half of
+// W-C-04's ladder symmetry (CLAUDE.md's mid-turn/pre-turn requirement): it
+// exercises maybeCompact's OWN copy of the
+// `err != nil || TokensAfter >= TokensBefore` success gate (line 206 above)
+// against a summary model that fails OUTRIGHT — never returns a reply at
+// all — which is a DIFFERENT failure mode from
+// TestCompactingModel_AFailedCompactionArmsTheCooldown just above: that
+// test's model call SUCCEEDS with an oversized summary, rejected by the C10
+// quality gate one layer down inside ctxcompact.Run, and Run still returns an
+// error on THAT path (see run.go's doc comment: EMPTY/QUALITY stay gates).
+// Before W-C-04 an outright model-call failure also propagated as a Run
+// error and maybeCompact returned (msgs, false); now ctxcompact.Run absorbs
+// it into a Fallback=true Result, so did must come back true here — the
+// fixture (NewFakeModel(nil, err) + this msgs slice) is independent from
+// both ctxcompact/run_test.go's fallback fixtures and
+// ctxcompact/compact_test.go's pre-turn fixture, so a regression in any ONE
+// of the three literal gate copies reddens only that layer's test.
+func TestCompactingModel_ModelFailureFallsBackToPinsOnly(t *testing.T) {
+	inner := NewFakeModel(nil, errors.New("model down")) // non-transient -> immediate, no retry cost
+	cm := &CompactingModel{
+		Inner:         inner,
+		Threshold:     0.5,
+		ContextWindow: 200, // 100-token threshold budget, same fixture as TestCompactingModel_CompactsWhenOverThreshold
+		KeepRecent:    2,
+	}
+	// 5 messages, each ~28 tokens → ~140 tokens, well over the 100 budget —
+	// same shape as TestCompactingModel_CompactsWhenOverThreshold, so this
+	// test isolates the model-failure branch rather than a threshold-gate
+	// difference.
+	msgs := []*schema.Message{
+		bigMessage(20),
+		bigMessage(20),
+		bigMessage(20),
+		bigMessage(20),
+		bigMessage(20),
+	}
+	require.True(t, cm.shouldCompact(msgs), "fixture is over threshold")
+
+	out, did := cm.maybeCompact(context.Background(), msgs)
+	require.True(t, did, "model failure is a fallback, not a no-op (W-C-04)")
+	assert.Less(t, len(out), len(msgs), "the summarize-only messages are dropped")
+}
+
 // TestHardForceBypassesCooldown_SoArmingOnFailureIsSafe pins the COUPLING that
 // makes maybeCompact's arm-on-failure safe. Read this before changing either
 // the cooldown or the hard-force branch.
@@ -1114,4 +1234,228 @@ func TestHardForceBypassesCooldown_SoArmingOnFailureIsSafe(t *testing.T) {
 			"this is the entire reason arming on failure is safe")
 	assert.Equal(t, 2, inner.callCount(), "the retry happened, exactly once")
 	assert.Less(t, len(out), len(big), "and it really compacted")
+}
+
+// TestRequestNewWindow_NoSignalBound proves the write side is a safe no-op
+// (not a panic, not a silent context.WithValue on a key nobody reads) when
+// the turn never bound a signal — e.g. a sub-agent context, or any call site
+// that predates W-C-14's orchestrator wiring. This is what
+// internal/tools/contextwindow.go's run() relies on to report an error
+// instead of claiming a request landed that nothing will ever read.
+func TestRequestNewWindow_NoSignalBound(t *testing.T) {
+	ok := RequestNewWindow(context.Background(), "done exploring")
+	assert.False(t, ok, "no signal bound on this context")
+}
+
+// TestRequestNewWindow_ConsumedOnce pins the one-shot contract directly, at
+// the signal layer, independent of CompactingModel: a request survives
+// exactly one read. A second read on the same turn context — e.g. a second
+// maybeCompact call within the same ReAct loop after the model already got
+// its fresh window — must not re-trigger.
+func TestRequestNewWindow_ConsumedOnce(t *testing.T) {
+	ctx := WithNewWindowSignal(context.Background())
+
+	ok := RequestNewWindow(ctx, "finished reading the big file")
+	require.True(t, ok, "signal is bound, so the write must succeed")
+
+	reason, got := consumeNewWindowRequest(ctx)
+	assert.True(t, got)
+	assert.Equal(t, "finished reading the big file", reason)
+
+	_, got = consumeNewWindowRequest(ctx)
+	assert.False(t, got, "a second read on the same request must find nothing — one-shot")
+}
+
+// TestCompactingModel_NewWindowRequestBypassesThreshold is W-C-14's core
+// behavioral pin: a pending request wins even on a history shouldCompact
+// would otherwise leave alone (huge ContextWindow, small history), AND it
+// never calls the inner model at all — the tool's whole point is skipping
+// summarization, not merely rushing it forward.
+func TestCompactingModel_NewWindowRequestBypassesThreshold(t *testing.T) {
+	inner := &recordingModel{reply: "answer", streamOK: true}
+	cm := &CompactingModel{
+		Inner:         inner,
+		Threshold:     0.8,
+		ContextWindow: 1_000_000, // shouldCompact would say no on this history
+		KeepRecent:    2,
+	}
+	msgs := []*schema.Message{
+		{Role: schema.User, Content: "task"},
+		bigMessage(200),
+		bigMessage(200),
+		{Role: schema.User, Content: "recent"},
+	}
+	require.False(t, cm.shouldCompact(msgs), "premise: the threshold gate alone would say no")
+
+	ctx := WithNewWindowSignal(context.Background())
+	require.True(t, RequestNewWindow(ctx, "finished the exploratory read"))
+
+	out, did := cm.maybeCompact(ctx, msgs)
+	assert.True(t, did, "a pending request bypasses the threshold gate")
+	assert.Less(t, len(out), len(msgs), "history actually shrank")
+	assert.Equal(t, 0, inner.callCount(), "no summary call — that is the entire point of this path")
+}
+
+// TestCompactingModel_NewWindowRequestIsOneShot proves the bypass in
+// TestCompactingModel_NewWindowRequestBypassesThreshold does not linger: the
+// NEXT maybeCompact call on the same turn context, with the same
+// under-threshold history and no new request, must fall through to the
+// ordinary threshold gate (which still says no) rather than re-triggering.
+func TestCompactingModel_NewWindowRequestIsOneShot(t *testing.T) {
+	inner := &recordingModel{reply: "answer", streamOK: true}
+	cm := &CompactingModel{
+		Inner:         inner,
+		Threshold:     0.8,
+		ContextWindow: 1_000_000,
+		KeepRecent:    2,
+	}
+	msgs := []*schema.Message{
+		{Role: schema.User, Content: "task"},
+		bigMessage(200),
+		bigMessage(200),
+		{Role: schema.User, Content: "recent"},
+	}
+	ctx := WithNewWindowSignal(context.Background())
+	require.True(t, RequestNewWindow(ctx, "reason"))
+
+	_, did := cm.maybeCompact(ctx, msgs)
+	require.True(t, did, "premise: the first call consumes the request")
+
+	out, did := cm.maybeCompact(ctx, msgs)
+	assert.False(t, did, "the request was already consumed — this call must fall through to shouldCompact")
+	assert.Len(t, out, len(msgs), "and shouldCompact still says no on this history")
+}
+
+// TestCompactingModel_NewWindowRequestFiresNoticeOnCallback proves the
+// client-visible half of "开窗被记录": a bound OnCompact callback receives
+// exactly ctxcompact.NewWindowNotice — not ctxcompact.FallbackNotice, not
+// silence — so internal/cli/tui/model.go's compact_chunk switch can render
+// the model-requested wording rather than the model-failure wording.
+func TestCompactingModel_NewWindowRequestFiresNoticeOnCallback(t *testing.T) {
+	inner := &recordingModel{reply: "answer", streamOK: true}
+	cm := &CompactingModel{
+		Inner:         inner,
+		Threshold:     0.8,
+		ContextWindow: 1_000_000,
+		KeepRecent:    1,
+	}
+	msgs := []*schema.Message{
+		{Role: schema.User, Content: "task"},
+		bigMessage(200),
+		{Role: schema.User, Content: "recent"},
+	}
+	ctx := WithNewWindowSignal(context.Background())
+	require.True(t, RequestNewWindow(ctx, "reason"))
+	var got []string
+	ctx = WithCompactCallback(ctx, func(chunk string) { got = append(got, chunk) })
+
+	_, did := cm.maybeCompact(ctx, msgs)
+	require.True(t, did)
+	assert.Equal(t, []string{ctxcompact.NewWindowNotice}, got)
+}
+
+// TestContextBudgetFromContext_NoSignalBound mirrors
+// TestRequestNewWindow_NoSignalBound for the W-C-11 read side: a context that
+// never called WithContextBudgetSignal (a sub-agent turn, most tests, any
+// call site predating this wiring) must report "not available" rather than a
+// zero-value snapshot that looks like a real "nothing left" answer.
+func TestContextBudgetFromContext_NoSignalBound(t *testing.T) {
+	_, ok := ContextBudgetFromContext(context.Background())
+	assert.False(t, ok, "no signal bound on this context")
+}
+
+// TestRecordContextBudget_AgreesWithDirectCtxcompactCall is W-C-11's core
+// pin: recordContextBudget must publish EXACTLY what calling
+// ctxcompact.EstimateTokens/RemainingBudget directly on the same msgs/window
+// would produce, across a table of windows and history sizes. A future
+// change that re-derives these numbers with different arithmetic — even
+// arithmetic that looks equivalent — would very likely disagree with the
+// direct call on at least one row, which is what this test exists to catch.
+func TestRecordContextBudget_AgreesWithDirectCtxcompactCall(t *testing.T) {
+	cases := []struct {
+		name   string
+		window int
+		n      int
+	}{
+		{"comfortably under budget", 10_000, 5},
+		{"comfortably over budget", 1_000, 100},
+		{"empty history", 1_000, 0},
+		{"large window many messages", 200_000, 40},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msgs := make([]*schema.Message, tc.n)
+			for i := range msgs {
+				msgs[i] = bigMessage(50)
+			}
+
+			ctx := WithContextBudgetSignal(context.Background())
+			recordContextBudget(ctx, msgs, tc.window)
+
+			got, ok := ContextBudgetFromContext(ctx)
+			require.True(t, ok, "recordContextBudget must publish a snapshot when a signal is bound")
+
+			wantUsed := ctxcompact.EstimateTokens(msgs)
+			wantRemaining := ctxcompact.RemainingBudget(msgs, ctxcompact.RunOpts{ModelWindow: tc.window})
+			assert.Equal(t, tc.window, got.Window)
+			assert.Equal(t, wantUsed, got.Used, "Used must be exactly ctxcompact.EstimateTokens, not a re-derived count")
+			assert.Equal(t, wantRemaining, got.Remaining, "Remaining must be exactly ctxcompact.RemainingBudget, not a re-derived number")
+		})
+	}
+}
+
+// TestRecordContextBudget_NoSignalBoundIsNoop proves the write side is
+// equally nil-safe: calling recordContextBudget on a context with no bound
+// signal (the overwhelming majority of call sites — sub-agent turns, unit
+// tests that construct a CompactingModel directly) must not panic and must
+// leave nothing behind to read.
+func TestRecordContextBudget_NoSignalBoundIsNoop(t *testing.T) {
+	ctx := context.Background()
+	require.NotPanics(t, func() {
+		recordContextBudget(ctx, []*schema.Message{bigMessage(10)}, 1000)
+	})
+	_, ok := ContextBudgetFromContext(ctx)
+	assert.False(t, ok)
+}
+
+// TestRecordContextBudget_NonPositiveWindowIsNoop mirrors
+// ctxcompact.RemainingBudget's own "0 means unbudgeted" convention: a turn
+// whose model has no configured context window publishes nothing, rather
+// than a snapshot claiming a window of 0.
+func TestRecordContextBudget_NonPositiveWindowIsNoop(t *testing.T) {
+	ctx := WithContextBudgetSignal(context.Background())
+	recordContextBudget(ctx, []*schema.Message{bigMessage(10)}, 0)
+	_, ok := ContextBudgetFromContext(ctx)
+	assert.False(t, ok, "a non-positive window must not publish a snapshot")
+}
+
+// TestCompactingModel_MaybeCompactPublishesContextBudgetEveryIteration proves
+// the wiring inside maybeCompact itself: the snapshot is published even on an
+// iteration where shouldCompact says no (small history, huge window) — the
+// context_budget tool must be able to answer "how much room is left" on every
+// turn, not only the turns that happened to trigger a summarization.
+func TestCompactingModel_MaybeCompactPublishesContextBudgetEveryIteration(t *testing.T) {
+	inner := &recordingModel{reply: "answer", streamOK: true}
+	cm := &CompactingModel{
+		Inner:         inner,
+		Threshold:     0.8,
+		ContextWindow: 1_000_000,
+		KeepRecent:    2,
+	}
+	msgs := []*schema.Message{
+		{Role: schema.User, Content: "task"},
+		bigMessage(200),
+		{Role: schema.User, Content: "recent"},
+	}
+	require.False(t, cm.shouldCompact(msgs), "premise: this history does not trigger compaction")
+
+	ctx := WithContextBudgetSignal(context.Background())
+	_, did := cm.maybeCompact(ctx, msgs)
+	require.False(t, did, "compaction did not fire")
+
+	got, ok := ContextBudgetFromContext(ctx)
+	require.True(t, ok, "a snapshot must be published even when compaction does not fire")
+	wantRemaining := ctxcompact.RemainingBudget(msgs, ctxcompact.RunOpts{ModelWindow: cm.ContextWindow})
+	assert.Equal(t, wantRemaining, got.Remaining)
+	assert.Equal(t, cm.ContextWindow, got.Window)
 }

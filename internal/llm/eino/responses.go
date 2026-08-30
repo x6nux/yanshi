@@ -86,6 +86,14 @@ type ResponsesConfig struct {
 	// client built on http.DefaultTransport is used (no timeout, no retry —
 	// ResilientChatModel is the single retry authority; see provider.go).
 	HTTPClient *http.Client
+	// Headers (W-C-02) are extra HTTP headers applied to every request AFTER
+	// the built-ins (Content-Type/Authorization) in setHeaders, so an
+	// operator entry can override a built-in name (e.g. routing through a
+	// proxy that wants its own Authorization scheme) as well as add new ones
+	// (an enterprise gateway token). See ProviderConfig.Headers for the
+	// SECURITY note — these values must reach the redactor before this
+	// struct is constructed; this type does not register them itself.
+	Headers map[string]string
 }
 
 // openaiResponsesModel implements model.BaseChatModel via the OpenAI
@@ -137,6 +145,7 @@ func NewOpenAIResponsesModel(_ context.Context, cfg *ResponsesConfig) (*openaiRe
 			Temperature:     cfg.Temperature,
 			TopP:            cfg.TopP,
 			HTTPClient:      hc,
+			Headers:         cfg.Headers,
 		},
 		client: hc,
 	}, nil
@@ -334,6 +343,10 @@ func (m *openaiResponsesModel) Generate(ctx context.Context, in []*schema.Messag
 		return nil, fmt.Errorf("eino/responses: do request: %w", err)
 	}
 	defer resp.Body.Close()
+	// W-C-08: observe quota-window headers on every completed round trip, not
+	// just failed ones — see quota.go's header comment for why success must
+	// be included.
+	observeQuotaHeaders(ctx, resp.Header)
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -382,6 +395,8 @@ func (m *openaiResponsesModel) Stream(ctx context.Context, in []*schema.Message,
 	if err != nil {
 		return nil, fmt.Errorf("eino/responses: do request: %w", err)
 	}
+	// W-C-08: same as Generate above — observe on every completed round trip.
+	observeQuotaHeaders(ctx, resp.Header)
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -397,9 +412,15 @@ func (m *openaiResponsesModel) Stream(ctx context.Context, in []*schema.Message,
 // helpers
 // ---------------------------------------------------------------------------
 
+// setHeaders sets the built-in headers, then applies the operator's W-C-02
+// Headers on top — deliberately AFTER, so an operator entry can override a
+// built-in name rather than the built-in silently winning.
 func (m *openaiResponsesModel) setHeaders(r *http.Request) {
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+m.cfg.APIKey)
+	for k, v := range m.cfg.Headers {
+		r.Header.Set(k, v)
+	}
 }
 
 // buildRequest converts eino messages + options into a Responses API request.

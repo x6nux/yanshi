@@ -60,6 +60,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/x6nux/yanshi/internal/guard"
 	"gopkg.in/yaml.v3"
@@ -79,24 +80,34 @@ const PolicyEnvVar = "YANSHI_POLICY"
 const DefaultPolicyFileName = "policy.yaml"
 
 // Policy is the trusted policy document. It carries the permission profiles and
-// the one key under `security:` that decides what a permission MEANS.
+// the keys under `security:` that decide what a permission MEANS, or what code
+// runs on the agent's behalf.
 //
-// Everything else in Config — providers, storage paths, ports — is either
-// harmless for an agent to change or is already protected by other means, and a
-// policy file that could set them would be a second, partial copy of the config
-// schema that drifts from the first. The test for membership is not "is this
-// security-shaped" but "does its value decide what the agent is allowed to do",
-// which is why `security.sandbox.enabled` and `security.network.*` stay out (they
-// constrain a decision the profile already made) and guardian_prompt_file does
-// not (it IS the decision — see PolicySecurity).
+// Everything else in Config — storage paths, ports, most of a provider's own
+// settings (model, base_url, generation parameters) — is either harmless for
+// an agent to change or is already protected by other means, and a policy file
+// that could set them would be a second, partial copy of the config schema
+// that drifts from the first. The test for membership is not "is this
+// security-shaped" but "does its value decide what the agent is allowed to
+// do", which is why `security.sandbox.enabled` and `security.network.*` stay
+// out (they constrain a decision the profile already made) while
+// guardian_prompt_file and llm.providers[].auth.command do not (both ARE the
+// decision — see PolicySecurity). auth.command (W-C-12) runs an arbitrary
+// command chosen by whoever last wrote config.yaml — including the agent
+// itself, through the same fs tools that can touch every other file in its
+// write scope — so it is exactly as much "the decision" as guardian_prompt_file
+// is; this claim was false from the moment W-C-12 shipped auth.command until
+// B-2 (2026-08-29 review) added ProviderAuth below.
 type Policy struct {
 	Profiles map[string]guard.PermissionProfile `yaml:"profiles"`
 	Security *PolicySecurity                    `yaml:"security"`
 }
 
-// PolicySecurity is the trusted half of Config.Security.
+// PolicySecurity is the trusted half of Config.Security, plus (since B-2) the
+// trusted half of the one field on ProviderConfig that runs code rather than
+// merely gating it.
 //
-// # Why exactly one key
+// # Why these keys and no others
 //
 // W-B-14 let an operator replace the auto-mode instruction body via
 // security.guardian_prompt_file. In ModeAuto that body is the ENTIRE verdict —
@@ -114,21 +125,47 @@ type Policy struct {
 // keys let a config edit rewrite an authorization decision; the two must not
 // get opposite answers, and before this they did.
 //
+// B-2 (2026-08-29 review) added ProviderAuth for the identical reason, one
+// level removed: llm.providers[].auth.command (W-C-12, ProviderAuthConfig) is
+// arbitrary argv that internal/llm/eino/cmdauth.go executes on every
+// credential refresh, and the argv is whatever the working-directory
+// config.yaml says — again a file the agent's own fs tools can reach by
+// default. Where guardian_prompt_file rewrites what a permission MEANS,
+// auth.command IS a program running with the agent's own privileges; leaving
+// it out of this struct would have policed the softer of the two escalation
+// shapes and ignored the harder one.
+//
 // # What "authority" means here
 //
-// If a trusted policy file exists at all, its value WINS, including when it is
-// empty — an empty value means the built-in body, which is the safe end. So the
-// escalation shape (write config.yaml, restart, run under a policy of your own
-// authorship) is closed by the same mechanism that closes it for profiles,
-// rather than by a second one that could disagree.
+// If a trusted policy file exists at all, both keys' values WIN, including
+// when empty (or, for ProviderAuth, when a given provider name is simply
+// absent from the map) — an empty/absent value means "disabled", which is the
+// safe end for both. So the escalation shape (write config.yaml, restart, run
+// under an authorization of your own authorship) is closed by the same
+// mechanism that closes it for profiles, rather than by a second one that
+// could disagree.
 //
-// With NO policy file the local key still works exactly as before. That is the
+// With NO policy file the local keys still work exactly as before. That is the
 // same backward-compatibility stance the header takes for profiles: an operator
 // without a trusted file is in the unprotected posture, `yanshi doctor` says so,
 // and this must not be the code that refuses to run.
 type PolicySecurity struct {
 	// GuardianPromptFile is the trusted value of security.guardian_prompt_file.
 	GuardianPromptFile string `yaml:"guardian_prompt_file"`
+
+	// ProviderAuth is the trusted value of every provider's
+	// llm.providers[].auth, keyed by ProviderConfig.Name. Same authority rule
+	// as GuardianPromptFile: whenever a trusted policy file exists at all, it
+	// decides EVERY provider's Auth — naming a provider replaces its Auth
+	// with the trusted command, and not naming one clears it to nil, rather
+	// than leaving the locally-configured command in place. There is no
+	// partial-trust merge the way NarrowProfile narrows a profile dimension
+	// by dimension: a command is atomic argv, and there is no representable
+	// "narrower" command the way there is a narrower glob or a shorter
+	// allowlist, so ApplyPolicy applies the same wholesale-overwrite
+	// semantics GuardianPromptFile already uses instead of inventing a
+	// second algebra for one field.
+	ProviderAuth map[string]*ProviderAuthConfig `yaml:"provider_auth"`
 }
 
 // PolicyPath returns the path of the trusted policy file that would be
@@ -186,6 +223,23 @@ func LoadPolicy() (*Policy, error) {
 			return nil, fmt.Errorf("config: policy %q: profiles.%s.shell.policy: %w", path, name, err)
 		}
 	}
+	// Same two checks validateProviderRetriesAndAuth already applies to a
+	// LOCAL auth block (config.go): an empty Command could never produce a
+	// credential, and a negative RefreshInterval cannot mean anything. A
+	// trusted entry that failed either check would silently make the
+	// affected provider's calls fail closed at request time instead of
+	// refusing to boot with a clear reason — the operator wrote this file to
+	// constrain the agent, not to be told about a typo three requests later.
+	if p.Security != nil {
+		for name, auth := range p.Security.ProviderAuth {
+			if auth == nil || len(auth.Command) == 0 {
+				return nil, fmt.Errorf("config: policy %q: security.provider_auth.%s.command: must not be empty", path, name)
+			}
+			if auth.RefreshInterval < 0 {
+				return nil, fmt.Errorf("config: policy %q: security.provider_auth.%s.refresh_interval: must be >= 0, got %v", path, name, auth.RefreshInterval)
+			}
+		}
+	}
 	return &p, nil
 }
 
@@ -209,8 +263,10 @@ func (c *Config) ApplyPolicy(policy *Policy) []string {
 	// `profiles:` would have made it silently do nothing. The trusted value wins
 	// even when empty, because empty means the built-in body.
 	trustedGuardian := ""
+	var trustedAuth map[string]*ProviderAuthConfig
 	if policy.Security != nil {
 		trustedGuardian = strings.TrimSpace(policy.Security.GuardianPromptFile)
+		trustedAuth = policy.Security.ProviderAuth
 	}
 	if strings.TrimSpace(c.Security.GuardianPromptFile) != trustedGuardian {
 		narrowedKeys = append(narrowedKeys, "security.guardian_prompt_file")
@@ -219,6 +275,40 @@ func (c *Config) ApplyPolicy(policy *Policy) []string {
 	// Cleared so a stale body cannot survive the swap: Load re-reads and
 	// re-validates from the path this just set.
 	c.Security.GuardianPrompt = ""
+
+	// B-2: llm.providers[].auth is taken over whenever a trusted file EXISTS,
+	// for the same reason the guardian prompt is a few lines above — a policy
+	// document that only pins auth.command (naming no profiles, no guardian
+	// file) is a legitimate thing to write, and gating this on `profiles:`
+	// would have made it silently do nothing. A provider the trusted map does
+	// not name gets Auth cleared to nil, mirroring "a profile the trusted
+	// policy does not name is DROPPED" below — carrying the local command
+	// forward would be the exact self-escalation shape this file exists to
+	// close, just for a command instead of a permission.
+	for i := range c.LLM.Providers {
+		p := &c.LLM.Providers[i]
+		trusted := trustedAuth[p.Name]
+		if trusted != nil {
+			// Copy rather than alias the policy's own struct: two providers
+			// naming the same trusted entry, or two Load calls sharing one
+			// parsed *Policy, must not see edits to one reflected in the
+			// other. applyDefaults (config.go) already ran before ApplyPolicy
+			// and only defaulted RefreshInterval on the LOCAL Auth value that
+			// is about to be replaced, so a policy-supplied entry that leaves
+			// RefreshInterval unset gets the same 15-minute default here —
+			// otherwise a trusted command that omits refresh_interval would
+			// silently re-run on every single call instead of every 15m.
+			t := *trusted
+			if t.RefreshInterval == 0 {
+				t.RefreshInterval = 15 * time.Minute
+			}
+			trusted = &t
+		}
+		if !authConfigEqual(p.Auth, trusted) {
+			narrowedKeys = append(narrowedKeys, "llm.providers["+p.Name+"].auth")
+		}
+		p.Auth = trusted
+	}
 
 	if len(policy.Profiles) == 0 {
 		sort.Strings(narrowedKeys)
@@ -246,6 +336,30 @@ func (c *Config) ApplyPolicy(policy *Policy) []string {
 	narrowed = append(narrowed, narrowedKeys...)
 	sort.Strings(narrowed)
 	return narrowed
+}
+
+// authConfigEqual reports whether a and b describe the same auth.command
+// config, treating "both nil" as equal. ApplyPolicy uses it only to decide
+// whether a provider's llm.providers[].auth was ACTUALLY altered by policy
+// governance, so it can be named in the operator-visible narrowedKeys list —
+// a provider whose local value already matched the trusted one should not be
+// reported as changed.
+func authConfigEqual(a, b *ProviderAuthConfig) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.RefreshInterval != b.RefreshInterval {
+		return false
+	}
+	if len(a.Command) != len(b.Command) {
+		return false
+	}
+	for i := range a.Command {
+		if a.Command[i] != b.Command[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // NarrowProfile returns the effective profile: trusted, restricted by every

@@ -9,11 +9,52 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
+// FallbackNotice is the onChunk text Run sends on the W-C-04 fallback path —
+// RunSummary could not obtain a summary at all (the model call itself failed:
+// exhausted retries, quota, overload, whatever the underlying provider chain
+// gave up on) and Run opened a new window directly instead of calling the
+// model again. Both transports (WS's compact_chunk frame, SSE's mirror)
+// forward onChunk text verbatim, so this string travels to the client
+// unchanged; internal/cli/tui/model.go prefix-matches it to render a
+// fallback-specific activity line rather than the generic "Compacting
+// context…" every other chunk produces. Exported (not a private const)
+// because the consumer lives in a different package, mirroring
+// SummarySentinel's existing cross-package pattern.
+const FallbackNotice = "[compaction-fallback] "
+
+// NewWindowNotice is the onChunk text OpenNewWindow's callers send on the
+// W-C-14 proactive path — the MODEL asked for a fresh window (via the
+// context_new_window tool) rather than Run hitting a summary-model failure.
+// Same transport as FallbackNotice (both travel over the compact_chunk
+// frame verbatim), deliberately a DIFFERENT string so
+// internal/cli/tui/model.go can render a distinct activity line: a model
+// choosing to skip summarization is a different event from summarization
+// having failed, even though both land on the same pins-only Result shape.
+const NewWindowNotice = "[compaction-new-window] "
+
 // Run is the unified compaction entry both paths (mid-turn CompactingModel and
 // pre-turn MaybeCompact) delegate to. It Plans, summarizes the summarize set,
-// and assembles the result. On summary failure it returns an error — callers
-// decide (mid-turn falls back to original msgs, pre-turn keeps history and
-// warns) — it NEVER produces an empty summary (bug⑥).
+// and assembles the result.
+//
+// On a summary MODEL failure (RunSummary's own error — the call itself never
+// produced a summary) Run does NOT return an error. It falls back (W-C-04):
+// discard the summarize-set history, keep only what Plan pinned, and report
+// Fallback=true on the Result. This is deliberately narrower than "any
+// failure downstream of RunSummary" — the two gates below (EMPTY, QUALITY)
+// still return an error, because those cases DID get a reply from the model
+// and rejected it; retrying a compaction that already produced illegible
+// output is exactly the case those gates exist to catch, and folding it into
+// the model-failure fallback would silently launder an illegible summary into
+// "we simply had no summary". See pinsOnlyResult for what the fallback keeps.
+//
+// It is narrower still (M-3, 2026-08-29 review): a RunSummary error whose
+// text carries isConfigOrWiringFailure's marker never reached the model at
+// all — the call could not get a credential — and also returns a real
+// error rather than the fallback, for the same reason the EMPTY/QUALITY
+// gates do: a config/wiring failure recurs identically on every future
+// call, so silently discarding history for it is strictly worse than
+// costing one failed compaction and keeping the original history. See
+// isConfigOrWiringFailure for the full argument.
 //
 // Two gates stand between the model's reply and the replacement of history, and
 // both fail in the SAME direction — no replacement, error out, let the caller
@@ -83,7 +124,32 @@ func Run(ctx context.Context, msgs []*schema.Message, planOpts PlanOpts, runOpts
 
 	summary, err := RunSummary(ctx, toSummarize, runOpts, m, onChunk)
 	if err != nil {
-		return nil, fmt.Errorf("compaction summary: %w", err)
+		// M-3 (2026-08-29 review): a credential/wiring failure — the
+		// summarizer never sent a request at all — is not the failure
+		// W-C-04's fallback below exists for, and must not take the same
+		// path. See isConfigOrWiringFailure's doc comment for the full
+		// argument; short version: a model failure recovers on its own next
+		// turn, a wiring failure repeats identically forever, so folding it
+		// into the silent fallback means every future pre-turn compaction on
+		// that provider quietly and permanently drops history. Returning a
+		// real error here instead routes back through the SAME gate the
+		// EMPTY/QUALITY errors above already use: MaybeCompactWithOptions's
+		// err != nil branch (compact.go) keeps the original, uncompacted
+		// history rather than replacing it. TestRun_ConfigFailureIsNotFallback
+		// (run_test.go) is the red assertion — deleting this branch turns
+		// that test's require.Error into require.NoError-shaped failure.
+		if isConfigOrWiringFailure(err) {
+			return nil, fmt.Errorf("compaction summary unavailable: %w", err)
+		}
+		// W-C-04: the model never gave us a summary — don't call it again,
+		// open a new window directly. onChunk still fires (with a DIFFERENT
+		// text than a normal summary delta) so the fallback is observable on
+		// the activity line, not a silent behavior change from the caller's
+		// point of view.
+		if onChunk != nil {
+			onChunk(FallbackNotice)
+		}
+		return pinsOnlyResult(msgs, plan, before, runOpts), nil
 	}
 	if strings.TrimSpace(summary) == "" {
 		// An empty summary is a failed summarization wearing a success's
@@ -142,6 +208,57 @@ func Run(ctx context.Context, msgs []*schema.Message, planOpts PlanOpts, runOpts
 		Fold:     foldStats,
 		Overflow: checkOverflow(after, runOpts),
 	}, nil
+}
+
+// pinsOnlyResult builds Run's W-C-04 fallback Result: everything Plan pinned,
+// verbatim, in original order — NO summary, NO eviction map, because there is
+// no summary to build either from (that's the whole point of the fallback).
+//
+// It reuses pinnedMessages (the same helper AssembleWithMap's pinned prefix is
+// built from — CLAUDE.md's "重复逻辑必须抽成公共函数") rather than duplicating
+// the index-walk, so the two pinned-message paths cannot drift on what "kept
+// verbatim" means.
+//
+// Fold still runs, against the same budgetFor(runOpts) an ordinary compaction
+// uses — pins-only is a real (if smaller) history that can still be sent, and
+// large pinned tool results are exactly what C5 exists to shrink. Overflow is
+// still reported for the same reason Run's main path reports it: "the
+// fallback ran" and "the result fits" are independent facts.
+//
+// TokensAfter < TokensBefore holds structurally whenever this is reached:
+// pinsOnlyResult is only called when plan.SummarizeIndices is non-empty (Run's
+// len==0 shortcut already returned before RunSummary was ever invoked), so the
+// pinned-only slice strictly excludes at least one message that had non-zero
+// estimated tokens in the overwhelming common case. The one theoretical
+// exception — every excluded message estimating to exactly zero tokens — is a
+// no-op fallback, no worse than the pre-W-C-04 behavior of returning an error
+// and leaving history untouched.
+func pinsOnlyResult(msgs []*schema.Message, plan *PlanResult, before int, runOpts RunOpts) *Result {
+	pinned := pinnedMessages(msgs, plan)
+	out, foldStats := FoldToolResults(pinned, FoldOptions{Budget: budgetFor(runOpts)})
+	after := EstimateTokens(out)
+	return &Result{
+		Messages: out, TokensBefore: before, TokensAfter: after,
+		Fold:     foldStats,
+		Overflow: checkOverflow(after, runOpts),
+		Fallback: true,
+	}
+}
+
+// OpenNewWindow is W-C-14's entry point: the model asked to open a fresh
+// window directly (via the context_new_window tool), skipping
+// summarization entirely rather than Run hitting a summary-model failure.
+// It shares the exact fallback SHAPE W-C-04 already established — Plan,
+// then keep only what was pinned — because "no summary" is "no summary"
+// regardless of why: pinsOnlyResult does not know or care whether the
+// caller is here because the summarizer errored or because nobody asked it
+// to run at all. Exported (unlike pinsOnlyResult) because its caller lives
+// in a different package (einollm.CompactingModel), mirroring Run's own
+// cross-package export.
+func OpenNewWindow(msgs []*schema.Message, planOpts PlanOpts, runOpts RunOpts) *Result {
+	before := EstimateTokens(msgs)
+	plan := Plan(msgs, planOpts)
+	return pinsOnlyResult(msgs, plan, before, runOpts)
 }
 
 // transcriptRunes is the rune length of the text the summarizer is shown. It

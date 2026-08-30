@@ -1,6 +1,7 @@
 package loopguard
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -67,6 +68,18 @@ func (g *TokenBudgetGate) Used() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.prompt + g.completion
+}
+
+// Max reports the configured ceiling this gate stops the turn at, mirroring
+// Used so a caller can render "N of M used" without a second copy of the
+// configured limit that could drift from the one actually enforcing it. 0 for
+// a nil gate, matching NewTokenBudgetGate's "non-positive maxTotal means no
+// gate" convention.
+func (g *TokenBudgetGate) Max() int {
+	if g == nil {
+		return 0
+	}
+	return g.maxTotal
 }
 
 // Check implements Gate.
@@ -148,4 +161,37 @@ func (g *DeadlineGate) Check(obs Observation) Result {
 		Reason: fmt.Sprintf("turn time limit reached: %s elapsed, limit %s (checked at an iteration boundary so tool_call/tool_result pairs stay intact)",
 			obs.Elapsed.Round(time.Second), g.limit),
 	}
+}
+
+// tokenBudgetKey is the context key for the per-turn *TokenBudgetGate binding.
+type tokenBudgetKey struct{}
+
+// WithTokenBudgetGate binds gate onto ctx.
+//
+// W-C-11: a tool that answers "how many turn tokens do I have left" must read
+// the SAME accumulator WrapInvokableToolCall/BeforeModelRewriteState enforce
+// the limit with — Used()/Max() on this exact instance — not a second
+// counter built from the same MaxTurnTokens config that could disagree with
+// it (a re-observed prompt-growth accumulator is exactly the kind of state
+// that drifts: see TokenBudgetGate's own doc comment on why it cannot be
+// recomputed from a raw total). loopguard has no accessor to pull a specific
+// typed gate back out of a Handler's private gate slice, so the caller that
+// builds the gate hands the pointer here directly.
+//
+// A nil gate (MaxTurnTokens unconfigured) leaves ctx unchanged, so
+// TokenBudgetGateFromContext correctly reports "not bound" rather than a fake
+// gate whose Max() is 0 and whose Used() looks like an exhausted budget.
+func WithTokenBudgetGate(ctx context.Context, gate *TokenBudgetGate) context.Context {
+	if gate == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, tokenBudgetKey{}, gate)
+}
+
+// TokenBudgetGateFromContext returns the gate bound by WithTokenBudgetGate, or
+// (nil, false) when none is bound — MaxTurnTokens unconfigured, a sub-agent
+// turn (which does not share the managing turn's context), or most tests.
+func TokenBudgetGateFromContext(ctx context.Context) (*TokenBudgetGate, bool) {
+	g, ok := ctx.Value(tokenBudgetKey{}).(*TokenBudgetGate)
+	return g, ok && g != nil
 }

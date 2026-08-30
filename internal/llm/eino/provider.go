@@ -3,6 +3,8 @@ package eino
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"sort"
 	"strings"
 
@@ -34,20 +36,67 @@ import (
 // retry to do usefully. http.DefaultTransport still provides connection reuse
 // and proper protocol-level behavior.
 //
-// Returns (models, chain, windows, err): models keys each entry by the
-// provider's REAL model id (with fallbacks — see chooseKey); chain is the same
-// models in config order (for NewResilientModel); windows maps the SAME
-// registry key → p.ContextWindow for every provider that sets one, so the http
-// layer's per-model window lookup (contextWindowFor) hits when the session
-// queries it with the registry key (cs.model / req.Model — the model id, not
-// the config name). Bootstrap forwards `windows` directly; do NOT rebuild it
-// from cfg.LLM.Providers by p.Name (the historical bug — keys did not match
-// the registry's model-id keys, so the per-model window was dead).
-func BuildProviders(cfg *config.Config) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, error) {
+// Returns (models, chain, windows, thresholds, truncations, fallbacks,
+// err): models keys each entry by the provider's REAL model id (with
+// collision fallback — see chooseKey); chain is the same models in config
+// order (for
+// NewResilientModel); windows maps the SAME registry key → p.ContextWindow
+// for every provider that sets one, so the http layer's per-model window
+// lookup (contextWindowFor) hits when the session queries it with the
+// registry key (cs.model / req.Model — the model id, not the config name).
+// Bootstrap forwards `windows` directly; do NOT rebuild it from
+// cfg.LLM.Providers by p.Name (the historical bug — keys did not match the
+// registry's model-id keys, so the per-model window was dead).
+//
+// W-C-01 (INF2): thresholds mirrors windows for the auto-compact threshold —
+// same registry key, same "only present when something resolved a value"
+// shape — so the pre-turn (contextWindowFor's sibling, thresholdFor) and
+// mid-turn (CompactionConfig.ProviderThresholds) paths both key off it the
+// same way they already key off windows. A model with neither an explicit
+// config override nor a catalog row is simply absent from this map; the
+// caller's own CompactionConfig.Threshold applies unchanged (see
+// ResolveAutoCompactThreshold, modelcatalog.go).
+//
+// M-4: truncations mirrors windows/thresholds for W-C-09's truncation
+// policy, same registry key, same "only present when something resolved a
+// value" shape — ResolveTruncationPolicy(p.TruncationPolicy, p.Model) per
+// provider, present only when its second return is true. Before this field
+// existed, ProviderConfig.TruncationPolicy's own doc comment documented it
+// as a PER-PROVIDER override while bootstrap.go only ever resolved
+// cfg.LLM.Providers[0] once at boot and bound that single value
+// unconditionally for every turn — a config with providers[1].truncation_policy
+// set had that value read by ResolveTruncationPolicy's doc comment and
+// nothing else; see orchestrator.Config.ProviderTruncationPolicies, the
+// consumer this map now feeds.
+//
+// M-2: fallbacks mirrors truncations for W-C-10's compaction-summary
+// fallback chain — ResolveFallbackModels(p.FallbackModels, p.Model) per
+// provider, present only when its second return is true. Unlike
+// windows/thresholds/truncations the values are declared model ids, not
+// resolved objects: bootstrap's buildProviderFallbacks still does the
+// id→live-model lookup against the SAME registry this function also
+// returns, because that lookup needs every provider's key already chosen
+// (a fallback id may name a provider later in cfg.LLM.Providers than the
+// one declaring it). Before this field existed, ProviderConfig had no
+// fallback_models key at all, so KnownFallbackModels' catalog path was the
+// ONLY rung of this ladder — and the shipped catalog ships zero rows on it
+// (Ruling RC-8), making W-C-10 unreachable by any deployment.
+//
+// registrars is optional (variadic, so the many existing call sites that do
+// not exercise W-C-12's B-2 credential registration keep compiling
+// unchanged) — the first non-nil element, if any, is forwarded to every
+// provider's auth.command token source so a command-produced credential is
+// scrubbed from logs/WS/SSE/SQLite the same way a config api_key or header
+// already is. See SecretRegistrar's doc comment (cmdauth.go).
+func BuildProviders(cfg *config.Config, registrars ...SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, map[string]TruncationSpec, map[string][]string, error) {
 	ctx := context.Background()
+	registrar := firstRegistrar(registrars)
 	chain := make([]model.BaseChatModel, 0, len(cfg.LLM.Providers))
 	models := make(map[string]model.BaseChatModel, len(cfg.LLM.Providers))
 	windows := make(map[string]int, len(cfg.LLM.Providers))
+	thresholds := make(map[string]float64, len(cfg.LLM.Providers))
+	truncations := make(map[string]TruncationSpec, len(cfg.LLM.Providers))
+	fallbacks := make(map[string][]string, len(cfg.LLM.Providers))
 	// The registry is keyed by the provider's REAL model id (config `model`),
 	// so /model lists and switches on the concrete model name (e.g.
 	// "claude-opus-4-8") rather than the config label (e.g. "claude"). When the
@@ -64,9 +113,9 @@ func BuildProviders(cfg *config.Config) (map[string]model.BaseChatModel, []model
 		return fmt.Sprintf("model-%d", i)
 	}
 	for i, p := range cfg.LLM.Providers {
-		m, err := buildOne(ctx, p)
+		m, err := buildOne(ctx, p, registrar)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("eino: build provider %q (kind=%q): %w", p.Name, p.Kind, err)
+			return nil, nil, nil, nil, nil, nil, fmt.Errorf("eino: build provider %q (kind=%q): %w", p.Name, p.Kind, err)
 		}
 		chain = append(chain, m)
 		key := chooseKey(p, i)
@@ -84,11 +133,30 @@ func BuildProviders(cfg *config.Config) (map[string]model.BaseChatModel, []model
 		// config first, then the static catalog (skipped for local runtimes),
 		// then a conservative default — so the map is now total and the
 		// fallback only applies to models nothing recognises.
-		if w, _ := ResolveContextWindow(providerShape(p), 0); w > 0 {
+		//
+		// A model neither the catalog nor the operator recognises is NOT a
+		// startup error (INF2 acceptance #2: an unlisted model must degrade,
+		// not block boot) — it is logged so the degradation is observable,
+		// same as discover.go's "configured model not advertised" warning.
+		w, src := ResolveContextWindow(providerShape(p), 0)
+		if w > 0 {
 			windows[key] = w
 		}
+		if src == WindowFromDefault {
+			slog.Warn("model not in context-window catalog; using conservative default",
+				"model", p.Model, "provider", p.Name, "default_tokens", w)
+		}
+		if t, ok := ResolveAutoCompactThreshold(providerShape(p)); ok {
+			thresholds[key] = t
+		}
+		if spec, ok := ResolveTruncationPolicy(p.TruncationPolicy, p.Model); ok {
+			truncations[key] = spec
+		}
+		if declared, ok := ResolveFallbackModels(p.FallbackModels, p.Model); ok {
+			fallbacks[key] = declared
+		}
 	}
-	return models, chain, windows, nil
+	return models, chain, windows, thresholds, truncations, fallbacks, nil
 }
 
 // providerShape projects a config.ProviderConfig onto the minimal shape
@@ -97,11 +165,12 @@ func BuildProviders(cfg *config.Config) (map[string]model.BaseChatModel, []model
 // duplicated at each call site.
 func providerShape(p config.ProviderConfig) ProviderShape {
 	return ProviderShape{
-		Kind:          p.Kind,
-		Model:         p.Model,
-		BaseURL:       p.BaseURL,
-		ContextWindow: p.ContextWindow,
-		Local:         p.Local,
+		Kind:                 p.Kind,
+		Model:                p.Model,
+		BaseURL:              p.BaseURL,
+		ContextWindow:        p.ContextWindow,
+		Local:                p.Local,
+		AutoCompactThreshold: p.AutoCompactThreshold,
 	}
 }
 
@@ -135,29 +204,69 @@ func normalizeKind(k string) string {
 // A plain value type would erase the difference between "unset" and "set to 0",
 // and 0 is meaningful for both temperature (deterministic judge calls) and
 // top_p (greedy decoding).
-func buildOne(ctx context.Context, p config.ProviderConfig) (model.BaseChatModel, error) {
+func buildOne(ctx context.Context, p config.ProviderConfig, registrar SecretRegistrar) (model.BaseChatModel, error) {
+	// W-C-12: apiKeyOrPlaceholder stands in for the three adapters' non-empty
+	// APIKey validation when the real credential comes from auth.command
+	// instead. It never reaches the wire — each branch's authRefreshTransport
+	// overwrites the credential header on every request before the
+	// RoundTripper it wraps sees it. See placeholderAPIKeyForCommandAuth.
+	apiKeyOrPlaceholder := p.APIKey
+	if apiKeyOrPlaceholder == "" && p.Auth != nil {
+		apiKeyOrPlaceholder = placeholderAPIKeyForCommandAuth
+	}
 	switch normalizeKind(p.Kind) {
 	case "anthropic":
+		// x-api-key is Anthropic's credential header, sent raw (no "Bearer "
+		// prefix) — see AnthropicModel.setHeaders.
+		var hc *http.Client
+		if p.Auth != nil {
+			hc = &http.Client{Transport: authRefreshHTTPTransport(http.DefaultTransport, p.Auth, "x-api-key", false, registrar)}
+		}
 		return NewAnthropicModel(ctx, &AnthropicModelConfig{
-			APIKey:      p.APIKey,
+			APIKey:      apiKeyOrPlaceholder,
 			Model:       p.Model,
 			BaseURL:     p.BaseURL,
 			MaxTokens:   derefOr(p.MaxTokens, 0),
 			Temperature: p.Temperature,
 			TopP:        p.TopP,
+			Headers:     p.Headers,
+			HTTPClient:  hc,
 		})
 	case "openai-responses":
+		// Authorization: Bearer <key> — see openaiResponsesModel.setHeaders.
+		var hc *http.Client
+		if p.Auth != nil {
+			hc = &http.Client{Transport: authRefreshHTTPTransport(http.DefaultTransport, p.Auth, "Authorization", true, registrar)}
+		}
 		return NewOpenAIResponsesModel(ctx, &ResponsesConfig{
-			APIKey:          p.APIKey,
+			APIKey:          apiKeyOrPlaceholder,
 			Model:           p.Model,
 			BaseURL:         p.BaseURL,
 			MaxOutputTokens: derefOr(p.MaxTokens, 0),
 			Temperature:     p.Temperature,
 			TopP:            p.TopP,
+			Headers:         p.Headers,
+			HTTPClient:      hc,
 		})
 	default: // "openai" and any unrecognized kind (backward-compat)
+		// go-openai builds Authorization: Bearer <APIKey> itself, so unlike
+		// the two hand-rolled adapters above the credential header is
+		// already on the request by the time it reaches this transport —
+		// authRefreshHTTPTransport's Set still overwrites it with the
+		// command-sourced token every request, same as it overrides the
+		// two adapters' own setHeaders. It sits BELOW headerCaptureTransport
+		// (base, not the client's outer Transport) so it runs LAST, closest
+		// to the wire: a static W-C-02 operator header of the same name must
+		// not be able to shadow the live, just-refreshed credential.
+		hc := newHeaderCaptureClient(p.Headers)
+		if p.Auth != nil {
+			hc = &http.Client{Transport: &headerCaptureTransport{
+				base:    authRefreshHTTPTransport(http.DefaultTransport, p.Auth, "Authorization", true, registrar),
+				headers: p.Headers,
+			}}
+		}
 		inner, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
-			APIKey:  p.APIKey,
+			APIKey:  apiKeyOrPlaceholder,
 			Model:   p.Model,
 			BaseURL: p.BaseURL,
 			// Pointers forwarded as-is: eino-ext's ChatModelConfig uses the
@@ -172,8 +281,11 @@ func buildOne(ctx context.Context, p config.ProviderConfig) (model.BaseChatModel
 			// when it builds its error, so without this the Retry-After of
 			// every 429 from an OpenAI-compatible endpoint is unrecoverable
 			// and M1's cooldown degrades to a blind exponential. See
-			// retryafter.go.
-			HTTPClient: newHeaderCaptureClient(),
+			// retryafter.go. The same transport also injects p.Headers
+			// (W-C-02) — go-openai owns request construction end to end for
+			// this kind, so the transport is the only seam that sees the
+			// outgoing *http.Request before it is sent.
+			HTTPClient: hc,
 		})
 		if err != nil {
 			return nil, err

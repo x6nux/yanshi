@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/cloudwego/eino/components/model"
+
 	"github.com/x6nux/yanshi/internal/approval"
 	"github.com/x6nux/yanshi/internal/features"
 	"github.com/x6nux/yanshi/internal/guard"
@@ -130,6 +132,23 @@ type CompactionConfig struct {
 	// size against the ACTUAL model's window instead of one global value.
 	// Populated by bootstrap from config.LLM.Providers[].ContextWindow.
 	ProviderWindows map[string]int
+	// ProviderThresholds maps provider name -> auto-compact threshold (a
+	// fraction of that model's window), the pre-turn sibling of
+	// orchestrator.CompactionConfig.ProviderThresholds (W-C-01 / INF2).
+	// Populated by bootstrap from config.ProviderConfig.AutoCompactThreshold
+	// first, then the embedded model catalog. A model absent from this map
+	// falls back to Threshold, same as ProviderWindows falls back to
+	// ContextWindow.
+	ProviderThresholds map[string]float64
+	// ProviderFallbacks maps provider name to an ordered chain of stand-in
+	// models to retry the PRE-TURN compaction summary call against when the
+	// primary model's own summary call fails outright — the pre-turn sibling
+	// of orchestrator.CompactionConfig.ProviderFallbacks (W-C-10). Populated
+	// by bootstrap from the same resolved map both compaction paths share. A
+	// model absent from this map, or with an empty entry, gets no fallback —
+	// compactionModel() then returns the primary model unwrapped, exactly
+	// today's pre-W-C-10 behavior.
+	ProviderFallbacks map[string][]model.BaseChatModel
 }
 
 // Server holds the mux and auth token. Use HandleFunc to register routes

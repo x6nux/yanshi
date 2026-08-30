@@ -257,6 +257,8 @@ Usage of doctor:
     	comma-separated subset of repairs to run (default: all allowlisted)
   -json
     	emit machine-readable JSON instead of human-readable text
+  -offline
+    	check local-runtime discovery from the on-disk cache only, never over the network (for sandboxes with no loopback egress)
   -release
     	promote release-blocking warns to fails (release runbook; see docs/upgrade-guide.md)
 ```

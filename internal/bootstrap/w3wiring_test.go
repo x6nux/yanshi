@@ -76,6 +76,8 @@ func TestW3ToolsAreRegisteredAndAuthorized(t *testing.T) {
 		{"background_result", true, "reads one offloaded run; the id is useless without it"},
 		{"background_cancel", true, "only takes capability away"},
 		{"milestone_set", true, "labels the model's own work for compaction"},
+		{"context_new_window", true, "writes only a one-shot flag on the caller's own turn context"},
+		{"context_budget", true, "read-only: reports numbers loopguard/einollm already compute, takes no argument"},
 		{"skill_write", true, "conditional: registered because user_dir is set"},
 		{"acp_delegate", false, "third-party code execution must stay a prompt"},
 		// shell_resize is the newest instance of the exact failure this test was

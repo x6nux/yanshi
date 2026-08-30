@@ -100,6 +100,18 @@ type App struct {
 	// profile allowing nine shell tools that were never registered.
 	ToolNames []string
 
+	// ServerCompaction is the apihttp.CompactionConfig actually handed to
+	// apihttp.New — the pre-turn (WS/SSE) half of the W-C-01 (INF2)
+	// per-model window/threshold ladder, the sibling of Orch's own copy
+	// (Orchestrator.CompactionForTest, the mid-turn half). Captured here,
+	// at the point Build already computes it, rather than read back off
+	// Server: Server is *net/http.Server (net/http, not apihttp), and
+	// constraint 13 of the C4 plan forbids type-asserting its Handler back
+	// to *apihttp.Server to refill fields that only exist to be read by
+	// tests — the same reason ToolNames/ToolTimeouts above are captured at
+	// the source rather than reconstructed from the assembled object.
+	ServerCompaction apihttp.CompactionConfig
+
 	// Background owns tool calls moved to the background when they hit their
 	// foreground deadline (T3). Closed by Shutdown; a wedged subprocess would
 	// otherwise outlive the process that spawned it.
@@ -346,12 +358,26 @@ type Options struct {
 
 // ProviderBuilder is the production BuildProviders signature. Returns the
 // per-name model map, the chain passed to NewResilientModel, the per-model
-// context windows, and an error. bootstrap calls it AFTER credential
-// resolution so cfg.LLM.Providers[i].APIKey holds plaintext.
-type ProviderBuilder func(*config.Config) (
+// context windows, the per-model auto-compact thresholds (W-C-01 / INF2),
+// the per-model truncation policies (M-4), the per-model declared
+// compaction-summary fallback ids (M-2 / W-C-10), and an error. bootstrap
+// calls it AFTER credential resolution so cfg.LLM.Providers[i].APIKey holds
+// plaintext.
+//
+// The trailing ...einollm.SecretRegistrar (W-C-12 review B-2) is how Build
+// hands einollm.BuildProviders the SAME redactor instance every other
+// dynamic credential (APIKey, Headers) is already registered with, so an
+// auth.command-produced token gets that protection too. A test
+// ProviderBuilder that ignores the parameter is unaffected — nil registrar
+// simply disables registration, same as every other soft-degradation
+// default in einollm.
+type ProviderBuilder func(*config.Config, ...einollm.SecretRegistrar) (
 	map[string]model.BaseChatModel,
 	[]model.BaseChatModel,
 	map[string]int,
+	map[string]float64,
+	map[string]einollm.TruncationSpec,
+	map[string][]string,
 	error,
 )
 
@@ -583,6 +609,25 @@ func Build(opts Options) (*App, error) {
 		redactor.Register(key)
 	}
 
+	// W-C-02: provider Headers are extra HTTP headers, most commonly a
+	// gateway token (Azure API key, enterprise proxy auth) rather than
+	// arbitrary text. Register every value with the redactor for the exact
+	// same reason as APIKey above — a header is at least as likely to carry
+	// a credential as the api_key field is, and it flows through the same
+	// logs/WS/SSE/SQLite surfaces the redactor already guards. Header NAMES
+	// are never secret and are not registered; only values are.
+	for i := range cfg.LLM.Providers {
+		for _, v := range cfg.LLM.Providers[i].Headers {
+			if v == "" {
+				continue
+			}
+			if len(v) < secrets.MinSecretLength {
+				output.Logger.Printf("warning: provider %q: a configured header value is too short to redact safely; it will appear verbatim in logs and stored messages\n", cfg.LLM.Providers[i].Name)
+			}
+			redactor.Register(v)
+		}
+	}
+
 	// Inject the redactor into Store (CreateSession / AppendMessage /
 	// UpdateSessionTitle all redact before SQL write) — the Server gets it
 	// via httpCfg.Redactor below.
@@ -651,6 +696,32 @@ func Build(opts Options) (*App, error) {
 	// contextWindowFor(cs.model / req.Model, ...) hits the per-model window
 	// instead of silently falling back to the global ContextWindow.
 	var providerWindows map[string]int
+	// providerThresholds mirrors providerWindows for the auto-compact
+	// threshold (W-C-01 / INF2) — same registry key, forwarded to both the
+	// orchestrator's mid-turn CompactionConfig and the http layer's pre-turn
+	// one so a per-model catalog/config threshold reaches both compaction
+	// paths (see CLAUDE.md's compaction section on why both must be wired).
+	var providerThresholds map[string]float64
+	// providerTruncationPolicies (M-4) mirrors providerWindows/
+	// providerThresholds for W-C-09's tool-output truncation policy — same
+	// registry key, forwarded to orchestrator.Config.ProviderTruncationPolicies
+	// so a turn running on a NON-primary provider (reached via /model) gets
+	// that provider's own truncation_policy override/catalog entry instead of
+	// the primary provider's, which is all `truncationPolicy` below (the
+	// single-value fallback) ever resolves. Before this map existed,
+	// ProviderConfig.TruncationPolicy's doc comment documented a per-provider
+	// override that only ever took effect for cfg.LLM.Providers[0].
+	var providerTruncationPolicies map[string]einollm.TruncationSpec
+	// providerFallbacks (W-C-10, config rung added by M-2) maps registry key
+	// -> resolved compaction-summary fallback chain, computed once by
+	// buildProviderFallbacks from providerModels + BuildProviders' declared
+	// map (config override, else the embedded catalog) and forwarded to
+	// both the orchestrator's mid-turn CompactionConfig and the http
+	// layer's pre-turn one, mirroring providerWindows/providerThresholds
+	// exactly. nil on the fake-model path (buildProviderFallbacks is only
+	// called in the real-provider branch below), which fallbacksFor/its
+	// apihttp twin already treat as "no fallback for anyone".
+	var providerFallbacks map[string][]model.BaseChatModel
 	// fakeChatModel stays nil on the production path ON PURPOSE: SelectRLMModel
 	// treats a non-nil fake as "rlm_query may fall back to it", so handing it a
 	// real model here would silently defeat the cheap-provider requirement and
@@ -675,7 +746,10 @@ func Build(opts Options) (*App, error) {
 		if providerBuilder == nil {
 			providerBuilder = einollm.BuildProviders
 		}
-		named, chain, windows, err := providerBuilder(cfg)
+		// redactor (B-2): the SAME instance APIKey/Headers were just
+		// registered with above, so an auth.command-produced token gets
+		// identical protection — see ProviderBuilder's doc comment.
+		named, chain, windows, thresholds, truncations, fallbackDecls, err := providerBuilder(cfg, redactor)
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap: build providers: %w", err)
 		}
@@ -684,9 +758,25 @@ func Build(opts Options) (*App, error) {
 		named, chain = BuildAdaptiveModels(named, chain, adaptiveDeps{
 			Cfg: cfg, Store: st, Windows: windows, Redactor: redactor,
 		})
+		// W-C-07: PerProviderMaxRetries[i] tracks cfg.LLM.Providers[i] one for
+		// one — BuildProviders (and any ProviderBuilder standing in for it)
+		// appends to chain in the SAME order it iterates cfg.LLM.Providers,
+		// which is why this can be derived here rather than plumbed back
+		// through BuildProviders' return signature. -1 (not 0, a legitimate
+		// "never retry") is the "not set" sentinel maxRetriesFor reads.
+		perProviderMaxRetries := make([]int, len(cfg.LLM.Providers))
+		for i, p := range cfg.LLM.Providers {
+			if p.MaxRetries != nil {
+				perProviderMaxRetries[i] = *p.MaxRetries
+			} else {
+				perProviderMaxRetries[i] = -1
+			}
+		}
 		rm, err := einollm.NewResilientModel(chain, einollm.ResilientConfig{
-			FirstChunkTimeout: cfg.LLM.StreamFirstChunkTimeout,
-			IdleTimeout:       cfg.LLM.StreamIdleTimeout,
+			FirstChunkTimeout:     cfg.LLM.StreamFirstChunkTimeout,
+			IdleTimeout:           cfg.LLM.StreamIdleTimeout,
+			MaxRetries:            cfg.LLM.MaxRetries,
+			PerProviderMaxRetries: perProviderMaxRetries,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap: resilient model: %w", err)
@@ -694,6 +784,9 @@ func Build(opts Options) (*App, error) {
 		chatModel = rm
 		providerModels = named
 		providerWindows = windows
+		providerThresholds = thresholds
+		providerTruncationPolicies = truncations
+		providerFallbacks = buildProviderFallbacks(named, fallbackDecls)
 		// M9: warn about a model name the provider does not list, naming the
 		// nearest matches. Non-blocking by construction — see RunPreflight.
 		// It takes context.Background() rather than the app's root context
@@ -752,6 +845,22 @@ func Build(opts Options) (*App, error) {
 	// instead of becoming paging. S8 also requires the registration — an
 	// unregistered name is refused by toolreg.Check at runtime.
 	for _, t := range tools.NewHistoryTools(st).Tools() {
+		allTools = append(allTools, t)
+	}
+
+	// W-C-14: context_new_window — the model-driven counterpart to C2's
+	// read-back tools above. Both exist because compaction is lossy in
+	// different directions: C2 lets the model recover detail AFTER it was
+	// evicted, this lets the model skip straight to a trimmed window BEFORE
+	// the threshold gate would ever fire, when it already knows it does not
+	// need what is about to be dropped.
+	//
+	// W-C-11: context_budget — a read-only query the model can make BEFORE
+	// deciding whether context_new_window is worth calling at all. Both tools
+	// are registered from the same tools.NewContextWindowTools().Tools()
+	// call, so a future third tool added to that package needs no change
+	// here.
+	for _, t := range tools.NewContextWindowTools().Tools() {
 		allTools = append(allTools, t)
 	}
 
@@ -1347,17 +1456,43 @@ func Build(opts Options) (*App, error) {
 		Snapshot: shellSnapshot,
 	}
 
+	// W-C-09: resolve the tool-output head/tail truncation policy once, from
+	// the primary (first-configured) provider's override / the model
+	// catalog, and hand orchestrator.New the single resolved value as the
+	// DEFAULT (see Orchestrator.truncationPolicy) — the policy a turn falls
+	// back to when its active model has no entry in providerTruncationPolicies
+	// below (M-4's per-provider map, the fix for the mismatch this comment
+	// used to describe: a config with providers[1].truncation_policy set had
+	// that value resolved by nothing, because this block only ever read
+	// providers[0]). A malformed override does NOT fail boot —
+	// internal/config.Config's TruncationPolicy field is deliberately
+	// unvalidated at load time (import cycle; see that field's doc comment)
+	// — so a typo degrades to the catalog/default here, observably, via this
+	// warning rather than by refusing to start.
+	truncationPolicy := einollm.DefaultTruncationSpec
+	if len(cfg.LLM.Providers) > 0 {
+		primary := cfg.LLM.Providers[0]
+		if spec, ok := einollm.ResolveTruncationPolicy(primary.TruncationPolicy, primary.Model); ok {
+			truncationPolicy = spec
+		} else if primary.TruncationPolicy != "" {
+			slog.Warn("truncation_policy is set but could not be resolved; falling back to the default policy",
+				"provider", primary.Name, "truncation_policy", primary.TruncationPolicy)
+		}
+	}
+
 	orchConfig := orchestrator.Config{
-		Model:           chatModel,
-		Tools:           allTools,
-		Profile:         profile,
-		Instruction:     instruction,
-		SkillMetaPrompt: registry.MetaPrompt(),
-		MemorySuffix:    memorySuffix,
-		WorkRoot:        workRoot,
-		TaskManager:     workMgr,
-		SubagentManager: subagentManager,
-		AvailableModels: availableModels,
+		Model:                      chatModel,
+		Tools:                      allTools,
+		Profile:                    profile,
+		Instruction:                instruction,
+		SkillMetaPrompt:            registry.MetaPrompt(),
+		MemorySuffix:               memorySuffix,
+		WorkRoot:                   workRoot,
+		TruncationPolicy:           truncationPolicy,
+		ProviderTruncationPolicies: providerTruncationPolicies,
+		TaskManager:                workMgr,
+		SubagentManager:            subagentManager,
+		AvailableModels:            availableModels,
 		// T3: the process-wide background manager. Bound into every turn ctx
 		// by bindExecutionContext; without it the three background_* tools
 		// find no manager and offload has no registry to record runs in.
@@ -1378,13 +1513,15 @@ func Build(opts Options) (*App, error) {
 		ImageStore:         imageStore,
 		VisionAuxAvailable: visionAux != nil,
 		Compaction: orchestrator.CompactionConfig{
-			Threshold:         cfg.Compaction.Threshold,
-			ContextWindow:     cfg.Compaction.ContextWindow,
-			KeepRecent:        cfg.Compaction.KeepRecent,
-			CooldownFraction:  cfg.Compaction.CooldownFraction,
-			CooldownDuration:  parseCooldownDuration(cfg.Compaction.CooldownDuration),
-			HardForceFraction: cfg.Compaction.HardForceFraction,
-			ProviderWindows:   providerWindows,
+			Threshold:          cfg.Compaction.Threshold,
+			ContextWindow:      cfg.Compaction.ContextWindow,
+			KeepRecent:         cfg.Compaction.KeepRecent,
+			CooldownFraction:   cfg.Compaction.CooldownFraction,
+			CooldownDuration:   parseCooldownDuration(cfg.Compaction.CooldownDuration),
+			HardForceFraction:  cfg.Compaction.HardForceFraction,
+			ProviderWindows:    providerWindows,
+			ProviderThresholds: providerThresholds,
+			ProviderFallbacks:  providerFallbacks,
 			// C11: mid-turn compaction redacts its summarizer input. The
 			// pre-turn/SSE path is wired separately via httpCfg.Redactor;
 			// without this line only that half would be covered and secrets
@@ -1449,11 +1586,13 @@ func Build(opts Options) (*App, error) {
 	httpCfg := apihttp.Config{
 		Token: cfg.Token,
 		Compaction: apihttp.CompactionConfig{
-			Threshold:       cfg.Compaction.Threshold,
-			KeepRecent:      cfg.Compaction.KeepRecent,
-			ContextWindow:   cfg.Compaction.ContextWindow,
-			Model:           cfg.Compaction.Model,
-			ProviderWindows: providerWindows,
+			Threshold:          cfg.Compaction.Threshold,
+			KeepRecent:         cfg.Compaction.KeepRecent,
+			ContextWindow:      cfg.Compaction.ContextWindow,
+			Model:              cfg.Compaction.Model,
+			ProviderWindows:    providerWindows,
+			ProviderThresholds: providerThresholds,
+			ProviderFallbacks:  providerFallbacks,
 		},
 		Store:         st,
 		VCS:           vcsInstance,
@@ -1597,50 +1736,51 @@ func Build(opts Options) (*App, error) {
 	closeStoreOnError = false
 	cancelOnError = false
 	return &App{
-		Server:          httpServer,
-		Store:           st,
-		Orch:            orch,
-		Broker:          broker,
-		Addr:            addr,
-		Model:           chatModel,
-		Models:          providerModels,
-		VisionAux:       visionAux,
-		MultimodalMap:   multimodalMap,
-		ImageStore:      imageStore,
-		VisionUsage:     &visionUsageSink,
-		AgentAPI:        agentAPI,
-		Skills:          registry,
-		ToolNames:       toolNames,
-		LaunchProxyURLs: launchProxyURLs(secureFactory, shellManager),
-		NetProxy:        netProxy,
-		mcpHealthCancel: mcpHealthCancel,
-		ToolTimeouts:    toolTimeouts,
-		VCS:             vcsInstance,
-		VCSRepoID:       vcsRepoID,
-		VCSDBPath:       cfg.Storage.SQLitePath,
-		WorktreeDir:     worktreeDir,
-		Sandbox:         sb,
-		NetworkPolicy:   networkPolicy,
-		SubagentManager: subagentManager,
-		AgentTools:      agentTools,
-		ToolBatch:       batchTool,
-		Automation:      c1Manager,
-		BootConfig:      cfg,
-		LSP:             lspMgr,
-		MCP:             mcpManager,
-		C1Scheduler:     c1Scheduler,
-		Upkeep:          upkeepWorker,
-		Approvals:       approvalMgr,
-		ShellManager:    shellManager,
-		SecureFactory:   secureFactory,
-		Features:        featureReg,
-		Pricing:         priceTab,
-		OTel:            otelRT,
-		Redactor:        redactor,
-		Auth:            authMgr,
-		LogPath:         logPath,
-		Background:      backgroundMgr,
-		cancel:          cancel,
+		Server:           httpServer,
+		Store:            st,
+		Orch:             orch,
+		Broker:           broker,
+		Addr:             addr,
+		Model:            chatModel,
+		Models:           providerModels,
+		VisionAux:        visionAux,
+		MultimodalMap:    multimodalMap,
+		ImageStore:       imageStore,
+		VisionUsage:      &visionUsageSink,
+		AgentAPI:         agentAPI,
+		Skills:           registry,
+		ToolNames:        toolNames,
+		ServerCompaction: httpCfg.Compaction,
+		LaunchProxyURLs:  launchProxyURLs(secureFactory, shellManager),
+		NetProxy:         netProxy,
+		mcpHealthCancel:  mcpHealthCancel,
+		ToolTimeouts:     toolTimeouts,
+		VCS:              vcsInstance,
+		VCSRepoID:        vcsRepoID,
+		VCSDBPath:        cfg.Storage.SQLitePath,
+		WorktreeDir:      worktreeDir,
+		Sandbox:          sb,
+		NetworkPolicy:    networkPolicy,
+		SubagentManager:  subagentManager,
+		AgentTools:       agentTools,
+		ToolBatch:        batchTool,
+		Automation:       c1Manager,
+		BootConfig:       cfg,
+		LSP:              lspMgr,
+		MCP:              mcpManager,
+		C1Scheduler:      c1Scheduler,
+		Upkeep:           upkeepWorker,
+		Approvals:        approvalMgr,
+		ShellManager:     shellManager,
+		SecureFactory:    secureFactory,
+		Features:         featureReg,
+		Pricing:          priceTab,
+		OTel:             otelRT,
+		Redactor:         redactor,
+		Auth:             authMgr,
+		LogPath:          logPath,
+		Background:       backgroundMgr,
+		cancel:           cancel,
 	}, nil
 }
 

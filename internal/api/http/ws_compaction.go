@@ -798,7 +798,7 @@ func maybeAutoCompact(ctx context.Context, s *Server,
 		return
 	}
 	newHist, tb, ta, did := ctxcompact.MaybeCompactWithOptions(ctx, cs.history,
-		s.compaction.Threshold, cw, kr, sumModel,
+		thresholdFor(cs.model, s.compaction), cw, kr, sumModel,
 		func(chunk string) { conn.write(proto.NewCompactChunk(chunk)) },
 		s.compactionOptions())
 	if !did {
@@ -911,12 +911,12 @@ func compactNow(ctx context.Context, s *Server,
 func compactionModel(cc CompactionConfig, models map[string]model.BaseChatModel, sessionModel string) model.BaseChatModel {
 	if cc.Model != "" {
 		if m := models[cc.Model]; m != nil {
-			return m
+			return wrapCompactionFallback(m, cc.Model, cc)
 		}
 	}
 	if sessionModel != "" {
 		if m := models[sessionModel]; m != nil {
-			return m
+			return wrapCompactionFallback(m, sessionModel, cc)
 		}
 	}
 	// Fallback: deterministic (sorted) first registered model — a new session
@@ -927,9 +927,38 @@ func compactionModel(cc CompactionConfig, models map[string]model.BaseChatModel,
 	}
 	sort.Strings(names)
 	if len(names) > 0 {
-		return models[names[0]]
+		return wrapCompactionFallback(models[names[0]], names[0], cc)
 	}
 	return nil
+}
+
+// wrapCompactionFallback (W-C-10) wraps the PRE-TURN compaction summarizer m
+// in a fallback-aware ResilientChatModel when cc.ProviderFallbacks declares a
+// chain for id — the pre-turn twin of orchestrator.wrapCompaction's fallback
+// branch. An empty/absent chain returns m unchanged: this is the common case
+// today (the shipped catalog ships zero fallback_models rows, Ruling RC-8),
+// and it is what keeps every existing compactionModel() caller's behavior
+// byte-identical until an operator's registry actually resolves one.
+//
+// Unlike the mid-turn path, there is no separate "Summarizer" field to set
+// here — compactionModel()'s return value IS the summarizer (there is no
+// separate turn-answering call sharing this model on the pre-turn path), so
+// wrapping m directly, rather than something alongside it, is correct.
+func wrapCompactionFallback(m model.BaseChatModel, id string, cc CompactionConfig) model.BaseChatModel {
+	fallbacks := cc.ProviderFallbacks[id]
+	if len(fallbacks) == 0 {
+		return m
+	}
+	chain := append([]model.BaseChatModel{m}, fallbacks...)
+	resilient, err := einollm.NewResilientModel(chain, einollm.ResilientConfig{})
+	if err != nil {
+		// Only reachable for an empty chain (see NewResilientModel), which
+		// chain cannot be here — it always has m as its first entry. Fail-safe:
+		// fall back to the unwrapped model rather than dropping compaction
+		// entirely.
+		return m
+	}
+	return resilient
 }
 
 // contextWindowFor returns the context-window budget for model: the per-provider
@@ -940,6 +969,41 @@ func contextWindowFor(model string, cc CompactionConfig) int {
 		return w
 	}
 	return cc.ContextWindow
+}
+
+// thresholdFor returns the auto-compact threshold budget for model: the
+// per-provider/catalog override if set, else the configured global fallback.
+// Mirrors contextWindowFor exactly (W-C-01 / INF2) — this is the PRE-TURN
+// sibling of orchestrator.CompactionConfig.thresholdFor/wrapCompaction, the
+// mid-turn path.
+//
+// The global-off check runs FIRST and short-circuits before ProviderThresholds
+// is even consulted (ADR-0024 C2, mirroring orchestrator.wrapCompaction's own
+// `cc.Threshold <= 0` gate — see that function for why the two must stay
+// literally the same check, ADR-0024 C1). Without it, an operator who wrote
+// `compaction.threshold: -1` (or a bare `0`, which only stays 0 on a Config
+// that bypassed applyDefaults) to turn compaction off globally would have it
+// silently reopened the moment a per-model catalog/config threshold existed
+// for their model — the value a per-model opinion may only RESIZE an
+// already-open gate with, never use to reopen a closed one.
+//
+// A resolved per-model value that is itself negative is an explicit
+// PER-PROVIDER disable (W-C-04 / F-10): it is returned as-is, and
+// MaybeCompactWithOptions's own `threshold <= 0` gate turns it into "off" for
+// that one provider without touching the global Threshold. This is the
+// mirror image of the global sentinel above, and the reason the lookup below
+// tests `t != 0` (not `t > 0`) — negative must pass through, while a stray
+// literal 0 (defensive: BuildProviders never stores one, since
+// ResolveAutoCompactThreshold never returns ok=true with a 0 value) still
+// falls through to the fallback rather than firing compaction every turn.
+func thresholdFor(model string, cc CompactionConfig) float64 {
+	if cc.Threshold <= 0 {
+		return cc.Threshold
+	}
+	if t, ok := cc.ProviderThresholds[model]; ok && t != 0 {
+		return t
+	}
+	return cc.Threshold
 }
 
 // keepRecentOrDefault applies the conventional default (4) when the configured

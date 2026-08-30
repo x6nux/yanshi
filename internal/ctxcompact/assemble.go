@@ -36,6 +36,23 @@ func IsEvictionMapMessage(m *schema.Message) bool {
 	return hasFragmentKind(m, KindEvictionMap)
 }
 
+// pinnedMessages collects msgs[plan.PinnedIndices] verbatim, in original
+// order, skipping any out-of-range or nil index defensively. It is the first
+// half of AssembleWithMap's job — the part shared with W-C-04's pins-only
+// fallback (run.go's pinsOnlyResult), which needs exactly this prefix and
+// nothing appended after it (no summary, no eviction map: there IS no
+// summary on that path, that's the point of the fallback). Extracted rather
+// than duplicated per CLAUDE.md's "重复逻辑必须抽成公共函数".
+func pinnedMessages(msgs []*schema.Message, plan *PlanResult) []*schema.Message {
+	out := make([]*schema.Message, 0, len(plan.PinnedIndices))
+	for _, i := range plan.PinnedIndices {
+		if i >= 0 && i < len(msgs) && msgs[i] != nil {
+			out = append(out, msgs[i])
+		}
+	}
+	return out
+}
+
 // AssembleWithMap is Assemble plus C3's eviction map.
 //
 // ORDER AT THE TAIL IS map, THEN summary, and it is chosen rather than
@@ -70,12 +87,7 @@ func IsEvictionMapMessage(m *schema.Message) bool {
 // includes whatever the stale one covered (Plan unpins stale summaries for
 // exactly that reason). Deleting one with no replacement is just loss.
 func AssembleWithMap(msgs []*schema.Message, plan *PlanResult, summary, mapText string) []*schema.Message {
-	out := make([]*schema.Message, 0, len(plan.PinnedIndices)+2)
-	for _, i := range plan.PinnedIndices {
-		if i >= 0 && i < len(msgs) && msgs[i] != nil {
-			out = append(out, msgs[i])
-		}
-	}
+	out := pinnedMessages(msgs, plan)
 
 	fresh := make([]*schema.Message, 0, 2)
 	replaced := make([]FragmentKind, 0, 2)

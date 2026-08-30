@@ -25,17 +25,14 @@ type Usage struct {
 // override with config Pricing.Overrides; MergePricing layers overrides on
 // top of this table. The exact model IDs are authoritative; do not append
 // date suffixes or fabricate legacy IDs.
+//
+// W-C-01 (INF2): this used to be a Go literal here. It is now built from the
+// embedded models.yaml (modelcatalog.go's buildPricingCatalog) so that
+// repricing a model is a data-file edit, not a Go code change. The values
+// and the exact-match (not boundary-substring) lookup semantics are
+// unchanged — see models.yaml for the current rows.
 func DefaultPricing() map[string]ModelPricing {
-	return map[string]ModelPricing{
-		"claude-fable-5":    {InputPerM: 10, CacheHitPerM: 1, OutputPerM: 50},
-		"claude-mythos-5":   {InputPerM: 10, CacheHitPerM: 1, OutputPerM: 50},
-		"claude-opus-4-8":   {InputPerM: 5, CacheHitPerM: 0.5, OutputPerM: 25},
-		"claude-opus-4-7":   {InputPerM: 5, CacheHitPerM: 0.5, OutputPerM: 25},
-		"claude-opus-4-6":   {InputPerM: 5, CacheHitPerM: 0.5, OutputPerM: 25},
-		"claude-sonnet-5":   {InputPerM: 3, CacheHitPerM: 0.3, OutputPerM: 15},
-		"claude-sonnet-4-6": {InputPerM: 3, CacheHitPerM: 0.3, OutputPerM: 15},
-		"claude-haiku-4-5":  {InputPerM: 1, CacheHitPerM: 0.1, OutputPerM: 5},
-	}
+	return buildPricingCatalog(modelCatalog)
 }
 
 // MergePricing returns a new table that combines base and overlay. Overlay

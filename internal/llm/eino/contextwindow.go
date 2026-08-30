@@ -77,69 +77,12 @@ type contextWindowEntry struct {
 // by snapshot or by opt-in header: Anthropic's 1M-context Sonnet is a beta
 // header the operator opts into, so the family row stays at the standard 200K
 // and the operator who enabled the beta sets `context_window` explicitly.
-var contextWindowCatalog = []contextWindowEntry{
-	// --- Anthropic ---------------------------------------------------------
-	// 200K standard across the modern families; the 1M Sonnet variant is a
-	// beta-header opt-in, so it is NOT assumed here.
-	{"claude-instant", 100_000}, // legacy, still served by some gateways
-	{"claude-2", 100_000},       // legacy, still served by Bedrock
-	{"claude", 200_000},
-	// --- OpenAI ------------------------------------------------------------
-	{"gpt-4.1", 1_047_576},
-	{"gpt-5", 272_000},
-	{"gpt-4o", 128_000},
-	{"gpt-4-turbo", 128_000},
-	{"gpt-4", 8_192}, // the original non-turbo gpt-4; catch-all for the family
-	{"gpt-3.5-turbo", 16_385},
-	{"o4-mini", 200_000},
-	{"o3", 200_000},
-	{"o1", 200_000},
-	// --- Google ------------------------------------------------------------
-	{"gemini-1.5-pro", 2_097_152},
-	{"gemini-1.5-flash", 1_048_576},
-	{"gemini", 1_048_576},
-	// --- Qwen / DashScope --------------------------------------------------
-	{"qwen-long", 10_000_000},
-	{"qwen-flash", 1_000_000},
-	{"qwen-turbo-latest", 1_000_000},
-	{"qwen-turbo", 131_072}, // stable alias: snapshot windows vary
-	{"qwen3.7-max", 1_000_000},
-	{"qwen3.7-plus", 1_000_000},
-	{"qwen3.6-plus", 1_000_000},
-	{"qwen-plus-latest", 1_000_000},
-	{"qwen-plus", 131_072}, // stable alias: snapshot windows vary
-	{"qwen3-coder-plus", 1_000_000},
-	{"qwen3-coder", 262_144},
-	{"qwen3-max", 262_144},
-	{"qwen-max", 131_072},
-	{"qwq", 131_072},
-	// --- DeepSeek ----------------------------------------------------------
-	{"deepseek-reasoner", 131_072},
-	{"deepseek-chat", 131_072},
-	{"deepseek-v3", 131_072},
-	{"deepseek-r1", 131_072},
-	// --- Moonshot / Zhipu / MiniMax ----------------------------------------
-	{"kimi-k2", 262_144},
-	{"moonshot-v1-128k", 131_072},
-	{"glm-5.2", 1_000_000},
-	{"glm-4.6", 200_000},
-	{"glm-4", 131_072},
-	{"minimax-m3", 1_000_000},
-	{"minimax-m2.7", 204_800},
-	// --- xAI ---------------------------------------------------------------
-	{"grok-4-fast", 2_000_000},
-	{"grok-4", 256_000},
-	{"grok-3", 131_072},
-	// --- Mistral / Cohere / Meta -------------------------------------------
-	{"mistral-large", 131_072},
-	{"mistral-small", 131_072},
-	{"codestral", 262_144},
-	{"command-r-plus", 128_000},
-	{"command-r", 128_000},
-	{"llama-4", 131_072},
-	{"llama-3.3", 131_072},
-	{"llama-3.1", 131_072},
-}
+// W-C-01 (INF2): this used to be a Go literal here. It is now built from the
+// embedded models.yaml (modelcatalog.go's buildContextWindowCatalog) so that
+// adding a model is a data-file edit, not a Go code change. The values, the
+// boundary-substring matching, and the longest-pattern-wins precedence are
+// all unchanged -- see models.yaml for the current rows and their provenance.
+var contextWindowCatalog = buildContextWindowCatalog(modelCatalog)
 
 // contextWindowPatterns is contextWindowCatalog sorted longest-pattern-first so
 // a specific row always beats its family catch-all no matter where either is
@@ -281,6 +224,17 @@ type ProviderShape struct {
 	ContextWindow int
 	// Local overrides the local/cloud heuristic; nil means "heuristic decides".
 	Local *bool
+	// AutoCompactThreshold is the explicitly configured per-provider
+	// auto-compact threshold (config.ProviderConfig.AutoCompactThreshold).
+	// Tri-state, unlike ContextWindow's plain "<=0 means unset": 0 means
+	// unset (falls through to the catalog, then the operator's global
+	// fallback); > 0 is an override value; < 0 is an explicit per-provider
+	// DISABLE (W-C-04 / F-10) — see ResolveAutoCompactThreshold
+	// (modelcatalog.go) for the resolution ladder this field participates
+	// in, and wrapCompaction/thresholdFor for how the negative sentinel
+	// turns into "off" for that one provider without touching the global
+	// switch.
+	AutoCompactThreshold float64
 }
 
 // isLocalBaseURL reports whether rawURL points at this machine or the local

@@ -41,7 +41,7 @@ func TestBuildProviders_WindowsAreResolvedNotCopied(t *testing.T) {
 		{Name: "unknown", Kind: "openai", Model: "inhouse-v7", APIKey: "k"},
 	}
 
-	_, _, windows, err := BuildProviders(cfg)
+	_, _, windows, _, _, _, err := BuildProviders(cfg)
 	require.NoError(t, err)
 
 	assert.Equal(t, 128_000, windows["gpt-4o"],
@@ -73,7 +73,7 @@ func TestBuildProviders_LocalProviderDoesNotInheritCloudWindow(t *testing.T) {
 		{Name: "cloud-qwen", Kind: "openai", Model: "qwen3-max", APIKey: "k"},
 	}
 
-	_, _, windows, err := BuildProviders(cfg)
+	_, _, windows, _, _, _, err := BuildProviders(cfg)
 	require.NoError(t, err)
 
 	assert.Equal(t, LocalContextWindow, windows["qwen3-coder"],
@@ -93,7 +93,7 @@ func TestBuildProviders_ExplicitLocalOverride(t *testing.T) {
 		{Name: "lan-gateway", Kind: "openai", Model: "claude-sonnet-5", APIKey: "k", BaseURL: "http://10.1.2.3:8080/v1", Local: &no},
 	}
 
-	_, _, windows, err := BuildProviders(cfg)
+	_, _, windows, _, _, _, err := BuildProviders(cfg)
 	require.NoError(t, err)
 
 	assert.Equal(t, LocalContextWindow, windows["gpt-4o"])
@@ -288,7 +288,7 @@ func TestBuildOne_ForwardsGenerationParams(t *testing.T) {
 		m, err := buildOne(context.Background(), config.ProviderConfig{
 			Kind: "anthropic", Model: "claude-sonnet-5", APIKey: "k",
 			MaxTokens: intPtr(32000), Temperature: f32Ptr(0.1), TopP: f32Ptr(0.9),
-		})
+		}, nil)
 		require.NoError(t, err)
 		am, ok := m.(*AnthropicModel)
 		require.True(t, ok)
@@ -303,7 +303,7 @@ func TestBuildOne_ForwardsGenerationParams(t *testing.T) {
 		m, err := buildOne(context.Background(), config.ProviderConfig{
 			Kind: "openai-responses", Model: "gpt-4o", APIKey: "k",
 			MaxTokens: intPtr(64000), Temperature: f32Ptr(0), TopP: f32Ptr(0.5),
-		})
+		}, nil)
 		require.NoError(t, err)
 		rm, ok := m.(*openaiResponsesModel)
 		require.True(t, ok)
@@ -317,7 +317,7 @@ func TestBuildOne_ForwardsGenerationParams(t *testing.T) {
 	t.Run("anthropic with unset params keeps the adapter default", func(t *testing.T) {
 		m, err := buildOne(context.Background(), config.ProviderConfig{
 			Kind: "anthropic", Model: "claude-sonnet-5", APIKey: "k",
-		})
+		}, nil)
 		require.NoError(t, err)
 		am := m.(*AnthropicModel)
 		assert.Equal(t, 4096, am.config.MaxTokens)

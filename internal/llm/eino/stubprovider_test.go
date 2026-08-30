@@ -54,6 +54,9 @@ type capturedRequest struct {
 	Raw string
 	// Auth is the Authorization header.
 	Auth string
+	// Header is the full set of request headers, for W-C-02 assertions about
+	// custom headers that are not Authorization.
+	Header http.Header
 }
 
 // stubResponse is what the stub should answer with for one request.
@@ -140,6 +143,7 @@ func (s *stubProvider) handleChat(w http.ResponseWriter, r *http.Request) {
 	raw, _ := io.ReadAll(r.Body)
 	cr := capturedRequest{
 		Path: r.URL.Path, At: time.Now(), Raw: string(raw), Auth: r.Header.Get("Authorization"),
+		Header: r.Header.Clone(),
 	}
 	_ = json.Unmarshal(raw, &cr.Body)
 	n := s.record(cr)
@@ -320,7 +324,7 @@ func buildStubModel(t *testing.T, s *stubProvider, mutate func(*config.ProviderC
 	model.BaseChatModel, map[string]int) {
 	t.Helper()
 	cfg := stubProviderConfig(s, mutate)
-	_, chain, windows, err := BuildProviders(cfg)
+	_, chain, windows, _, _, _, err := BuildProviders(cfg)
 	if err != nil {
 		t.Fatalf("BuildProviders: %v", err)
 	}

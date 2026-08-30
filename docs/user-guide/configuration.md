@@ -5,6 +5,8 @@ yanshi 从 `config.yaml` 加载配置（已被 gitignore；从被跟踪的 `conf
 > `llm.providers[].api_key` 只接受两种写法：**明文字面量**，或 **`${VAR}`**（加载时由 `os.ExpandEnv` 展开，展开结果同样是明文）。两者都原样交给 provider SDK，不经任何凭据解析或加密存储。写 `secret://…` / `env://…` 不再有特殊含义 —— 那串字符会被当成 key 本身发出去。
 >
 > 明文 key 仍会注册进进程 Redactor，因此不会出现在日志、WS/SSE 帧或 SQLite 里。但 `config.yaml` 本身是明文文件（已被 gitignore），请自行控制它的读权限。
+>
+> `llm.providers[].headers`（map，W-C-02）是附加在每个请求上的自定义 HTTP 头（企业网关 token、Azure 网关 key 之类）。值同样接受 `${VAR}` 展开，且同样注册进 Redactor —— 只有值被注册，头名不算凭据。三种 provider kind 都支持：`openai` kind 由 `retryafter.go` 的传输层注入，`anthropic`/`openai-responses` 由各自的 `setHeaders` 注入；三者都在**内置头之后**应用，因此一条 `headers` 条目可以覆盖内置头名（例如自定义 `Authorization`、`anthropic-version`）而不是被静默盖掉。
 
 ## server
 
@@ -20,7 +22,19 @@ SQLite 持久化（`sqlite_path`）。F1 的 WAL 相关项：`wal_max_open_conns
 
 ## llm
 
-`providers` 是 provider 列表，每项有 `name`/`kind`（`openai`|`openai-responses`|`anthropic`）/`model`/`api_key`/`base_url`/`context_window`/`cost_class`/`multimodal`。`context_window` 是该模型的 token 窗口；compaction 按它而非全局值估算。`multimodal: true` 声明原生图像输入（Tier G）；当主模型非多模态时，bootstrap 自动选第一个 `multimodal==true` 的 provider 作为视觉辅助。`llm.providers` 为空时 `--fake-model` 自动接入确定性 fake model。
+`providers` 是 provider 列表，每项有 `name`/`kind`（`openai`|`openai-responses`|`anthropic`）/`model`/`api_key`/`base_url`/`context_window`/`cost_class`/`multimodal`/`auto_compact_threshold`/`truncation_policy`/`fallback_models`/`headers`/`max_retries`/`auth`。`context_window` 是该模型的 token 窗口；compaction 按它而非全局值估算；`0`（省略）回退到目录/`compaction.context_window`，**负值在加载期直接拒绝启动**（review-whole.md I-1：这里没有 `auto_compact_threshold` 那种"负值=显式关闭"的读法，此前会静默落回目录/128K 默认，是四个相邻维度里唯一沉默的一个）。`auto_compact_threshold` 是该模型自己的压缩触发比例，覆盖 `compaction.threshold`（同一梯子：显式字段 > 模型目录命中 > 全局回退，W-C-01/ADR-0024）；取值必须是 `context_window` 的**分数**（`<= 1`，否则加载期拒绝启动——像绝对 token 数的值会静默错配压缩门），**负值**是显式信号，会为这一个 provider 单独关闭压缩，即使全局开关是开着的。`multimodal: true` 声明原生图像输入（Tier G）；当主模型非多模态时，bootstrap 自动选第一个 `multimodal==true` 的 provider 作为视觉辅助。`llm.providers` 为空时 `--fake-model` 自动接入确定性 fake model。
+
+`truncation_policy`（string，W-C-09）覆盖这个 provider 的模型送进工具结果截断（`internal/tools/spillover.go`）时保留的首/尾行数，写法是 `"head=<N>,tail=<M>"`（任一 key 可省略；语法见 `internal/llm/eino::ParseTruncationPolicy`）。省略（零值）时解析退到模型目录（`internal/llm/eino::KnownTruncationPolicy`），再退到内置默认 `internal/llm/eino::DefaultTruncationSpec`（15/10 行，与 W-C-09 之前硬编码的行为逐字节一致）。**每个 provider 独立解析、独立生效**：bootstrap 按 provider 的注册模型名把结果存进一张 map（镜像 `context_window`/`auto_compact_threshold` 已有的按模型解析模式），一次活跃 turn 读取的是它**实际运行的那个模型**自己的 `truncation_policy`，而不是配置文件里第一个 provider 的。M-4 之前这里有一个已修的缺口：解析只在启动时对 `providers[0]` 跑一次，`/model` 切到其他 provider 后仍然沿用第一个 provider 的截断策略——即使那个 provider 自己配置了不同的 `truncation_policy`。格式在加载期不做校验（原因见 `TruncationPolicy` 字段自己的 doc 注释——校验需要反向依赖 `internal/llm/eino`，会成环），写错只退化为默认策略并在启动日志打一条警告，不会拒绝启动。
+
+`fallback_models`（`[]string`，M-2/W-C-10）按优先级列出这个 provider 的压缩摘要（compaction summary）调用失败时依次回退的**注册模型 id**——与 `context_window`/`auto_compact_threshold`/`truncation_policy` 解析所用的同一个 key（`model` 字段本身，不是 `name` 标签）。省略（零值）时解析退到模型目录（`internal/llm/eino::KnownFallbackModels`），目录也没有意见时该 provider 干脆没有回退链——与另外三维同一把梯子（显式字段 > 模型目录命中 > 无/全局回退）。**这条字段是这把梯子上最后补齐的一级**：在它存在之前，`fallback_models` 在 `ProviderConfig` 里没有任何键，出厂模型目录（`models.yaml`）本身也是零行 `fallback_models`（Ruling RC-8）——两头都没有数据来源，W-C-10 因此对任何部署都不可达，不是"默认关闭"而是"没有开关"。写了 `fallback_models` 的 provider 拿到的是**这份列表本身**，不会与目录条目合并；列表里任何一个模型 id 若不是当前部署实际配置的某个 provider，就在 bootstrap 阶段被静默丢弃（更短的链，不是错误），因为校验一个 id 需要这份注册表自己——而这份字段正是它的输入之一。
+
+`max_retries`（int，W-C-07）是这个 provider 自己的重试上限，覆盖 `llm.max_retries` 这个全局回退值；不设置（省略）时用全局值，设置为 `0` 是显式的"这个 provider 一次都不重试"，两者的区别由指针类型钉住（config.go 的 M4 nil-means-omit 惯例）。`ResilientChatModel` 是重试的唯一权威，per-provider 预算在 failover 换到别的 provider 时会重置，不会带着上一个 provider 已经花掉的次数。负值在加载期直接拒绝启动（`llm.max_retries` 或某个 provider 的 `max_retries` < 0）。
+
+⚠️ **同一个取值 `0` 在这两层是相反的语义。** 顶层 `llm.max_retries` 是普通 `int`（零值就是省略），`0`（或整段省略 `llm` 块）意味着"没配置，用 `ResilientChatModel` 的内置默认 10"；每个 provider 的 `max_retries` 是 `*int`，`0` 是**显式**配置出来的取值，意味着"这个 provider 一次都不重试"。原因就是上一段说的指针类型：顶层没有 nil-means-omit 的空间，`0` 只能读成"没说"；provider 级别有，`0` 因此能读成"说了，说的是零"。
+
+`auth`（W-C-12）配置**命令产出型**凭据：`auth.command`（`[]string`，argv 形式，不经 shell 解析）是产出 token 的命令，`auth.refresh_interval`（duration，默认 `15m`）是刷新周期。配了 `auth` 时 `api_key` 可以留空。命令执行必须走 `secproc`（W-B-02 收敛后的唯一子进程入口），401 会触发一次命令重跑再重试。`auth.command` 为空、或 `refresh_interval` 为负值，都在加载期直接拒绝启动。
+
+⚠️ **`auth.command` 拿不到 yanshi 自己继承的环境凭据。** 这条命令的 `AllowEnv` 留空（`runAuthCommand` 的实现），于是 `netpolicy.ScrubCredentials` 会把父进程环境里所有凭据类变量（`AWS_SECRET_ACCESS_KEY`、`OPENAI_API_KEY` 这类）连同其余环境一起清洗掉——理由与 `shell_run`/ACP agent 等其余不受信子进程完全一致：这是一条产出 token 的**外部命令**，对 yanshi 自己的凭据没有天然主张权。如果 helper 脚本本身依赖某个环境变量（例如用 `AWS_SECRET_ACCESS_KEY` 去换一个临时 STS token），它必须自己想办法拿到这个值（写进脚本、读配置文件、走脚本自己的登录态），而不能指望 yanshi 把它转发进来。
 
 ## agents
 
@@ -203,6 +217,7 @@ export YANSHI_ALLOW_CHILD_ENV=NETRC,npm_config_registry,SSH_AUTH_SOCK
 | llm.preflight | *bool | |
 | llm.stream_first_chunk_timeout | duration | |
 | llm.stream_idle_timeout | duration | |
+| llm.max_retries | int | |
 
 ### agents
 

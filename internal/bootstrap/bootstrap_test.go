@@ -1057,6 +1057,75 @@ func TestBuild_APIKeysAreUsedVerbatimAndRedacted(t *testing.T) {
 	}
 }
 
+// TestWC02_HeaderValuesAreRedacted is W-C-02's redaction half. The claim it
+// pins is narrower than "Redactor.Register was called on a header value" —
+// that would only prove the redactor EXISTS, which a plain grep for the call
+// site already answers. What it actually checks is whether the SAME redactor
+// instance Build wires into Store/WS/SSE (app.Redactor) scrubs a value that
+// made a REAL round trip: injected into a REAL outgoing request by the
+// production Anthropic adapter (einollm.NewAnthropicModel, not a hand-built
+// config struct at the redactor seam), echoed back by a gateway-style stub
+// into a REAL 401 error the adapter's own error-formatting code produced
+// (internal/llm/eino's TestWC02_HeaderValueSurvivesIntoAGenuineProviderError
+// is the negative control proving that echo is a genuine leak vector, not a
+// straw man — this test cannot reuse that file's helpers across packages, so
+// it reruns the same stub-and-adapter shape here). A raw-text negative
+// control (errText itself, never redacted) sits alongside the redacted
+// assertion so this test cannot pass by asserting something that was never
+// actually at risk.
+func TestWC02_HeaderValuesAreRedacted(t *testing.T) {
+	const headerName = "X-Gateway-Token"
+	const canary = "wc02-bootstrap-canary-4d2b8f"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen := r.Header.Get(headerName)
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprintf(w, `{"error":{"message":"invalid gateway token: %s","type":"authentication_error"}}`, seen)
+	}))
+	defer srv.Close()
+
+	// Drive the REAL adapter (not bootstrap.Build's chain — that would also
+	// exercise BuildProviders/ResilientChatModel for no added signal on the
+	// question this test asks) to get an error string production code
+	// actually produces, carrying the header value it actually sent.
+	m, err := einollm.NewAnthropicModel(context.Background(), &einollm.AnthropicModelConfig{
+		APIKey: "k", Model: "claude-opus-4-8", BaseURL: srv.URL,
+		Headers: map[string]string{headerName: canary},
+	})
+	require.NoError(t, err)
+	_, genErr := m.Generate(context.Background(), []*schema.Message{schema.UserMessage("hi")})
+	require.Error(t, genErr, "want an error from the 401 stub")
+	errText := genErr.Error()
+	require.Contains(t, errText, canary,
+		"negative control failed: the real adapter error does not even contain the canary, "+
+			"so this test would prove nothing about redaction")
+
+	// Now register the SAME value the way Build does (cfg.LLM.Providers[i].Headers)
+	// and confirm app.Redactor — the instance wired into Store/WS/SSE — scrubs
+	// the real error text captured above.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	dbPath := toYAMLPath(filepath.Join(dir, "yanshi.db"))
+	cfgContent := "server:\n  http_addr: \"127.0.0.1:0\"\nstorage:\n  sqlite_path: \"" + dbPath + "\"\n" +
+		"llm:\n  providers:\n" +
+		"    - name: gw\n      kind: anthropic\n      model: claude-opus-4-8\n      api_key: k\n" +
+		"      headers:\n        " + headerName + ": " + canary + "\n"
+	require.NoError(t, os.WriteFile(cfgPath, []byte(cfgContent), 0o644))
+
+	cfg, err := config.Load(cfgPath)
+	require.NoError(t, err)
+	require.Equal(t, canary, cfg.LLM.Providers[0].Headers[headerName])
+
+	app, err := bootstrap.Build(bootstrap.Options{Cfg: cfg, FakeModel: true})
+	require.NoError(t, err)
+	defer app.Shutdown(context.Background())
+	require.NotNil(t, app.Redactor, "app.Redactor must be non-nil after Build")
+
+	redacted := app.Redactor.Redact(errText)
+	assert.NotContains(t, redacted, canary,
+		"a header value that made a real round trip through a real provider error was not redacted: %q", redacted)
+}
+
 // TestBuild_DeviceProviderInjection (structural fix #2) covers both sources:
 //
 //	(a) cfg-driven providers get NewGenericRFC8628Provider validation, and a
@@ -1185,7 +1254,7 @@ func TestOutputLanguageInstructionIndependentOfUILocale(t *testing.T) {
 	}
 }
 
-func fakeProviderBuilder(cfg *config.Config) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, error) {
+func fakeProviderBuilder(cfg *config.Config, _ ...einollm.SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, map[string]einollm.TruncationSpec, map[string][]string, error) {
 	named := make(map[string]model.BaseChatModel)
 	var chain []model.BaseChatModel
 	for _, p := range cfg.LLM.Providers {
@@ -1193,7 +1262,92 @@ func fakeProviderBuilder(cfg *config.Config) (map[string]model.BaseChatModel, []
 		named[p.Model] = fm
 		chain = append(chain, fm)
 	}
-	return named, chain, nil, nil
+	return named, chain, nil, nil, nil, nil, nil
+}
+
+// TestBuild_PerProviderMaxRetriesSentinelIsWiredCorrectly is the W-C-07 C2
+// review's M-2 finding: bootstrap.go's *int -> []int conversion loop
+// (perProviderMaxRetries) writes -1 for "MaxRetries omitted" so
+// maxRetriesFor falls back to the global ceiling, and the provider's OWN
+// value — including an explicit 0, "never retry" — otherwise. Nothing
+// exercised that conversion end to end before this test: mutating the -1
+// sentinel to 0 (turning "omitted" into "never retry this provider") left
+// bootstrap, eino, config and archtest fully green, because
+// TestMaxRetriesFor and TestResilientModel_GeneratePerProviderMaxRetries*
+// (internal/llm/eino/resilient_test.go) exercise
+// einollm.ResilientConfig.PerProviderMaxRetries directly and never touch
+// bootstrap's construction of that slice from a real config.Config.
+//
+// Two providers cover the if/else's two branches:
+//   - "omitted" (max_retries left out of the YAML) must fall back to the
+//     global llm.max_retries (2 here): 1 initial call + 2 retries = 3.
+//   - "explicit 0" must never retry regardless of the global ceiling: 1
+//     call, period — the OTHER branch of the same if/else, and the reason a
+//     fix that just special-cased "always fall back" would not be enough.
+//
+// Both providers' FakeModel always fails (RetryableModelError), so
+// ResilientChatModel.Generate walks the whole chain and each provider's
+// GenerateCalls ends up exactly the number of attempts maxRetriesFor(i)
+// allowed it. The mutation this test exists to catch (-1 -> 0 in the else
+// branch) only moves the "omitted" provider's count (3 -> 1); the
+// "explicit 0" provider is the control proving the if branch is untouched.
+//
+// The two FakeModel pointers are captured directly from the ProviderBuilder
+// closure rather than read back via app.Models: Build unconditionally runs
+// every provider through BuildAdaptiveModels (M5/M6/M7/M10/C6) before the
+// resilient chain is assembled, so app.Models holds *einollm.AdaptiveModel
+// wrappers, not the raw fakes — asserting through the wrapper would make
+// this test depend on AdaptiveModel's pass-through behavior staying
+// call-for-call transparent, which is a second thing to prove and not what
+// M-2 is about.
+func TestBuild_PerProviderMaxRetriesSentinelIsWiredCorrectly(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfgContent := `
+storage:
+  sqlite_path: "` + toYAMLPath(filepath.Join(dir, "test.db")) + `"
+llm:
+  max_retries: 2
+  providers:
+    - name: omitted-retries
+      model: model-omitted
+    - name: never-retry
+      model: model-never
+      max_retries: 0
+`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(cfgContent), 0o644))
+
+	var fakes []*einollm.FakeModel
+	builder := func(cfg *config.Config, _ ...einollm.SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, map[string]einollm.TruncationSpec, map[string][]string, error) {
+		named := make(map[string]model.BaseChatModel)
+		var chain []model.BaseChatModel
+		for _, p := range cfg.LLM.Providers {
+			fm := einollm.NewFakeModel(nil, &einollm.RetryableModelError{Err: errors.New("transient")})
+			named[p.Model] = fm
+			chain = append(chain, fm)
+			fakes = append(fakes, fm)
+		}
+		return named, chain, nil, nil, nil, nil, nil
+	}
+
+	app, err := bootstrap.Build(bootstrap.Options{
+		ConfigPath:      cfgPath,
+		ProviderBuilder: builder,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = app.Shutdown(context.Background()) })
+	require.NotNil(t, app.Model, "App.Model (resilient chain) must be non-nil")
+	require.Len(t, fakes, 2, "builder must have been given both configured providers")
+	omitted, never := fakes[0], fakes[1]
+
+	_, err = app.Model.Generate(context.Background(), []*schema.Message{schema.UserMessage("hi")})
+	require.Error(t, err, "both fakes always fail, so the whole chain must be exhausted")
+
+	assert.Equal(t, 3, omitted.GenerateCalls,
+		"MaxRetries omitted must fall back to the global max_retries=2 (1 initial + 2 retries); "+
+			"got %d — the -1 'not set' sentinel is no longer reaching maxRetriesFor", omitted.GenerateCalls)
+	assert.Equal(t, 1, never.GenerateCalls,
+		"MaxRetries: 0 must mean never retry regardless of the global ceiling; got %d calls", never.GenerateCalls)
 }
 
 func TestBuildSelectsFirstMultimodalProviderAsAux(t *testing.T) {

@@ -223,3 +223,161 @@ func TestRateLimiterConcurrentBucketCreation(t *testing.T) {
 		t.Errorf("created %d buckets for one model", len(l.buckets))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// W-C-08: quotaGovernor and RateLimiter.ObserveQuota.
+// ---------------------------------------------------------------------------
+
+// TestQuotaGovernorDelay is the shape table for quotaGovernor.delay(): below
+// the floor is free, the floor-to-100 range ramps linearly, 100 is a hard
+// stop for the whole remaining window, and a stale observation (the window
+// has had time to reset since it was taken) never throttles.
+func TestQuotaGovernorDelay(t *testing.T) {
+	cases := []struct {
+		name       string
+		used       float64
+		resetAfter time.Duration
+		elapsed    time.Duration // real time since the observation, before delay() is called
+		want       time.Duration
+	}{
+		{name: "below floor is free", used: 50, resetAfter: time.Minute, elapsed: 0, want: 0},
+		{name: "exactly at floor is free", used: quotaThrottleFloor, resetAfter: time.Minute, elapsed: 0, want: 0},
+		{name: "halfway from floor to 100 is half the remaining window",
+			used: quotaThrottleFloor + (100-quotaThrottleFloor)/2, resetAfter: 100 * time.Second, elapsed: 0, want: 50 * time.Second},
+		{name: "100 percent is a hard stop for the whole remaining window",
+			used: 100, resetAfter: 30 * time.Second, elapsed: 0, want: 30 * time.Second},
+		{name: "elapsed time is subtracted from the remaining window",
+			used: 100, resetAfter: 30 * time.Second, elapsed: 10 * time.Second, want: 20 * time.Second},
+		{name: "a window that has had time to fully reset no longer throttles",
+			used: 100, resetAfter: 30 * time.Second, elapsed: time.Minute, want: 0},
+		// B-1: a server reporting a multi-day window at 100% used must not
+		// wedge every call to this model for days. delay() clamps through
+		// clampRetryAfter (errclass.go), the same ceiling Retry-After uses,
+		// rather than sleeping the raw server-reported value.
+		{name: "100 percent on a multi-day window is clamped to MaxRetryAfter",
+			used: 100, resetAfter: 7 * 24 * time.Hour, elapsed: 0, want: MaxRetryAfter},
+		{name: "a ramp value above MaxRetryAfter is also clamped",
+			used: 99, resetAfter: 7 * 24 * time.Hour, elapsed: 0, want: MaxRetryAfter},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clk2 := newFakeClock()
+			g := &quotaGovernor{now: clk2.now}
+			g.observe(QuotaWindow{UsedPercent: tc.used, ResetAfter: tc.resetAfter})
+			clk2.advance(tc.elapsed)
+			got := g.delay()
+			// Linear interpolation involves float division; allow a small
+			// tolerance rather than pinning an exact float bit pattern.
+			diff := got - tc.want
+			if diff < -time.Millisecond || diff > time.Millisecond {
+				t.Errorf("delay = %v, want ~%v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestQuotaGovernorDelayWithNoObservation pins that a governor that has never
+// observed anything is inert — the same "disabled by default" contract
+// TokenBucket has for QPM 0.
+func TestQuotaGovernorDelayWithNoObservation(t *testing.T) {
+	g := &quotaGovernor{}
+	if d := g.delay(); d != 0 {
+		t.Errorf("delay = %v on a governor with no observation, want 0", d)
+	}
+}
+
+// TestQuotaGovernorWaitRespectsContext mirrors
+// TestTokenBucketWaitRespectsContext: a cancelled context must not wait out a
+// quota-driven delay either.
+func TestQuotaGovernorWaitRespectsContext(t *testing.T) {
+	g := &quotaGovernor{}
+	g.observe(QuotaWindow{UsedPercent: 100, ResetAfter: time.Hour})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	if err := g.wait(ctx); err == nil {
+		t.Fatal("wait returned nil for a cancelled context")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("wait blocked %v on a cancelled context", elapsed)
+	}
+}
+
+// TestRateLimiterObserveQuotaPicksWorstWindow pins that ObserveQuota drives
+// the governor from whichever window is closer to exhaustion, not from a
+// fixed window name — Codex's primary and secondary windows are independent
+// and either alone can block the next call.
+func TestRateLimiterObserveQuotaPicksWorstWindow(t *testing.T) {
+	l := NewRateLimiter(RateLimitConfig{}, nil)
+	clk := newFakeClock()
+	l.quotaFor("m").now = clk.now
+	l.ObserveQuota("m", map[string]QuotaWindow{
+		"primary":   {UsedPercent: 30, ResetAfter: time.Minute},
+		"secondary": {UsedPercent: 95, ResetAfter: time.Hour},
+	})
+	g := l.quotaFor("m")
+	g.mu.Lock()
+	used, resetAfter := g.used, g.resetAfter
+	g.mu.Unlock()
+	if used != 95 || resetAfter != time.Hour {
+		t.Errorf("governor observed {%v %v}, want the secondary window (95%%, 1h)", used, resetAfter)
+	}
+}
+
+// TestRateLimiterObserveQuotaNilAndEmptyAreNoop pins that a nil limiter or an
+// empty window map costs nothing and creates nothing, so every adapter's
+// unconditional observeQuotaHeaders call is safe even when nothing was
+// parsed out of a response.
+func TestRateLimiterObserveQuotaNilAndEmptyAreNoop(t *testing.T) {
+	var nilLimiter *RateLimiter
+	nilLimiter.ObserveQuota("m", map[string]QuotaWindow{"primary": {UsedPercent: 99}}) // must not panic
+
+	l := NewRateLimiter(RateLimitConfig{}, nil)
+	l.ObserveQuota("m", nil)
+	l.ObserveQuota("m", map[string]QuotaWindow{})
+	if len(l.quotas) != 0 {
+		t.Errorf("quotas = %+v, want none created for an empty observation", l.quotas)
+	}
+}
+
+// TestRateLimiterWaitAlsoWaitsOnQuotaGovernor proves the integration point
+// this whole feature exists for: an observation fed through ObserveQuota
+// actually slows down the NEXT Wait call, even with no QPM configured at all
+// (the common, default case — see quotaGovernor's doc comment for why it is
+// not gated by TokenBucket.Enabled()).
+func TestRateLimiterWaitAlsoWaitsOnQuotaGovernor(t *testing.T) {
+	l := NewRateLimiter(RateLimitConfig{}, nil) // no QPM configured anywhere
+	clk := newFakeClock()
+	l.quotaFor("m").now = clk.now
+
+	l.ObserveQuota("m", map[string]QuotaWindow{
+		"primary": {UsedPercent: 100, ResetAfter: 50 * time.Millisecond},
+	})
+
+	start := time.Now()
+	if err := l.Wait(context.Background(), "m"); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 40*time.Millisecond {
+		t.Errorf("Wait returned after %v, want it to have blocked for ~50ms of quota-driven delay", elapsed)
+	}
+}
+
+// TestRateLimiterWaitQuotaGovernorRespectsContext pins that a cancelled
+// context still short-circuits the quota-driven half of Wait, not just the
+// TokenBucket half.
+func TestRateLimiterWaitQuotaGovernorRespectsContext(t *testing.T) {
+	l := NewRateLimiter(RateLimitConfig{}, nil)
+	l.ObserveQuota("m", map[string]QuotaWindow{
+		"primary": {UsedPercent: 100, ResetAfter: time.Hour},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	if err := l.Wait(ctx, "m"); err == nil {
+		t.Fatal("Wait returned nil for a cancelled context")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("Wait blocked %v on a cancelled context", elapsed)
+	}
+}

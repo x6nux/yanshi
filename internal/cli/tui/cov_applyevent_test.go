@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/x6nux/yanshi/internal/cli"
+	"github.com/x6nux/yanshi/internal/ctxcompact"
 	"github.com/x6nux/yanshi/internal/proto"
 )
 
@@ -204,6 +205,18 @@ func TestApplyEvent_ControlReplies(t *testing.T) {
 		m := aeModel()
 		m = m.applyEvent(cli.StreamEvent{Kind: "compact_chunk"})
 		assert.Contains(t, m.activity, "Compacting")
+	})
+
+	// W-C-04: a fallback-tagged compact_chunk (the summary model failed and
+	// Run opened a new window directly — see ctxcompact.FallbackNotice) must
+	// render a DIFFERENT activity string than an ordinary summary delta, so
+	// the acceptance criterion "兜底被记录到 activity line" has an observable
+	// witness distinct from the generic "Compacting context…" case above.
+	t.Run("compact_chunk_fallback_sets_distinct_activity", func(t *testing.T) {
+		m := aeModel()
+		m = m.applyEvent(cli.StreamEvent{Kind: "compact_chunk", Text: ctxcompact.FallbackNotice})
+		assert.Contains(t, m.activity, "fallback", "fallback chunk gets its own activity text")
+		assert.NotEqual(t, "Compacting context…", m.activity, "must differ from the ordinary summary-delta activity string")
 	})
 
 	t.Run("retry_sets_state", func(t *testing.T) {

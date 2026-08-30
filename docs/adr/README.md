@@ -26,6 +26,8 @@ ADR 不复制 `CLAUDE.md` 的内容：每条 ADR 的"关联"段指向 `CLAUDE.md
 | [0012](0012-gate-runs-argv-directly-not-through-shell-session.md) | task_gate_run 直接执行 argv，不经 shell session | accepted | W3 裁定 3 |
 | [0013](0013-mid-turn-compaction-token-dimension.md) | mid-turn 压缩的 token 会计以未压缩历史为统一量纲 | accepted | W4 |
 | [0016](0016-two-shell-readers-one-word-layer.md) | guard 保留两个 shell reader，共用同一个词法层 | accepted | W-B 再评审 R-1/R-2 |
+| [0024](0024-model-catalog-is-data-the-ladder-is-code.md) | 模型能力目录是数据，覆盖优先级是代码 | accepted | W-C-01 (INF2) |
+| [0025](0025-discovery-is-a-read-only-cache-not-a-catalog-writer.md) | 本地运行时发现是只读缓存，不是目录写入口 | accepted | W-C-03/05/06/15 |
 
 ## 状态图例
 

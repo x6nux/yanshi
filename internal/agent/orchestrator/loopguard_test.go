@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/x6nux/yanshi/internal/ctxcompact"
 	"github.com/x6nux/yanshi/internal/guard"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/loopguard"
@@ -112,6 +113,31 @@ func TestWithLoopGuardBindsOnlyWhenConfigured(t *testing.T) {
 	assert.Nil(t, g.budget, "no tool budget was configured")
 }
 
+// TestWithLoopGuard_BindsTheTokenBudgetGateItself is W-C-11's pin at the
+// orchestrator wiring layer: WithLoopGuard must bind the SAME
+// *loopguard.TokenBudgetGate instance the returned handler enforces
+// MaxTurnTokens with, retrievable via loopguard.TokenBudgetGateFromContext —
+// not a second gate built from the same config, which is exactly the kind of
+// duplicate the context_budget tool must not read from (see
+// loopguard.WithTokenBudgetGate's doc comment).
+func TestWithLoopGuard_BindsTheTokenBudgetGateItself(t *testing.T) {
+	ctx := WithLoopGuard(context.Background(), LoopGuardConfig{MaxTurnTokens: 5000})
+	gate, ok := loopguard.TokenBudgetGateFromContext(ctx)
+	require.True(t, ok, "a configured MaxTurnTokens must bind a retrievable gate")
+	assert.Equal(t, 5000, gate.Max())
+	assert.Equal(t, 0, gate.Used(), "fresh turn, nothing spent yet")
+}
+
+// TestWithLoopGuard_NoTokenBudgetMeansNoBoundGate proves the negative: when
+// MaxTurnTokens is unconfigured (but some other gate is, e.g. repetition
+// detection alone), WithLoopGuard still binds a turnGuard, but there is no
+// *loopguard.TokenBudgetGate to retrieve.
+func TestWithLoopGuard_NoTokenBudgetMeansNoBoundGate(t *testing.T) {
+	ctx := WithLoopGuard(context.Background(), LoopGuardConfig{RepetitionEnabled: true})
+	_, ok := loopguard.TokenBudgetGateFromContext(ctx)
+	assert.False(t, ok, "no MaxTurnTokens configured, so no token-budget gate to bind")
+}
+
 func TestBuildHandlerGateSelection(t *testing.T) {
 	cases := []struct {
 		name string
@@ -133,7 +159,8 @@ func TestBuildHandlerGateSelection(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.cfg.buildHandler().Names()
+			handler, _ := tc.cfg.buildHandler()
+			got := handler.Names()
 			if len(tc.want) == 0 {
 				assert.Empty(t, got)
 				return
@@ -146,7 +173,7 @@ func TestBuildHandlerGateSelection(t *testing.T) {
 
 func TestBuildHandlerCustomRepetitionStages(t *testing.T) {
 	cfg := LoopGuardConfig{RepetitionEnabled: true, RepetitionWarnAfter: 2, RepetitionStopAfter: 3, RepetitionWindow: 2}
-	h := cfg.buildHandler()
+	h, _ := cfg.buildHandler()
 	same := loopguard.ToolCall{Name: "x", ArgsHash: "h"}
 	var last loopguard.Result
 	for i := 0; i < 3; i++ {
@@ -412,8 +439,9 @@ func TestLoopGuardE2E_NoBudgetMeansNoLimit(t *testing.T) {
 func TestLoopGuardDeadlineStopsAtBoundary(t *testing.T) {
 	start := time.Now()
 	clock := start
+	handler, _ := LoopGuardConfig{TurnTimeout: time.Minute}.buildHandler()
 	g := &turnGuard{
-		handler: LoopGuardConfig{TurnTimeout: time.Minute}.buildHandler(),
+		handler: handler,
 		started: start,
 		now:     func() time.Time { return clock },
 		nudges:  map[string]int{},
@@ -582,6 +610,70 @@ func TestS8_RegisteredSetIsBoundPerTurn(t *testing.T) {
 	require.NoError(t, toolreg.Check(ctx, "fs_read"))
 	require.Error(t, toolreg.Check(ctx, "fs_mkdir"), "a phantom name must be refused")
 	require.Error(t, toolreg.Check(ctx, ""), "an empty tool name must be refused")
+}
+
+// TestWithTurnContextBindsNewWindowSignal is W-C-14's production-call-site
+// pin (GOV6): withTurnContext must bind einollm.WithNewWindowSignal on every
+// turn, unconditionally — even here, where the orchestrator's Model is a
+// bare FakeModel never wrapped in a CompactingModel — because the tool
+// handler's own success/failure branch (internal/tools/contextwindow.go's
+// run()) is the thing that would silently start reporting failure on every
+// call if this bind were ever dropped or made conditional.
+func TestWithTurnContextBindsNewWindowSignal(t *testing.T) {
+	o, err := New(Config{
+		Model:   einollm.NewFakeModel([]string{"hi"}, nil),
+		Tools:   []BaseTool{&countingTool{name: "fs_read"}},
+		Profile: allowAll(),
+	})
+	require.NoError(t, err)
+
+	ctx := o.withTurnContext(context.Background(), TurnOpts{})
+	assert.True(t, einollm.RequestNewWindow(ctx, "reason"),
+		"withTurnContext must bind a new-window signal every turn publishes into")
+}
+
+// TestWithTurnContextBindsContextBudgetSignal is W-C-11's production-call-site
+// pin (GOV6), the read-direction mirror of
+// TestWithTurnContextBindsNewWindowSignal above: withTurnContext must bind
+// einollm.WithContextBudgetSignal every turn, and a real CompactingModel
+// driven through the resulting ctx (exactly how runnerFor drives the turn's
+// model) must be able to publish into it.
+//
+// ContextBudgetFromContext alone cannot distinguish "signal bound but nothing
+// published yet" from "no signal bound at all" — both read (zero, false) by
+// design, since the context_budget tool does not need to tell those apart.
+// So the only way to prove withTurnContext's bind is real, rather than a
+// no-op that happens to look identical from the read side, is to actually
+// publish through it: construct a CompactingModel and call Generate on the
+// SAME ctx withTurnContext returned, then confirm the snapshot it left behind
+// is readable and matches ctxcompact.RemainingBudget computed independently.
+func TestWithTurnContextBindsContextBudgetSignal(t *testing.T) {
+	o, err := New(Config{
+		Model:   einollm.NewFakeModel([]string{"hi"}, nil),
+		Tools:   []BaseTool{&countingTool{name: "fs_read"}},
+		Profile: allowAll(),
+	})
+	require.NoError(t, err)
+
+	ctx := o.withTurnContext(context.Background(), TurnOpts{})
+
+	inner := einollm.NewFakeModel([]string{"reply"}, nil)
+	cm := &einollm.CompactingModel{
+		Inner:         inner,
+		Threshold:     0.99, // high enough that this short history never triggers actual compaction
+		ContextWindow: 100000,
+		KeepRecent:    4,
+	}
+	msgs := []*schema.Message{{Role: schema.User, Content: "hello"}}
+
+	_, err = cm.Generate(ctx, msgs)
+	require.NoError(t, err)
+
+	got, ok := einollm.ContextBudgetFromContext(ctx)
+	require.True(t, ok, "withTurnContext's bind must let a CompactingModel driven through this ctx publish a snapshot")
+	assert.Equal(t, 100000, got.Window)
+	wantRemaining := ctxcompact.RemainingBudget(msgs, ctxcompact.RunOpts{ModelWindow: 100000})
+	assert.Equal(t, wantRemaining, got.Remaining)
 }
 
 // TestS8_HeadlessContextAlsoBinds: `yanshi pr` and the goal loop reach tools

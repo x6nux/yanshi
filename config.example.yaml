@@ -34,6 +34,18 @@ storage:
   # memory_quota: 2000
 token: "change-me"
 llm:
+  # max_retries (W-C-07) is the global per-attempt retry ceiling for a
+  # provider that does not set its own max_retries below. Omit it (or leave
+  # 0) to keep the resilient layer's own built-in default (10).
+  #
+  # WARNING: 0 means something different here than it does on a single
+  # provider's own max_retries below. This field is a plain int, so its zero
+  # value IS "omitted" — 0 (or leaving the whole llm: block out) falls back to
+  # the built-in default of 10. A provider's own max_retries is a *int, which
+  # CAN distinguish "omitted" from "explicitly 0" — there, 0 really does mean
+  # "never retry this provider." Same digit, opposite meaning, because only
+  # one of the two types has room to represent "unset."
+  # max_retries: 5
   providers:
     # context_window is OPTIONAL. Omit it and yanshi resolves the window from a
     # built-in model catalog (routing prefixes like "openrouter/anthropic/...",
@@ -42,17 +54,59 @@ llm:
     # whose num_ctx you raised. Unknown models fall back to a deliberately
     # CONSERVATIVE default: guessing the window too high means compaction never
     # fires and the request dies, guessing low only costs one extra compaction.
+    # A negative value is rejected at load time (review-whole.md I-1) -- unlike
+    # auto_compact_threshold below, negative has no "explicitly disabled"
+    # reading here.
+    #
+    # auto_compact_threshold is OPTIONAL and mirrors context_window's role for
+    # W-C-01's data-driven model catalog: it is a FRACTION of the resolved
+    # context_window (e.g. 0.75), not an absolute token count. Omit it and
+    # yanshi resolves the threshold from the same built-in catalog (falls back
+    # to compaction.threshold below when the catalog has no opinion either —
+    # the shipped catalog currently has no rows for this field, so in practice
+    # this is the only way to set it).
+    # Set it to give one noisy model (heavy tool output, frequent repetition)
+    # its own earlier trigger point without lowering the global default for
+    # every other provider.
     #
     # max_tokens / temperature / top_p are OPTIONAL generation parameters.
     # Omitting a key leaves the provider's own default in force; setting one to
     # 0 is a real setting (temperature: 0 for deterministic judge calls) and is
     # sent to the API. Raise max_tokens when the model must emit whole files —
     # the built-in 4096 default truncates long patches.
+    #
+    # truncation_policy (W-C-09) is OPTIONAL and overrides how many head/tail
+    # lines of an oversized tool result are kept verbatim before the rest is
+    # replaced with an explicit "[... N lines omitted ...]" marker. Format is
+    # "head=<N>,tail=<M>" (either key may be omitted). Omit the whole field
+    # and yanshi resolves the policy from the built-in model catalog (falls
+    # back to a conservative head=15,tail=10 default when the catalog has no
+    # opinion either — the shipped catalog currently has no rows for this
+    # field either, so in practice this is the only way to set it; unlike
+    # auto_compact_threshold above, an unparsable value here does NOT fail
+    # startup, it degrades the same way an absent value would, with a
+    # warning logged at boot).
+    #
+    # fallback_models (M-2 / W-C-10) is OPTIONAL and names, in priority
+    # order, the registry model ids this provider's compaction-summary call
+    # falls back to when it errors — the SAME key context_window /
+    # auto_compact_threshold / truncation_policy resolve against above (the
+    # model: field's value, not the name: label). Omit it and yanshi
+    # resolves the chain from the built-in model catalog (falls back to no
+    # fallback at all when the catalog has no opinion either — the shipped
+    # catalog currently has no rows for this field either, so in practice
+    # this is the only way to set it). A listed id that no configured
+    # provider resolves to is silently dropped, not a load-time error —
+    # validating it here would need the provider registry this field is
+    # itself an input to.
     - name: "openai"
       kind: "openai"
       model: "gpt-4o"
       api_key: "${OPENAI_API_KEY}"
       context_window: 128000      # this model's token window; compaction sizes against it
+      # auto_compact_threshold: 0.75  # fraction of context_window; omit to use the catalog/global default
+      # truncation_policy: "head=20,tail=15"  # per-model tool-output retention; omit to use the catalog/default
+      # fallback_models: ["gpt-4o-mini"]  # compaction-summary fallback chain; omit to use the catalog/no-fallback default
       # max_tokens: 32000         # cap per response; omit to keep the 4096 default
       # temperature: 0.2          # omit to keep the provider default; 0 is a valid setting
       # top_p: 0.95               # tune this OR temperature, not both
@@ -63,6 +117,24 @@ llm:
       api_key: "${ANTHROPIC_API_KEY}"
       context_window: 200000
       multimodal: true            # native image input (Tier G)
+      # max_retries: 3             # W-C-07: overrides llm.max_retries for just this provider
+      # headers:                   # W-C-02: extra HTTP headers sent on every request to this
+      #   X-Corp-Gateway-Token: "${CORP_GATEWAY_TOKEN}"  # provider; ${VAR} expands like api_key.
+      #                             # Values are as sensitive as api_key — registered with the
+      #                             # redactor at boot, never logged in the clear.
+      # auth:                      # W-C-12: command-based token auth, instead of a static api_key.
+      #   command: ["aws", "sso-token", "print"]  # stdout (trimmed) becomes the credential.
+      #   refresh_interval: 15m    # re-run the command at most this often; also re-run once after
+      #                             # any 401. Omit to default to 15m. Runs through secproc.Launch
+      #                             # (Authorized + credential-scrubbed), same as shell_run/ACP.
+      #                             # "Credential-scrubbed" cuts both ways: the command does NOT
+      #                             # inherit yanshi's own ambient credential env vars (AWS_*,
+      #                             # OPENAI_API_KEY, ...) — they are wiped along with everything
+      #                             # else on the credential axis before this argv is spawned. If
+      #                             # your helper script itself needs a secret from the
+      #                             # environment (e.g. to mint an STS token), it must obtain it
+      #                             # some other way (baked into the script, a config file, its
+      #                             # own login state) — yanshi will not forward it in.
     # Local runtimes (Ollama / LM Studio / vLLM / llama.cpp) are auto-detected
     # from base_url (loopback, RFC1918, *.local) or from kind, and are NEVER
     # given a cloud model's window: a local serve truncates at its own num_ctx

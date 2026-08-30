@@ -3,6 +3,7 @@ package bootstrap_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/require"
 
@@ -777,6 +779,72 @@ func TestShellV2TaskJobIsControllableWithTheIDItReturns(t *testing.T) {
 		"the underlying session was not canceled")
 }
 
+// providerLadderBuilder is a bootstrap.ProviderBuilder fixture for
+// TestProviderWindowsReachTheOrchestrator / TestProviderThresholdsReachBothCompactionConfigs
+// (F-2 / W-C-05), TestProviderTruncationPolicyReachesTheActiveTurn (M-4), and
+// TestProviderFallbackModelsReachTheCompactionConfig (M-2). Unlike the
+// package's fakeProviderBuilder (which always returns nil
+// windows/thresholds/truncations/fallbacks — deliberately, so it does not
+// accidentally pin this ladder), it returns KNOWN, non-zero, non-default
+// per-model values keyed by the registry key (p.Model), mirroring what
+// einollm.BuildProviders really does when a config override or a
+// models.yaml catalog hit resolves one.
+func providerLadderBuilder(cfg *config.Config, _ ...einollm.SecretRegistrar) (map[string]model.BaseChatModel, []model.BaseChatModel, map[string]int, map[string]float64, map[string]einollm.TruncationSpec, map[string][]string, error) {
+	named := make(map[string]model.BaseChatModel)
+	var chain []model.BaseChatModel
+	windows := make(map[string]int)
+	thresholds := make(map[string]float64)
+	truncations := make(map[string]einollm.TruncationSpec)
+	fallbacks := make(map[string][]string)
+	for _, p := range cfg.LLM.Providers {
+		fm := einollm.NewFakeModel([]string{"reply"}, nil)
+		named[p.Model] = fm
+		chain = append(chain, fm)
+	}
+	// Only "small-model" gets a resolved entry — deliberately, so the tests
+	// below can also assert the OTHER provider still falls back to the
+	// global Compaction.*/TruncationPolicy values (or no fallback chain at
+	// all) instead of every provider sharing one map entry by accident.
+	windows["small-model"] = 42000
+	thresholds["small-model"] = 0.55
+	truncations["small-model"] = einollm.TruncationSpec{HeadLines: 30, TailLines: 20}
+	fallbacks["small-model"] = []string{"big-model"}
+	return named, chain, windows, thresholds, truncations, fallbacks, nil
+}
+
+// buildAppWithProviderLadder builds a real App with two providers — one
+// ("small-model") that providerLadderBuilder resolves a per-model window and
+// threshold for, one ("big-model") that it deliberately leaves unresolved —
+// so tests can assert both the per-model hit AND the fallback in the same
+// build. compaction.threshold/context_window are left unset in the YAML so
+// config.applyDefaults fills the conventional 0.8/256000, giving a value the
+// per-model entries above are required to differ from (otherwise a test
+// asserting equality to the per-model value would pass even if bootstrap
+// wired the global fallback into every model instead).
+func buildAppWithProviderLadder(t *testing.T) *bootstrap.App {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	yamlBytes := fmt.Appendf(nil, `
+llm:
+  providers:
+    - name: small
+      model: small-model
+    - name: big
+      model: big-model
+storage:
+  sqlite_path: %q
+`, filepath.Join(dir, "test.db"))
+	require.NoError(t, os.WriteFile(cfgPath, yamlBytes, 0644))
+	app, err := bootstrap.Build(bootstrap.Options{
+		ConfigPath:      cfgPath,
+		ProviderBuilder: providerLadderBuilder,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { app.Shutdown(context.Background()) })
+	return app
+}
+
 // TestProviderWindowsReachTheOrchestrator pins the composition root's half of
 // the per-model compaction window.
 //
@@ -785,24 +853,226 @@ func TestShellV2TaskJobIsControllableWithTheIDItReturns(t *testing.T) {
 // side notices if bootstrap stops filling the map: windowFor returns 0 for
 // every model, wrapCompaction reads 0 as "use the configured window", and every
 // provider silently shares the global fallback again -- which is exactly the
-// defect W4 removed, restored without a single test going red. Measured: with
-// this assignment set to nil, bootstrap, orchestrator and archtest all stay
-// green.
+// defect W4 removed, restored without a single test going red.
 //
-// Checked at the source because the map is not reachable from App: it goes
-// into orchestrator.Config, which Build consumes and does not retain. A test
-// that reconstructed the whole Build to observe it would be pinning the
-// assembly harness rather than this line.
+// F-2 rewrite: this used to read bootstrap.go as text (strings.Contains on
+// the assignment literal), which stays green even when the RHS is reassigned
+// to something that compiles but is wrong (nil, an empty map, the wrong
+// variable) — a text match on the assignment site cannot see what value
+// actually reaches a built App. It now asserts on Orchestrator.CompactionForTest()
+// (added alongside this fix) against a really-built App, the same landing
+// pattern internal/bootstrap/w3wiring_test.go uses for GOV5/GOV7.
 func TestProviderWindowsReachTheOrchestrator(t *testing.T) {
-	src, err := os.ReadFile("bootstrap.go")
-	if err != nil {
-		t.Fatalf("read bootstrap.go: %v", err)
+	app := buildAppWithProviderLadder(t)
+	cc := app.Orch.CompactionForTest()
+	require.Equal(t, 42000, cc.ProviderWindows["small-model"],
+		"a provider with a catalog/config-resolved window must reach the orchestrator's mid-turn CompactionConfig")
+	require.NotEqual(t, cc.ContextWindow, cc.ProviderWindows["small-model"],
+		"this test is only meaningful if the resolved value actually differs from the global fallback")
+	require.Zero(t, cc.ProviderWindows["big-model"],
+		"a provider the builder left unresolved must not spuriously acquire an entry")
+}
+
+// TestProviderThresholdsReachBothCompactionConfigs pins the composition
+// root's half of the W-C-01 (INF2) per-model auto-compact threshold — the
+// mid-turn/pre-turn sibling of TestProviderWindowsReachTheOrchestrator above.
+//
+// Unlike the windows assignment, this one has TWO independent consumers to
+// keep wired: orchestrator.CompactionConfig (mid-turn, consumed by
+// wrapCompaction via CompactionConfig.thresholdFor) and apihttp.CompactionConfig
+// (pre-turn, consumed by ws_compaction.go's and chat.go's thresholdFor). Both
+// assignments must survive independently — a future edit could easily fix one
+// call site and miss the other, exactly the asymmetry the CLAUDE.md
+// architecture section warns the two window paths already have. Asserting on
+// BOTH App.Orch.CompactionForTest() and App.ServerCompaction (rather than
+// either alone) is what makes this test fail on a single-site regression
+// instead of passing as long as one survives. The http side is read off
+// App.ServerCompaction rather than a Server accessor because App.Server is
+// *net/http.Server, not *apihttp.Server (see ServerCompaction's doc comment
+// on the App struct for why).
+//
+// F-2 rewrite: this used to strings.Count "ProviderThresholds: providerThresholds,"
+// occurrences in bootstrap.go's source text and require exactly 2 — a count
+// that stays exactly 2 across a huge range of wrong edits (e.g. swapping
+// which local variable each literal receives, since both are still named
+// "providerThresholds" at their call sites) and goes stale the moment either
+// literal is reformatted across lines. It now builds a real App and reads the
+// value that actually reached each consumer.
+func TestProviderThresholdsReachBothCompactionConfigs(t *testing.T) {
+	app := buildAppWithProviderLadder(t)
+
+	occ := app.Orch.CompactionForTest()
+	require.Equal(t, 0.55, occ.ProviderThresholds["small-model"],
+		"a provider with a catalog/config-resolved threshold must reach the orchestrator's mid-turn CompactionConfig")
+	require.NotEqual(t, occ.Threshold, occ.ProviderThresholds["small-model"],
+		"this test is only meaningful if the resolved value actually differs from the global fallback")
+	require.Zero(t, occ.ProviderThresholds["big-model"],
+		"a provider the builder left unresolved must not spuriously acquire an entry")
+
+	svc := app.ServerCompaction
+	require.Equal(t, 0.55, svc.ProviderThresholds["small-model"],
+		"a provider with a catalog/config-resolved threshold must ALSO reach the http server's pre-turn CompactionConfig, independently of the orchestrator's copy")
+	require.NotEqual(t, svc.Threshold, svc.ProviderThresholds["small-model"],
+		"this test is only meaningful if the resolved value actually differs from the global fallback")
+	require.Zero(t, svc.ProviderThresholds["big-model"],
+		"a provider the builder left unresolved must not spuriously acquire an entry")
+}
+
+// TestProviderTruncationPolicyReachesTheActiveTurn pins the composition
+// root's per-provider half of the M-4 fix for W-C-09's truncation_policy.
+//
+// Before this fix, orchestrator.Config.TruncationPolicy was the ONLY
+// resolution bootstrap ever wired — read once from cfg.LLM.Providers[0] at
+// boot and bound unconditionally onto every turn by bindExecutionContext —
+// so a turn running on a NON-primary provider (reachable via /model) got the
+// PRIMARY provider's truncation_policy instead of its own, even though
+// ProviderConfig.TruncationPolicy's own doc comment documents a per-provider
+// override. See Orchestrator.truncationPolicyFor's doc comment for the fix.
+//
+// Read off WithTurnContextForTest (a real turn's context-binding path,
+// TurnOpts.ModelID included) rather than BindExecutionContextForTest —
+// bindExecutionContext alone only ever binds the DEFAULT value; the
+// per-model override only takes effect inside withTurnContext. That is
+// exactly the gap this test closes: TestTruncationPolicyOverrideReachesOrchestratorContext
+// above only proves the single-provider/no-ModelID case, which stayed green
+// throughout the M-4 bug's lifetime.
+func TestProviderTruncationPolicyReachesTheActiveTurn(t *testing.T) {
+	app := buildAppWithProviderLadder(t)
+
+	smallCtx := app.Orch.WithTurnContextForTest(context.Background(), orchestrator.TurnOpts{ModelID: "small-model"})
+	smallSpec, ok := tools.TruncationPolicyFromContext(smallCtx)
+	require.True(t, ok, "withTurnContext must bind a truncation policy unconditionally")
+	require.Equal(t, einollm.TruncationSpec{HeadLines: 30, TailLines: 20}, smallSpec,
+		"a turn on the provider WITH a resolved truncation policy must get its OWN policy, not the primary provider's")
+
+	bigCtx := app.Orch.WithTurnContextForTest(context.Background(), orchestrator.TurnOpts{ModelID: "big-model"})
+	bigSpec, ok := tools.TruncationPolicyFromContext(bigCtx)
+	require.True(t, ok, "withTurnContext must bind a truncation policy unconditionally")
+	require.Equal(t, einollm.DefaultTruncationSpec, bigSpec,
+		"a provider the builder left unresolved must fall back to the global default, not spuriously acquire an entry")
+	require.NotEqual(t, smallSpec, bigSpec,
+		"this test is only meaningful if the two turns actually resolve to different policies")
+}
+
+// TestProviderFallbackModelsReachTheCompactionConfig pins the composition
+// root's half of the M-2 fix for W-C-10's compaction-summary fallback
+// chain — the fourth and last of the four provider-level resolution
+// ladders (context_window / auto_compact_threshold / truncation_policy /
+// fallback_models), and the only one this test suite could not previously
+// exercise at all: before ProviderConfig.FallbackModels existed there was
+// no config-level input to drive a per-model fallback chain through a real
+// App build, since the shipped catalog (models.yaml, Ruling RC-8) ships
+// zero fallback_models rows.
+//
+// providerLadderBuilder's fixture stands in for BuildProviders' declared-id
+// resolution (ResolveFallbackModels) directly, so this test is really
+// pinning the SECOND half — buildProviderFallbacks turning a declared id
+// into the live model.BaseChatModel object registered under that id, and
+// bootstrap forwarding the result to BOTH consumers — rather than the
+// resolution-precedence first half, which
+// internal/llm/eino::TestResolveFallbackModels_OverrideOutranksCatalog pins
+// directly (mirroring how TestProviderTruncationPolicyReachesTheActiveTurn
+// pins bootstrap's forwarding while modelcatalog_test.go's
+// TestResolveTruncationPolicy_OverrideOutranksCatalog pins
+// ResolveTruncationPolicy itself).
+//
+// Both consumers are asserted independently, same rationale as
+// TestProviderThresholdsReachBothCompactionConfigs above: a future edit
+// could fix bootstrap's orchestrator.Config wiring and miss the
+// apihttp.Config one (or vice versa) and this test would still fail on
+// whichever side broke, instead of passing as long as one survives.
+func TestProviderFallbackModelsReachTheCompactionConfig(t *testing.T) {
+	app := buildAppWithProviderLadder(t)
+
+	occ := app.Orch.CompactionForTest()
+	require.Len(t, occ.ProviderFallbacks["small-model"], 1,
+		"small-model's declared fallback_models=[\"big-model\"] must resolve to exactly one live model in the orchestrator's mid-turn CompactionConfig")
+	require.Empty(t, occ.ProviderFallbacks["big-model"],
+		"a provider the builder left undeclared must not spuriously acquire a fallback chain")
+
+	svc := app.ServerCompaction
+	require.Len(t, svc.ProviderFallbacks["small-model"], 1,
+		"small-model's declared fallback_models=[\"big-model\"] must ALSO resolve in the http server's pre-turn CompactionConfig, independently of the orchestrator's copy")
+	require.Empty(t, svc.ProviderFallbacks["big-model"],
+		"a provider the builder left undeclared must not spuriously acquire a fallback chain")
+}
+
+// buildAppWithTruncationPolicy builds a real App (FakeModel:true, so no
+// network client construction) whose first provider carries the given
+// truncation_policy override string (possibly empty). It exercises the REAL
+// providerBuilder path (no ProviderBuilder override), because W-C-09's
+// resolution in bootstrap.go reads cfg.LLM.Providers[0] directly rather than
+// going through the einollm.BuildProviders return values the ladder fixtures
+// above stub out.
+func buildAppWithTruncationPolicy(t *testing.T, override string) *bootstrap.App {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
+	policyLine := ""
+	if override != "" {
+		policyLine = "      truncation_policy: " + override + "\n"
 	}
-	if !strings.Contains(string(src), "ProviderWindows:   providerWindows,") {
-		t.Error("the orchestrator's CompactionConfig no longer receives providerWindows: " +
-			"every model would fall back to the global context window, so a provider " +
-			"with a smaller one gets a compaction threshold it can never reach")
-	}
+	yamlBytes := fmt.Appendf(nil, `
+llm:
+  providers:
+    - name: literal
+      kind: openai
+      model: gpt-fake
+      api_key: sk-fake
+%sstorage:
+  sqlite_path: %q
+`, policyLine, dbPath)
+	require.NoError(t, os.WriteFile(cfgPath, yamlBytes, 0o644))
+	app, err := bootstrap.Build(bootstrap.Options{ConfigPath: cfgPath, FakeModel: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { app.Shutdown(context.Background()) })
+	return app
+}
+
+// TestTruncationPolicyOverrideReachesOrchestratorContext (W-C-09) is the full
+// wire: a ProviderConfig.TruncationPolicy override in config.yaml must reach
+// spillover.go's consumer via bootstrap's resolution -> orchestrator.Config
+// -> Orchestrator.truncationPolicy -> bindExecutionContext's unconditional
+// tools.WithTruncationPolicy bind. Read off BindExecutionContextForTest (the
+// same landing pattern TestOrchestratorReceivesSecuritySubsystems uses)
+// rather than a text match on bootstrap.go, so a wrong-variable or
+// forgotten-field regression that still compiles is caught.
+func TestTruncationPolicyOverrideReachesOrchestratorContext(t *testing.T) {
+	app := buildAppWithTruncationPolicy(t, `"head=22,tail=13"`)
+	ctx := app.Orch.BindExecutionContextForTest(context.Background(), "")
+	spec, ok := tools.TruncationPolicyFromContext(ctx)
+	require.True(t, ok, "bindExecutionContext must bind a truncation policy unconditionally")
+	require.Equal(t, einollm.TruncationSpec{HeadLines: 22, TailLines: 13}, spec,
+		"the config.yaml override must reach spillPreview's consumer, not the catalog/default")
+}
+
+// TestTruncationPolicyFallsBackToDefaultWhenUnset pins the "no override, no
+// catalog opinion" branch: RC-9 ships zero catalog rows, so an unconfigured
+// deployment must resolve to einollm.DefaultTruncationSpec end to end, not a
+// zero-value TruncationSpec (which would mean spillPreview keeps NOTHING).
+func TestTruncationPolicyFallsBackToDefaultWhenUnset(t *testing.T) {
+	app := buildAppWithTruncationPolicy(t, "")
+	ctx := app.Orch.BindExecutionContextForTest(context.Background(), "")
+	spec, ok := tools.TruncationPolicyFromContext(ctx)
+	require.True(t, ok, "bindExecutionContext must bind a truncation policy unconditionally even with no override")
+	require.Equal(t, einollm.DefaultTruncationSpec, spec,
+		"an unconfigured deployment must resolve to the default, not a zero-value spec")
+}
+
+// TestTruncationPolicyMalformedOverrideFallsBackToDefaultWithoutFailingBoot
+// pins the load-time-unvalidated half of W-C-09: internal/config.Config
+// cannot validate ProviderConfig.TruncationPolicy's format without importing
+// internal/llm/eino back (an import cycle — see that field's doc comment), so
+// a typo must degrade to the default at resolution time rather than refusing
+// to boot.
+func TestTruncationPolicyMalformedOverrideFallsBackToDefaultWithoutFailingBoot(t *testing.T) {
+	app := buildAppWithTruncationPolicy(t, `"not-a-valid-policy"`)
+	ctx := app.Orch.BindExecutionContextForTest(context.Background(), "")
+	spec, ok := tools.TruncationPolicyFromContext(ctx)
+	require.True(t, ok, "a malformed override must still resolve to SOME policy, not leave ctx unbound")
+	require.Equal(t, einollm.DefaultTruncationSpec, spec,
+		"a malformed override falls back to the default exactly as if it were empty")
 }
 
 // TestUnregisteredCompactionModelIsReported pins the warning for a
