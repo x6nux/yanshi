@@ -1,6 +1,7 @@
 package loopguard
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -466,6 +467,66 @@ func TestTokenBudgetGateNilSafe(t *testing.T) {
 	}
 	if g.Used() != 0 {
 		t.Fatal("nil gate Used must be 0")
+	}
+	if g.Max() != 0 {
+		t.Fatal("nil gate Max must be 0")
+	}
+}
+
+// TestTokenBudgetGateMax pins Max as a plain read of the configured ceiling —
+// unlike Used it does not depend on any Check call having happened yet.
+func TestTokenBudgetGateMax(t *testing.T) {
+	g := NewTokenBudgetGate(12345)
+	if got := g.Max(); got != 12345 {
+		t.Fatalf("Max = %d, want 12345", got)
+	}
+}
+
+// TestWithTokenBudgetGate_NilGateIsNoop: NewTokenBudgetGate(0) returns nil for
+// "no limit configured" (see its own doc comment), and binding that nil must
+// leave the context exactly as if WithTokenBudgetGate had never been called —
+// not a context carrying a nil gate that TokenBudgetGateFromContext would
+// have to special-case to avoid handing a caller a pointer whose Used()/Max()
+// both read 0 and look like an exhausted budget.
+func TestWithTokenBudgetGate_NilGateIsNoop(t *testing.T) {
+	ctx := WithTokenBudgetGate(context.Background(), nil)
+	if _, ok := TokenBudgetGateFromContext(ctx); ok {
+		t.Fatal("binding a nil gate must not make TokenBudgetGateFromContext report ok=true")
+	}
+}
+
+// TestTokenBudgetGateFromContext_NotBound covers the far more common case:
+// most turn contexts (sub-agents, tests, MaxTurnTokens left unconfigured)
+// never call WithTokenBudgetGate at all.
+func TestTokenBudgetGateFromContext_NotBound(t *testing.T) {
+	if _, ok := TokenBudgetGateFromContext(context.Background()); ok {
+		t.Fatal("an unbound context must report ok=false")
+	}
+}
+
+// TestWithTokenBudgetGate_RoundTripsTheExactInstance is W-C-11's pin at the
+// loopguard layer: the context must hand back the SAME *TokenBudgetGate
+// pointer that was bound, not a copy or a freshly constructed gate with the
+// same Max — because Check() below is mutating that instance's accumulator
+// the whole turn, and a copy would silently diverge the moment either side
+// observed another call.
+func TestWithTokenBudgetGate_RoundTripsTheExactInstance(t *testing.T) {
+	g := NewTokenBudgetGate(1000)
+	ctx := WithTokenBudgetGate(context.Background(), g)
+
+	got, ok := TokenBudgetGateFromContext(ctx)
+	if !ok {
+		t.Fatal("expected ok=true for a bound gate")
+	}
+	if got != g {
+		t.Fatal("must round-trip the exact pointer, not a copy")
+	}
+
+	// Prove it really is the same instance: mutate through the ORIGINAL
+	// reference and confirm the context-retrieved one observes the change.
+	g.Check(Observation{Iteration: 0, PromptTokens: 300, CompletionTokens: 20})
+	if got.Used() != 320 {
+		t.Fatalf("Used via context-retrieved gate = %d, want 320 (mutation via the original pointer must be visible)", got.Used())
 	}
 }
 

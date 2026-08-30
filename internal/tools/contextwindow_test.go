@@ -3,13 +3,17 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/x6nux/yanshi/internal/ctxcompact"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
+	"github.com/x6nux/yanshi/internal/loopguard"
 )
 
 // TestContextWindowTools_RequestsOnABoundSignal proves the handler's success
@@ -72,8 +76,144 @@ func TestContextWindowTools_RejectsEmptyReason(t *testing.T) {
 // makes the tool fail-closed at runtime and reddens GOV5.
 func TestContextWindowTools_NameIsRegisterable(t *testing.T) {
 	got := NewContextWindowTools().Tools()
-	require.Len(t, got, 1)
-	info, err := got[0].Info(context.Background())
+	require.Len(t, got, 2)
+	var names []string
+	for _, tl := range got {
+		info, err := tl.Info(context.Background())
+		require.NoError(t, err)
+		names = append(names, info.Name)
+	}
+	require.Equal(t, []string{"context_new_window", "context_budget"}, names)
+}
+
+// TestContextBudget_NeitherTracked proves the handler degrades gracefully —
+// not with an error, since an unconfigured MaxTurnTokens and a model with
+// compaction disabled are both ordinary, legitimate configurations, not
+// wiring bugs (context_new_window's "not available" error is the wrong shape
+// here for exactly that reason).
+func TestContextBudget_NeitherTracked(t *testing.T) {
+	ct := NewContextWindowTools()
+	out, err := ct.budget(context.Background(), "")
 	require.NoError(t, err)
-	require.Equal(t, "context_new_window", info.Name)
+
+	var res contextBudgetResult
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	assert.Nil(t, res.TurnTokens)
+	assert.Nil(t, res.Context)
+	assert.Contains(t, res.Note, "turn token budget")
+	assert.Contains(t, res.Note, "context window budget")
+}
+
+// TestContextBudget_TurnTokensTracksTheLiveGate is W-C-11's mutation pin for
+// the turn-token half: it binds the EXACT *loopguard.TokenBudgetGate instance
+// loopguard's own middleware would mutate, calls the tool BEFORE and AFTER
+// mutating that instance through Check (the same method the loopguard
+// middleware calls on every iteration), and requires the tool's JSON to
+// follow the mutation exactly. A handler that captured Used/Max once at bind
+// time, or that computed its own independent counter, would fail the second
+// assertion.
+func TestContextBudget_TurnTokensTracksTheLiveGate(t *testing.T) {
+	ct := NewContextWindowTools()
+	gate := loopguard.NewTokenBudgetGate(1000)
+	ctx := loopguard.WithTokenBudgetGate(context.Background(), gate)
+
+	out, err := ct.budget(ctx, "")
+	require.NoError(t, err)
+	var res contextBudgetResult
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	require.NotNil(t, res.TurnTokens)
+	assert.Equal(t, turnTokenBudget{Used: 0, Max: 1000, Remaining: 1000}, *res.TurnTokens)
+	assert.Nil(t, res.Context)
+
+	// Mutate the SAME gate instance the way loopguard's middleware does.
+	gate.Check(loopguard.Observation{PromptTokens: 300, CompletionTokens: 50})
+
+	out, err = ct.budget(ctx, "")
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	require.NotNil(t, res.TurnTokens)
+	assert.Equal(t, turnTokenBudget{Used: 350, Max: 1000, Remaining: 650}, *res.TurnTokens,
+		"the tool's answer must follow the mutation of the live gate, not a value captured earlier")
+}
+
+// TestContextBudget_ContextWindowTracksTheLiveSnapshot is W-C-11's mutation
+// pin for the context-window half: it drives a REAL *einollm.CompactingModel
+// through Generate — the exact call CompactingModel.maybeCompact's
+// recordContextBudget runs inside of — across two different-sized histories,
+// and requires the tool's JSON to follow, matching
+// ctxcompact.RemainingBudget/EstimateTokens computed independently for each
+// history. A handler that re-derived these numbers instead of reading the
+// published snapshot would very likely disagree with at least one of the two
+// readings.
+func TestContextBudget_ContextWindowTracksTheLiveSnapshot(t *testing.T) {
+	ct := NewContextWindowTools()
+	ctx := einollm.WithContextBudgetSignal(context.Background())
+
+	out, err := ct.budget(ctx, "")
+	require.NoError(t, err)
+	var res contextBudgetResult
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	assert.Nil(t, res.Context, "nothing published yet")
+
+	cm := &einollm.CompactingModel{
+		Inner:         einollm.NewFakeModel([]string{"reply"}, nil),
+		Threshold:     0.99,
+		ContextWindow: 100000,
+		KeepRecent:    4,
+	}
+	small := []*schema.Message{{Role: schema.User, Content: "hi"}}
+	_, err = cm.Generate(ctx, small)
+	require.NoError(t, err)
+
+	out, err = ct.budget(ctx, "")
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	require.NotNil(t, res.Context)
+	wantSmall := ctxcompact.RemainingBudget(small, ctxcompact.RunOpts{ModelWindow: 100000})
+	assert.Equal(t, wantSmall, res.Context.Remaining)
+	assert.Nil(t, res.TurnTokens)
+
+	big := make([]*schema.Message, 40)
+	for i := range big {
+		big[i] = &schema.Message{Role: schema.User, Content: fmt.Sprintf("message number %d with some extra padding text", i)}
+	}
+	_, err = cm.Generate(ctx, big)
+	require.NoError(t, err)
+
+	out, err = ct.budget(ctx, "")
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	require.NotNil(t, res.Context)
+	wantBig := ctxcompact.RemainingBudget(big, ctxcompact.RunOpts{ModelWindow: 100000})
+	assert.Equal(t, wantBig, res.Context.Remaining,
+		"the tool's answer must follow the second Generate call's larger history, not the first snapshot")
+	assert.NotEqual(t, wantSmall, wantBig, "premise: the two histories really do have different remaining budgets")
+}
+
+// TestContextBudget_BothTrackedNoNote proves Note is only populated when
+// something really is missing — a caller parsing this JSON should be able to
+// tell "fully tracked" apart from "partially tracked" without string-matching
+// the absence of a note against its presence.
+func TestContextBudget_BothTrackedNoNote(t *testing.T) {
+	ct := NewContextWindowTools()
+	gate := loopguard.NewTokenBudgetGate(1000)
+	ctx := loopguard.WithTokenBudgetGate(context.Background(), gate)
+	ctx = einollm.WithContextBudgetSignal(ctx)
+
+	cm := &einollm.CompactingModel{
+		Inner:         einollm.NewFakeModel([]string{"reply"}, nil),
+		Threshold:     0.99,
+		ContextWindow: 100000,
+		KeepRecent:    4,
+	}
+	_, err := cm.Generate(ctx, []*schema.Message{{Role: schema.User, Content: "hi"}})
+	require.NoError(t, err)
+
+	out, err := ct.budget(ctx, "")
+	require.NoError(t, err)
+	var res contextBudgetResult
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	assert.NotNil(t, res.TurnTokens)
+	assert.NotNil(t, res.Context)
+	assert.Empty(t, res.Note)
 }

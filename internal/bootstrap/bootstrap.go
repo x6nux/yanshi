@@ -838,6 +838,12 @@ func Build(opts Options) (*App, error) {
 	// evicted, this lets the model skip straight to a trimmed window BEFORE
 	// the threshold gate would ever fire, when it already knows it does not
 	// need what is about to be dropped.
+	//
+	// W-C-11: context_budget — a read-only query the model can make BEFORE
+	// deciding whether context_new_window is worth calling at all. Both tools
+	// are registered from the same tools.NewContextWindowTools().Tools()
+	// call, so a future third tool added to that package needs no change
+	// here.
 	for _, t := range tools.NewContextWindowTools().Tools() {
 		allTools = append(allTools, t)
 	}

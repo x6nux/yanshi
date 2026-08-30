@@ -176,3 +176,34 @@ func checkOverflow(tokens int, opts RunOpts) error {
 func CheckContextLimit(msgs []*schema.Message, opts RunOpts) error {
 	return checkOverflow(EstimateTokens(msgs), opts)
 }
+
+// RemainingBudget reports how much of the turn's input budget (budgetFor:
+// the context window less the output reserve) is unused by msgs.
+//
+// W-C-11: the model-facing "how much context do I have left" tool needs a
+// number, not a pass/fail — CheckContextLimit only ever says "fits" or
+// "does not fit" via an error, which is the right shape for the send-time
+// gate but throws away the margin a caller asking ahead of time wants to
+// see. RemainingBudget calls the SAME budgetFor/effectiveReserve/
+// EstimateTokens chain CheckContextLimit does, so the two can never
+// disagree about where the line is: budgetFor(opts) - EstimateTokens(msgs)
+// is negative in exactly the cases CheckContextLimit would refuse, and
+// TestRemainingBudgetAgreesWithCheckContextLimit pins that boundary across a
+// table of windows and reserves.
+//
+// A negative result means msgs already exceeds the budget by that many
+// tokens, mirroring the deficit CheckContextLimit's *ContextOverflowError
+// would report.
+func RemainingBudget(msgs []*schema.Message, opts RunOpts) int {
+	if opts.ModelWindow <= 0 {
+		// Mirrors budgetFor's own "0 means unbudgeted" convention (see its doc
+		// comment) instead of reporting a large negative deficit for a caller
+		// that configured no limit at all. This keeps RemainingBudget's answer
+		// ("nothing tracked") consistent with CheckContextLimit's own answer
+		// for the same input ("never overflows" — there is no limit to be
+		// over), rather than the two disagreeing about whether an unbudgeted
+		// window is a problem.
+		return 0
+	}
+	return budgetFor(opts) - EstimateTokens(msgs)
+}

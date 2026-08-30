@@ -1353,3 +1353,109 @@ func TestCompactingModel_NewWindowRequestFiresNoticeOnCallback(t *testing.T) {
 	require.True(t, did)
 	assert.Equal(t, []string{ctxcompact.NewWindowNotice}, got)
 }
+
+// TestContextBudgetFromContext_NoSignalBound mirrors
+// TestRequestNewWindow_NoSignalBound for the W-C-11 read side: a context that
+// never called WithContextBudgetSignal (a sub-agent turn, most tests, any
+// call site predating this wiring) must report "not available" rather than a
+// zero-value snapshot that looks like a real "nothing left" answer.
+func TestContextBudgetFromContext_NoSignalBound(t *testing.T) {
+	_, ok := ContextBudgetFromContext(context.Background())
+	assert.False(t, ok, "no signal bound on this context")
+}
+
+// TestRecordContextBudget_AgreesWithDirectCtxcompactCall is W-C-11's core
+// pin: recordContextBudget must publish EXACTLY what calling
+// ctxcompact.EstimateTokens/RemainingBudget directly on the same msgs/window
+// would produce, across a table of windows and history sizes. A future
+// change that re-derives these numbers with different arithmetic — even
+// arithmetic that looks equivalent — would very likely disagree with the
+// direct call on at least one row, which is what this test exists to catch.
+func TestRecordContextBudget_AgreesWithDirectCtxcompactCall(t *testing.T) {
+	cases := []struct {
+		name   string
+		window int
+		n      int
+	}{
+		{"comfortably under budget", 10_000, 5},
+		{"comfortably over budget", 1_000, 100},
+		{"empty history", 1_000, 0},
+		{"large window many messages", 200_000, 40},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msgs := make([]*schema.Message, tc.n)
+			for i := range msgs {
+				msgs[i] = bigMessage(50)
+			}
+
+			ctx := WithContextBudgetSignal(context.Background())
+			recordContextBudget(ctx, msgs, tc.window)
+
+			got, ok := ContextBudgetFromContext(ctx)
+			require.True(t, ok, "recordContextBudget must publish a snapshot when a signal is bound")
+
+			wantUsed := ctxcompact.EstimateTokens(msgs)
+			wantRemaining := ctxcompact.RemainingBudget(msgs, ctxcompact.RunOpts{ModelWindow: tc.window})
+			assert.Equal(t, tc.window, got.Window)
+			assert.Equal(t, wantUsed, got.Used, "Used must be exactly ctxcompact.EstimateTokens, not a re-derived count")
+			assert.Equal(t, wantRemaining, got.Remaining, "Remaining must be exactly ctxcompact.RemainingBudget, not a re-derived number")
+		})
+	}
+}
+
+// TestRecordContextBudget_NoSignalBoundIsNoop proves the write side is
+// equally nil-safe: calling recordContextBudget on a context with no bound
+// signal (the overwhelming majority of call sites — sub-agent turns, unit
+// tests that construct a CompactingModel directly) must not panic and must
+// leave nothing behind to read.
+func TestRecordContextBudget_NoSignalBoundIsNoop(t *testing.T) {
+	ctx := context.Background()
+	require.NotPanics(t, func() {
+		recordContextBudget(ctx, []*schema.Message{bigMessage(10)}, 1000)
+	})
+	_, ok := ContextBudgetFromContext(ctx)
+	assert.False(t, ok)
+}
+
+// TestRecordContextBudget_NonPositiveWindowIsNoop mirrors
+// ctxcompact.RemainingBudget's own "0 means unbudgeted" convention: a turn
+// whose model has no configured context window publishes nothing, rather
+// than a snapshot claiming a window of 0.
+func TestRecordContextBudget_NonPositiveWindowIsNoop(t *testing.T) {
+	ctx := WithContextBudgetSignal(context.Background())
+	recordContextBudget(ctx, []*schema.Message{bigMessage(10)}, 0)
+	_, ok := ContextBudgetFromContext(ctx)
+	assert.False(t, ok, "a non-positive window must not publish a snapshot")
+}
+
+// TestCompactingModel_MaybeCompactPublishesContextBudgetEveryIteration proves
+// the wiring inside maybeCompact itself: the snapshot is published even on an
+// iteration where shouldCompact says no (small history, huge window) — the
+// context_budget tool must be able to answer "how much room is left" on every
+// turn, not only the turns that happened to trigger a summarization.
+func TestCompactingModel_MaybeCompactPublishesContextBudgetEveryIteration(t *testing.T) {
+	inner := &recordingModel{reply: "answer", streamOK: true}
+	cm := &CompactingModel{
+		Inner:         inner,
+		Threshold:     0.8,
+		ContextWindow: 1_000_000,
+		KeepRecent:    2,
+	}
+	msgs := []*schema.Message{
+		{Role: schema.User, Content: "task"},
+		bigMessage(200),
+		{Role: schema.User, Content: "recent"},
+	}
+	require.False(t, cm.shouldCompact(msgs), "premise: this history does not trigger compaction")
+
+	ctx := WithContextBudgetSignal(context.Background())
+	_, did := cm.maybeCompact(ctx, msgs)
+	require.False(t, did, "compaction did not fire")
+
+	got, ok := ContextBudgetFromContext(ctx)
+	require.True(t, ok, "a snapshot must be published even when compaction does not fire")
+	wantRemaining := ctxcompact.RemainingBudget(msgs, ctxcompact.RunOpts{ModelWindow: cm.ContextWindow})
+	assert.Equal(t, wantRemaining, got.Remaining)
+	assert.Equal(t, cm.ContextWindow, got.Window)
+}

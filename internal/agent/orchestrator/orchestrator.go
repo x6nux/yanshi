@@ -650,6 +650,14 @@ func (o *Orchestrator) withTurnContext(ctx context.Context, opts TurnOpts) conte
 	// has nothing downstream to consume it, the same shape as any other
 	// context value bound for a code path that turns out not to run.
 	ctx = einollm.WithNewWindowSignal(ctx)
+	// W-C-11: a fresh context-budget signal per turn, same reasoning as the
+	// new-window bind immediately above but with the roles reversed — this is
+	// the pointer CompactingModel.maybeCompact WRITES on every iteration and
+	// the context_budget tool READS. Bound unconditionally for the same
+	// reason: turns whose model isn't wrapped in a CompactingModel simply
+	// never get a snapshot published, and ContextBudgetFromContext reports
+	// that as "not available" rather than erroring.
+	ctx = einollm.WithContextBudgetSignal(ctx)
 	return o.bindManagedRunner(ctx)
 }
 

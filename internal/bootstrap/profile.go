@@ -173,6 +173,13 @@ func DefaultOrchestratorProfile() guard.PermissionProfile {
 			// unnecessary context trim, the same outcome an over-eager
 			// automatic compaction threshold already produces silently.
 			"context_new_window",
+			// W-C-11: read-only — it reports numbers other production code
+			// (loopguard's TokenBudgetGate, einollm's CompactingModel) already
+			// computed and holds on the turn's own context; it takes no
+			// argument and writes nothing anywhere. A dialog on a pure status
+			// query is the same over-gating context_new_window's comment above
+			// warns against.
+			"context_budget",
 			// T3 background offload. background_list and background_result are
 			// READ-ONLY over this process's own offload registry, and
 			// background_cancel only takes capability away. Withholding them

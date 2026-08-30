@@ -113,6 +113,102 @@ func consumeNewWindowRequest(ctx context.Context) (string, bool) {
 	return reason, true
 }
 
+// contextBudgetKey is the context key for the W-C-11 per-turn
+// context-remaining signal.
+type contextBudgetKey struct{}
+
+// ContextBudgetSnapshot is the most recently published reading of how much of
+// the model's context window is left, from the SAME arithmetic the overflow
+// gate refuses a send with (ctxcompact.RemainingBudget shares budgetFor and
+// effectiveReserve with ctxcompact.CheckContextLimit) — not a second,
+// independently-estimated number that could disagree with it.
+type ContextBudgetSnapshot struct {
+	// Window is the model's context window in tokens.
+	Window int
+	// Used is ctxcompact.EstimateTokens of the history as of the most recent
+	// model call this turn.
+	Used int
+	// Remaining is ctxcompact.RemainingBudget for that same history and
+	// window: the window less the output reserve, less Used. Negative means
+	// the history already exceeds the budget the overflow gate would refuse
+	// to send.
+	Remaining int
+}
+
+// contextBudgetSignal is the pointer WithContextBudgetSignal binds once per
+// turn and maybeCompact updates on every ReAct iteration — the same
+// context-carried-mutable-pointer idiom newWindowSignal above uses, except
+// the direction is reversed: there the tool writes and maybeCompact reads,
+// here maybeCompact writes and the context_budget tool (internal/tools) reads.
+// Both exist because a tool handler and a model wrapper never share a call
+// stack, so a value reachable from both sides' copy of the same turn context
+// is the only channel between them.
+type contextBudgetSignal struct {
+	mu       sync.Mutex
+	snapshot ContextBudgetSnapshot
+	has      bool
+}
+
+// WithContextBudgetSignal binds a fresh, empty W-C-11 signal onto ctx. Call
+// once per turn, mirroring WithNewWindowSignal — a signal shared across turns
+// would let a tool call answer with a previous turn's stale numbers until the
+// next model call overwrote them.
+func WithContextBudgetSignal(ctx context.Context) context.Context {
+	return context.WithValue(ctx, contextBudgetKey{}, &contextBudgetSignal{})
+}
+
+// contextBudgetSignalFromContext returns the bound signal, or (nil, false)
+// when none is bound — sub-agents and most tests, matching
+// newWindowSignalFromContext's own "absent means the feature is off" shape.
+func contextBudgetSignalFromContext(ctx context.Context) (*contextBudgetSignal, bool) {
+	s, ok := ctx.Value(contextBudgetKey{}).(*contextBudgetSignal)
+	return s, ok
+}
+
+// ContextBudgetFromContext is the context_budget tool's read side: it returns
+// the most recent snapshot maybeCompact published this turn, or (zero, false)
+// when none is available yet — compaction disabled entirely for this turn
+// (wrapCompaction never built a CompactingModel), or the model has not been
+// called yet this turn (the signal is bound before the first Generate/Stream
+// call, so this is the "asked before the first model call" case, not "asked
+// on a turn predating the wiring").
+func ContextBudgetFromContext(ctx context.Context) (ContextBudgetSnapshot, bool) {
+	s, ok := contextBudgetSignalFromContext(ctx)
+	if !ok {
+		return ContextBudgetSnapshot{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.snapshot, s.has
+}
+
+// recordContextBudget publishes msgs' current standing against window onto
+// ctx's bound signal, reusing ctxcompact.RemainingBudget — the exact function
+// ctxcompact.CheckContextLimit's overflow decision is built from (both share
+// budgetFor/effectiveReserve) — so a tool reading this snapshot cannot report
+// a number the actual send-time gate would disagree with. A no-op when no
+// signal is bound (sub-agent turns, tests that never call
+// WithContextBudgetSignal) or window is non-positive (nothing to report
+// against).
+func recordContextBudget(ctx context.Context, msgs []*schema.Message, window int) {
+	if window <= 0 {
+		return
+	}
+	s, ok := contextBudgetSignalFromContext(ctx)
+	if !ok {
+		return
+	}
+	opts := ctxcompact.RunOpts{ModelWindow: window}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snapshot = ContextBudgetSnapshot{
+		Window:    window,
+		Used:      ctxcompact.EstimateTokens(msgs),
+		Remaining: ctxcompact.RemainingBudget(msgs, opts),
+	}
+	s.has = true
+}
+
 // CompactingModel wraps a model.BaseChatModel and transparently compresses its
 // input when the estimated token count reaches Threshold*ContextWindow. It is
 // the MID-TURN compaction path: the ADK ReAct loop calls Generate/Stream on
@@ -274,6 +370,11 @@ func (c *CompactingModel) Stream(ctx context.Context, msgs []*schema.Message, op
 // TestHardForceBypassesCooldown_SoArmingOnFailureIsSafe guards the coupling and
 // names it; read it before changing either gate.
 func (c *CompactingModel) maybeCompact(ctx context.Context, msgs []*schema.Message) ([]*schema.Message, bool) {
+	// W-C-11: published unconditionally, on every iteration, regardless of
+	// whether compaction fires below — a tool asking "how much room is left"
+	// needs the answer for the history as it stands right now, not only on
+	// the iterations that happened to cross the compaction threshold.
+	recordContextBudget(ctx, msgs, c.ContextWindow)
 	// W-C-14: a pending tool-set request wins over the threshold gate — the
 	// model asked for this explicitly, so it fires even when shouldCompact
 	// would say no (under threshold, in cooldown). Checked BEFORE
