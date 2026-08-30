@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/x6nux/yanshi/internal/cli"
 )
@@ -353,5 +354,98 @@ func TestReflow_ClampsStaleYOffsetWhenContentFits(t *testing.T) {
 	m = mm.(model)
 	if m.viewport.YOffset != 0 {
 		t.Fatalf("content fits → YOffset must clamp to 0 (logo visible), got %d", m.viewport.YOffset)
+	}
+}
+
+// ---- W-E-01: renderFooter must honor the detected terminal color profile ----
+//
+// renderFooter (the Powerline-style bottom status bar) builds every ANSI
+// escape by hand rather than through a lipgloss.Style, so it does NOT
+// automatically pick up ApplyColorProfile's effect on lipgloss's shared
+// renderer — it needs its own read via footerColorSeq/footerSGRParts/sgrWrap
+// (see renderFooter's doc comment). Before that plumbing existed, a real
+// tuidbg capture under NO_COLOR=1 showed the footer still emitting full
+// ANSI-256 escapes while every other lipgloss-rendered element correctly
+// suppressed color. These two tests pin that fix at the unit level: they
+// fail if renderFooter reverts to raw "\x1b[48;5;…m" string concatenation.
+
+// footerTestSegs is a representative segment list: colored pills (bg != the
+// default "236" footer background) so the Powerline-arrow transition path
+// (not just the plain-separator path) is exercised. bold is false on both —
+// bold is a text attribute, not a color, and this fixture is used by the
+// tests that assert color-profile-driven ANSI output; the bold/Ascii
+// interaction has its own fixture and test below.
+var footerTestSegs = []segmentDef{
+	{text: " yanshi ", fg: "255", bg: "17", bold: false},
+	{text: " main ", fg: "255", bg: "24", bold: false},
+}
+
+// TestRenderFooterSuppressesColorUnderAscii proves acceptance criterion 1
+// (NO_COLOR) for the footer specifically: under termenv.Ascii, renderFooter
+// emits not a single ANSI escape byte for colored-pill segments.
+func TestRenderFooterSuppressesColorUnderAscii(t *testing.T) {
+	withColorProfile(t, termenv.Ascii)
+	out := renderFooter(footerTestSegs, 0)
+	if strings.ContainsRune(out, '\x1b') {
+		t.Fatalf("Ascii profile: renderFooter output still contains an ANSI escape byte: %q", out)
+	}
+}
+
+// footerBoldTestSegs pins a bold segment (theme tables carry bold:true pills,
+// e.g. the "perm_yolo" mode indicator) alongside a plain one.
+var footerBoldTestSegs = []segmentDef{
+	{text: " YOLO ", fg: "255", bg: "196", bold: true},
+	{text: " main ", fg: "255", bg: "24", bold: false},
+}
+
+// TestRenderFooterBoldSurvivesAsciiButNotColor pins the precise scope of
+// acceptance criterion 1: NO_COLOR suppresses COLOR, not text attributes.
+// capability_test.go's TestApplyColorProfile_AsciiSuppressesColor documents
+// the same convention for lipgloss's own Style.Render path (Ascii profile
+// still emits "\x1b[1m" for Bold — it only ever downgrades color to
+// NoColor). footerSGRParts intentionally mirrors that: it appends the "1"
+// SGR code for bold unconditionally, regardless of profile, and only
+// footerColorSeq's fg/bg codes are profile-gated. So under Ascii, a bold
+// segment still emits an escape — but that escape must never contain a
+// color code ("38;"/"48;"), which is what would indicate the profile gate
+// was bypassed.
+func TestRenderFooterBoldSurvivesAsciiButNotColor(t *testing.T) {
+	withColorProfile(t, termenv.Ascii)
+	out := renderFooter(footerBoldTestSegs, 0)
+	if !strings.Contains(out, "\x1b[1m") {
+		t.Fatalf("Ascii profile: expected bold's \\x1b[1m to survive (bold is not a color), got %q", out)
+	}
+	if strings.Contains(out, "38;") || strings.Contains(out, "48;") {
+		t.Fatalf("Ascii profile: renderFooter leaked a color SGR code alongside bold: %q", out)
+	}
+}
+
+// TestRenderFooterDegradesTo16ColorUnderANSI proves acceptance criterion 4's
+// 16-color half for the footer: under termenv.ANSI, the 256-color pill
+// backgrounds ("17", "24") degrade to plain 16-color SGR codes, never an
+// 8-bit "38;5;"/"48;5;" palette index.
+func TestRenderFooterDegradesTo16ColorUnderANSI(t *testing.T) {
+	withColorProfile(t, termenv.ANSI)
+	out := renderFooter(footerTestSegs, 0)
+	if strings.Contains(out, "38;5;") || strings.Contains(out, "48;5;") {
+		t.Fatalf("ANSI (16-color) profile: renderFooter should degrade to plain 16-color codes, got %q", out)
+	}
+	if !strings.ContainsRune(out, '\x1b') {
+		t.Fatalf("ANSI (16-color) profile: expected a 16-color escape sequence, got none: %q", out)
+	}
+}
+
+// TestRenderFooterUnchangedUnderANSI256 proves the fix is behavior-preserving
+// under the profile this file hardcoded before W-E-01: the colored pills
+// still render as 8-bit "48;5;17"/"48;5;24" backgrounds, byte-for-byte what
+// the pre-fix raw literals produced.
+func TestRenderFooterUnchangedUnderANSI256(t *testing.T) {
+	withColorProfile(t, termenv.ANSI256)
+	out := renderFooter(footerTestSegs, 0)
+	if !strings.Contains(out, "48;5;17") {
+		t.Fatalf("ANSI256 profile: expected the first pill's \"48;5;17\" background, got %q", out)
+	}
+	if !strings.Contains(out, "48;5;24") {
+		t.Fatalf("ANSI256 profile: expected the second pill's \"48;5;24\" background, got %q", out)
 	}
 }

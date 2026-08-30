@@ -615,6 +615,50 @@ type segmentDef struct {
 	bold bool
 }
 
+// footerColorSeq converts a raw ANSI-256 color code (e.g. "236", as stored in
+// segmentDef/theme tables) into the SGR parameter string appropriate for the
+// terminal color profile most recently applied via ApplyColorProfile — "" for
+// termenv.Ascii (NO_COLOR / TERM=dumb), a downgraded 16-color code for
+// termenv.ANSI, or the code unchanged for ANSI256/TrueColor. code == "" (no
+// color wanted on this side) also yields "". bg selects background (true) vs
+// foreground (false).
+func footerColorSeq(code string, bg bool) string {
+	c := currentColorProfile().Color(code)
+	if c == nil {
+		return ""
+	}
+	return c.Sequence(bg)
+}
+
+// footerSGRParts builds the SGR parameter list for a footer chunk: bold (if
+// set) followed by whichever of fg/bg survive footerColorSeq's profile
+// downgrade. An empty result means "no escape needed at all" — the caller
+// (sgrWrap) then emits the plain text with no \x1b bytes, which is what makes
+// NO_COLOR / TERM=dumb produce byte-for-byte colorless footer output instead
+// of degrading to colorless-looking-but-still-escaped output.
+func footerSGRParts(fg, bg string, bold bool) []string {
+	var parts []string
+	if bold {
+		parts = append(parts, "1")
+	}
+	if seq := footerColorSeq(fg, false); seq != "" {
+		parts = append(parts, seq)
+	}
+	if seq := footerColorSeq(bg, true); seq != "" {
+		parts = append(parts, seq)
+	}
+	return parts
+}
+
+// sgrWrap wraps text in the given SGR parts ("\x1b[<parts>m" ... "\x1b[0m"),
+// or returns text unchanged when parts is empty — see footerSGRParts.
+func sgrWrap(text string, parts []string) string {
+	if len(parts) == 0 {
+		return text
+	}
+	return "\x1b[" + strings.Join(parts, ";") + "m" + text + "\x1b[0m"
+}
+
 // renderFooter assembles a Powerline-style footer bar from segments. Each
 // segment has its own background color; adjacent segments are joined by a
 // Powerline arrow (U+E0B0) whose foreground transitions from the previous
@@ -629,30 +673,33 @@ type segmentDef struct {
 // The bar is right-filled to width with the default footer background so it
 // spans the entire terminal width edge-to-edge. When width < 4 (uninitialised)
 // no right-fill is applied.
+//
+// Every color code here is routed through footerSGRParts/footerColorSeq
+// rather than written as a raw "\x1b[38;5;N...m" literal (W-E-01): this bar
+// is built by hand, outside lipgloss's Style.Render path that
+// ApplyColorProfile otherwise governs for the rest of this package, so
+// without this indirection NO_COLOR/TERM=dumb/COLORTERM would have no effect
+// on it at all — exactly what a real tuidbg capture under NO_COLOR=1 caught.
 func renderFooter(segs []segmentDef, width int) string {
 	const footerBg = "236"
 	var b strings.Builder
 
 	// Left padding: space on the default footer background.
-	b.WriteString("\x1b[48;5;" + footerBg + "m \x1b[0m")
+	b.WriteString(sgrWrap(" ", footerSGRParts("", footerBg, false)))
 
 	for i, s := range segs {
 		if i > 0 {
 			prevBg := segs[i-1].bg
 			if s.bg == footerBg && prevBg == footerBg {
 				// Both on default bg → simple dim separator, no colour transition.
-				b.WriteString("\x1b[38;5;240;48;5;" + footerBg + "m │ \x1b[0m")
+				b.WriteString(sgrWrap(" │ ", footerSGRParts("240", footerBg, false)))
 			} else {
 				// Powerline arrow: foreground = previous bg, background = this bg.
-				b.WriteString("\x1b[38;5;" + prevBg + ";48;5;" + s.bg + "m\U0000E0B0\x1b[0m")
+				b.WriteString(sgrWrap("\U0000E0B0", footerSGRParts(prevBg, s.bg, false)))
 			}
 		}
 		// Segment body with its own background and foreground.
-		if s.bold {
-			b.WriteString("\x1b[1;38;5;" + s.fg + ";48;5;" + s.bg + "m" + s.text + "\x1b[0m")
-		} else {
-			b.WriteString("\x1b[38;5;" + s.fg + ";48;5;" + s.bg + "m" + s.text + "\x1b[0m")
-		}
+		b.WriteString(sgrWrap(s.text, footerSGRParts(s.fg, s.bg, s.bold)))
 	}
 
 	// Right-fill: extend the default footer background to the terminal width
@@ -661,7 +708,7 @@ func renderFooter(segs []segmentDef, width int) string {
 		plain := ansiRe.ReplaceAllString(b.String(), "")
 		visWidth := lipgloss.Width(plain)
 		if remaining := width - visWidth; remaining > 0 {
-			b.WriteString("\x1b[48;5;" + footerBg + "m" + strings.Repeat(" ", remaining) + "\x1b[0m")
+			b.WriteString(sgrWrap(strings.Repeat(" ", remaining), footerSGRParts("", footerBg, false)))
 		}
 	}
 	return b.String()

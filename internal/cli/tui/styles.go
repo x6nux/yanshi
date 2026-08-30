@@ -140,6 +140,17 @@ func ApplyColorProfile(p termenv.Profile) {
 	}
 }
 
+// currentColorProfile returns the profile most recently applied via
+// ApplyColorProfile, safe for concurrent use. renderFooter (view.go) writes
+// raw ANSI escapes directly rather than through a lipgloss.Style — it never
+// goes through lipgloss's shared renderer, so it needs its own read of the
+// active profile to honor NO_COLOR / TERM=dumb / COLORTERM (W-E-01).
+func currentColorProfile() termenv.Profile {
+	mdRendererMu.Lock()
+	defer mdRendererMu.Unlock()
+	return activeProfile
+}
+
 func renderer(width int) *glamour.TermRenderer {
 	mdRendererMu.Lock()
 	defer mdRendererMu.Unlock()
