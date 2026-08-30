@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/x6nux/yanshi/internal/guard"
 )
@@ -631,14 +632,24 @@ func footerColorSeq(code string, bg bool) string {
 }
 
 // footerSGRParts builds the SGR parameter list for a footer chunk: bold (if
-// set) followed by whichever of fg/bg survive footerColorSeq's profile
-// downgrade. An empty result means "no escape needed at all" — the caller
-// (sgrWrap) then emits the plain text with no \x1b bytes, which is what makes
-// NO_COLOR / TERM=dumb produce byte-for-byte colorless footer output instead
-// of degrading to colorless-looking-but-still-escaped output.
+// set and the profile allows it) followed by whichever of fg/bg survive
+// footerColorSeq's profile downgrade. An empty result means "no escape
+// needed at all" — the caller (sgrWrap) then emits the plain text with no
+// \x1b bytes, which is what makes NO_COLOR / TERM=dumb produce byte-for-byte
+// colorless footer output instead of degrading to colorless-looking-but-
+// still-escaped output.
+//
+// bold is dropped under termenv.Ascii specifically to match termenv.Style's
+// own Styled() (style.go: "if t.profile == Ascii { return s }") — under
+// Ascii, termenv suppresses ALL styling, not just color, for every
+// lipgloss-rendered element elsewhere in this package. A real tuidbg capture
+// under NO_COLOR=1 confirmed this: roleUser (Bold+Foreground, rendering
+// "you:") produced zero escape bytes end to end. Keeping bold in the footer
+// under Ascii would make it the one element in the UI that still emits an
+// escape under NO_COLOR — the opposite of consistent.
 func footerSGRParts(fg, bg string, bold bool) []string {
 	var parts []string
-	if bold {
+	if bold && currentColorProfile() != termenv.Ascii {
 		parts = append(parts, "1")
 	}
 	if seq := footerColorSeq(fg, false); seq != "" {

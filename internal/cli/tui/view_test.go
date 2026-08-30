@@ -366,15 +366,14 @@ func TestReflow_ClampsStaleYOffsetWhenContentFits(t *testing.T) {
 // (see renderFooter's doc comment). Before that plumbing existed, a real
 // tuidbg capture under NO_COLOR=1 showed the footer still emitting full
 // ANSI-256 escapes while every other lipgloss-rendered element correctly
-// suppressed color. These two tests pin that fix at the unit level: they
-// fail if renderFooter reverts to raw "\x1b[48;5;…m" string concatenation.
+// suppressed color. These tests pin that fix at the unit level: they fail if
+// renderFooter reverts to raw "\x1b[48;5;…m" string concatenation, or if
+// footerSGRParts stops matching termenv's own Ascii-suppresses-everything
+// rule (see TestRenderFooterSuppressesBoldUnderAsciiToo).
 
 // footerTestSegs is a representative segment list: colored pills (bg != the
 // default "236" footer background) so the Powerline-arrow transition path
-// (not just the plain-separator path) is exercised. bold is false on both —
-// bold is a text attribute, not a color, and this fixture is used by the
-// tests that assert color-profile-driven ANSI output; the bold/Ascii
-// interaction has its own fixture and test below.
+// (not just the plain-separator path) is exercised.
 var footerTestSegs = []segmentDef{
 	{text: " yanshi ", fg: "255", bg: "17", bold: false},
 	{text: " main ", fg: "255", bg: "24", bold: false},
@@ -398,25 +397,32 @@ var footerBoldTestSegs = []segmentDef{
 	{text: " main ", fg: "255", bg: "24", bold: false},
 }
 
-// TestRenderFooterBoldSurvivesAsciiButNotColor pins the precise scope of
-// acceptance criterion 1: NO_COLOR suppresses COLOR, not text attributes.
-// capability_test.go's TestApplyColorProfile_AsciiSuppressesColor documents
-// the same convention for lipgloss's own Style.Render path (Ascii profile
-// still emits "\x1b[1m" for Bold — it only ever downgrades color to
-// NoColor). footerSGRParts intentionally mirrors that: it appends the "1"
-// SGR code for bold unconditionally, regardless of profile, and only
-// footerColorSeq's fg/bg codes are profile-gated. So under Ascii, a bold
-// segment still emits an escape — but that escape must never contain a
-// color code ("38;"/"48;"), which is what would indicate the profile gate
-// was bypassed.
-func TestRenderFooterBoldSurvivesAsciiButNotColor(t *testing.T) {
+// TestRenderFooterSuppressesBoldUnderAsciiToo closes a gap the first version
+// of this fix left open: footerSGRParts used to append bold's "1" SGR code
+// unconditionally, regardless of profile. That was inconsistent with every
+// other lipgloss-rendered element in this package — termenv.Style.Styled
+// (style.go) has an unconditional "if t.profile == Ascii { return s }" up
+// front, which drops ALL styling under Ascii, not just color; a real tuidbg
+// capture under NO_COLOR=1 confirmed roleUser (Bold+Foreground, rendering
+// "you:") emits zero escape bytes end to end. So a footer pill using the
+// theme's bold:true entries (e.g. "perm_yolo") must degrade the same way.
+func TestRenderFooterSuppressesBoldUnderAsciiToo(t *testing.T) {
 	withColorProfile(t, termenv.Ascii)
 	out := renderFooter(footerBoldTestSegs, 0)
-	if !strings.Contains(out, "\x1b[1m") {
-		t.Fatalf("Ascii profile: expected bold's \\x1b[1m to survive (bold is not a color), got %q", out)
+	if strings.ContainsRune(out, '\x1b') {
+		t.Fatalf("Ascii profile: renderFooter output still contains an ANSI escape byte for a bold segment: %q", out)
 	}
-	if strings.Contains(out, "38;") || strings.Contains(out, "48;") {
-		t.Fatalf("Ascii profile: renderFooter leaked a color SGR code alongside bold: %q", out)
+}
+
+// TestRenderFooterBoldSurvivesUnderColorProfiles proves the flip side: bold
+// is only dropped under Ascii specifically, not under every non-256 profile
+// — under ANSI (16-color) a bold segment still emits "\x1b[1m" alongside the
+// degraded color code.
+func TestRenderFooterBoldSurvivesUnderColorProfiles(t *testing.T) {
+	withColorProfile(t, termenv.ANSI)
+	out := renderFooter(footerBoldTestSegs, 0)
+	if !strings.Contains(out, "\x1b[1;") && !strings.Contains(out, ";1;") && !strings.Contains(out, ";1m") {
+		t.Fatalf("ANSI profile: expected bold's \"1\" SGR code to survive alongside the degraded color, got %q", out)
 	}
 }
 
