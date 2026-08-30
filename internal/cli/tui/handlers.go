@@ -428,6 +428,19 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		m.reflow()
 		m.enqueueSave(m.stash.Save)
 		return m, m.pushToast("info", "draft stashed"), true
+	case tea.KeyCtrlE:
+		// W-E-12: open $VISUAL/$EDITOR (or the platform default) on the
+		// current input text. Blocked while a modal owns the keyboard,
+		// matching Ctrl+S's guard — the editor takes over the whole
+		// terminal, which no popup can survive being drawn under.
+		if m.paletteOpen() || m.pickerKind != "" || m.action != nil || m.helpVisible {
+			return m, nil, true
+		}
+		cmd, err := startExternalEditor(m.input.Value())
+		if err != nil {
+			return m, m.pushToast("warn", "could not start editor: "+err.Error()), true
+		}
+		return m, cmd, true
 	case tea.KeyF1:
 		// C2 — UX2: toggle the F1 help panel. If already open, close it
 		// (acts as Esc); otherwise clear any prior query and open fresh.

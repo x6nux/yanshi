@@ -186,7 +186,12 @@ var spawnEnvCensus = map[string]string{
 		"reader guess.",
 	"internal/agent/goalloop/implementer.go": "gitWorktreeCommand: netpolicy.ScrubbedEnviron(). " +
 		"Local worktree add/remove/list, no network leg.",
-
+	"internal/cli/tui/editor.go": "buildEditorCmd (called by startExternalEditor) INHERITS, " +
+		"deliberately. Ctrl+E hands the terminal to the operator's own $VISUAL/$EDITOR/vi, " +
+		"synchronously and in the foreground — the same login-shell posture " +
+		"internal/shell/snapshot.go documents. Nothing it reads leaves the machine on its " +
+		"own, and a scrubbed PATH/HOME would break the operator's own editor configuration " +
+		"for a purely local edit.",
 	// ---- execve of THIS process: the environment is already whatever the
 	// ---- launcher built, and os.Environ() reads it back rather than adding to it
 	"internal/execbroker/shim.go": "RunShim: syscall.Exec with os.Environ() UNCHANGED. This " +

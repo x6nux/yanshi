@@ -607,6 +607,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reflow()
 		return m, nil
 
+	case externalEditorMsg:
+		// W-E-12: the Ctrl+E editor process has exited. A non-nil err covers
+		// both failure modes (missing binary, non-zero exit) identically —
+		// the temp file is discarded and the input box is left untouched,
+		// so a spawn failure never loses already-typed text.
+		if msg.err != nil {
+			os.Remove(msg.tmpFile)
+			return m, m.pushToast("warn", "editor exited with an error: "+msg.err.Error())
+		}
+		data, readErr := os.ReadFile(msg.tmpFile)
+		os.Remove(msg.tmpFile)
+		if readErr != nil {
+			return m, m.pushToast("warn", "could not read editor output: "+readErr.Error())
+		}
+		m.input.SetValue(strings.TrimSuffix(string(data), "\n"))
+		m.growInput()
+		m.reflow()
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		// Size the input width first so reflow() measures the rendered block at
