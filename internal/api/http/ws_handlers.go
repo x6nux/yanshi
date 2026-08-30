@@ -23,6 +23,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/gorilla/websocket"
 
+	"github.com/x6nux/yanshi/internal/ctxcompact"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/mcp"
 	"github.com/x6nux/yanshi/internal/proto"
@@ -337,6 +338,21 @@ func resolveRollbackSeq(st *store.Store, sessionID string, turnsBack int) (int, 
 	remaining := turnsBack
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role != store.RoleUser {
+			continue
+		}
+		// RE-14 (fix-e3a): a compaction summary is persisted as a plain
+		// store.RoleUser row (ws_compaction.go writes it through the same
+		// path as any other turn) but is never rendered as a user turn in
+		// the TUI — internal/cli/tui/model.go's history-load filters out
+		// any msg.Role=="user" whose Content has this prefix before turning
+		// rows into userEntry values. rollbackCandidates() (client) counts
+		// only rendered userEntry values, so it never sees this row; before
+		// this skip, resolveRollbackSeq (server) counted it anyway, and the
+		// two turnsBack counters disagreed for any session that had ever
+		// been compacted. See
+		// TestResolveRollbackSeq_SkipsCompactionSummaryRow for the
+		// regression this closes.
+		if strings.HasPrefix(msgs[i].Content, ctxcompact.SummarySentinel) {
 			continue
 		}
 		remaining--

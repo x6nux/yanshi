@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/x6nux/yanshi/internal/agent/orchestrator"
+	"github.com/x6nux/yanshi/internal/ctxcompact"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/store"
@@ -333,6 +334,41 @@ func TestResolveRollbackSeq_ExceedsAvailableTurnsErrors(t *testing.T) {
 
 	_, err := resolveRollbackSeq(st, sid, 3)
 	require.Error(t, err)
+}
+
+// TestResolveRollbackSeq_SkipsCompactionSummaryRow is the RE-14 (fix-e3a)
+// regression: after a compaction pass, ws_compaction.go persists the summary
+// as an ordinary store.RoleUser row, but the client never counts it as a
+// user turn — internal/cli/tui/model.go's history-load filters out any
+// msg.Role=="user" row whose Content starts with ctxcompact.SummarySentinel
+// before turning rows into userEntry values, so rollbackCandidates() never
+// sees it. Before this test's fix, resolveRollbackSeq counted the summary
+// row like any other store.RoleUser row, so the two turnsBack counters
+// disagreed for any session that had ever been compacted.
+func TestResolveRollbackSeq_SkipsCompactionSummaryRow(t *testing.T) {
+	st, _ := newSessionTestServer(t)
+	sid := seedRollbackSession(t, st) // seq0 user "first", seq1 asst, seq2 user "second", seq3 asst
+
+	// A compaction pass ran after "second": the summary lands at seq=4,
+	// followed by a real post-compaction turn.
+	require.NoError(t, st.AppendMessage(sid, 4, "user", ctxcompact.SummarySentinel+"compacted turns 1-2"))
+	require.NoError(t, st.AppendMessage(sid, 5, "user", "third"))
+	require.NoError(t, st.AppendMessage(sid, 6, "assistant", "reply3"))
+
+	// turnsBack=1 must target "third" (seq=5) — the most recent REAL user
+	// turn — resolving to seq-1=4, right after the summary row.
+	seq, err := resolveRollbackSeq(st, sid, 1)
+	require.NoError(t, err)
+	assert.Equal(t, 4, seq)
+
+	// turnsBack=2 must skip straight past the summary row to "second"
+	// (seq=2), resolving to seq-1=1. The client's rollbackCandidates()
+	// never counts the summary as a turn, so the second most recent turn IS
+	// "second" — not the summary. Before the fix this counted the summary
+	// row as turn 2 and wrongly resolved to seq=3.
+	seq, err = resolveRollbackSeq(st, sid, 2)
+	require.NoError(t, err)
+	assert.Equal(t, 1, seq)
 }
 
 // TestChatWS_ForkSession_RollbackByTurnsBack proves the end-to-end wire path:
