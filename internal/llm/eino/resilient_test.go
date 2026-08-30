@@ -45,6 +45,47 @@ func TestResilientModel_FailoverToNext(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&goodCalls))
 }
 
+// contentSafetyRefusalModel always returns a ClassContentSafety-classified
+// error from Generate — used by
+// TestResilientModel_GenerateContentSafetyDoesNotFailOver to prove Ruling
+// RC-11's carve-out on the non-streaming path (Stream's is covered by
+// TestResilientModel_StreamContentSafetyDoesNotFailOver).
+type contentSafetyRefusalModel struct {
+	calls *int32
+}
+
+func (m *contentSafetyRefusalModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	atomic.AddInt32(m.calls, 1)
+	return nil, errors.New("error, status code: 400, status: 400 Bad Request, message: Your request was rejected as a result of our safety system.")
+}
+
+func (m *contentSafetyRefusalModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	return nil, errors.New("not used by this test")
+}
+
+var _ model.BaseChatModel = (*contentSafetyRefusalModel)(nil)
+
+// TestResilientModel_GenerateContentSafetyDoesNotFailOver is Ruling RC-11's
+// (review-whole.md M-5) pinning test for the NON-streaming path: Generate's
+// chain loop advances to i+1 unconditionally for every OTHER error class
+// (TestResilientModel_FailoverToNext exercises a transient error exhausting
+// its retry budget and still failing over) — content safety is the one
+// carve-out, and provider B must never be called.
+func TestResilientModel_GenerateContentSafetyDoesNotFailOver(t *testing.T) {
+	var aCalls, bCalls int32
+	a := &contentSafetyRefusalModel{calls: &aCalls}
+	b := newScriptedModel([]bool{false}, &bCalls)
+	r, err := NewResilientModel([]model.BaseChatModel{a, b}, fastEinoCfg())
+	require.NoError(t, err)
+
+	_, err = r.Generate(context.Background(), []*schema.Message{schema.UserMessage("x")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "safety system")
+	assert.NotContains(t, err.Error(), "chain exhausted", "the chain was never exhausted — only A was ever asked")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&aCalls), "content-safety is non-retryable: exactly 1 call to A")
+	assert.Equal(t, int32(0), atomic.LoadInt32(&bCalls), "RC-11: B must never be called — the refusal must not fail over")
+}
+
 func TestResilientModel_EmptyChain(t *testing.T) {
 	_, err := NewResilientModel(nil, fastEinoCfg())
 	require.Error(t, err)
@@ -1206,11 +1247,15 @@ func TestResilientModel_StreamFailoverArmsPartialDiscard(t *testing.T) {
 	assert.Contains(t, gotErr.Error(), "404")
 }
 
-// TestResilientModel_StreamContentSafetyAlsoFailsOver proves the failover
-// branch is not 404-specific: any ClassContentSafety mid-stream error (the
-// other class W-C-13 names explicitly) fails over the same way, via the
-// shared isNonRetryableClientErr chokepoint.
-func TestResilientModel_StreamContentSafetyAlsoFailsOver(t *testing.T) {
+// TestResilientModel_StreamContentSafetyDoesNotFailOver is Ruling RC-11's
+// (review-whole.md M-5) pinning test for the Stream path: unlike a 404 (see
+// TestResilientModel_StreamFailoverOnNonRetryableMidStreamErr), a
+// ClassContentSafety mid-stream error must NOT advance to provider B. Before
+// this ruling, isNonRetryableClientErr's shared chokepoint made both classes
+// fail over identically — that behavior is exactly what this test now
+// forbids: provider A refused the REQUEST, and resending that same request
+// to B would silently seek a laxer verdict instead of surfacing A's refusal.
+func TestResilientModel_StreamContentSafetyDoesNotFailOver(t *testing.T) {
 	var aCalls, bCalls int32
 	rejected := errors.New("error, status code: 400, status: 400 Bad Request, message: Your request was rejected as a result of our safety system.")
 	require.Equal(t, ClassContentSafety, ClassifyError(rejected).Class, "premise")
@@ -1223,21 +1268,19 @@ func TestResilientModel_StreamContentSafetyAlsoFailsOver(t *testing.T) {
 	require.NoError(t, err)
 	defer sr.Close()
 
-	var got string
-	var sawEOF bool
+	var sawErr error
 	for {
-		msg, e := sr.Recv()
-		if errors.Is(e, io.EOF) {
-			sawEOF = true
+		_, e := sr.Recv()
+		if e != nil {
+			sawErr = e
 			break
 		}
-		require.NoError(t, e, "a content-safety refusal on provider A must fail over to provider B, not surface")
-		got += msg.Content
 	}
-	assert.True(t, sawEOF, "the call must still succeed via B")
-	assert.Contains(t, got, "ok")
+	require.Error(t, sawErr, "the content-safety refusal must surface, not a clean EOF from a failed-over B")
+	assert.False(t, errors.Is(sawErr, io.EOF))
+	assert.Contains(t, sawErr.Error(), "safety system")
 	assert.Equal(t, int32(1), atomic.LoadInt32(&aCalls), "content-safety is non-retryable: exactly 1 call to A")
-	assert.Equal(t, int32(1), atomic.LoadInt32(&bCalls))
+	assert.Equal(t, int32(0), atomic.LoadInt32(&bCalls), "RC-11: B must never be called — the refusal must not fail over")
 }
 
 // TestResilientModel_StreamNoFailoverPastLastProvider proves the failover

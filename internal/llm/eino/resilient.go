@@ -232,6 +232,20 @@ func (r *ResilientChatModel) Generate(ctx context.Context, in []*schema.Message,
 			return msg, nil
 		}
 		lastErr = err
+		// Ruling RC-11 (review-whole.md M-5): a content-safety refusal
+		// rejected the REQUEST, not provider i — every other entry in the
+		// chain would receive the exact same content. Advancing anyway would
+		// silently resend it hoping a laxer provider says yes, overriding
+		// provider i's safety judgment instead of surfacing it to the
+		// caller. Return the raw refusal here, unwrapped by the "chain
+		// exhausted" framing below (the chain was not exhausted — only
+		// provider i was ever asked). See isFailoverEligibleErr's doc
+		// comment for the Stream path's symmetric carve-out, and
+		// docs/adr/0026-content-safety-refusals-do-not-fail-over.md for the
+		// ruling itself.
+		if isContentSafetyRefusal(err) {
+			return nil, err
+		}
 		// W-C-10: provider i exhausted its own retry budget and there is a
 		// next entry to try — record the ADVANCE, not the exhaustion (a
 		// failure on the LAST entry is chain exhaustion, reported below via
@@ -425,22 +439,29 @@ func (r *ResilientChatModel) runStream(ctx context.Context, in []*schema.Message
 				continue
 			}
 			// W-C-13: a mid-stream error that classifies as non-retryable
-			// (real 4xx, context overflow, content-safety refusal — see
-			// isNonRetryableClientErr) means THIS provider will keep saying no
-			// to the same request; it does not mean the whole chain should
-			// give up. Before this branch existed, only OPEN-time errors ever
-			// advanced past a provider (openStreamChain's unconditional loop),
-			// so a provider that accepted the connection and only failed once
-			// the request itself was inspected (e.g. a 404 on an unknown
-			// model, or a content-policy rejection) terminated the entire
-			// call even with healthy providers left in the chain — the gap
-			// TestResilientModel_StreamFailoverOnNonRetryableMidStreamErr
-			// pins closed. Scoped to isNonRetryableClientErr specifically
-			// (not "any non-retryable outcome") so this never fires for a
-			// provider that is merely out of its own retry budget on an
+			// (real 4xx, context overflow — see isNonRetryableClientErr) means
+			// THIS provider will keep saying no to the same request; it does
+			// not mean the whole chain should give up. Before this branch
+			// existed, only OPEN-time errors ever advanced past a provider
+			// (openStreamChain's unconditional loop), so a provider that
+			// accepted the connection and only failed once the request itself
+			// was inspected (e.g. a 404 on an unknown model) terminated the
+			// entire call even with healthy providers left in the chain — the
+			// gap TestResilientModel_StreamFailoverOnNonRetryableMidStreamErr
+			// pins closed. Scoped to isFailoverEligibleErr specifically (not
+			// "any non-retryable outcome") so this never fires for a provider
+			// that is merely out of its own retry budget on an
 			// otherwise-retryable error — that case is unaffected and still
 			// terminates here, exactly as before this branch existed.
-			if !deliveredTools && curIdx+1 < len(r.chain) && isNonRetryableClientErr(recvErr) {
+			//
+			// isFailoverEligibleErr, not isNonRetryableClientErr: a
+			// content-safety refusal is ALSO non-retryable (W-C-13 — see
+			// isNonRetryableClientErr's own doc comment), but Ruling RC-11
+			// (review-whole.md M-5) carves it out of failover specifically —
+			// see isFailoverEligibleErr's doc comment for why, and
+			// TestResilientModel_StreamContentSafetyDoesNotFailOver for the
+			// pinning test.
+			if !deliveredTools && curIdx+1 < len(r.chain) && isFailoverEligibleErr(recvErr) {
 				// No RecordFallback call here: the next iteration's
 				// openStreamChain call will land on some provider >=
 				// curIdx+1, and its openIdx != curIdx branch above already
@@ -481,12 +502,13 @@ func (r *ResilientChatModel) runStream(ctx context.Context, in []*schema.Message
 // the last setup error when all of them fail.
 //
 // start exists for W-C-13: runStream's streamErr case sets it past a provider
-// that just gave a non-retryable-class mid-stream refusal (a real 4xx,
-// content overflow, or content-safety rejection — see isNonRetryableClientErr)
-// so this search does not immediately re-open the same provider that will
-// just refuse again. Every OTHER caller of this method passes 0 — the
-// pre-W-C-13 "always search from the top" behavior — so start does not change
-// how any existing retryable-error path resolves its next provider.
+// that just gave a failover-eligible mid-stream refusal (a real 4xx or
+// context overflow — see isFailoverEligibleErr; NOT a content-safety
+// rejection, carved out by Ruling RC-11) so this search does not immediately
+// re-open the same provider that will just refuse again. Every OTHER caller
+// of this method passes 0 — the pre-W-C-13 "always search from the top"
+// behavior — so start does not change how any existing retryable-error path
+// resolves its next provider.
 //
 // The returned int is the chain index of the provider that actually served
 // the stream (-1 on total failure), so the caller (runStream) can resolve
@@ -697,10 +719,14 @@ func isRetryableStreamErr(ctx context.Context, err error) bool {
 // context overflow, or a content-safety rejection (W-C-13) — the conditions on
 // which retry wastes time and masks the underlying problem. Shared by the
 // Generate (retry) and Stream (isRetryableStreamErr) paths so both agree by
-// construction, and now also by runStream's mid-stream failover decision (see
-// the streamErr case in runStream): a non-retryable-by-class mid-stream error
-// is exactly the signal that means "this provider will keep saying no, try
-// the next one" rather than "this provider is having a bad moment."
+// construction on the "don't retry THIS provider" question.
+//
+// It is NOT the predicate for "should the chain fail over to the next
+// provider" — that question has a different, narrower answer since Ruling
+// RC-11 (review-whole.md M-5): see isFailoverEligibleErr and Generate's own
+// isContentSafetyRefusal check, both of which exclude ClassContentSafety
+// from failover while this function continues to include it in "don't retry
+// this provider", per W-C-13's unchanged requirement.
 //
 // It delegates to ClassifyError rather than scanning text itself; see
 // isRetryableStreamErr for what that fixed.
@@ -710,6 +736,41 @@ func isNonRetryableClientErr(err error) bool {
 	}
 	c := ClassifyError(err).Class
 	return c == ClassClientError || c == ClassContextOverflow || c == ClassContentSafety
+}
+
+// isFailoverEligibleErr reports whether a mid-stream error should advance
+// runStream's streamErr branch to the next provider in the chain, rather
+// than surface directly. It is isNonRetryableClientErr with ClassContentSafety
+// excluded — Ruling RC-11 (review-whole.md M-5): a content-safety refusal
+// means the REQUEST was refused on content-policy grounds, not that this
+// provider is unhealthy. Every other provider in the chain would receive the
+// exact same content; advancing anyway would silently resend it hoping a
+// laxer provider says yes, overriding the refusing provider's safety
+// judgment instead of surfacing it to the caller. isNonRetryableClientErr
+// itself is unchanged — content safety still means "don't retry this
+// provider" (W-C-13), it just no longer also means "try the next one."
+//
+// Generate has its own symmetric carve-out (isContentSafetyRefusal, checked
+// directly in the Generate loop) rather than reusing this function, because
+// Generate's chain loop has no isNonRetryableClientErr gate to subtract
+// from in the first place — every OTHER error class there already advances
+// unconditionally (see Generate's own comment), so only content safety needs
+// an explicit stop, not a "which classes may advance" allowlist.
+func isFailoverEligibleErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	c := ClassifyError(err).Class
+	return c == ClassClientError || c == ClassContextOverflow
+}
+
+// isContentSafetyRefusal reports whether err classifies as ClassContentSafety
+// — the Ruling RC-11 failover carve-out (see isFailoverEligibleErr's doc
+// comment for the full reasoning). Used directly by Generate's chain loop
+// and, via isFailoverEligibleErr's exclusion, indirectly by runStream's
+// streamErr branch.
+func isContentSafetyRefusal(err error) bool {
+	return err != nil && ClassifyError(err).Class == ClassContentSafety
 }
 
 // legacyTransientMarkers are the pre-classifier substrings that marked a
