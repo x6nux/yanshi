@@ -231,6 +231,77 @@ func TestRollbackConfirm_SendsForkSessionFrame(t *testing.T) {
 	assert.Equal(t, 7, mm.pendingRollbackIndex)
 }
 
+// ---- RE-13 (fix-e3a): a rejected rollback fork must disarm pendingRollback ----
+
+// TestApplyEvent_ErrorClearsPendingRollback pins the fix directly at the
+// case "error" site: rollbackConfirm arms pendingRollback/*Text/*Index BEFORE
+// the fork_session frame is even sent (rollback.go), so a server rejection —
+// no "session_forked" reply ever arrives — must disarm them the same way the
+// line right above already does for pendingSeamRestore.
+func TestApplyEvent_ErrorClearsPendingRollback(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	m.pendingRollback = true
+	m.pendingRollbackText = "stale prompt"
+	m.pendingRollbackIndex = 3
+
+	m = m.applyEvent(cli.StreamEvent{Kind: "error", Text: "fork: nope"})
+
+	assert.False(t, m.pendingRollback, "a rejected fork must disarm pendingRollback")
+	assert.Empty(t, m.pendingRollbackText)
+	assert.Equal(t, 0, m.pendingRollbackIndex)
+}
+
+// TestSessionForked_PendingRollbackDoesNotLeakAcrossFailedFork is the
+// end-to-end regression: reproduces the review's repro almost verbatim.
+// Without the case "error" fix, a rejected Esc-Esc rollback leaves
+// pendingRollback armed; the NEXT successful "session_forked" this session
+// ever sees — even an ordinary /fork issued long after, with an unrelated
+// draft sitting in the textarea — consumes the stale state: truncates
+// m.entries at the old (now meaningless) index and overwrites the user's
+// draft with the old picked prompt. This is reachable without compaction:
+// two of the review's three documented paths are a side session
+// (/exit-side clears cs.sessionID, so the server's handleForkSession replies
+// with a generic "error" for what the TUI still thinks is a live rollback)
+// and SSE (control frames are rejected outright on that transport) — this
+// test uses a plain rejection to stay transport-agnostic, since the fix is
+// in the shared case "error" handler both paths land on.
+func TestSessionForked_PendingRollbackDoesNotLeakAcrossFailedFork(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	m.entries = []entry{
+		&userEntry{text: "old turn"},
+		&assistantEntry{},
+		&userEntry{text: "second old turn"},
+	}
+	m.rollback = &rollbackState{items: []rollbackItem{{text: "old turn", turnsBack: 1, entryIndex: 0}}}
+
+	// rollbackConfirm arms pendingRollback and sends fork_session — the
+	// server rejects it (side session / SSE / out-of-range turns_back).
+	mm, ok := handleKey(m, tea.KeyMsg{Type: tea.KeyEnter})
+	require.True(t, ok)
+	m = mm
+	require.True(t, m.pendingRollback, "rollbackConfirm must have armed pendingRollback")
+
+	m = m.applyEvent(cli.StreamEvent{Kind: "error", Text: "fork: nope"})
+	require.False(t, m.pendingRollback, "prerequisite: the error must have disarmed pendingRollback")
+
+	// User keeps working: types a fresh draft, then issues a PLAIN /fork
+	// (pendingRollback intentionally not set — this mirrors cmdFork).
+	m.input.SetValue("half-typed draft I do not want to lose")
+	m = m.applyEvent(cli.StreamEvent{Kind: "session_forked", SessionID: "fork-9"})
+
+	// No truncation: the 3 original entries survive, plus the error entry
+	// the rejection appended, plus the session_forked ack — NOT cut down to
+	// the stale rollback's entryIndex (which would have left only entries
+	// before index 0, i.e. none, before the two appends).
+	require.Len(t, m.entries, 5)
+	_, stillUser0 := m.entries[0].(*userEntry)
+	_, stillAssistant := m.entries[1].(*assistantEntry)
+	_, stillUser1 := m.entries[2].(*userEntry)
+	assert.True(t, stillUser0 && stillAssistant && stillUser1, "the 3 original entries must be untouched, not truncated at the stale rollback index")
+	assert.Equal(t, "half-typed draft I do not want to lose", m.input.Value(),
+		"a normal /fork after a rejected rollback must not overwrite the user's draft with the stale picked prompt")
+}
+
 // ---- session_forked applyEvent integration ----
 
 func TestSessionForked_RollbackTruncatesAndRefillsInput(t *testing.T) {

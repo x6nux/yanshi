@@ -387,8 +387,15 @@ type model struct {
 	// historySearch's "nil means closed" convention). pendingRollback +
 	// pendingRollbackText/Index are set by rollbackConfirm right before
 	// sending the fork_session{turns_back} request and consumed by
-	// applyEvent's case "session_forked", which cannot be reached any other
-	// way — the fields only carry state across that one round trip.
+	// applyEvent's case "session_forked" on success. RE-13 (fix-e3a): this
+	// comment used to claim that case "cannot be reached any other way" —
+	// false, and disproved by TestSessionForked_PendingRollbackDoesNotLeakAcrossFailedFork:
+	// "session_forked" fires for ANY successful fork_session reply, not just
+	// the one rollbackConfirm sent, so a rejected rollback fork (case "error"
+	// below) that left these three fields armed gets its stale state consumed
+	// by the very next successful fork — plain /fork included. That is why
+	// applyEvent's case "error" now clears all three alongside
+	// pendingSeamRestore.
 	lastEsc              time.Time
 	rollback             *rollbackState
 	pendingRollback      bool
@@ -1043,6 +1050,24 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 		// not leave the user in a "reverting…" limbo when the server rejects.
 		if m.pendingSeamRestore != nil {
 			m.pendingSeamRestore = nil
+		}
+		// RE-13 (fix-e3a): same shape, one line above. rollbackConfirm arms
+		// pendingRollback/*Text/*Index BEFORE the fork_session frame is even
+		// sent (rollback.go), so a server rejection — a "session_forked" reply
+		// never arriving — must disarm them here too. Left armed, the NEXT
+		// "session_forked" this session ever receives (a plain /fork, a
+		// second successful Esc-Esc, even one from an unrelated side session)
+		// consumes this stale state: truncates m.entries at a now-meaningless
+		// index and overwrites whatever the user has typed since with the old
+		// picked prompt. Reachable without any compaction involved — see
+		// TestApplyEvent_ErrorClearsPendingRollback for the SSE path (a
+		// control frame rejected with "control frames require the WebSocket
+		// transport") and the side-session path (fork rejected because
+		// cs.sessionID was cleared by /exit-side).
+		if m.pendingRollback {
+			m.pendingRollback = false
+			m.pendingRollbackText = ""
+			m.pendingRollbackIndex = 0
 		}
 		m.entries = append(m.entries, errorEntry{text: ev.Text})
 	case "models":
