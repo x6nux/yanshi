@@ -16,12 +16,17 @@ import (
 const notifyLongTaskThreshold = 10 * time.Second
 
 // notifyCmd returns the tea.Cmd that fires W-E-04's "turn finished" desktop
-// notification, or nil when any of three gates fails:
+// notification, or nil when either of TWO gates fails:
 //
 //  1. notifyEnabled is false (config tui.notify, default OFF — see
 //     notifyEnabled's doc comment on the model struct).
 //  2. The turn ran shorter than notifyLongTaskThreshold — see that
 //     constant's doc comment.
+//
+// (RE-32: this said "any of three gates" while enumerating two, then went on
+// to call the third one a tier selector in the next sentence. There is no
+// third gate — titleEnabled never yields nil, it only chooses which escape to
+// send.)
 //
 // Past those two gates, titleEnabled (== cap.AltScreen, reused rather than
 // duplicated — see notifyEnabled's doc comment) picks the escape tier: a
