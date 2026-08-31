@@ -20,6 +20,15 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu, windows, macos]
+    env:
+      # 无 dbus session 的 runner 上，go-keyring 的 SessionBus() 会走
+      # autolaunch：fork dbus-launch 等 X11，永不返回——bootstrap 的
+      # LiveRun 家族因此挂满 10m 包超时（panic: test timed out，2026-08-27
+      # 起 ubuntu/race/coverage 三处同源）。指一个不可达地址让 godbus 直接
+      # dial 失败，keyring 探测落进代码既有的降级路径（日志
+      # "no secrets backend is configured" 即该路径的正确输出）。
+      # windows/macos 的 keyring 不经过 dbus，此变量对它们无效。
+      DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -116,6 +125,10 @@ jobs:
   race:
     name: race
     runs-on: ubuntu-latest
+    env:
+      # 与 test job 同因：无 dbus session 时 go-keyring autolaunch 挂死，
+      # -race 下更慢，包内 600s 超时必然打爆。见 test job 的注释。
+      DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent
     steps:
       - uses: actions/checkout@v4
       # cmd/tuidbg's render tests need a font that actually carries CJK
@@ -392,6 +405,10 @@ jobs:
   coverage:
     name: coverage (per-package floors)
     runs-on: ubuntu-latest
+    env:
+      # 与 test job 同因：无 dbus session 时 go-keyring autolaunch 挂死，
+      # coverage 插桩更慢，10m 包超时必然打爆。见 test job 的注释。
+      DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent
     steps:
       - uses: actions/checkout@v4
       # Same deps the test (ubuntu) leg installs: without bwrap every
