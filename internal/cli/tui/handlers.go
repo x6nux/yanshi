@@ -483,10 +483,20 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 	case tea.KeyTab:
 		// Tab completes the selected command name into the input (and closes
 		// the palette) when the palette is open.
+		// W-E-14: when the @ popup is open, Tab cycles the filter mode instead
+		// of completing, so the user can switch between all/files/plugins without
+		// closing the popup first.
 		if m.pendingPermission() != nil {
 			return m, nil, true // modal: Tab does nothing
 		}
 		if m.paletteOpen() {
+			// If the first palette item is an @ path entry, this is the @
+			// completion popup — cycle the mode.
+			if len(m.paletteItems) > 0 && m.paletteItems[0].kind == cmdAtPath {
+				m.cycleAtMode()
+				m.reflow()
+				return m, nil, true
+			}
 			m.paletteComplete()
 			m.reflow()
 			return m, nil, true
