@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"golang.org/x/term"
 
 	"github.com/x6nux/yanshi/internal/cli"
 	"github.com/x6nux/yanshi/internal/ctxcompact"
@@ -19,6 +20,11 @@ import (
 	"github.com/x6nux/yanshi/internal/keymap"
 	"github.com/x6nux/yanshi/internal/proto"
 )
+
+// stdoutInteractive gates the first-run wizard: a real terminal may show it,
+// a pipe (go test, CI, headless) must not. Package-level so onboarding's
+// tests can arm the wizard directly, matching StdinIsTerminal's caller.
+var stdoutInteractive = term.IsTerminal(int(os.Stdout.Fd()))
 
 // tuiSession is the subset of *cli.Session the TUI uses (avoids an import
 // cycle cli -> tui -> cli). The concrete *cli.Session satisfies it; tests use
@@ -548,7 +554,18 @@ func newModelWithPrefs(sess tuiSession, root string, project Preferences) model 
 	// W-E-16: arm the first-run wizard only when no layer of the cascade has
 	// recorded OnboardingDone. The tombstone is written on BOTH finish and
 	// skip, so the wizard never appears twice for the same user.
-	if !eff.OnboardingDone {
+	//
+	// A non-interactive stdout never arms it either: go test, CI jobs and
+	// piped/headless runs have no human to walk through the pick, and
+	// onboardingKey would otherwise eat every keypress the caller sends.
+	// That is exactly what turned the whole tui suite red on a clean CI
+	// runner while every developer's own prefs.json said done. The probe is
+	// the same term.IsTerminal tcgetattr/GetConsoleMode check StdinIsTerminal
+	// uses (os.ModeCharDevice is wrong for /dev/null); stdout, because the
+	// wizard is a visual surface. The probe is a package-level variable so
+	// onboarding's own tests can arm the wizard without a real TTY — the
+	// same "tests set it directly" pattern StdinIsTerminal's caller uses.
+	if !eff.OnboardingDone && stdoutInteractive {
 		m.onboarding = &onboardingState{step: 0}
 	}
 	m.refresh()

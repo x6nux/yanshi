@@ -168,6 +168,18 @@ func fontCandidates() []fontCandidate {
 			// 换一台 x/image 版本更新的机器它们可能就能用了。
 			{"/System/Library/Fonts/STHeiti Light.ttc", 0},
 		}
+	case "windows":
+		// Windows 此前落进 default 分支拿到的全是 Linux 路径，每个候选都
+		// read 失败，tuidbg 在 Windows 上从来起不来（CI 的 race-full
+		// windows 与 test (windows) 都被它绊倒过）。Consolas 自 Vista 起是
+		// 系统等宽字体；微软雅黑（msyh）提供 CJK 回退，Win10 起随系统装
+		// .ttc、更老的安装是 .ttf，两个都列上 —— 解析失败的候选被跳过
+		// 本来就是正常流程。
+		return []fontCandidate{
+			{`C:\Windows\Fonts\consola.ttf`, 0},
+			{`C:\Windows\Fonts\msyh.ttc`, 0},
+			{`C:\Windows\Fonts\msyh.ttf`, 0},
+		}
 	default:
 		// Linux 及其余平台。发行版之间路径差异很大，全部尝试、能用几个算几个。
 		return []fontCandidate{

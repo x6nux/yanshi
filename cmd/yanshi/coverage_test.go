@@ -126,15 +126,19 @@ func TestAbsWorkdir(t *testing.T) {
 
 	// Absolute Windows drive path passes through untouched.
 	assert.Equal(t, `C:\proj`, absWorkdirSafe(`C:\proj`))
-	// Unix-rooted path passes through.
-	assert.Equal(t, "/tmp/x", absWorkdirSafe("/tmp/x"))
+	// Unix-rooted path passes through. The expectation is run through
+	// filepath.Clean so the assertion states the CONTRACT (already-absolute
+	// input is normalised, not re-rooted) in each platform's own spelling:
+	// on Windows Clean turns the slash-rooted path into "\tmp\x" (current
+	// drive), and asserting the POSIX literal there was a false failure.
+	assert.Equal(t, filepath.Clean("/tmp/x"), absWorkdirSafe("/tmp/x"))
 	// Backslash-rooted path passes through.
 	assert.Equal(t, `\srv\x`, absWorkdirSafe(`\srv\x`))
 
 	// Relative path is joined to the cwd.
 	rel, err := absWorkdir("sub/dir")
 	require.NoError(t, err)
-	assert.True(t, strings.HasSuffix(rel, "sub/dir"), "rel=%q", rel)
+	assert.True(t, strings.HasSuffix(rel, filepath.Join("sub", "dir")), "rel=%q", rel)
 	assert.True(t, filepath.IsAbs(rel), "rel should be absolute: %q", rel)
 }
 

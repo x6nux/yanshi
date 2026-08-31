@@ -227,7 +227,12 @@ func TestResetGoalRun(t *testing.T) {
 	require.NoError(t, os.WriteFile(configPath,
 		[]byte("storage:\n  sqlite_path: "+dbPath+"\n"), 0o600))
 
-	workdir := "/repo/resetme"
+	// absWorkdir normalises the workdir (on Windows a slash-rooted literal
+	// becomes a current-drive path), and every KV key and output line below
+	// uses that normalised spelling. Asserting the POSIX literal was a
+	// guaranteed mismatch on Windows — derive the expectation from the same
+	// normalisation the implementation applies.
+	workdir := absWorkdirSafe("/repo/resetme")
 	st, err := store.Open(dbPath)
 	require.NoError(t, err)
 	// A resume point the operator wants gone. The key format is goalloop's, so

@@ -26,15 +26,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      # W-B fix-b57 finding 4: without bubblewrap on the ubuntu leg, every
-      # TestBwrapReally* enforcement test (internal/sandbox) skips instead of
+      # W-B fix-b57 finding 4: without bubblewrap on the ubuntu leg, every      # TestBwrapReally* enforcement test (internal/sandbox) skips instead of
       # verifying, and if the runner's kernel also lacks Landlock the whole
       # linux enforcement story for W-B-23 goes green without a single test
       # actually confining anything. Installing it here turns those from
       # "may skip forever" into "always gives a verdict".
-      - name: install bubblewrap (linux sandbox enforcement tests)
+      - name: install bubblewrap and Noto CJK fonts (linux sandbox + tuidbg render tests)
         if: matrix.os == 'ubuntu'
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap fonts-noto-cjk
       # e2e_real build tag is off by default -> codex/claudecode CLIs are not
       # needed. eino/bootstrap t.Skip on missing providers is expected, not a fail.
       - run: go test ./...
@@ -108,6 +107,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # cmd/tuidbg's render tests need a font that actually carries CJK
+      # glyphs: the runner only ships DejaVu, the chain falls through every
+      # candidate, and TestChainRendersCJK/TestWideGlyphSpansBothColumns
+      # failed on the missing ink rather than on any code defect.
+      - name: install bubblewrap and Noto CJK fonts (linux-only test deps)
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap fonts-noto-cjk
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -373,6 +378,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Same deps the test (ubuntu) leg installs: without bwrap every
+      # bootstrap sandbox probe walks the degraded path (landlock helper
+      # retry + managed-proxy spin-up per subprocess), which under coverage
+      # instrumentation compounded past the package's 10m deadline and
+      # panicked the job (2026-08-31); fonts-noto-cjk lets cmd/tuidbg's
+      # render tests find real CJK ink under -cover too.
+      - name: install bubblewrap and Noto CJK fonts (coverage needs what test needs)
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap fonts-noto-cjk
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
