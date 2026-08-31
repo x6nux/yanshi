@@ -53,6 +53,15 @@ type connSession struct {
 	// policy (W-B-14). Empty = built-in. See autoApprovalPromptFor.
 	guardianPrompt string
 
+	// W-F-23: the dynamic tools THIS connection injected (tool_inject frames),
+	// plus the pending tool_invoke round-trips. dynMu guards both. The tools
+	// ride TurnOpts.DynamicTools at turn start; the pending map is touched by
+	// the tool goroutine (register) and the reader goroutine (deliver) — the
+	// same reader/main split permTracker uses. See ws_dyn.go.
+	dynMu      sync.Mutex
+	dynTools   []orchestrator.BaseTool
+	dynPending map[string]chan dynResult
+
 	transientThreadID string
 
 	// defaultModel is the model name shown in status frames when no model is
@@ -506,6 +515,20 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 					pt.deliver(cf.ID, tools.PermissionDecision(cf.Decision), curMode)
 					continue
 				}
+				// W-F-23: tool_result is the same shape of mid-turn reply —
+				// the tool goroutine is blocked inside the injected tool's
+				// invoke waiting for exactly this frame, and the main loop is
+				// blocked inside the turn. Delivered inline; unknown ids (a
+				// late reply after timeout/cancel) are dropped by the
+				// tracker.
+				if cf.Type == "tool_result" {
+					r := dynResult{text: cf.Text}
+					if cf.ToolError {
+						r.err = &clientToolError{text: cf.Text}
+					}
+					cs.deliverDynResult(cf.ID, r)
+					continue
+				}
 				// set_mode is applied to the LIVE permission state here — not
 				// only forwarded to the frames channel — so a mode switch takes
 				// effect even while a turn is running and the main loop (the
@@ -903,6 +926,11 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 				EmitWorkFrame:       conn.write,
 				PlanMode:            turnMode == guard.ModePlan,
 				ConnectionSessionID: connectionSessionID,
+				// W-F-23: this connection's injected tools, snapshotted at
+				// turn start. Mid-turn injections take effect from the NEXT
+				// turn — the tool face of a turn is fixed when the turn
+				// starts, same philosophy as PlanMode being read once.
+				DynamicTools: cs.dynamicSnapshot(),
 			}
 
 			// A12-core: per-turn structured output. When the client declares
@@ -1325,6 +1353,11 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 					handleMCPAction(s, conn, "", "list")
 				case "mcp_action":
 					handleMCPAction(s, conn, cf.MCPServer, cf.MCPAction)
+				case "tool_inject":
+					// W-F-23: donate a function spec. Validated/constructed
+					// in tools.NewClientTool; takes effect from the next
+					// turn (see ws_dyn.go).
+					handleToolInject(conn, &cs, cf)
 				case "session_list":
 					handleSessionList(s, conn)
 				case "restore_session":

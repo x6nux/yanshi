@@ -38,13 +38,19 @@ import (
 //	features_list        request the runtime feature flag table (reply: features)
 //	features_set         toggle one flag; Enabled *bool so false is serialised (reply: features)
 type ClientFrame struct {
-	Type     string `json:"type"`               // user_message|cancel|set_model|set_thinking|set_mode|clear|list_models|get_status|permission_response|compact|list_mcp|mcp_action
-	Text     string `json:"text,omitempty"`     // user_message
-	Name     string `json:"name,omitempty"`     // set_model
+	Type     string `json:"type"`               // user_message|cancel|set_model|set_thinking|set_mode|clear|list_models|get_status|permission_response|compact|list_mcp|mcp_action|tool_inject|tool_result
+	Text     string `json:"text,omitempty"`     // user_message; tool_result: the client tool's result text
+	Name     string `json:"name,omitempty"`     // set_model; tool_inject: the tool name (must be client_<identifier>)
 	Effort   string `json:"effort,omitempty"`   // set_thinking: low|medium|high|off
 	Mode     string `json:"mode,omitempty"`     // set_mode: default|allow-edits|yolo|auto
-	ID       string `json:"id,omitempty"`       // permission_response
+	ID       string `json:"id,omitempty"`       // permission_response; tool_result: the correlation id of the tool_invoke being answered
 	Decision string `json:"decision,omitempty"` // permission_response: allow|deny|always_allow
+	// ToolSchema carries the JSON Schema (object form) of a tool_inject spec's
+	// parameters. May be absent for a no-argument tool (W-F-23).
+	ToolSchema json.RawMessage `json:"tool_schema,omitempty"` // tool_inject
+	// ToolError marks a tool_result as a failed client-side execution; the
+	// text is fed back to the model as an error result (W-F-23).
+	ToolError bool `json:"tool_error,omitempty"` // tool_result
 	// OutputSchema carries an optional JSON Schema for a user_message turn. When
 	// non-empty the server validates the model's final output against it and
 	// emits a structured_result frame (A12-core); when empty/absent the turn is
@@ -669,6 +675,32 @@ func NewStatusWithMode(model, thinking string, in, out, turns, contextWindow int
 // happily answer on the user's behalf.
 func NewPermissionRequest(id, tool, args, reason string, approvalRequired, forcePrompt bool) ServerFrame {
 	return ServerFrame{Type: "permission_request", ID: id, ToolName: tool, ToolArgs: args, Reason: reason, ApprovalRequired: approvalRequired, ForcePrompt: forcePrompt}
+}
+
+// NewToolInvoke builds a tool_invoke frame (W-F-23): the server asks the client
+// that injected a dynamic tool to execute one call. ID is the correlation id
+// the tool_result reply must carry; ToolArgs is the raw JSON arguments blob the
+// model produced. WS-only by construction — a dynamic tool exists only on a
+// connection that injected it, so SSE never receives this frame.
+func NewToolInvoke(id, tool, args string) ServerFrame {
+	return ServerFrame{Type: "tool_invoke", ID: id, ToolName: tool, ToolArgs: args}
+}
+
+// NewToolInject builds a tool_inject frame (W-F-23): the client donates a
+// function spec (name must be client_<lowercase_identifier>, description,
+// optional JSON Schema parameters) that becomes a callable tool for this
+// connection's subsequent turns. WS-only — SSE has no client→server frame
+// channel, so dynamic injection degrades to "unsupported" there by design.
+func NewToolInject(name, description string, parameters json.RawMessage) ClientFrame {
+	return ClientFrame{Type: "tool_inject", Name: name, Text: description, ToolSchema: parameters}
+}
+
+// NewClientToolResult answers a tool_invoke (W-F-23). ID must match the
+// invoke's correlation id; ToolError marks a failed client-side execution so
+// the text is fed back to the model as an error result. (Distinct from the
+// server→client NewToolResult above: this one is a ClientFrame reply.)
+func NewClientToolResult(id, text string, toolError bool) ClientFrame {
+	return ClientFrame{Type: "tool_result", ID: id, Text: text, ToolError: toolError}
 }
 
 // WithPermDeadline stamps an approval countdown onto a permission_request

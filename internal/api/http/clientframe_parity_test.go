@@ -65,6 +65,8 @@ var clientControlOnlyFields = map[string]string{
 	"Source":        "install_skill",
 	"FeaturesSet":   "features_set",
 	"Dim":           "checkpoint names which of session/memory/files to plan or restore",
+	"ToolSchema":    "tool_inject (W-F-23) donates a function spec; only the WS control channel exists to carry it, and injection is WS-only by design",
+	"ToolError":     "tool_result (W-F-23) answers a tool_invoke on the same connection that injected the tool; no SSE/v1 turn input is involved",
 }
 
 // TestEveryClientFrameTurnInputFieldReachesEveryTransport pins the request-side

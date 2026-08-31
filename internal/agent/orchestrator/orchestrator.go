@@ -778,6 +778,19 @@ func (o *Orchestrator) withTurnContext(ctx context.Context, opts TurnOpts) conte
 	// the parent ctx it derives from carries the parent's, so a load can
 	// never cross the delegation boundary.
 	ctx = tools.WithToolLoadState(ctx)
+	// W-F-23: the connection's dynamic tools ride TurnOpts. Bound
+	// UNCONDITIONALLY (an empty set shadows the value inherited from a parent
+	// turn ctx — the sub-agent escape-gate mechanism), merged into the
+	// toolreg set when non-empty, and read by the dynamicToolMiddleware at
+	// BeforeAgent. bindExecutionContext above ran with the orchestrator's own
+	// set; the merge here layers the connection's donations on top, per turn.
+	ctx = WithDynamicTools(ctx, opts.DynamicTools)
+	if len(opts.DynamicTools) > 0 {
+		merged := make([]string, 0, len(o.toolNames)+len(opts.DynamicTools))
+		merged = append(merged, o.toolNames...)
+		merged = append(merged, dynamicToolNames(opts.DynamicTools)...)
+		ctx = toolreg.WithRegistered(ctx, merged)
+	}
 	// W-F-02: the hook bus is CONFIG like the loop guard above, bound per turn
 	// for the same reason — the hook middleware is shared across memoised
 	// runners, so the turn finds its bus here. Sub-agent turns run through
@@ -1008,6 +1021,11 @@ func orchestratorMiddlewares() []adk.ChatModelAgentMiddleware {
 	return []adk.ChatModelAgentMiddleware{
 		newSystemPromptRefresher(),
 		newLoopGuardMiddleware(), newHookMiddleware(), newResultHygiene(), newMessageRecorder(), newImageAttacher(),
+		// W-F-23: stateless — it only reads the turn ctx's dynamic-tool set
+		// (bound by withTurnContext) and appends it at BeforeAgent. Turns
+		// without injected tools pass through untouched, so its position is
+		// unobservable; last keeps the pre-existing slice byte-identical.
+		newDynamicToolMiddleware(),
 	}
 }
 
@@ -1148,6 +1166,16 @@ type TurnOpts struct {
 	// counter (which is what the previous sink was, and why it could never
 	// reach a per-session cost).
 	AuxUsage *registry.Usage
+
+	// DynamicTools (W-F-23) carries the tools the CLIENT injected for this
+	// connection (see tools.NewClientTool). withTurnContext binds them into
+	// the turn's dispatch (BeforeAgent) AND merges their names into the turn's
+	// toolreg registered set — an injected name is a real tool; everything
+	// else the toolreg check refuses still refuses, silently. Sub-agents do
+	// NOT inherit them: the connection donated them, not the orchestrator, and
+	// withTurnContext's unconditional shadow-bind makes the leak structurally
+	// unexpressible (see dynamic.go).
+	DynamicTools []BaseTool
 }
 
 // EventsWithHistoryOpts runs one turn with full history and per-turn opts.

@@ -111,6 +111,22 @@ func (m *toolSpecGate) BeforeModelRewriteState(
 			out = append(out, ti)
 		}
 	}
+	// W-F-23: 注入的动态工具不在 gate 的静态快照里（快照建自 runner 构造时
+	// 的 dispatch 集合），按可见集过滤会把它们藏掉——注入是连接的显式动作，
+	// 不是检索的猜测对象，无条件放行。
+	if dyn := dynamicToolsFromContext(ctx); len(dyn) > 0 {
+		have := make(map[string]struct{}, len(out))
+		for _, ti := range out {
+			have[ti.Name] = struct{}{}
+		}
+		for _, t := range dyn {
+			if info, err := t.Info(context.Background()); err == nil && info != nil {
+				if _, dup := have[info.Name]; !dup {
+					out = append(out, info)
+				}
+			}
+		}
+	}
 	state.ToolInfos = out
 	return ctx, state, nil
 }

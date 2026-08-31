@@ -456,6 +456,7 @@ func goldenFrames() []ServerFrame {
 		NewMemoriesCleared(3, ""),
 		NewCheckpointResult("checkpoint abc123 taken"),
 		NewWorkspaceDiff(nil),
+		NewToolInvoke("dyn-1", "client_ping", "{}"),
 	}
 }
 

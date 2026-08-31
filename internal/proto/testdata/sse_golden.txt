@@ -112,3 +112,6 @@ data: {"type":"checkpoint_result","text":"checkpoint abc123 taken"}
 event: workspace_diff
 data: {"type":"workspace_diff"}
 
+event: tool_invoke
+data: {"type":"tool_invoke","tool_name":"client_ping","tool_args":"{}","id":"dyn-1"}
+
