@@ -378,6 +378,39 @@ func TestStdioClient_NoHandlerDropsSilently(t *testing.T) {
 	// No assertion needed — we're testing that it doesn't panic.
 }
 
+// 并发请求各自拿到自己的响应，且互不楔死。
+//
+// 这条是锁序死锁的回归测试：写串行化（writeMu）曾与 pending 表共用一把锁，
+// 一个 doRequest 持锁阻塞在 pipe 写上时 readLoop 的 deliver 拿不到锁，响应
+// 永远投递不出去 —— 4 个并发 Ping + 对端停读 stdin 即永久楔死（连 Close 都
+// 挂）。变异判据：把任一写点的 writeMu 换回 pending 表那把锁，本测试在
+// -timeout 下挂死变红。注意 -race 探不出这个洞（io.Pipe 往返提供偶然的
+// happens-before 链），挂死只能靠超时暴露 —— 必须带 -timeout 跑。
+func TestStdioClient_ConcurrentRequestsEachGetTheirOwnResponse(t *testing.T) {
+	inW, outR, done := fakeStdioProcess(t)
+	defer done()
+	cli := NewStdioClient(outR, inW)
+	if err := cli.Initialize(context.Background(), "/"); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 4)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- cli.Ping(context.Background())
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		if e != nil {
+			t.Fatalf("concurrent ping: %v", e)
+		}
+	}
+}
+
 // Close wakes up blocked doRequest and readLoop exits cleanly.
 func TestStdioClient_CloseWakesPending(t *testing.T) {
 	srv, cli := newBidirServer(t)

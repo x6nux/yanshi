@@ -31,9 +31,16 @@ type StdioClient struct {
 	rawR    io.Reader // 原始 reader，Close 时如实现 io.Closer 则关闭
 	w       io.Writer
 	cmd     *exec.Cmd
-	mu      sync.Mutex // 保护 w 的串行写入与 pending/closed
+	// writeMu 只串行化 stdin 写入（WriteLineMessage 是 header+body 两次
+	// Write，交错会撕裂帧）。它绝不能在阻塞 I/O 之外再被 readLoop 需要 ——
+	// 曾与 pending 表共用一把锁：写阻塞在 pipe 上时 deliver 拿不到锁，响应
+	// 永远投递不出去，对端停读 stdin 即整个 client 楔死（连 Close 都挂）。
+	writeMu sync.Mutex
 	nextID  int64
 	timeout time.Duration
+
+	// mu 只保护 pending 表与 closed 标记 —— 两者都是内存操作，临界区无 I/O。
+	mu sync.Mutex
 
 	pending map[int64]chan map[string]any
 	done    chan struct{}
@@ -119,9 +126,9 @@ func (c *StdioClient) doRequest(ctx context.Context, id int64, req any) (map[str
 		c.mu.Unlock()
 	}()
 
-	c.mu.Lock()
+	c.writeMu.Lock()
 	err := WriteLineMessage(c.w, req)
-	c.mu.Unlock()
+	c.writeMu.Unlock()
 	if err != nil {
 		return nil, err
 	}
@@ -140,8 +147,8 @@ func (c *StdioClient) doRequest(ctx context.Context, id int64, req any) (map[str
 }
 
 func (c *StdioClient) notify(method string, params any) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	return WriteLineMessage(c.w, map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
 }
 
@@ -225,8 +232,9 @@ func (c *StdioClient) handleServerRequest(id int64, method string, msg map[strin
 	}
 
 	// Reply with "method not found" so the server doesn't hang. The write
-	// runs in its own goroutine: a blocked write (server not consuming stdin)
-	// must not stall the readLoop's dispatch of subsequent messages.
+	// runs in its own goroutine on writeMu only: a blocked write (server not
+	// consuming stdin) must not stall the readLoop's dispatch of subsequent
+	// messages, and must not hold the pending-table lock either.
 	go func() {
 		resp := map[string]any{
 			"jsonrpc": "2.0",
@@ -236,9 +244,9 @@ func (c *StdioClient) handleServerRequest(id int64, method string, msg map[strin
 				"message": "method not found",
 			},
 		}
-		c.mu.Lock()
+		c.writeMu.Lock()
 		_ = WriteLineMessage(c.w, resp)
-		c.mu.Unlock()
+		c.writeMu.Unlock()
 	}()
 }
 
