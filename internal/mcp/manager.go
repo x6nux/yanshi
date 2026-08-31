@@ -251,6 +251,14 @@ func (m *Manager) startOne(ctx context.Context, cfg *ServerConfig) (Client, erro
 	m.mu.Lock()
 	temp := make(map[string]ToolDescriptor, len(tools))
 	for _, td := range tools {
+		// W-F-12: the per-server allow/deny filter is registration-side
+		// narrowing only — dropped here, before anything downstream (the
+		// guard's mcp dimension, GOV5's profile reconciliation) can see the
+		// name. Empty allow admits all, so every config predating the field
+		// registers exactly what it registered before.
+		if !cfg.AdmitsTool(td.ToolName) {
+			continue
+		}
 		td.ServerName = cfg.Name
 		td.Qualified = QualifyToolName(cfg.Name, td.ToolName)
 		if _, exists := m.toolMap[td.Qualified]; exists {

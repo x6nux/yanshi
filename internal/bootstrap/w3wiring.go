@@ -182,6 +182,9 @@ func buildMCPManager(cfg *config.Config, secretMgr *secrets.Manager) *mcp.Manage
 			Command: sc.Command, Args: sc.Args, Env: sc.Env,
 			URL: sc.URL, Bearer: sc.Bearer, Timeout: d, Reconnect: sc.Reconnect,
 			OAuth: mcpOAuthFromConfig(sc.OAuth),
+			// W-F-12: per-server tool allow/deny. Projection, not policy —
+			// the enforcement lives in the mcp package's registration path.
+			ToolAllow: sc.ToolAllow, ToolDeny: sc.ToolDeny,
 		}
 	}
 	mgr := mcp.NewManager(servers)

@@ -483,6 +483,13 @@ mcp:
   #     authorization_url: "https://auth.example.com/oauth/authorize"
   #     client_id: "${MCP_CLIENT_ID}"
   #     scopes: [read, write]
+  #
+  # 每 server 工具 allow/deny（W-F-12）。按 server 自己的工具名（不带
+  # mcp_<server>_ 前缀）过滤注册面，精确名或 `*` 通配；deny 压过 allow。
+  # 空 tool_allow = 不过滤（与本字段出现之前逐字节一致）—— 真正的鉴权门
+  # 仍是 profiles.mcp.allow 的 fail-closed 语义，这里只能收窄不能放宽：
+  #   tool_allow: ["*"]
+  #   tool_deny: ["deploy_prod"]
 
 # MEM1 用户 memory:跨会话偏好笔记,启动时作为独立 suffix 注入 system prompt。
 # 默认关闭;显式 enabled: true 后才会加载与注入。

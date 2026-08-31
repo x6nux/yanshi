@@ -43,6 +43,19 @@ type MCPServerConfig struct {
 	// the server authenticates with Bearer (or not at all), which is what
 	// every config predating this field meant.
 	OAuth *MCPOAuthConfig `yaml:"oauth,omitempty"`
+
+	// ToolAllow restricts which tools from this server yanshi registers, by
+	// the server's own tool name (before the mcp_<server>_ prefix). Exact
+	// names or `*`-style globs ("search_*"). Empty means every advertised
+	// tool is a candidate — the security gate stays downstream in the guard's
+	// mcp dimension, whose empty-allow fail-closed semantics this list does
+	// not touch; this is a registration-side narrowing only and can never
+	// widen anything.
+	ToolAllow []string `yaml:"tool_allow,omitempty"`
+	// ToolDeny excludes tools by the same name/glob shape as ToolAllow.
+	// Deny wins over allow, so "allow everything but the destructive one" is
+	// tool_allow: ["*"] plus tool_deny: ["deploy_prod"].
+	ToolDeny []string `yaml:"tool_deny,omitempty"`
 }
 
 // MCPOAuthConfig configures OAuth 2.0 token acquisition for one MCP server.

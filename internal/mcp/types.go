@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"path"
 	"strings"
 	"time"
 )
@@ -35,6 +36,43 @@ type ServerConfig struct {
 	Timeout   time.Duration     `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	Reconnect bool              `json:"reconnect,omitempty" yaml:"reconnect,omitempty"`
 	OAuth     *OAuthConfig      `json:"oauth,omitempty" yaml:"oauth,omitempty"`
+	// ToolAllow/ToolDeny narrow which of the server's advertised tools get
+	// registered, by the server's own tool name (pre-qualification), exact or
+	// `*`-glob. Empty allow admits all — the profile-level guard mcp
+	// dimension remains the fail-closed authority; this is narrowing only.
+	ToolAllow []string `json:"tool_allow,omitempty" yaml:"tool_allow,omitempty"`
+	ToolDeny  []string `json:"tool_deny,omitempty" yaml:"tool_deny,omitempty"`
+}
+
+// AdmitsTool reports whether a tool advertised by this server (name is the
+// server's own tool name, without the mcp_<server>_ qualification) passes the
+// per-server allow/deny filter.
+//
+// Semantics, in order: a deny hit refuses — deny wins over allow, so a
+// broad allow plus one exclusion is expressible; an empty allow admits
+// everything not denied, because every config predating these fields must
+// keep meaning exactly what it meant (all tools registered, guarded
+// downstream by the profile's mcp dimension as before); a non-empty allow
+// admits only what matches. Patterns are exact names or `*`-globs
+// (path.Match); a malformed pattern matches nothing, which fails closed on
+// the allow side and merely weakens the deny side — deny lists are written
+// by the same hand as allow lists, and inventing a validation layer for one
+// field is not this function's job.
+func (cfg *ServerConfig) AdmitsTool(name string) bool {
+	for _, pat := range cfg.ToolDeny {
+		if ok, _ := path.Match(pat, name); ok {
+			return false
+		}
+	}
+	if len(cfg.ToolAllow) == 0 {
+		return true
+	}
+	for _, pat := range cfg.ToolAllow {
+		if ok, _ := path.Match(pat, name); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // ConnectionStatus 表示一个 server 的实时连接状态。

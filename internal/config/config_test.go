@@ -1250,3 +1250,33 @@ llm:
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "refresh_interval")
 }
+
+// W-F-12: per-server tool allow/deny parse from YAML and land on the config
+// struct, from where buildMCPManager projects them onto the mcp.ServerConfig
+// the Manager enforces. Absent fields stay nil — every config predating the
+// fields keeps meaning "no registration-side filter".
+func TestLoad_MCPToolAllowDeny(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+mcp:
+  servers:
+    github:
+      enabled: true
+      transport: http
+      url: "https://mcp.example.com"
+      tool_allow: ["search_*", "get_file"]
+      tool_deny: ["search_web"]
+    plain:
+      enabled: true
+      transport: http
+      url: "https://mcp2.example.com"
+`))
+	require.NoError(t, err)
+	gh := cfg.MCP.Servers["github"]
+	require.NotNil(t, gh)
+	assert.Equal(t, []string{"search_*", "get_file"}, gh.ToolAllow)
+	assert.Equal(t, []string{"search_web"}, gh.ToolDeny)
+	plain := cfg.MCP.Servers["plain"]
+	require.NotNil(t, plain)
+	assert.Empty(t, plain.ToolAllow)
+	assert.Empty(t, plain.ToolDeny)
+}
