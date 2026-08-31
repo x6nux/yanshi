@@ -9,7 +9,7 @@ import (
 // 协商矩阵：server 带回的三版都采纳；空应答与未知版本都是硬错误。
 // 变异：把 negotiateProtocolVersion 里 !supportedProtocolVersions[v] 的分支
 // 改成「返回 preferred 降级继续」→ 本测试的三个 reject 用例全部变红
-//（静默降级正是这条要拦的行为）。
+// （静默降级正是这条要拦的行为）。
 func TestNegotiateProtocolVersionMatrix(t *testing.T) {
 	for _, v := range []string{"2025-06-18", "2025-03-26", "2024-11-05"} {
 		got, err := negotiateProtocolVersion(v)
@@ -85,7 +85,7 @@ func TestStdioClient_NegotiatesProtocolVersion(t *testing.T) {
 }
 
 // HTTP 半：协商出的版本作为 MCP-Protocol-Version 头出现在后续请求上
-//（2025-03-26 起的契约），initialize 本身不带（那时还没协商出来）。
+// （2025-03-26 起的契约），initialize 本身不带（那时还没协商出来）。
 //
 // 变异：删掉 post 里 version != "" 的 SetHeader 两行 → 本测试变红。
 func TestHTTPClient_SendsNegotiatedProtocolVersionHeader(t *testing.T) {

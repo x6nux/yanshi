@@ -535,8 +535,6 @@ func (m *Manager) refreshTools(server string) {
 	}
 }
 
-
-//
 // An authorization_code server whose token source cannot be constructed —
 // no store bound, missing client_id — falls back to the configured bearer
 // rather than to an unauthenticated client. The fallback is not a silent

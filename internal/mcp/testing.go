@@ -33,8 +33,8 @@ type FakeServer struct {
 	InitProtocolHeader string
 	// LastSubscribeURI / LastUnsubscribeURI record the uri params of the most
 	// recent resources/subscribe / resources/unsubscribe.
-	LastSubscribeURI    string
-	LastUnsubscribeURI  string
+	LastSubscribeURI   string
+	LastUnsubscribeURI string
 }
 
 func (f *FakeServer) handle(w http.ResponseWriter, r *http.Request) {

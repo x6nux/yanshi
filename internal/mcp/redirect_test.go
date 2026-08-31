@@ -60,7 +60,7 @@ func (p *redirectProbe) values() (auth, sess string) {
 // 不剪同源 —— API 主机内部的 307 是正常拓扑）。
 //
 // 变异：把 checkRedirect 的跨源条件改成「一律 strip」→ 本测试变红
-//（同源跳也丢了凭据）。
+// （同源跳也丢了凭据）。
 func TestHTTPClient_SameOriginRedirectKeepsCredentials(t *testing.T) {
 	probe := &redirectProbe{}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -92,7 +92,7 @@ func TestHTTPClient_SameOriginRedirectKeepsCredentials(t *testing.T) {
 // 在起点上被发出过，否则「B 处为空」什么都没证。
 //
 // 变异：删掉 checkRedirect 里的三行 Del → 本测试变红
-//（Authorization 走 stdlib 的剥离侥幸为空，Mcp-Session-Id 必然泄漏 ——
+// （Authorization 走 stdlib 的剥离侥幸为空，Mcp-Session-Id 必然泄漏 ——
 // 这正是 stdlib 默认策略只护 Authorization/Cookie 留下的缝）。
 func TestHTTPClient_CrossOriginRedirectStripsCredentials(t *testing.T) {
 	target := &redirectProbe{}

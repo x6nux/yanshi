@@ -43,7 +43,7 @@ func startOverPipes(t *testing.T, svc *v1.Service) *mcp.StdioClient {
 // agent 能把 yanshi 当子 agent 调」（客户端半是生产代码，不是测试桩）。
 //
 // 断言说明：DefaultModel-only 的 v1 路径按契约只发一个 stub chunk
-//（"(no real model configured)"），所以这里断言的是会话/turn 形状与
+// （"(no real model configured)"），所以这里断言的是会话/turn 形状与
 // 非空文本 —— 对话记忆语义归 v1/编排器自己的测试管。
 //
 // 变异：把 callPrompt 的 Resume 分支删掉、session_id 非空时也 Start 新线程

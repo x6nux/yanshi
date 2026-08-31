@@ -31,10 +31,10 @@ type ServerHandler func(method string, params map[string]any)
 // pending[id] channel，通知按 method 路由到 ServerHandler，server
 // 发起的请求（带 id + method）由 handler 处理后回复。
 type StdioClient struct {
-	r       *bufio.Reader
-	rawR    io.Reader // 原始 reader，Close 时如实现 io.Closer 则关闭
-	w       io.Writer
-	cmd     *exec.Cmd
+	r    *bufio.Reader
+	rawR io.Reader // 原始 reader，Close 时如实现 io.Closer 则关闭
+	w    io.Writer
+	cmd  *exec.Cmd
 	// writeMu 只串行化 stdin 写入（WriteLineMessage 是 header+body 两次
 	// Write，交错会撕裂帧）。它绝不能在阻塞 I/O 之外再被 readLoop 需要 ——
 	// 曾与 pending 表共用一把锁：写阻塞在 pipe 上时 deliver 拿不到锁，响应
@@ -46,12 +46,12 @@ type StdioClient struct {
 	// mu 只保护 pending 表与 closed 标记 —— 两者都是内存操作，临界区无 I/O。
 	mu sync.Mutex
 
-	pending map[int64]chan map[string]any
-	done    chan struct{}
-	closed  bool
+	pending   map[int64]chan map[string]any
+	done      chan struct{}
+	closed    bool
 	closeOnce sync.Once
 
-	handler  ServerHandler // nil = 忽略 server 主动推送
+	handler   ServerHandler // nil = 忽略 server 主动推送
 	handlerMu sync.RWMutex
 
 	// protocol is the MCP revision the session settled on at Initialize. Only

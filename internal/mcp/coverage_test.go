@@ -48,7 +48,7 @@ func (f *fakeClient) ListResources(context.Context) ([]ResourceDescriptor, error
 func (f *fakeClient) ListResourcesPage(context.Context, string) ([]ResourceDescriptor, string, error) {
 	return f.resources, "", f.listResErr
 }
-func (f *fakeClient) SubscribeResource(context.Context, string) error  { return nil }
+func (f *fakeClient) SubscribeResource(context.Context, string) error   { return nil }
 func (f *fakeClient) UnsubscribeResource(context.Context, string) error { return nil }
 func (f *fakeClient) ReadResource(context.Context, string) (json.RawMessage, error) {
 	return f.readResult, f.readErr
