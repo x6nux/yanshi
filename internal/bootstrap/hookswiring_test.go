@@ -91,3 +91,71 @@ func TestBuild_WithoutHooksBlockBindsNothing(t *testing.T) {
 
 	assert.Equal(t, orchestrator.HooksConfig{}, app.Orch.HooksForTest())
 }
+
+// TestToOrchestratorHooksCompactionSegmentsMapping 是压缩段（W-F-08）的映射
+// 对账，尺子与 PreToolUse 那条相同：config struct 到 orchestrator struct 的
+// 逐字段拷贝里 typo 编译通过、静默传零值。**方向是本条存在的理由**：把
+// PreCompact 错映射到 PostCompact 在编译期与运行期都无感（两段形状相同、
+// 事件按 phase 分发，错的段只是收不到自己那半事件）——只有逐段断言抓得住。
+//
+// 会变红的变异：toOrchestratorHooks 里把 PreCompact append 进 out.PostCompact
+//（方向交叉）→ 本测试红。
+func TestToOrchestratorHooksCompactionSegmentsMapping(t *testing.T) {
+	in := config.HooksConfig{
+		PreCompact: []config.HookConfig{{
+			Program: "/opt/hooks/pre-compact",
+			Args:    []string{"--before"},
+			Timeout: 3 * time.Second,
+		}},
+		PostCompact: []config.HookConfig{{
+			Program: "/opt/hooks/post-compact",
+			Args:    []string{"--after"},
+			Timeout: 4 * time.Second,
+		}},
+	}
+
+	got := toOrchestratorHooks(in)
+	require.Len(t, got.PreCompact, 1, "pre_compact 段必须落在自己的段里")
+	require.Equal(t, "/opt/hooks/pre-compact", got.PreCompact[0].Program)
+	require.Equal(t, []string{"--before"}, got.PreCompact[0].Args)
+	require.Equal(t, 3*time.Second, got.PreCompact[0].Timeout)
+	require.Len(t, got.PostCompact, 1, "post_compact 段必须落在自己的段里")
+	require.Equal(t, "/opt/hooks/post-compact", got.PostCompact[0].Program)
+	require.Equal(t, []string{"--after"}, got.PostCompact[0].Args)
+	require.Equal(t, 4*time.Second, got.PostCompact[0].Timeout)
+
+	// Args 独立拷贝，与 PreToolUse 段同一纪律。
+	in.PreCompact[0].Args[0] = "MUTATED"
+	assert.Equal(t, "--before", got.PreCompact[0].Args[0],
+		"映射必须拷贝 Args 切片，不能共享底层数组")
+}
+
+// TestBuild_WiresCompactionHooksIntoServerConfig 是传输层的接线半边：hooks 块
+// 的压缩段经 Build 真的落进交给 apihttp.New 的配置——pre-turn 自动压缩与
+// 手动 /compact 靠它拿到与 mid-turn 同一份生命周期 hook。捕获读的是**交给
+// apihttp 的那个 struct**（App.ServerHooks 从 httpCfg.Hooks 取，不是从映射
+// 表达式取）：把 http 配置字面量里的 Hooks 行删掉，这里立刻红——独立捕获
+// 看不见这一行的消失。
+//
+// 会变红的变异：删掉 httpCfg 字面量的 Hooks 行 → 本测试红；
+// toOrchestratorHooks 方向交叉 → 上一条映射测试与本测试同时红。
+func TestBuild_WiresCompactionHooksIntoServerConfig(t *testing.T) {
+	extra := "\nhooks:\n" +
+		"  pre_compact:\n" +
+		"    - program: /opt/hooks/pre-compact\n" +
+		"      timeout: 3s\n" +
+		"  post_compact:\n" +
+		"    - program: /opt/hooks/post-compact\n" +
+		"      args: [\"--json\"]\n"
+
+	app, cleanup := buildFakeApp(t, extra)
+	defer cleanup()
+
+	require.Len(t, app.ServerHooks.PreCompact, 1,
+		"压缩段必须真的到达交给 apihttp 的配置，而不是停在映射函数里")
+	require.Equal(t, "/opt/hooks/pre-compact", app.ServerHooks.PreCompact[0].Program)
+	require.Equal(t, 3*time.Second, app.ServerHooks.PreCompact[0].Timeout)
+	require.Len(t, app.ServerHooks.PostCompact, 1)
+	require.Equal(t, "/opt/hooks/post-compact", app.ServerHooks.PostCompact[0].Program)
+	require.Equal(t, []string{"--json"}, app.ServerHooks.PostCompact[0].Args)
+}

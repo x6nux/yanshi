@@ -112,6 +112,18 @@ type App struct {
 	// the source rather than reconstructed from the assembled object.
 	ServerCompaction apihttp.CompactionConfig
 
+	// ServerHooks is the orchestrator.HooksConfig actually handed to
+	// apihttp.New — the W-F-08 half that lets the transport-side compaction
+	// paths (pre-turn auto-compact, manual /compact) fire the same lifecycle
+	// hooks the mid-turn path does. Captured FROM the http config struct
+	// (not from the mapping expression) so the capture dies with the
+	// pass-through: deleting the http config's Hooks field zeroes this and
+	// the wiring test goes red, which a capture computed independently
+	// would not notice. Same C4 constraint-13 rationale as ServerCompaction:
+	// App.Server is net/http.Server and the handler must not be type-asserted
+	// back to apihttp just to refill a test's field.
+	ServerHooks orchestrator.HooksConfig
+
 	// Background owns tool calls moved to the background when they hit their
 	// foreground deadline (T3). Closed by Shutdown; a wedged subprocess would
 	// otherwise outlive the process that spawned it.
@@ -1765,6 +1777,7 @@ func Build(opts Options) (*App, error) {
 		Skills:           registry,
 		ToolNames:        toolNames,
 		ServerCompaction: httpCfg.Compaction,
+		ServerHooks:      httpCfg.Hooks,
 		LaunchProxyURLs:  launchProxyURLs(secureFactory, shellManager),
 		NetProxy:         netProxy,
 		mcpHealthCancel:  mcpHealthCancel,

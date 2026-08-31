@@ -117,8 +117,9 @@ func TestMidTurnCompactionPathFiresLifecycleHook(t *testing.T) {
 	// 端到端：真实装配的 orchestrator → withTurnContext 绑总线 → turn ctx
 	// → CompactingModel 触发压缩 → ctxcompact 发事件 → 真实外部 hook 进程
 	// 落盘。mid-turn 是三条压缩路径里唯一从 turn ctx 读总线的；pre-turn 与
-	// 手动 /compact 的传输层绑定由 api/http 的构造函数承担（bootstrap 把同
-	// 一份映射交给两边，wiring_test 层面对账）。
+	// 手动 /compact 的传输层绑定在 api/http 的 compaction_lifecycle_test 里
+	// 各有探针 sink 测试；config 到装配的两段（压缩段映射的方向、到
+	// apihttp 配置的传递）由 bootstrap 的 hookswiring 压缩段测试钉住。
 	logPath := lifecycleTestEnv(t)
 	workRoot := t.TempDir()
 
