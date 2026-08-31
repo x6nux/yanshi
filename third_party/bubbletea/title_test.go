@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,8 +26,22 @@ type titleModel struct {
 	// quitting from inside it is the only shape here that is actually
 	// deterministic.
 	quitAfterTitles bool
-	doPanic         atomic.Bool
+	// panicAfterTitles panics from Update once the titles are in, replacing an
+	// earlier "panic on the first KeyMsg" trigger. Same race as above from the
+	// other side: the keypress could arrive before Init's title Cmds had
+	// produced anything, and under -race it did — the panic exit path saw a
+	// buffer with zero title bytes in 2 runs out of 3.
+	panicAfterTitles bool
+	// titlesDone is set once eventLoop has processed both title msgs. Because
+	// eventLoop handles setWindowTitleMsg synchronously and Sequence feeds it
+	// in order, observing this means both titles are already in the output —
+	// which is what lets the Kill test fire at a deterministic moment instead
+	// of racing the titles from View's first execution.
+	titlesDone atomic.Bool
 }
+
+// titlesDoneMsg is the Sequence's final step; see titleModel.titlesDone.
+type titlesDoneMsg struct{}
 
 // titleA/titleB are the two titles Init emits. TWO, not one, because
 // titlePushed's whole reason to exist is that a real yanshi turn sets the
@@ -45,19 +60,24 @@ func (m *titleModel) Init() Cmd {
 	if !m.setTitle {
 		return nil
 	}
-	cmds := []Cmd{SetWindowTitle(titleA), SetWindowTitle(titleB)}
-	if m.quitAfterTitles {
-		cmds = append(cmds, Quit)
-	}
-	return Sequence(cmds...)
+	return Sequence(
+		SetWindowTitle(titleA),
+		SetWindowTitle(titleB),
+		func() Msg { return titlesDoneMsg{} },
+	)
 }
 
 func (m *titleModel) Update(msg Msg) (Model, Cmd) {
 	switch msg.(type) {
-	case KeyMsg:
-		if m.doPanic.Load() {
+	case titlesDoneMsg:
+		if m.panicAfterTitles {
 			panic("titleModel: testing panic behavior")
 		}
+		m.titlesDone.Store(true)
+		if m.quitAfterTitles {
+			return m, Quit
+		}
+	case KeyMsg:
 		return m, Quit
 	}
 	return m, nil
@@ -104,18 +124,39 @@ func TestTitleRestoredOnNormalQuit(t *testing.T) {
 }
 
 // TestTitleRestoredOnKill covers exit path 2/3: Kill, which cancels the
-// program's internal context from a goroutine other than eventLoop's and
-// causes Run() to call p.shutdown(killed=true) — distinct from the plain
-// Quit test above, where Run() reaches the SAME p.shutdown(...) call at its
-// own tail (tea.go:755) after eventLoop returns normally. That single call
-// site is also what SIGTERM/SIGINT go through in this fork (their handler
-// just sends QuitMsg/InterruptMsg into eventLoop, same as a 'q' keypress —
-// there is no separate signal-specific shutdown path), so the Quit test
-// already exercises that shape; Kill and panic (below) are the two
-// genuinely different call sites (screen.go's Kill() and tea.go's
-// recoverFromPanic both call p.shutdown() directly, from a different
-// goroutine than the one that set titlePushed) — which is what proves
-// titlePushed's atomic.Bool, not a plain bool, is load-bearing here.
+// program's internal context so eventLoop returns early and Run reaches its
+// tail with killed=true (skipping the final render).
+//
+// RE-28 rewrote this comment; the previous version got three checkable facts
+// wrong, so here they are with the check that establishes each:
+//
+//   - Kill does NOT call p.shutdown. Program.Kill's entire body is p.cancel()
+//     (tea.go — `grep -n 'func (p \*Program) Kill' third_party/bubbletea/*.go`
+//     also shows it is in tea.go, not screen.go as claimed). p.shutdown has
+//     exactly two call sites in the fork, Run's tail and recoverFromPanic
+//     (`grep -n 'p.shutdown(' third_party/bubbletea/tea.go`) — Kill is not
+//     one of them, which the old comment's own preceding clause ("causes
+//     Run() to call p.shutdown") already contradicted.
+//   - The old comment also cited a line number for Run's tail shutdown; that
+//     number pointed at a comment line even when written. Symbol references
+//     only here, per the review checklist's F3 rule.
+//   - Kill and panic are therefore NOT "shutdown from a different goroutine
+//     than the one that set titlePushed". eventLoop is called synchronously
+//     by Run; recoverFromPanic is a defer inside Run; Run's tail is Run. All
+//     three exit paths read titlePushed on the very goroutine that wrote it,
+//     so nothing in THIS file requires an atomic — a plain bool passes all
+//     four tests here under -race (verified).
+//
+// atomic.Bool is still the right type, for a reason none of these tests
+// exercised until RE-28 added one: Program.SetWindowTitle is exported and
+// documents no goroutine restriction, so callers may drive it concurrently.
+// TestSetWindowTitleFromConcurrentGoroutines below is what actually holds
+// that property.
+//
+// What this test does still prove: the killed=true path restores the title.
+// SIGTERM/SIGINT need no test of their own — their handler just sends
+// QuitMsg/InterruptMsg into eventLoop, the same shape as a keypress, so the
+// plain-Quit test above already covers them.
 func TestTitleRestoredOnKill(t *testing.T) {
 	var buf bytes.Buffer
 	var in bytes.Buffer
@@ -125,7 +166,7 @@ func TestTitleRestoredOnKill(t *testing.T) {
 	go func() {
 		for {
 			time.Sleep(time.Millisecond)
-			if m.executed.Load() != nil {
+			if m.titlesDone.Load() {
 				p.Kill()
 				return
 			}
@@ -147,10 +188,8 @@ func TestTitleRestoredOnKill(t *testing.T) {
 func TestTitleRestoredOnPanic(t *testing.T) {
 	var buf bytes.Buffer
 	var in bytes.Buffer
-	in.Write([]byte("q"))
 
-	m := &titleModel{setTitle: true}
-	m.doPanic.Store(true)
+	m := &titleModel{setTitle: true, panicAfterTitles: true}
 	p := NewProgram(m, WithInput(&in), WithOutput(&buf))
 
 	// Run() itself recovers the panic (see recoverFromPanic) and returns a
@@ -199,6 +238,81 @@ func TestTitleUntouchedLeavesNoStackNoise(t *testing.T) {
 // file green before the count existed — and that mutation is exactly the bug
 // titlePushed's doc comment warns about, since shutdown pops one level while
 // the terminal's title stack grows by one per turn.
+// syncBuffer is a mutex-guarded output sink. standardRenderer.execute writes
+// straight to the output with no lock of its own, so a plain bytes.Buffer
+// would report a data race on the BUFFER as soon as two goroutines set the
+// title concurrently — drowning out the race the test below is actually
+// looking for. Locking here removes that one, leaving titlePushed as the only
+// unsynchronized state in the picture (the "attribution" requirement: an
+// assertion that cannot say which mechanism failed proves nothing).
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestSetWindowTitleFromConcurrentGoroutines is what makes titlePushed's
+// atomic.Bool load-bearing (RE-28). Program.SetWindowTitle is exported and
+// promises no goroutine affinity, so a caller may drive it from anywhere;
+// with a plain bool, the `if !p.titlePushed { p.titlePushed = true }`
+// read-modify-write here is an unsynchronized write racing every other
+// goroutine's read.
+//
+// The deterministic half (push count) and the -race half both matter: the
+// count can go above one only when two goroutines interleave, which is
+// timing-dependent, whereas the race detector flags the unsynchronized access
+// whether or not the interleaving loses. CI runs `go test -race` as a hard
+// gate, so the reliable signal is there.
+//
+// This test drives SetWindowTitle directly rather than through the Cmd path
+// because the Cmd path is by construction single-goroutine (eventLoop); the
+// exported method is the surface with no such guarantee.
+func TestSetWindowTitleFromConcurrentGoroutines(t *testing.T) {
+	var out syncBuffer
+	var in bytes.Buffer
+
+	m := &titleModel{} // setTitle=false: this test sets the title itself
+	p := NewProgram(m, WithInput(&in), WithOutput(&out))
+
+	go func() {
+		// Wait for View to run: the atomic store in View happens after Run
+		// assigned p.renderer, so loading it here establishes the
+		// happens-before edge that makes reading p.renderer below legal.
+		for m.executed.Load() == nil {
+			time.Sleep(time.Millisecond)
+		}
+		var wg sync.WaitGroup
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for j := 0; j < 25; j++ {
+					p.SetWindowTitle(titleA)
+				}
+			}()
+		}
+		wg.Wait()
+		p.Quit()
+	}()
+
+	if _, err := p.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	assertTitlePushSetPopInOrder(t, out.String())
+}
+
 func assertTitlePushSetPopInOrder(t *testing.T, out string) {
 	t.Helper()
 	const title = "\x1b]2;" + titleA + "\x07"
