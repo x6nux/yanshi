@@ -32,6 +32,7 @@ var keyBindings = []helpItem{
 	{Label: "Ctrl+T", Source: "key", Hint: "fullscreen transcript pager"},
 	{Label: "Ctrl+V", Source: "key", Hint: "attach clipboard image (silent if none)"},
 	{Label: "Ctrl+C", Source: "key", Hint: "cancel in-flight turn"},
+	{Label: "Ctrl+Z", Source: "key", Hint: "suspend to background (Unix only; fg to resume)"},
 	{Label: "Alt+R", Source: "key", Hint: "search prompt history"},
 	{Label: "Alt+Up", Source: "key", Hint: "edit last queued message"},
 	{Label: "Shift+Tab", Source: "key", Hint: "cycle permission mode"},

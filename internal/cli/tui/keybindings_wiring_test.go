@@ -115,6 +115,7 @@ var keyBindingsCensus = map[string]keyCensusEntry{
 	"KeyEscape":    {labels: []string{"Esc"}},
 	"KeyShiftTab":  {labels: []string{"Shift+Tab"}},
 	"KeyCtrlC":     {labels: []string{"Ctrl+C"}},
+	"KeyCtrlZ":     {labels: []string{"Ctrl+Z"}},
 	"KeyPgUp":      {labels: []string{"PgUp/PgDn"}},
 	"KeyPgDown":    {labels: []string{"PgUp/PgDn"}},
 	"KeyTab":       {labels: []string{"Tab"}},

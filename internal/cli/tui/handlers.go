@@ -439,6 +439,22 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 	case tea.KeyShiftTab:
 		mm, cmd := m.cycleMode()
 		return mm.(model), cmd, true
+	case tea.KeyCtrlZ:
+		// W-E-10: suspend to background (Unix Ctrl+Z / SIGTSTP). bubbletea's
+		// fork handles the actual terminal release + signal + restore cycle
+		// via tea.Suspend → p.suspend() → ReleaseTerminal/suspendProcess/
+		// RestoreTerminal + p.Send(ResumeMsg{}). On Windows suspendSupported
+		// is false so tea.Suspend is a no-op; the key still returns true here
+		// so it is not typed into the input box.
+		//
+		// Mid-turn ruling (W-E-10): if a stream is in flight when the user
+		// comes back (fg), the turn continues — the stream goroutine stays
+		// alive, bubbletea re-arms input, and the next waitForEvent Cmd that
+		// fires picks up where it left off. Cancelling mid-stream on suspend
+		// would surprise users who step away briefly; leaving it alone is the
+		// least-intrusive choice (mirrors what a terminal shell does when you
+		// Ctrl+Z and fg a blocking process: it keeps going).
+		return m, tea.Suspend, true
 	case tea.KeyCtrlC:
 		// First Ctrl-C during a stream cancels the turn; a second press
 		// (or any Ctrl-C when idle) quits.
