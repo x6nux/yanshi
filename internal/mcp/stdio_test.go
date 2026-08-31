@@ -411,6 +411,68 @@ func TestStdioClient_ConcurrentRequestsEachGetTheirOwnResponse(t *testing.T) {
 	}
 }
 
+// 钉住 SetHandler doc 上的机制断言：handler 在 readLoop goroutine 中同步
+// 执行 —— 阻塞的 handler 会停住后续消息的分发。所以耗时 handler 必须
+// spawn goroutine，否则一次慢回调就拖住整条通知流（所有 pending doRequest
+// 逐个走到超时）。
+//
+// 变异判据：把 handleServerMessage 里的 handler 调用包进 go func(){}，
+// 本测试的「B 尚未分发」断言变红（异步分发下 B 会在 handler 阻塞期间到达）。
+func TestStdioClient_HandlerRunsSynchronouslyOnReadLoop(t *testing.T) {
+	srv, cli := newBidirServer(t)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var mu sync.Mutex
+	gotB := false
+	cli.SetHandler(func(method string, params map[string]any) {
+		if method == "notifications/a" {
+			close(started)
+			<-release // handler 故意阻塞
+		}
+		if method == "notifications/b" {
+			mu.Lock()
+			gotB = true
+			mu.Unlock()
+		}
+	})
+
+	srv.handshake(cli)
+
+	// A 先到，handler 开始阻塞。
+	srv.SendNotification("notifications/a", nil)
+	<-started
+
+	// B 在 handler 阻塞期间发出。必须从独立 goroutine 发：io.Pipe 是同步的，
+	// 同步分发下 readLoop 卡在 handler 里根本读不到 B，这个写会一直阻塞，
+	// 直到 handler 放行、readLoop 回到读循环为止 —— 这正是被钉住的行为。
+	go srv.SendNotification("notifications/b", nil)
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	if gotB {
+		mu.Unlock()
+		t.Fatal("notification B dispatched while handler was blocked; dispatch is asynchronous")
+	}
+	mu.Unlock()
+
+	// 放行 handler，B 应当随后到达。
+	close(release)
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		ok := gotB
+		mu.Unlock()
+		if ok {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("notification B never dispatched after handler released")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
 // Close wakes up blocked doRequest and readLoop exits cleanly.
 func TestStdioClient_CloseWakesPending(t *testing.T) {
 	srv, cli := newBidirServer(t)

@@ -68,9 +68,10 @@ func NewStdioClient(r io.Reader, w io.Writer) *StdioClient {
 }
 
 // SetHandler 注册 server 主动推送的回调（notification 与 server 发起的 request）。
-// 必须在 Initialize 之前调用——readLoop 在 Initialize 时启动。回调在 readLoop
-// goroutine 中同步执行，耗时操作（如工具表刷新）应自行 spawn goroutine 避免
-// 阻塞后续消息的投递。
+// 应在 Initialize 之前调用以收到早期消息 —— readLoop 在 Initialize 时启动；
+// 晚注册不报错，只是收不到注册前的那些消息。回调在 readLoop goroutine 中
+// 同步执行（有测试钉住：阻塞的 handler 会停住后续消息的分发），耗时操作
+// （如工具表刷新）必须自行 spawn goroutine。
 func (c *StdioClient) SetHandler(h ServerHandler) {
 	c.handlerMu.Lock()
 	c.handler = h
