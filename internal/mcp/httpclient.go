@@ -58,17 +58,19 @@ const maxRedirects = 5
 // checkRedirect is the client's redirect policy (W-F-29): a cross-origin hop
 // must not carry credentials.
 //
-// The stdlib already strips Authorization/Cookie on cross-origin redirects,
-// but only those — everything else is copied verbatim, which includes
-// Mcp-Session-Id. That header is the session handle this client propagates on
-// every call; handing it to a different origin lets that origin hijack the
-// MCP session, and it is exactly the kind of header a future credential-
-// shaped addition would silently fall into. So the policy is stated here,
-// explicitly, over the headers this client actually sets — same-origin hops
-// keep everything, cross-origin hops lose Authorization, Cookie and
-// Mcp-Session-Id. Origin is scheme-aware: an http→https hop on the same host
-// counts as cross-origin and is stripped (the downgrade direction is the
-// classic leak).
+// 写机制断言前先对照实测（RF-8，httptest 两台不同端口的三形态对照）：stdlib
+// 默认**不剥**任何东西。它的跨域判据（shouldCopyHeaderOnRedirect 一路走到
+// isDomainOrSubdomain）喂的是 url.Hostname() —— **端口不参与**，scheme 也不
+// 参与，所以 127.0.0.1:A → 127.0.0.1:B 的 307 被判为同域，Authorization
+// 原样复制到目标；https→http 的同域降级同样不在其列。也就是说 stdlib 只在
+// 「注册域名都不同」时才剥 Authorization/Cookie，而 MCP 服务常见形态
+// （同主机换端口、lb 换端口、降级）全在泄漏侧。Mcp-Session-Id 则从头到尾
+// 不在任何 stdlib 名单里 —— 它是会话句柄，交给另一个 origin 等于把 MCP
+// 会话送出去，也正是未来凭据形头会无声掉进去的那个洞。
+//
+// 所以策略在此显式声明，覆盖本 client 真正设置的头：同源跳全保留，跨源跳
+// 丢 Authorization、Cookie、Mcp-Session-Id。Origin 判据是 scheme+host 含
+// 端口 —— 比 stdlib 严的那一档（端口与 scheme 都参与）正是实测泄漏的形状。
 func (c *HTTPClient) checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= maxRedirects {
 		return fmt.Errorf("mcp: stopped after %d redirects", maxRedirects)
