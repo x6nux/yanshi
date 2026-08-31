@@ -191,11 +191,13 @@ func (s *bidirServer) SendRequest(id int64, method string, params map[string]any
 	}
 	data, _ := json.Marshal(msg)
 	// 同 SendNotification：s.w 的写必须全部互斥（见那里的注释）。
+	// 锁只护写不护读 —— defer 到函数尾会让 s.mu 跨下面的阻塞读持有，
+	// 读期间任何需要 s.mu 的写者全部死锁（RF-7，与 respondLoop 同一形状）。
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.w.Write(data)
 	s.w.WriteByte('\n')
 	s.w.Flush()
+	s.mu.Unlock()
 
 	resp, err := ReadMessage(s.buf)
 	if err != nil {
