@@ -149,9 +149,15 @@ type hookBusKey struct{}
 // ctx——中间件查不到总线就直接放行，行为与引入前逐字节一致。
 //
 // 故意不导出：WithLoopGuard 导出是因为 goalloop 这类非 turn 入口需要它；hook
-// 总线的每个生产入口都经过 withTurnContext（它同时是 GOV6 的调用点），子代理
-// 走自己 Orchestrator 的 withTurnContext，天然带各自的总线。多一个导出形式
-// 只多一条「绑了却没人消费」的路。
+// 总线的每个生产入口都经过 withTurnContext。多一个导出形式只多一条「绑了却
+// 没人消费」的路。
+//
+// 这句话的机器凭据**不是** GOV6 —— GOV6 的检测器只扫导出的注入器，本函数
+// 不导出就不在它视野内（评审 RF-16 抓住的正是这句原先的假声称）。真实凭据
+// 是行为测试：TestE2E_PreToolUseHookBlocksRealToolInRealTurn 证明主 turn 的
+// 真实管线绑了总线，TestSubAgentTurnHooksReachSubAgentTools 证明子代理 turn
+// 同样绑了（RF-14 之前那半句是假的——子编排器不继承 Hooks，各自的总线是
+// 空的）。
 func withTurnHooks(ctx context.Context, cfg HooksConfig) context.Context {
 	if len(cfg.PreToolUse) == 0 {
 		return ctx
@@ -181,6 +187,12 @@ func newHookMiddleware() *hookMiddleware {
 }
 
 // WrapInvokableToolCall 在每次工具调用前跑 PreToolUse hook 链。
+//
+// 只实现 Invokable 半边是当下完整的：全仓没有一个工具实现 StreamableRun 或
+// EnhancedInvokableRun（评审 RF-14 轮的必查 3 实测，internal/cmd 排测试零命
+// 中），compose 只能走 Invokable 端点。但这是「今天没人走另一条路」而非
+// 「另一条路被堵死」——将来引入 streamable 工具而不给本中间件补 Streamable
+// 半边的话，那些工具的调用会**静默**绕开 hook 门。届时先补中间件，再接工具。
 //
 // 工厂与 workRoot 在**包装时**从 turn ctx 取（此刻 ctx 保证带着
 // bindExecutionContext 绑的值），callCtx 只用于取消与超时 —— 与预算中间件

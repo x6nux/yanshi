@@ -925,7 +925,11 @@ func (o *Orchestrator) runnerFor(chatModel model.BaseChatModel, plan bool, model
 // wrappers that makes the budget consume first and the PreToolUse hooks judge
 // second, so a hook-blocked call still counts as a call the model made (a
 // repetition loop over a blocked tool is the repetition gate's problem, not
-// the budget's blind spot). It does not touch the model-call ordering above.
+// the budget's blind spot). That relative order is pinned by
+// TestHookBlockedCallsStillConsumeToolBudget, which builds its chain from THIS
+// slice — swapping the two turns the second call's refusal from the budget
+// message back into a hook block. It does not touch the model-call ordering
+// above.
 func orchestratorMiddlewares() []adk.ChatModelAgentMiddleware {
 	return []adk.ChatModelAgentMiddleware{
 		newSystemPromptRefresher(),

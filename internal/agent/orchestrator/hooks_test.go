@@ -813,3 +813,51 @@ func TestPreToolUseUntrustedOutputChannelsAreBounded(t *testing.T) {
 		assert.NotContains(t, out, "noise-0000-f3head")
 	})
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RF-16：orchestratorMiddlewares 的 hook/预算相对顺序必须有测试钉住。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestHookBlockedCallsStillConsumeToolBudget 钉住装配注释里的顺序声称：
+// loopGuard 在外、hook 在内，于是 hook 拒掉的调用同样计入 per-turn 预算 ——
+// 一个被 hook 全面拦截的模型仍会在预算耗尽处停下，而不是无限次撞 hook。
+//
+// 组链直接用生产装配的 orchestratorMiddlewares()（eino 语义：handlers[0]
+// 最外层，逐个从后往前包），所以有人调整 slice 里 newHookMiddleware 与
+// newLoopGuardMiddleware 的相对位置时，这条测试的链随之改变并变红 ——
+// 评审指出的「交换两者顺序现有套件全绿」由此闭合。
+//
+// 变异：把 orchestratorMiddlewares() 里的 newHookMiddleware() 挪到
+// newLoopGuardMiddleware() 之前 → 第二次调用再次撞上 hook 拒绝而不是预算
+// 拒绝，第二条断言红。
+func TestHookBlockedCallsStillConsumeToolBudget(t *testing.T) {
+	workRoot := t.TempDir()
+	t.Setenv(hookHelperReasonEnv, "blocked, and still billed")
+
+	turnCtx := tools.WithProfile(context.Background(), fsWriteProfile())
+	turnCtx = tools.WithWorkRoot(turnCtx, workRoot)
+	turnCtx = tools.WithSecureProcessFactory(turnCtx, shell.UnsandboxedSecureFactory())
+	turnCtx = WithLoopGuard(turnCtx, LoopGuardConfig{MaxToolCalls: 1})
+	turnCtx = withTurnHooks(turnCtx, HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "block")}})
+
+	d := &hookToolDouble{workRoot: workRoot}
+	ep := d.endpoint()
+	for i := len(orchestratorMiddlewares()) - 1; i >= 0; i-- {
+		wrapped, err := orchestratorMiddlewares()[i].WrapInvokableToolCall(
+			turnCtx, ep, &adk.ToolContext{Name: "fs_write"})
+		require.NoError(t, err)
+		ep = wrapped
+	}
+
+	out1, err := ep(turnCtx, `{"path":"a.txt"}`)
+	require.NoError(t, err)
+	assert.Contains(t, out1, "blocked by pre_tool_use hook", "第一次调用死于 hook")
+	assert.Empty(t, d.ran())
+
+	out2, err := ep(turnCtx, `{"path":"b.txt"}`)
+	require.NoError(t, err)
+	assert.Contains(t, out2, "budget",
+		"hook 拒掉的那次必须已计入预算：第二次调用应撞预算，不是再撞一次 hook")
+	assert.NotContains(t, out2, "blocked by pre_tool_use hook")
+	assert.Empty(t, d.ran())
+}
