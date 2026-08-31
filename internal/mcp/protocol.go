@@ -51,14 +51,14 @@ func supportedProtocolVersionList() []string {
 	return []string{"2025-06-18", "2025-03-26", "2024-11-05"}
 }
 
-// answerProtocolVersion is the server half of the same handshake, used by this
-// package's server-side kit consumers (the yanshi agent MCP server). When the
-// client requests a revision this server speaks, it is echoed — that pinned
-// revision then governs the session. When it requests something else (a newer
-// or unknown revision), the server answers with its newest and lets the client
+// AnswerProtocolVersion is the server half of the same handshake, used by
+// yanshi's own MCP servers (the agent server, W-F-06). When the client
+// requests a revision this server speaks, it is echoed — that pinned revision
+// then governs the session. When it requests something else (a newer or
+// unknown revision), the server answers with its newest and lets the client
 // decide: the MCP initialize contract says an unsupported answer is the
 // client's signal to disconnect, which is the honest outcome for both sides.
-func answerProtocolVersion(requested string) string {
+func AnswerProtocolVersion(requested string) string {
 	v := strings.TrimSpace(requested)
 	if supportedProtocolVersions[v] {
 		return v

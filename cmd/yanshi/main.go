@@ -51,6 +51,7 @@ Usage:
   yanshi app     [-config config.yaml] [-fake-model]
   yanshi goal    [-config config.yaml] [-fake-model] [-workdir DIR] [-agent claudecode] [-max-iters 5] [-max-tokens 0] [-goal "text"] [-tier auto|t0..t4]
   yanshi vcs-mcp (env-driven; spawned by the ACP adapter — YANSHI_DB_PATH/YANSHI_REPO_ID/YANSHI_WT_ID/YANSHI_AGENT/YANSHI_WORKTREE_DIR)
+  yanshi mcp    [-config config.yaml] [-fake-model]
   yanshi init    [-config FILE] [-template FILE] [-force]
   yanshi daemon  status|stop|reload [-root DIR] [-json] [-config FILE] [-timeout 20s]
   yanshi schedule list|show|pause|resume|run-now|delete [ID] [-root DIR] [-json]
@@ -85,6 +86,13 @@ Subcommands:
            so stdout stays parseable. -fake-model needs no API key.
   goal     Run the self-driven goal loop (plan-implement-evaluate-judge).
   vcs-mcp  Run the autoVCS MCP server on stdio (spawned by the ACP adapter).
+  mcp      Run yanshi itself as a general-purpose MCP server on stdio. Another
+           MCP-capable agent adds it as a tool server and drives yanshi as a
+           sub-agent: agent_prompt sends a prompt and waits for the finished
+           turn (pass the returned session_id back to continue that
+           conversation), agent_interrupt cancels a session's active turn.
+           The same engine the HTTP transport serves; -fake-model needs no
+           API key.
   init     Generate a config.yaml from config.example.yaml. Refuses to
            overwrite an existing config unless -force (which backs it up
            first). ${VAR} references are left as references — nothing writes
@@ -244,6 +252,8 @@ func dispatch(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runGoal(argv[2:])
 	case "vcs-mcp":
 		return vcsMcp(argv[2:])
+	case "mcp":
+		return mcpServer(argv[2:])
 	case "init":
 		return runInit(argv[2:], stdout, stderr)
 	case "daemon":
