@@ -54,6 +54,14 @@ jobs:
       - name: allow unprivileged user namespaces (bwrap needs them on 24.04)
         if: matrix.os == 'ubuntu'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # TestAstSearchReal_* drive the REAL ast-grep binary. The runner image's
+      # preinstalled sg is too old to know the `run` relational group
+      # ("sg: group 'run' does not exist"), which fails four tests that are
+      # about yanshi's parsing of ast-grep's output, not about which sg
+      # version a runner happened to ship. Pin a current binary.
+      - name: install current ast-grep (runner's prebuilt sg is too old)
+        if: matrix.os == 'ubuntu'
+        run: sudo npm install -g @ast-grep/cli
       # e2e_real build tag is off by default -> codex/claudecode CLIs are not
       # needed. eino/bootstrap t.Skip on missing providers is expected, not a fail.
       - run: go test ./...

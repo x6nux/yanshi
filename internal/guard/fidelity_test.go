@@ -416,7 +416,15 @@ func newShellHarness(t *testing.T) (workdir string, run func(string) shellReadin
 		// silently.
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		c := exec.CommandContext(ctx, "/bin/sh", "-c", cmd)
+		// The reference shell is bash, not /bin/sh: the corpus carries rows
+		// whose parsing differs per shell family (ANSI-C $'…' quoting, >&fd
+		// redirections), and what the differential assertion needs is ONE
+		// well-defined reader that both macOS and the ubuntu runner ship —
+		// /bin/sh is dash on Linux and parses neither, which left those rows
+		// unwitnessed on CI while green on a mac. Guard itself must read the
+		// way every major shell reads; bash is the superset that pins the
+		// corpus rows deterministically on both platforms.
+		c := exec.CommandContext(ctx, "/bin/bash", "-c", cmd)
 		c.Dir = work
 		// PATH carries the shim directory alone: an unshimmed program cannot be
 		// resolved at all, so a bug in this harness fails closed.
