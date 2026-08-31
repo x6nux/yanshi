@@ -556,6 +556,11 @@ func buildModelForCapability(sess *cli.Session, root string, project Preferences
 	// style in this package (see ApplyColorProfile's doc comment for why one
 	// call suffices for all of them).
 	ApplyColorProfile(cap.Profile)
+	// W-E-06: gates OSC 8 hyperlinks in toolArgSummary — a package-level
+	// toggle, not an `m.<field>` assignment, so (like ApplyColorProfile above)
+	// it is intentionally outside capabilityWiredFields' census; see
+	// SetHyperlinksEnabled's doc comment.
+	SetHyperlinksEnabled(cap.AltScreen)
 	// W-E-03: mirrors programOptions' own gate below — see mouseEnabled's
 	// doc comment on the model struct for why the pager's raw-copy toggle
 	// needs to know this at runtime, not just at startup.

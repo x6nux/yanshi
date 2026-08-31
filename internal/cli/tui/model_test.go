@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -264,6 +265,75 @@ func TestToolArgSummary(t *testing.T) {
 		assert.Equalf(t, tc.want, toolArgSummary(tc.name, tc.args, tc.root),
 			"toolArgSummary(%q,%q,%q)", tc.name, tc.args, tc.root)
 	}
+}
+
+// TestToolArgSummary_HyperlinksDisabledByDefault proves toolArgSummary emits
+// plain text — byte-identical to the pre-W-E-06 output above — when
+// SetHyperlinksEnabled has never been called (the zero value of
+// hyperlinksEnabled). This is the state every other test in the package
+// observes, and the state a TERM=dumb session runs in for its entire
+// lifetime (buildModelForCapability calls SetHyperlinksEnabled(false) for
+// it) — a corrupted-escape regression here would otherwise ship as garbage
+// on an unsupported terminal.
+func TestToolArgSummary_HyperlinksDisabledByDefault(t *testing.T) {
+	hyperlinksEnabled.Store(false)
+	got := toolArgSummary("fs_read", `{"path":"src/main.go"}`, "/proj")
+	want := "(src/main.go)"
+	assert.Equal(t, want, got)
+	assert.NotContains(t, got, "\x1b]8;;", "OSC 8 bytes must not appear when hyperlinks are disabled")
+}
+
+// TestToolArgSummary_HyperlinksEnabledWrapsPath proves that once
+// SetHyperlinksEnabled(true) has run (the capable-terminal branch of
+// buildModelForCapability), a "path" arg is wrapped in a real OSC 8 escape
+// (termenv.Hyperlink) around the same display text toolArgSummary would
+// otherwise show plain — clicking it must not open the wrong file, so the
+// URI is asserted exactly, not just "contains file://".
+func TestToolArgSummary_HyperlinksEnabledWrapsPath(t *testing.T) {
+	hyperlinksEnabled.Store(true)
+	t.Cleanup(func() { hyperlinksEnabled.Store(false) })
+
+	got := toolArgSummary("fs_read", `{"path":"src/main.go"}`, "/proj")
+	wantLink := termenv.Hyperlink("file:///proj/src/main.go", "src/main.go")
+	want := "(" + wantLink + ")"
+	assert.Equal(t, want, got)
+}
+
+// TestToolArgSummary_HyperlinksEnabledGlobStaysPlain proves the "glob" key
+// is deliberately excluded from hyperlink-wrapping even when enabled: a glob
+// like "**/*.go" is a pattern, not a single file a click could open (see
+// toolArgSummary's body comment on the key == "path" check).
+func TestToolArgSummary_HyperlinksEnabledGlobStaysPlain(t *testing.T) {
+	hyperlinksEnabled.Store(true)
+	t.Cleanup(func() { hyperlinksEnabled.Store(false) })
+
+	got := toolArgSummary("fs_glob", `{"glob":"**/*.go"}`, "/proj")
+	assert.Equal(t, "(**/*.go)", got)
+	assert.NotContains(t, got, "\x1b]8;;")
+}
+
+// TestToolArgSummary_HyperlinksEnabledRelativeNoRootStaysPlain proves that a
+// relative path with no root to anchor it to degrades to plain text rather
+// than emitting a URI that would open the wrong file (fileHyperlinkURI
+// returns "" in that case — see its doc comment).
+func TestToolArgSummary_HyperlinksEnabledRelativeNoRootStaysPlain(t *testing.T) {
+	hyperlinksEnabled.Store(true)
+	t.Cleanup(func() { hyperlinksEnabled.Store(false) })
+
+	got := toolArgSummary("fs_read", `{"path":"src/main.go"}`, "")
+	assert.Equal(t, "(src/main.go)", got)
+	assert.NotContains(t, got, "\x1b]8;;")
+}
+
+// TestFileHyperlinkURI covers fileHyperlinkURI directly: root-relative,
+// already-absolute, Windows drive-letter, and the two "cannot build safely"
+// cases (empty path, relative path with no root).
+func TestFileHyperlinkURI(t *testing.T) {
+	assert.Equal(t, "file:///proj/src/main.go", fileHyperlinkURI("src/main.go", "/proj"))
+	assert.Equal(t, "file:///abs/elsewhere/main.go", fileHyperlinkURI("/abs/elsewhere/main.go", "/proj"))
+	assert.Equal(t, "file:///C:/proj/main.go", fileHyperlinkURI("C:/proj/main.go", "/ignored"))
+	assert.Equal(t, "", fileHyperlinkURI("", "/proj"))
+	assert.Equal(t, "", fileHyperlinkURI("src/main.go", ""))
 }
 
 // TestToolEntry_RenderFriendlyFormat proves the rendered tool block uses the

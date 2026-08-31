@@ -75,6 +75,12 @@ func TestCov_NewProgram(t *testing.T) {
 	// into every later test in the package that renders a lipgloss style.
 	prev := lipgloss.ColorProfile()
 	t.Cleanup(func() { ApplyColorProfile(prev) })
+	// W-E-06: NewProgram also calls SetHyperlinksEnabled(cap.AltScreen) from
+	// the machine's real detected capability — another process-global side
+	// effect this test's real (non-injected) capability detection can leak
+	// into later tests exactly like the color profile above.
+	prevHyperlinks := hyperlinksEnabled.Load()
+	t.Cleanup(func() { hyperlinksEnabled.Store(prevHyperlinks) })
 
 	p := NewProgram(&cli.Session{}, "/proj", Preferences{})
 	assert.NotNil(t, p)

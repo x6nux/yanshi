@@ -50,6 +50,10 @@ func TestNewProgram_AppliesRealCapability(t *testing.T) {
 	prev := lipgloss.ColorProfile()
 	t.Cleanup(func() { ApplyColorProfile(prev) })
 	ApplyColorProfile(termenv.TrueColor)
+	// W-E-06: NewProgram also calls SetHyperlinksEnabled(cap.AltScreen) —
+	// another process-global side effect alongside the color profile above.
+	prevHyperlinks := hyperlinksEnabled.Load()
+	t.Cleanup(func() { hyperlinksEnabled.Store(prevHyperlinks) })
 
 	t.Setenv("TERM", "xterm-256color") // must not be "dumb" — that outranks NO_COLOR
 	t.Setenv("NO_COLOR", "1")

@@ -158,6 +158,13 @@ func TestBuildModelForCapability_FieldsFollowCapability(t *testing.T) {
 			// failing the moment this test runs first.
 			prev := lipgloss.ColorProfile()
 			t.Cleanup(func() { ApplyColorProfile(prev) })
+			// W-E-06: buildModelForCapability also calls
+			// SetHyperlinksEnabled(cap.AltScreen), another process-global side
+			// effect — same leak shape as the color profile above, since
+			// probe.high (AltScreen: true for every current census entry)
+			// would otherwise leave it stuck on for every later test.
+			prevHyperlinks := hyperlinksEnabled.Load()
+			t.Cleanup(func() { hyperlinksEnabled.Store(prevHyperlinks) })
 
 			lowM := buildModelForCapability(&cli.Session{}, "/proj", Preferences{}, probe.low)
 			highM := buildModelForCapability(&cli.Session{}, "/proj", Preferences{}, probe.high)
@@ -167,5 +174,32 @@ func TestBuildModelForCapability_FieldsFollowCapability(t *testing.T) {
 				"%s must actually depend on the detected capability (got %v for both low=%+v and high=%+v)",
 				name, lowVal, probe.low, probe.high)
 		})
+	}
+}
+
+// TestBuildModelForCapability_WiresHyperlinksEnabled proves
+// buildModelForCapability calls SetHyperlinksEnabled(cap.AltScreen) (W-E-06).
+// It cannot be a capabilityWiredFields census entry: that census's AST walk
+// only matches `m.<field> = …` assignments, and SetHyperlinksEnabled is a
+// package-level side effect (like ApplyColorProfile, which gets its own
+// direct test — TestNewProgram_AppliesRealCapability — for the same reason).
+// Without this test, a deleted SetHyperlinksEnabled call would leave every
+// other test green: no model field observes it.
+func TestBuildModelForCapability_WiresHyperlinksEnabled(t *testing.T) {
+	t.Cleanup(func() { hyperlinksEnabled.Store(false) })
+	// buildModelForCapability also calls ApplyColorProfile(cap.Profile); see
+	// TestBuildModelForCapability_FieldsFollowCapability's identical restore
+	// for why leaving this unset here would fail every later plain-text test
+	// in the package.
+	prev := lipgloss.ColorProfile()
+	t.Cleanup(func() { ApplyColorProfile(prev) })
+
+	buildModelForCapability(&cli.Session{}, "/proj", Preferences{}, cli.TermCapability{AltScreen: false})
+	if hyperlinksEnabled.Load() {
+		t.Fatal("AltScreen=false: hyperlinksEnabled = true, want false")
+	}
+	buildModelForCapability(&cli.Session{}, "/proj", Preferences{}, cli.TermCapability{AltScreen: true})
+	if !hyperlinksEnabled.Load() {
+		t.Fatal("AltScreen=true: hyperlinksEnabled = false, want true")
 	}
 }

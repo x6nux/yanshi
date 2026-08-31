@@ -6,6 +6,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -172,6 +173,30 @@ var (
 	// helpers invoked outside a running program) keeps today's behavior.
 	activeProfile = termenv.ANSI256
 )
+
+// hyperlinksEnabled gates W-E-06's OSC 8 semantic hyperlinks (toolArgSummary
+// wrapping file paths via termenv.Hyperlink). Unlike activeProfile it needs
+// no mutex: it is a single independent bool with no paired cache to
+// invalidate, so atomic.Bool (already this file's pattern for a lone counter
+// — see entryCacheCount) is the smaller primitive that is still safe for
+// SetHyperlinksEnabled's one write racing toolArgSummary's many reads.
+// Zero value is false: any render before SetHyperlinksEnabled runs (tests,
+// the pre-detection window) emits plain text, the fail-safe direction for a
+// feature that did not exist before W-E-06.
+var hyperlinksEnabled atomic.Bool
+
+// SetHyperlinksEnabled toggles whether toolArgSummary wraps file paths in an
+// OSC 8 hyperlink escape (W-E-06). Call once at startup from
+// buildModelForCapability, gated on cap.AltScreen — the same signal
+// titleEnabled/mouseEnabled use, because a terminal E1 doesn't trust with
+// escape sequences (TERM=dumb) shouldn't be handed OSC 8 either; see
+// ApplyColorProfile's doc comment for why a package-level toggle rather than
+// threading a flag through every entry.render() call is the right shape:
+// entries do not carry the model or its capability, only styles.go's package
+// state does.
+func SetHyperlinksEnabled(v bool) {
+	hyperlinksEnabled.Store(v)
+}
 
 // ApplyColorProfile sets the terminal color profile used by every lipgloss
 // style declared in this package and by the glamour markdown renderer built
@@ -636,6 +661,10 @@ func toolArgSummary(name, argsJSON, root string) string {
 	if s == "" {
 		return ""
 	}
+	// raw keeps the un-shortened value for fileHyperlinkURI below: shortenPath
+	// is display-only (root-relative, or reduced to a basename) and can throw
+	// away the part of the path a file:// URI needs.
+	raw := s
 	switch key {
 	case "path", "glob":
 		s = shortenPath(s, root)
@@ -649,7 +678,17 @@ func toolArgSummary(name, argsJSON, root string) string {
 			s = strconv.Quote(s)
 		}
 	}
-	return "(" + truncate(s, 40) + ")"
+	s = truncate(s, 40)
+	// W-E-06: OSC 8 semantic hyperlink, strictly AFTER truncate — wrapping
+	// first would let the 40-char budget cut into the escape sequence itself.
+	// "path" only, not "glob": a glob is a pattern ("*.go"), not a location a
+	// click could open.
+	if key == "path" && hyperlinksEnabled.Load() {
+		if uri := fileHyperlinkURI(raw, root); uri != "" {
+			s = termenv.Hyperlink(uri, s)
+		}
+	}
+	return "(" + s + ")"
 }
 
 // pickArgKey selects the most relevant arg key for the tool family. fs tools
@@ -745,4 +784,38 @@ func isAbsPath(pr string) bool {
 		return true
 	}
 	return len(pr) >= 3 && pr[1] == ':' && pr[2] == '/'
+}
+
+// fileHyperlinkURI builds a file:// URI for path (W-E-06), or "" when one
+// cannot be built safely. path is resolved against root first when it isn't
+// already absolute — a relative path with no root to anchor it to would
+// produce a URI that opens the wrong file, so that case returns "" rather
+// than guessing (the caller then shows plain, unlinked text — the same
+// degrade as an unsupported terminal, just for a different reason).
+//
+// url.URL.String() percent-encodes the path (spaces, non-ASCII, etc.), which
+// a bare string concatenation would not. Windows drive-letter paths
+// ("C:/foo", already caught by isAbsPath) are prefixed with "/" first, which
+// is the conventional Windows file URI form ("file:///C:/foo") — url.URL has
+// no drive-letter concept of its own, but treating "/C:/foo" as an ordinary
+// absolute path produces exactly that string.
+func fileHyperlinkURI(path, root string) string {
+	pr := filepath.ToSlash(strings.TrimSpace(path))
+	if pr == "" {
+		return ""
+	}
+	if !isAbsPath(pr) {
+		if root == "" {
+			return ""
+		}
+		rr := strings.TrimSuffix(filepath.ToSlash(root), "/")
+		if rr == "" {
+			return ""
+		}
+		pr = rr + "/" + pr
+	}
+	if !strings.HasPrefix(pr, "/") {
+		pr = "/" + pr
+	}
+	return (&url.URL{Scheme: "file", Path: pr}).String()
 }
