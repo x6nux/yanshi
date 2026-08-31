@@ -341,12 +341,20 @@ var credentialWriterShims = []string{
 // an operand that the real program would only READ (cp's source, sed's script)
 // costs nothing: the assertion asks whether the CREDENTIAL path appeared, and a
 // source operand that is one is a write to it under any reading.
+//
+// The creating command is `true >` and not the seductive `: >`: colon is a
+// SPECIAL builtin, and POSIX says a redirection failure on a special builtin
+// aborts a non-interactive shell — dash exits 2 right there, `|| true`
+// notwithstanding, so one uncreatable operand (sed's `s/x/y/`, curl's
+// `http://…/k`) killed the shim before it ever reached the credential path.
+// `true` is a regular builtin: its redirection failure is an ordinary command
+// failure, the loop moves on. (2026-08-31, ubuntu leg.)
 const credentialWriterScript = `#!/bin/sh
 for a in "$@"; do
   case "$a" in
     -*) continue ;;
   esac
-  : > "$a" 2>/dev/null || true
+  true > "$a" 2>/dev/null || true
 done
 exit 0
 `
