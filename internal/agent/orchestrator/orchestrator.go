@@ -1511,7 +1511,14 @@ func (o *Orchestrator) runSubAgentTurn(ctx context.Context, prompt string, allow
 		// withTurnContext, which rebinds). Without this line delegation is a
 		// budget escape hatch: an agent that has burnt its shell_run budget
 		// spawns a sub-agent and gets a full one.
-		LoopGuard: o.loopGuard,
+		// RF-14: the hook bus is CONFIG
+		// like the loop guard, and a sub-orchestrator without it would run
+		// every delegated tool call with no PreToolUse hook in the way —
+		// operator-configured interception that one agent_start undoes. The
+		// sub's withTurnContext binds its own fresh bus from this config, so
+		// there is no double-hooking on the managed path either (the managed
+		// runner rebinds ctx, then recurses back into runSubAgentTurn).
+		Hooks: o.hooks,
 	})
 	if serr != nil {
 		resp, gerr := o.model.Generate(ctx, []*schema.Message{schema.UserMessage(prompt)})

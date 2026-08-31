@@ -88,8 +88,14 @@ func hookHelperVerdict(mode string, req hookRequest) string {
 	case "allow":
 		return `{"block":false}`
 	case "rewrite":
+		// 只替换 path 字段、保留入参其余部分 —— 针对单个字段的改写是真实
+		// hook 的常态；整包替换会把 content 之类的字段一并冲掉。
 		to := os.Getenv(hookHelperRewriteEnv)
-		return `{"block":false,"updated_input":{"path":` + strconv.Quote(to) + `}}`
+		var m map[string]any
+		_ = json.Unmarshal(req.Args, &m)
+		m["path"] = to
+		out, _ := json.Marshal(map[string]any{"block": false, "updated_input": m})
+		return string(out)
 	case "block":
 		return `{"block":true,"reason":` + strconv.Quote(os.Getenv(hookHelperReasonEnv)) + `}`
 	case "context":
@@ -632,4 +638,83 @@ func TestE2E_PreToolUseHookBlocksRealToolInRealTurn(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Helo world", string(got),
 		"hook 拦截的调用绝不能抵达真实 fs_edit")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RF-14：hook 总线必须覆盖子代理 —— 委派不是逃逸门。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestSubAgentTurnHooksReachSubAgentTools 钉住 RF-14：操作员配置的 PreToolUse
+// hook 对**子代理 turn 里的工具调用**同样生效。runSubAgentTurn 构造子编排器时
+// 继承 LoopGuard 的理由写在它的注释里（「delegation is a budget escape
+// hatch」）——hook 是同一个形状的策略层：主 turn 配的拦截，子代理绕一行就免单，
+// 等于 hook 层的逃逸门。config.example.yaml 对操作员的承诺是 hook 跑在
+// 「every tool call」之前，子代理的工具调用不豁免。
+//
+// 两个形状分开钉：拦截（文件不被写）与改写（写落到 hook 改写后的路径，
+// guard 对改写入参的判决照常）。变异：把 runSubAgentTurn 的 Config 字面量里
+// 的 Hooks 字段删掉，两条子测试同时红（文件被写 / 写回原始路径）。
+func TestSubAgentTurnHooksReachSubAgentTools(t *testing.T) {
+	t.Run("block", func(t *testing.T) {
+		workRoot := t.TempDir()
+		t.Setenv(hookHelperReasonEnv, "delegation does not bypass the hook")
+
+		target := filepath.Join(workRoot, "secret.txt")
+		step1 := schema.AssistantMessage("", []schema.ToolCall{
+			{ID: "c1", Type: "function", Function: schema.FunctionCall{
+				Name:      "fs_write",
+				Arguments: `{"path":"secret.txt","content":"should never land"}`,
+			}},
+		})
+		mdl := einollm.NewFakeModelWithMessages([]*schema.Message{step1}, nil)
+		o, err := New(Config{
+			Model:    mdl,
+			Tools:    []BaseTool{tools.NewFSTools(workRoot).Write},
+			Profile:  fsWriteProfile(),
+			WorkRoot: workRoot,
+			Hooks:    HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "block")}},
+		})
+		require.NoError(t, err)
+
+		out, err := o.runSubAgentTurn(context.Background(), "write it", nil, "", 0)
+		require.NoError(t, err, "hook 拒绝在子代理里也必须是工具结果，不拆 turn")
+
+		_, statErr := os.Stat(target)
+		require.True(t, os.IsNotExist(statErr),
+			"主 turn 配置的 hook 必须拦下子代理里的 fs_write（out=%q）", out)
+	})
+
+	t.Run("rewrite", func(t *testing.T) {
+		workRoot := t.TempDir()
+		t.Setenv(hookHelperRewriteEnv, "renamed-by-hook.txt")
+
+		original := filepath.Join(workRoot, "original.txt")
+		rewritten := filepath.Join(workRoot, "renamed-by-hook.txt")
+		step1 := schema.AssistantMessage("", []schema.ToolCall{
+			{ID: "c1", Type: "function", Function: schema.FunctionCall{
+				Name:      "fs_write",
+				Arguments: `{"path":"original.txt","content":"hook sent me here"}`,
+			}},
+		})
+		mdl := einollm.NewFakeModelWithMessages([]*schema.Message{step1}, nil)
+		o, err := New(Config{
+			Model:    mdl,
+			Tools:    []BaseTool{tools.NewFSTools(workRoot).Write},
+			Profile:  fsWriteProfile(),
+			WorkRoot: workRoot,
+			Hooks:    HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "rewrite")}},
+		})
+		require.NoError(t, err)
+
+		_, err = o.runSubAgentTurn(context.Background(), "write it", nil, "", 0)
+		require.NoError(t, err)
+
+		// 改写在子代理里流动：写落到 hook 改写后的路径（guard 对它判决通过），
+		// 原始路径没有文件。
+		got, rerr := os.ReadFile(rewritten)
+		require.NoError(t, rerr, "hook 的改写必须在子代理 turn 里生效")
+		require.Equal(t, "hook sent me here", string(got))
+		_, statErr := os.Stat(original)
+		require.True(t, os.IsNotExist(statErr), "原始路径不应被写")
+	})
 }
