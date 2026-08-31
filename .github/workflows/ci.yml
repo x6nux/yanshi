@@ -291,7 +291,19 @@ jobs:
           # hatch lived in the shell, not on a YAML key, and no gate could see
           # it. E2's assets (FuzzMatchGlob plus internal/ctxcompact's
           # TestProperty_*) have landed, so the stated precondition is met.
-          if ! go test -list 'Fuzz.*|TestProperty.*' ./internal/guard/... ./internal/ctxcompact/... 2>/dev/null | grep -Eq 'Fuzz|TestProperty'; then
+          #
+          # The listing is captured before grep runs, not piped straight into
+          # `grep -q`: with pipefail, grep -q exits at the first match and
+          # closes the pipe while `go test -list` is still writing the
+          # remaining packages' output — the writer then dies of SIGPIPE, the
+          # pipeline reports failure, and the `if !` misreads that as "no
+          # targets". That false negative is exactly what this gate exists to
+          # prevent, and it is what flipped this job red on 2026-08-27.
+          # Collecting first keeps the gate exactly as strict: a listing with
+          # no fuzz/property target still fails here, and a compile error now
+          # surfaces instead of being silenced into the same message.
+          fuzz_targets="$(go test -list 'Fuzz.*|TestProperty.*' ./internal/guard/... ./internal/ctxcompact/...)"
+          if ! printf '%s\n' "$fuzz_targets" | grep -Eq 'Fuzz|TestProperty'; then
             echo "no fuzz/property target found in internal/guard or internal/ctxcompact — " \
                  "they were removed, or a package moved. This job exists to run them." >&2
             exit 1

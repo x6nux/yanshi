@@ -278,7 +278,7 @@ bootstrap 把它传给 `apihttp.CompactionConfig`，handler 经 `compactionModel
 配 `chunk_threshold: 0.5` 得到的仍是 0.9。那条测试断言的是**默认值**，所以有没有人读它
 都会绿 —— 它反而让这个死键看起来是活的。
 
-[ADR-0006](adr/0006-compaction-two-paths.md) 里「由 `chunk_threshold`（默认 0.9）控制」
+[ADR-0006](adr/0006-compaction-unified-core-strict-window.md) 里「由 `chunk_threshold`（默认 0.9）控制」
 这句因此不成立。
 
 **修法是接线而非删键**：把它经两个 `CompactionConfig` 传到三个调用点，路子与 W4 处理
