@@ -80,6 +80,9 @@ type bidirServer struct {
 	w      *bufio.Writer
 	buf    *bufio.Reader
 	mu     sync.Mutex // serializes all reads from buf
+	// protoVersion is the protocolVersion the initialize answer carries.
+	// Empty means 2025-06-18. Set BEFORE handshake.
+	protoVersion string
 }
 
 func newBidirServer(t *testing.T) (*bidirServer, *StdioClient) {
@@ -115,7 +118,11 @@ func (s *bidirServer) handleOne() {
 	resp := map[string]any{"jsonrpc": "2.0", "id": id}
 	switch method {
 	case "initialize":
-		resp["result"] = map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}}
+		v := s.protoVersion
+		if v == "" {
+			v = "2025-06-18"
+		}
+		resp["result"] = map[string]any{"protocolVersion": v, "capabilities": map[string]any{}}
 	case "ping":
 		resp["result"] = map[string]any{}
 	case "tools/list":

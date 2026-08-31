@@ -23,6 +23,10 @@ type HTTPClient struct {
 	nextID  int64
 	mu      sync.RWMutex
 	session string
+	// version is the MCP protocol revision negotiated at Initialize. Empty
+	// until then; from 2025-03-26 on, subsequent requests must carry it in the
+	// MCP-Protocol-Version header.
+	version string
 }
 
 // NewHTTPClient creates an HTTP MCP client with an optional bearer token.
@@ -51,16 +55,28 @@ func (c *HTTPClient) SetTimeout(d time.Duration) {
 	}
 }
 
-// Initialize performs the MCP initialize handshake over HTTP.
+// Initialize performs the MCP initialize handshake over HTTP. The server's
+// chosen protocol revision is negotiated here (hard error on an unsupported
+// answer) and echoed on every subsequent request as MCP-Protocol-Version —
+// required since the 2025-03-26 revision, harmless before.
 func (c *HTTPClient) Initialize(ctx context.Context, rootURI string) error {
-	_, err := c.request(ctx, "initialize", map[string]any{
-		"protocolVersion": "2025-06-18",
+	resp, err := c.request(ctx, "initialize", map[string]any{
+		"protocolVersion": preferredProtocolVersion,
 		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]any{"name": "yanshi-mcp", "version": "0.1"},
 	})
 	if err != nil {
 		return fmt.Errorf("mcp: initialize: %w", err)
 	}
+	result, _ := resp["result"].(map[string]any)
+	offered, _ := result["protocolVersion"].(string)
+	version, err := negotiateProtocolVersion(offered)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.version = version
+	c.mu.Unlock()
 	return c.notification(ctx, "notifications/initialized", map[string]any{})
 }
 
@@ -95,9 +111,13 @@ func (c *HTTPClient) post(ctx context.Context, payload any, mayRetryAuth bool) (
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	c.mu.RLock()
 	session := c.session
+	version := c.version
 	c.mu.RUnlock()
 	if session != "" {
 		req.Header.Set("Mcp-Session-Id", session)
+	}
+	if version != "" {
+		req.Header.Set("MCP-Protocol-Version", version)
 	}
 	if c.tokens != nil {
 		token, err := c.tokens.Token(ctx)

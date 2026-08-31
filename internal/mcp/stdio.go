@@ -53,6 +53,11 @@ type StdioClient struct {
 
 	handler  ServerHandler // nil = 忽略 server 主动推送
 	handlerMu sync.RWMutex
+
+	// protocol is the MCP revision the session settled on at Initialize. Only
+	// written by Initialize before any concurrent reader can observe it; the
+	// readLoop goroutine it starts does not read it.
+	protocol string
 }
 
 // NewStdioClient creates an MCP client communicating over stdin/stdout pipes.
@@ -113,6 +118,15 @@ func (c *StdioClient) Initialize(ctx context.Context, rootURI string) error {
 	if e, ok := resp["error"]; ok {
 		return fmt.Errorf("mcp: initialize error: %v", e)
 	}
+	result, _ := resp["result"].(map[string]any)
+	offered, _ := result["protocolVersion"].(string)
+	// 版本协商失败是硬错误：没有谈妥的版本，后续每个方法的语义按哪一版解释
+	// 无人知晓（见 negotiateProtocolVersion）。
+	version, err := negotiateProtocolVersion(offered)
+	if err != nil {
+		return err
+	}
+	c.protocol = version
 	return c.notify("notifications/initialized", map[string]any{})
 }
 

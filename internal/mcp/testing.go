@@ -20,6 +20,17 @@ type FakeServer struct {
 	Server    *httptest.Server
 	Tools     []ToolDescriptor
 	CallCount int
+	// ListCount counts tools/list requests, so a test can tell a fresh
+	// catalog fetch from a cached one (W-F-28).
+	ListCount int
+	// ProtocolVersion is the protocolVersion the initialize answer carries.
+	// Empty means 2025-06-18.
+	ProtocolVersion string
+	// LastProtocolHeader records the MCP-Protocol-Version request header of
+	// the most recent post-initialize request; InitProtocolHeader records the
+	// one (if any) the initialize request itself carried.
+	LastProtocolHeader string
+	InitProtocolHeader string
 }
 
 func (f *FakeServer) handle(w http.ResponseWriter, r *http.Request) {
@@ -39,12 +50,19 @@ func (f *FakeServer) handle(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	case "initialize":
+		v := f.ProtocolVersion
+		if v == "" {
+			v = "2025-06-18"
+		}
+		f.InitProtocolHeader = r.Header.Get("MCP-Protocol-Version")
 		resp["result"] = map[string]any{
-			"protocolVersion": "2025-06-18",
+			"protocolVersion": v,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      map[string]any{"name": "fake-mcp", "version": "0.1"},
 		}
 	case "tools/list":
+		f.ListCount++
+		f.LastProtocolHeader = r.Header.Get("MCP-Protocol-Version")
 		toolObjs := make([]map[string]any, len(f.Tools))
 		for i, td := range f.Tools {
 			toolObjs[i] = map[string]any{
