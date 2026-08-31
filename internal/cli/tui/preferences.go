@@ -37,6 +37,11 @@ type Preferences struct {
 	// project bindings may still apply. Nothing writes it outside tests —
 	// see the package note on preferencesPath.
 	KeymapReset *bool `json:"keymap_reset,omitempty"`
+	// KeymapBindings is the user-level custom keybindings map. Keys are
+	// normalized key strings (e.g. "ctrl+z"); values are action names (e.g.
+	// "cancel"). Written by /keymap bind <action>, overrides project bindings
+	// but is itself overridden by the env/flags layers.
+	KeymapBindings map[string]string `json:"keymap_bindings,omitempty"`
 }
 
 // EffectivePreferences is the fully merged, non-sparse result of the cascade.
@@ -50,14 +55,15 @@ type Preferences struct {
 // store at all, and Notify into m.notifyEnabled. It is the same "true when
 // written, never updated" shape TUIConfig's doc comment was rewritten for.
 type EffectivePreferences struct {
-	UILocale     string
-	ThemeName    string
-	KeymapName   string
-	HighContrast bool
-	Vim          bool
-	Frecency     bool
-	Notify       bool
-	KeymapReset  bool
+	UILocale       string
+	ThemeName      string
+	KeymapName     string
+	HighContrast   bool
+	Vim            bool
+	Frecency       bool
+	Notify         bool
+	KeymapReset    bool
+	KeymapBindings map[string]string
 }
 
 // preferencesPersistDisabled mirrors persistPermMode: tests flip it to skip
@@ -171,6 +177,14 @@ func mergeTUIPrefs(flags, env, user, project Preferences) EffectivePreferences {
 		}
 		if layer.KeymapReset != nil {
 			out.KeymapReset = *layer.KeymapReset
+		}
+		// KeymapBindings: each layer is merged entry-by-entry so a user can
+		// add a binding without wiping out the project's other bindings.
+		for k, v := range layer.KeymapBindings {
+			if out.KeymapBindings == nil {
+				out.KeymapBindings = make(map[string]string)
+			}
+			out.KeymapBindings[k] = v
 		}
 	}
 	apply(project)

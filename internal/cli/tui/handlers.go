@@ -311,6 +311,19 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		return m, nil, true
 	}
 
+	// W-E-15: keymap capture wizard. /keymap bind <action> sets keymapCapture;
+	// here we intercept the very next keypress and save it as the binding.
+	if m.keymapCapture != "" {
+		if msg.Type == tea.KeyEscape {
+			m.entries = append(m.entries, ackEntry{text: "keymap bind cancelled"})
+			m.keymapCapture = ""
+			m.reflow()
+			return m, nil, true
+		}
+		mm, cmd := m.commitKeymapCapture(msg)
+		return mm, cmd, true
+	}
+
 	if m.yoloConfirm > 0 && msg.Type != tea.KeyEnter && msg.Type != tea.KeyShiftTab {
 		m.yoloConfirm = 0
 		return m, nil, true

@@ -445,6 +445,11 @@ type model struct {
 	pendingRollback      bool
 	pendingRollbackText  string
 	pendingRollbackIndex int
+
+	// W-E-15: keymapCapture is non-empty while the /keymap bind <action> wizard
+	// is active. It names the action the user wants to rebind; the NEXT keypress
+	// (other than Esc) is captured and saved as the new binding.
+	keymapCapture string
 }
 
 // newModel builds a model with no project preference layer. Kept as the
@@ -769,6 +774,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.growInput()
 		m.reflow()
 		return m, nil
+
+	case tea.ResumeMsg:
+		// W-E-10: sent by bubbletea's suspend() after RestoreTerminal returns,
+		// so this fires on every fg. Reflow + repaint because the terminal may
+		// have been resized while we were in the background, and the renderer
+		// needs a clean state to avoid stale lines.
+		m.reflow()
+		m.refresh()
+		return m, tea.Repaint
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
