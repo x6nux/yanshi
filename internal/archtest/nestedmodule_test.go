@@ -23,8 +23,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // nestedModulesNotTestedInCI records nested modules that deliberately have no
@@ -73,15 +76,65 @@ func nestedGoModDirs(t *testing.T) []string {
 	return out
 }
 
-// TestNestedModulesRunInCI requires every nested module to be either driven by
-// a `go test -C <dir>` step in the CI workflow or listed, with a reason, in
-// nestedModulesNotTestedInCI.
-func TestNestedModulesRunInCI(t *testing.T) {
+// ciRunCommands parses the workflow and returns the `run:` script of every
+// step of every job — the commands CI actually executes, and nothing else.
+//
+// This is parsed rather than string-matched against the file, and that choice
+// is the whole point of the helper. A `#` is how a YAML step gets disabled;
+// it is the first thing anyone reaches for to skip a step "just for this one
+// push". A gate that reads the workflow as one string and asks whether the
+// command appears in it answers yes for a commented-out step — it protects
+// against DELETING the step while ignoring the far more likely way the step
+// stops running. Measured on the real file: deleting the line failed the gate,
+// prefixing the same line with `#` passed it.
+//
+// The reverse direction matters too and comes free here: prose in a comment
+// that merely quotes the command (an explanation, a TODO, this very sentence
+// in some future edit) can no longer satisfy the gate, because a comment is
+// not a step and never reaches this slice.
+//
+// This exact defect — a gate reading source as text, counting an occurrence,
+// and passing on a commented-out occurrence — was already found and fixed once
+// in this repo, on the gate guarding composition-root wiring. Reintroducing it
+// in the gate whose entire job is "these tests must actually run" would be the
+// same mistake twice.
+func ciRunCommands(t *testing.T) []string {
+	t.Helper()
 	raw, err := os.ReadFile(abs(ciWorkflowPath))
 	if err != nil {
 		t.Fatalf("read %s: %v", ciWorkflowPath, err)
 	}
-	ci := string(raw)
+	var wf struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Run string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(raw, &wf); err != nil {
+		t.Fatalf("parse %s: %v", ciWorkflowPath, err)
+	}
+	var out []string
+	for _, job := range wf.Jobs {
+		for _, step := range job.Steps {
+			if strings.TrimSpace(step.Run) != "" {
+				out = append(out, step.Run)
+			}
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("%s parsed to zero `run:` steps — the gate below would pass "+
+			"vacuously for every nested module; the workflow's shape changed",
+			ciWorkflowPath)
+	}
+	return out
+}
+
+// TestNestedModulesRunInCI requires every nested module to be either driven by
+// a `go test -C <dir>` step in the CI workflow or listed, with a reason, in
+// nestedModulesNotTestedInCI.
+func TestNestedModulesRunInCI(t *testing.T) {
+	runs := ciRunCommands(t)
 
 	dirs := nestedGoModDirs(t)
 	if len(dirs) == 0 {
@@ -98,7 +151,7 @@ func TestNestedModulesRunInCI(t *testing.T) {
 		// that fails with "main module does not contain package", so matching
 		// the -C form specifically is the point rather than an accident.
 		step := regexp.MustCompile(`go test\s+-C\s+` + regexp.QuoteMeta(dir) + `\b`)
-		inCI := step.MatchString(ci)
+		inCI := slices.ContainsFunc(runs, step.MatchString)
 		reason, exempt := nestedModulesNotTestedInCI[dir]
 
 		switch {
