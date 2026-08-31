@@ -36,19 +36,35 @@ func TestRefreshPendingMarkdown_FirstChunkRendersImmediately(t *testing.T) {
 }
 
 // TestRefreshPendingMarkdown_NoOpWhenUnchanged proves a call with the same
-// (pending, width) as the last pass does not recompute — this is the fast
-// path renderBody's ~24 FPS activityTick redraws rely on to stay cheap when
-// no new text has actually arrived.
+// (pending, width) as the last pass does not recompute.
+//
+// RE-27-era note (RE-31): this comment used to credit the fast path to
+// "renderBody's ~24 FPS activityTick redraws". That caller does not exist —
+// refreshPendingMarkdown has exactly one production call site, applyEvent's
+// agent_chunk branch (model.go); the activity tick redraws go through
+// renderPendingBody, a pure cache read that never calls this at all. What the
+// fast path actually buys is on the agent_chunk path itself: without it, a
+// chunk that leaves m.pending unchanged (an empty or duplicate delta) still
+// resets pendingRenderedAt and so pushes the NEXT real refresh a further
+// throttle window into the future.
+//
+// The backdate below is what makes this test about the fast path rather than
+// about the throttle. Two back-to-back calls land inside the same 200ms
+// window, so the throttle gate alone would return early and the assertion
+// would pass with the identity check deleted — measured: deleting it left
+// this test green.
 func TestRefreshPendingMarkdown_NoOpWhenUnchanged(t *testing.T) {
 	m := newModel(nil, "/proj")
 	m.width = 80
 	m.pending = "hello"
 	m = m.refreshPendingMarkdown()
-	firstAt := m.pendingRenderedAt
+
+	m.pendingRenderedAt = m.pendingRenderedAt.Add(-2 * pendingMarkdownThrottle)
+	backdated := m.pendingRenderedAt
 
 	m = m.refreshPendingMarkdown()
-	if !m.pendingRenderedAt.Equal(firstAt) {
-		t.Fatalf("pendingRenderedAt changed on a no-op call: %v -> %v", firstAt, m.pendingRenderedAt)
+	if !m.pendingRenderedAt.Equal(backdated) {
+		t.Fatalf("pendingRenderedAt changed on a no-op call with the throttle already expired: %v -> %v", backdated, m.pendingRenderedAt)
 	}
 }
 
