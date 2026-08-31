@@ -30,6 +30,10 @@ var frameTypesNotRendered = map[string]string{
 		"internal/cli/ssebackend.go before a StreamEvent is ever built",
 	"structured_result": "requires TurnOpts.OutputSchema, which the TUI never sets — " +
 		"this is the headless/SDK path",
+	"tool_invoke": "W-F-23 WS-only round-trip: the server sends it to the client that " +
+		"injected the tool; the TUI is a CLI consumer of the SSE/WS stream, not a " +
+		"tool-execution host, and never injects tools, so this frame is structurally " +
+		"unreachable here",
 }
 
 // TestEveryServerFrameTypeIsRenderedOrDeclared is the TYPE-level twin of
