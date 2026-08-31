@@ -69,6 +69,26 @@ func (s *Server) sessionInfos(sessions []store.SessionSummary) []proto.SessionIn
 			row.CostUSD = ss.CostUSD
 			row.CostKnown = ss.CostKnown
 		}
+		// W-E-08: transcript preview via bounded reverse scan — MessagesPage
+		// with Newest:true,Limit:1 so we never load the whole log. The last
+		// user or assistant message text is truncated to 80 runes for display.
+		if s.store != nil {
+			msgs, err := s.store.MessagesPage(store.MessageRange{
+				SessionID: ss.ID,
+				Limit:     1,
+				Newest:    true,
+			})
+			if err == nil && len(msgs) > 0 {
+				txt := msgs[0].Content
+				// Trim to 80 runes; a CJK session can have very wide first chars.
+				runes := []rune(txt)
+				if len(runes) > 80 {
+					runes = runes[:80]
+					txt = string(runes) + "…"
+				}
+				row.Preview = txt
+			}
+		}
 		info = append(info, row)
 	}
 	return info

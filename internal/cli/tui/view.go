@@ -51,9 +51,14 @@ func (m model) sessionPickerPopup() string {
 		if s.Model != "" {
 			modelInfo = " " + s.Model
 		}
-		line := fmt.Sprintf("  %-4s  %s\n    %s  %s  %d msgs%s",
+		// W-E-08: show the last message snippet when the server provided one.
+		previewLine := ""
+		if s.Preview != "" {
+			previewLine = "\n    " + toolMeta.Render(truncate(s.Preview, 60))
+		}
+		line := fmt.Sprintf("  %-4s  %s\n    %s  %s  %d msgs%s%s",
 			toolMeta.Render(s.ID), title,
-			created, okStyle.Render("•"), s.MsgCount, modelInfo)
+			created, okStyle.Render("•"), s.MsgCount, modelInfo, previewLine)
 		if i == m.restoreCursor {
 			b.WriteString(selPaletteStyle.Render("▶ " + line))
 		} else {
@@ -823,10 +828,28 @@ func (m model) statusHeader() string {
 		segs = append(segs, segmentDef{text: " " + label + " ", fg: c.fg, bg: c.bg, bold: c.bold})
 	}
 
-	// 4. Git branch.
+	// 4. Git branch + W-E-09 diff-stat and open-PR indicator.
 	if m.gitBranch != "" {
+		branchText := " " + m.gitBranch
+		if m.gitDiffStat != "" {
+			branchText += " " + m.gitDiffStat
+		}
+		branchText += " "
 		c = tc("git")
-		segs = append(segs, segmentDef{text: " " + m.gitBranch + " ", fg: c.fg, bg: c.bg, bold: c.bold})
+		segs = append(segs, segmentDef{text: branchText, fg: c.fg, bg: c.bg, bold: c.bold})
+	}
+	// 4b. Open PR (W-E-06 + W-E-09): only when hyperlinks are on and a PR URL exists.
+	if m.gitOpenPRURL != "" {
+		c = tc("git")
+		label := "PR"
+		if m.gitOpenPRTitle != "" {
+			label = truncate(m.gitOpenPRTitle, 22)
+		}
+		text := " " + label + " "
+		if hyperlinksEnabled.Load() && currentColorProfile() != termenv.Ascii {
+			text = " " + termenv.Hyperlink(m.gitOpenPRURL, label) + " "
+		}
+		segs = append(segs, segmentDef{text: text, fg: c.fg, bg: c.bg, bold: c.bold})
 	}
 
 	// 5. Model name.

@@ -285,6 +285,10 @@ type SessionInfo struct {
 	// absent from the pricing table; renderers must show "N/A", not "$0".
 	CostUSD   float64 `json:"cost_usd,omitempty"`
 	CostKnown bool    `json:"cost_known,omitempty"`
+	// Preview is the last user or assistant message snippet (W-E-08). Fetched
+	// via a bounded reverse scan (MessagesPage{Newest:true,Limit:1}) so it
+	// never loads the whole transcript; empty when no messages exist.
+	Preview string `json:"preview,omitempty"`
 }
 
 // SeamInfo carries one seam row for the seams list response (type "seams").
