@@ -1192,6 +1192,23 @@ func Build(opts Options) (*App, error) {
 	batchTool := tools.NewToolBatchTool()
 	allTools = append(allTools, batchTool.Tool)
 
+	// W-F-11: the escape-hatch tools, registered only when on-demand loading
+	// is enabled (feature off → full schema → the hatch has nothing to
+	// escape from, and two unregistered names in the default profile would be
+	// phantoms). Built BEFORE the toolNames snapshot so GOV5 sees the names;
+	// the metas cover everything assembled so far (the hatch lists itself via
+	// its own two entries, appended inside the constructor).
+	if cfg.Tools.OnDemand.Enabled {
+		discMetas := make([]tools.ToolMeta, 0, len(allTools))
+		for _, tl := range allTools {
+			if info, err := tl.Info(context.Background()); err == nil && info != nil {
+				discMetas = append(discMetas, tools.ToolMeta{Name: info.Name, Desc: info.Desc})
+			}
+		}
+		disc := tools.NewToolDiscoveryTools(discMetas)
+		allTools = append(allTools, disc.List, disc.Load)
+	}
+
 	// GOV5 seam: snapshot the registered tool names while allTools is still
 	// in scope. Info() is pure metadata on every tool implementation, so the
 	// background context here can never block.
@@ -1511,6 +1528,13 @@ func Build(opts Options) (*App, error) {
 		// implicit-skill recognition; OnSkillUse stays nil so the default
 		// structured-log sink applies (visible via /logs).
 		SkillRegistry: registry,
+		// W-F-11: on-demand tool-spec loading. Zero value = disabled = full
+		// schema, byte-identical to the pre-W-F-11 wiring.
+		OnDemand: tools.ToolLoadConfig{
+			Enabled:    cfg.Tools.OnDemand.Enabled,
+			MaxVisible: cfg.Tools.OnDemand.MaxVisible,
+			Always:     cfg.Tools.OnDemand.Always,
+		},
 		MemorySuffix:               memorySuffix,
 		WorkRoot:                   workRoot,
 		TruncationPolicy:           truncationPolicy,

@@ -700,3 +700,21 @@ goal:
 #   web_search:
 #     backend: searxng
 #     endpoint: https://searx.internal/search
+
+# W-F-11：按需加载工具 spec。默认关（省略整块 = 模型看到全量 schema，与引入
+# 前逐字节一致）。
+#
+# 开启后 orchestrator 每轮按检索（BM25）选取最多 max_visible 个工具进 schema，
+# 其余工具从模型视野里藏起 —— dispatch 与授权不变，模型仍可经逃生门显式加载：
+#   - tools_list 列出全部注册工具（永远可见）；
+#   - tools_load 按名字加载工具 spec（永远可见，当轮生效）。
+# 风险自担：检索选错 = 模型看不见的能力。always 里的名字不受检索影响、永远
+# 可见（必须是注册过的工具名）。
+#
+# tools:
+#   on_demand:
+#     enabled: true
+#     max_visible: 24
+#     always:
+#       - fs_read
+#       - shell_run

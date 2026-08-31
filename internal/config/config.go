@@ -208,6 +208,28 @@ type ToolsConfig struct {
 	// WebSearch selects the web_search backend. See WebSearchConfig; the zero
 	// value is the built-in duckduckgo backend at its default endpoint.
 	WebSearch WebSearchConfig `yaml:"web_search"`
+	// OnDemand configures W-F-11 on-demand tool-spec loading. The zero value
+	// is disabled: the model sees the full schema, exactly as before.
+	OnDemand OnDemandToolsConfig `yaml:"on_demand"`
+}
+
+// OnDemandToolsConfig configures on-demand tool-spec loading (W-F-11): the
+// orchestrator keeps the full registry in dispatch but shows the model only
+// always-visible + per-turn loaded + retrieval-selected tool schemas. Disabled
+// by default — a retrieval miss hides a capability from the model, which is a
+// behavior change an operator must opt into, and the escape-hatch tools
+// (tools_list / tools_load, registered only when Enabled) are the standing
+// mitigation.
+type OnDemandToolsConfig struct {
+	// Enabled turns the feature on and registers the escape-hatch tools.
+	Enabled bool `yaml:"enabled"`
+	// MaxVisible is how many tools retrieval may additionally surface per
+	// turn (on top of always + loaded). 0 → tools.DefaultMaxVisibleTools.
+	MaxVisible int `yaml:"max_visible"`
+	// Always names tools that stay visible regardless of retrieval (operator
+	// named must-haves). Unknown names are silently inert; the escape-hatch
+	// tools are always added implicitly.
+	Always []string `yaml:"always"`
 }
 
 // WebSearchConfig configures the web_search backend (W-F-27).
@@ -1251,7 +1273,28 @@ func (c *Config) validate() error {
 	if err := c.validateWebSearch(); err != nil {
 		return err
 	}
+	if err := c.validateOnDemandTools(); err != nil {
+		return err
+	}
 	return c.validateProfiles()
+}
+
+// validateOnDemandTools rejects a negative max_visible (a cap below zero is
+// not a cap, it is a typo; 0 legitimately means "use the default") and a
+// blank name in always (which would otherwise sit in the visible set forever
+// matching nothing — a silent dead entry the operator believed was pinning a
+// real tool).
+func (c *Config) validateOnDemandTools() error {
+	od := c.Tools.OnDemand
+	if od.MaxVisible < 0 {
+		return errors.New("tools.on_demand: max_visible must be >= 0 (0 = default)")
+	}
+	for _, n := range od.Always {
+		if strings.TrimSpace(n) == "" {
+			return errors.New("tools.on_demand: always contains a blank tool name")
+		}
+	}
+	return nil
 }
 
 // validateWebSearch rejects a tools.web_search block the tools package would

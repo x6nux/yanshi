@@ -48,6 +48,13 @@ type Config struct {
 	Tools           []BaseTool
 	Instruction     string
 	SkillMetaPrompt string
+	// OnDemand（W-F-11）打开按需加载工具 spec：每次模型调用前把
+	// state.ToolInfos 收窄到 always ∪ 本轮已加载 ∪ 检索 Top-K（toolspec.go）。
+	// 零值 = 关闭 = 全量 schema，与引入前逐字节一致。子代理的 Config 字面量
+	//（runSubAgentTurn）**刻意不继承**它：子代理的工具集是父显式挑选的子集，
+	// 对它再检索收窄等于把「被委托的能力」静默变少；委托面要么给要么不给，
+	// 没有按需的中间态。
+	OnDemand tools.ToolLoadConfig
 	// SkillRegistry（W-F-10）是隐式 skill 调用识别的锚点：识别只认注册表
 	// 里的 skill（名字或目录基名对上候选路径），未注册的 SKILL.md 与随机
 	// 的 /scripts/ 路径不算「在用技能」。nil = 不识别（识别器不绑定）。
@@ -268,6 +275,7 @@ type Orchestrator struct {
 	instruction string
 	agentTools  []tool.BaseTool
 	toolNames   []string
+	onDemand    tools.ToolLoadConfig
 	maxIters    int
 	compaction  CompactionConfig
 
@@ -451,6 +459,7 @@ func New(cfg Config) (*Orchestrator, error) {
 		memorySuffix:               cfg.MemorySuffix,
 		agentTools:                 agentTools,
 		toolNames:                  toolNames,
+		onDemand:                   cfg.OnDemand,
 		maxIters:                   maxIters,
 		compaction:                 cfg.Compaction,
 		taskManager:                cfg.TaskManager,
@@ -762,6 +771,13 @@ func (o *Orchestrator) withTurnContext(ctx context.Context, opts TurnOpts) conte
 	// instance) serves every turn on that model, so any counter living there
 	// would be process-wide.
 	ctx = WithLoopGuard(ctx, o.loopGuard)
+	// W-F-11: a fresh tool-spec load state per turn, bound UNCONDITIONALLY
+	// for the same reason as the loop-guard bind above — tools_load writes it
+	// and the toolSpecGate (installed per runner only when on-demand is
+	// enabled) reads it; a sub-agent turn then gets its OWN state even when
+	// the parent ctx it derives from carries the parent's, so a load can
+	// never cross the delegation boundary.
+	ctx = tools.WithToolLoadState(ctx)
 	// W-F-02: the hook bus is CONFIG like the loop guard above, bound per turn
 	// for the same reason — the hook middleware is shared across memoised
 	// runners, so the turn finds its bus here. Sub-agent turns run through
@@ -918,6 +934,18 @@ func (o *Orchestrator) runnerFor(chatModel model.BaseChatModel, plan bool, model
 	}
 	names := collectToolNames(registered)
 
+	// W-F-11: the tool-spec gate rides the same per-runner build as the rest
+	// of the middleware stack, built against THIS runner's dispatch subset
+	// (plan mode's subset is already plan-filtered; retrieval only narrows
+	// within it). Appended LAST: it only rewrites state.ToolInfos before each
+	// model call, nothing downstream of the other handlers reads ToolInfos,
+	// so its position among them is unobservable — last keeps the existing
+	// slice byte-identical when the feature is off.
+	handlers := orchestratorMiddlewares()
+	if o.onDemand.Enabled {
+		handlers = append(handlers, newToolSpecGate(registered, o.onDemand))
+	}
+
 	agent, err := adk.NewChatModelAgent(context.Background(), &adk.ChatModelAgentConfig{
 		Model:         wrapCompaction(chatModel, o.compaction, o.compaction.windowFor(modelID), o.compaction.thresholdFor(modelID), o.compaction.fallbacksFor(modelID)),
 		Instruction:   o.instruction,
@@ -928,7 +956,7 @@ func (o *Orchestrator) runnerFor(chatModel model.BaseChatModel, plan bool, model
 				UnknownToolsHandler: unknownToolHandler(names),
 			},
 		},
-		Handlers: orchestratorMiddlewares(),
+		Handlers: handlers,
 	})
 	if err != nil {
 		return nil

@@ -1320,3 +1320,32 @@ func TestWFS27_WebSearchConfigPinsTheConfigSeam(t *testing.T) {
 		require.Error(t, err)
 	})
 }
+
+// TestWFS11OnDemandConfigValidation pins the tools.on_demand block: the zero
+// value is disabled (nothing registered, nothing widened), max_visible>=0 is
+// accepted (0 = default applied downstream), a negative max_visible and a
+// blank always entry are rejected at load.
+func TestWFS11OnDemandConfigValidation(t *testing.T) {
+	t.Run("zero value is disabled", func(t *testing.T) {
+		cfg, err := LoadBytes([]byte("server:\n  addr: \":0\"\n"))
+		require.NoError(t, err)
+		require.False(t, cfg.Tools.OnDemand.Enabled)
+	})
+
+	t.Run("enabled with defaults loads", func(t *testing.T) {
+		cfg, err := LoadBytes([]byte("tools:\n  on_demand:\n    enabled: true\n"))
+		require.NoError(t, err)
+		require.True(t, cfg.Tools.OnDemand.Enabled)
+		require.Equal(t, 0, cfg.Tools.OnDemand.MaxVisible)
+	})
+
+	t.Run("negative max_visible is rejected", func(t *testing.T) {
+		_, err := LoadBytes([]byte("tools:\n  on_demand:\n    enabled: true\n    max_visible: -3\n"))
+		require.Error(t, err)
+	})
+
+	t.Run("blank always entry is rejected", func(t *testing.T) {
+		_, err := LoadBytes([]byte("tools:\n  on_demand:\n    enabled: true\n    always:\n      - \"  \"\n"))
+		require.Error(t, err)
+	})
+}

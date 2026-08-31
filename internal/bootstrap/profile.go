@@ -28,7 +28,7 @@ import (
 // GOV5 builds one app and a phantom that only appears under another config is
 // structurally invisible to it.
 //
-// Today the set holds two names:
+// Today the set holds these names:
 //
 //   - rlm_query — needs an explicitly configured cheap provider
 //     (batch.rlm_model, see SelectRLMModel). Absent it, BuildC1 warns, leaves
@@ -43,6 +43,12 @@ import (
 //     Its capability is narrow: it writes a SKILL.md beneath a root fixed at
 //     construction, which the model cannot redirect through arguments.
 //
+//   - tools_list / tools_load (W-F-11) — registered only when on-demand
+//     tool-spec loading is enabled (tools.on_demand.enabled). With the
+//     feature off the model sees the full schema and the hatch has no job;
+//     registering them unconditionally would make the default profile grant
+//     two tools that do not exist in the default wiring.
+//
 // The eight automation_* tools and agent_batch stay in the static list on
 // purpose: their only degradation path is a wireC1 error, which BuildC1 can
 // only produce from a nil registry or nil adapter — arguments Build always
@@ -55,7 +61,7 @@ import (
 // name is always present: a tool that cannot do its job is a placeholder, and
 // an allow list that names it is lying in a second way.
 func ConditionalProfileTools() []string {
-	return []string{"rlm_query", "skill_write"}
+	return []string{"rlm_query", "skill_write", tools.ToolsListToolName, tools.ToolsLoadToolName}
 }
 
 // extendProfileWithConditionalTools returns p with every ConditionalProfileTools

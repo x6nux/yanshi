@@ -414,4 +414,7 @@ export YANSHI_ALLOW_CHILD_ENV=NETRC,npm_config_registry,SSH_AUTH_SOCK
 |---|---|---|
 | tools.web_search.backend | string | |
 | tools.web_search.endpoint | string | |
+| tools.on_demand.enabled | bool | |
+| tools.on_demand.max_visible | int | |
+| tools.on_demand.always | []string | |
 <!-- END GENERATED: config-skeleton -->

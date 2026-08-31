@@ -64,6 +64,18 @@ type FakeModel struct {
 	RecordMessages   bool
 	ReceivedMessages []*schema.Message
 
+	// RecordTools, when true, makes Generate/Stream capture the tool list
+	// bound to every call (model.WithTools in the call options) into
+	// ReceivedToolsHistory, one entry per call in call order. This is how
+	// W-F-11's on-demand spec gate is asserted: the gate rewrites the list
+	// before the model sees it, so "what did the model actually get" is only
+	// observable here. Unlike the other Received* fields this ACCUMULATES —
+	// the load-bearing assertion is a DIFFERENCE between consecutive calls
+	// (hidden tool absent, then present after tools_load), which an
+	// overwrite-only field could not express.
+	RecordTools          bool
+	ReceivedToolsHistory [][]*schema.ToolInfo
+
 	// Vision, when true, makes Generate/Stream return a deterministic description
 	// derived from the number of image parts in the most recent input message.
 	Vision bool
@@ -204,15 +216,23 @@ func (m *FakeModel) Stream(_ context.Context, messages []*schema.Message, opts .
 // recordOpts captures the call's model.Options when RecordOpts is set, and
 // decodes the per-turn output schema (if any) into ReceivedOutputSchema so
 // higher-layer tests can assert schema forwarding without importing the
-// unexported option type.
+// unexported option type. RecordTools appends the bound tool list to
+// ReceivedToolsHistory on every call (see its doc comment for why it
+// accumulates instead of overwriting).
 func (m *FakeModel) recordOpts(opts []model.Option) {
-	if !m.RecordOpts {
+	if !m.RecordOpts && !m.RecordTools {
 		return
 	}
 	m.optsMu.Lock()
-	m.ReceivedOpts = opts
-	implOpts := model.GetImplSpecificOptions(&outputSchemaOptions{}, opts...)
-	m.ReceivedOutputSchema = implOpts.Schema
+	if m.RecordOpts {
+		m.ReceivedOpts = opts
+		implOpts := model.GetImplSpecificOptions(&outputSchemaOptions{}, opts...)
+		m.ReceivedOutputSchema = implOpts.Schema
+	}
+	if m.RecordTools {
+		common := model.GetCommonOptions(&model.Options{}, opts...)
+		m.ReceivedToolsHistory = append(m.ReceivedToolsHistory, common.Tools)
+	}
 	m.optsMu.Unlock()
 }
 
