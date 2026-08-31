@@ -17,14 +17,39 @@ import (
 type titleModel struct {
 	executed atomic.Value
 	setTitle bool
-	doPanic  atomic.Bool
+	// quitAfterTitles appends Quit to Init's Sequence instead of waiting for a
+	// keypress. A key arrives from the input reader on its own schedule, which
+	// races the title Cmds: with two titles to write (RE-29) the plain-quit
+	// test failed 3 runs in 5 with only the second title reaching the buffer.
+	// Sequence delivers its msgs into the single eventLoop in order, so
+	// quitting from inside it is the only shape here that is actually
+	// deterministic.
+	quitAfterTitles bool
+	doPanic         atomic.Bool
 }
+
+// titleA/titleB are the two titles Init emits. TWO, not one, because
+// titlePushed's whole reason to exist is that a real yanshi turn sets the
+// title repeatedly (W-E-05 sets it once per turn) while shutdown pops exactly
+// one level — a single SetWindowTitle cannot tell "push once" apart from
+// "push on every call" (RE-29). They differ in text so that
+// assertTitlePushSetPopInOrder's search for titleA cannot accidentally match
+// the second write: OSC 2 is BEL-terminated, so "…test\x07" is not a prefix
+// of "…test 2\x07".
+const (
+	titleA = "yanshi — test"
+	titleB = "yanshi — test 2"
+)
 
 func (m *titleModel) Init() Cmd {
 	if !m.setTitle {
 		return nil
 	}
-	return SetWindowTitle("yanshi — test")
+	cmds := []Cmd{SetWindowTitle(titleA), SetWindowTitle(titleB)}
+	if m.quitAfterTitles {
+		cmds = append(cmds, Quit)
+	}
+	return Sequence(cmds...)
 }
 
 func (m *titleModel) Update(msg Msg) (Model, Cmd) {
@@ -61,15 +86,21 @@ const (
 func TestTitleRestoredOnNormalQuit(t *testing.T) {
 	var buf bytes.Buffer
 	var in bytes.Buffer
-	in.Write([]byte("q"))
 
-	m := &titleModel{setTitle: true}
+	m := &titleModel{setTitle: true, quitAfterTitles: true}
 	p := NewProgram(m, WithInput(&in), WithOutput(&buf))
 	if _, err := p.Run(); err != nil {
 		t.Fatal(err)
 	}
 
-	assertTitlePushSetPopInOrder(t, buf.String())
+	out := buf.String()
+	assertTitlePushSetPopInOrder(t, out)
+	// This is the one exit path that deterministically writes BOTH titles, so
+	// it is where the "push exactly once despite N sets" property (RE-29) is
+	// actually exercised rather than trivially satisfied.
+	if !strings.Contains(out, "\x1b]2;"+titleB+"\x07") {
+		t.Fatalf("expected the second SetWindowTitle (%q) to reach the terminal: %q", titleB, out)
+	}
 }
 
 // TestTitleRestoredOnKill covers exit path 2/3: Kill, which cancels the
@@ -156,10 +187,25 @@ func TestTitleUntouchedLeavesNoStackNoise(t *testing.T) {
 	}
 }
 
+// assertTitlePushSetPopInOrder checks the two properties every exit path must
+// hold: the push/set/pop ordering, and that the push happened EXACTLY once no
+// matter how many times the title was set.
+//
+// The count is not redundant with the ordering (RE-29): strings.Index finds
+// the FIRST occurrence, so with N pushes the first one is still ahead of the
+// title and the ordering assertion passes unchanged. A mutation replacing
+// screen.go's `if !p.titlePushed.Swap(true)` with an unconditional
+// `p.titlePushed.Store(true); p.renderer.pushWindowTitle()` left this whole
+// file green before the count existed — and that mutation is exactly the bug
+// titlePushed's doc comment warns about, since shutdown pops one level while
+// the terminal's title stack grows by one per turn.
 func assertTitlePushSetPopInOrder(t *testing.T, out string) {
 	t.Helper()
-	const title = "\x1b]2;yanshi — test\x07"
+	const title = "\x1b]2;" + titleA + "\x07"
 
+	if n := strings.Count(out, pushSeq); n != 1 {
+		t.Fatalf("title-stack push %q appeared %d times, want exactly 1 (shutdown pops only one level): %q", pushSeq, n, out)
+	}
 	pushAt := strings.Index(out, pushSeq)
 	titleAt := strings.Index(out, title)
 	popAt := strings.Index(out, popSeq)
