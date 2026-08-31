@@ -1,6 +1,6 @@
 // effect_wiring_test.go — the RE-23/24/25 wiring census (fix-e4a of W-E-tui).
 //
-// WHY THE TWO EXISTING CENSUS GATES DID NOT CATCH THESE THREE
+// # WHY THE TWO EXISTING CENSUS GATES DID NOT CATCH THESE THREE
 //
 // capability_wiring_test.go and keybindings_wiring_test.go both census a
 // SUPPLY side: "which model fields does buildModelForCapability set from the
