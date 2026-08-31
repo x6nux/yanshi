@@ -123,7 +123,12 @@ func TestAgentMCPUnknownSessionIsAnError(t *testing.T) {
 	}
 }
 
-// agent_interrupt 幂等：无活动 turn 的会话返回 ok，不报错。
+// agent_interrupt 幂等：无活动 turn 的会话返回 ok，不报错 —— 且第二次调用
+// 语义不变（RF-11：只调一次的「幂等」测试名字大于覆盖面）。
+//
+// 变异：让 callInterrupt 把重复 interrupt 当错误（第二次调用返回 RPC error）
+// → 本测试在第二次调用处红。幂等语义本体由 v1 的 Interrupt 钉住，这里钉的
+// 是工具面不额外设限。
 func TestAgentMCPInterruptIsIdempotent(t *testing.T) {
 	svc, err := v1.NewService(v1.Config{DefaultModel: eino.NewFakeModel([]string{"ok"}, nil)})
 	if err != nil {
@@ -140,14 +145,26 @@ func TestAgentMCPInterruptIsIdempotent(t *testing.T) {
 	var started struct {
 		SessionID string `json:"session_id"`
 	}
-	_ = json.Unmarshal(raw, &started)
-	res, err := cli.CallTool(context.Background(), "agent_interrupt",
-		json.RawMessage(`{"session_id":"`+started.SessionID+`"}`))
-	if err != nil {
-		t.Fatalf("agent_interrupt: %v", err)
+	if err := json.Unmarshal(raw, &started); err != nil {
+		t.Fatalf("decode prompt result %s: %v", raw, err)
 	}
-	if len(res) == 0 {
-		t.Fatal("empty interrupt result")
+	callInterrupt := func(t *testing.T) map[string]any {
+		t.Helper()
+		res, err := cli.CallTool(context.Background(), "agent_interrupt",
+			json.RawMessage(`{"session_id":"`+started.SessionID+`"}`))
+		if err != nil {
+			t.Fatalf("agent_interrupt (repeat): %v", err)
+		}
+		var out map[string]any
+		if err := json.Unmarshal(res, &out); err != nil {
+			t.Fatalf("decode interrupt result %s: %v", res, err)
+		}
+		return out
+	}
+	first := callInterrupt(t)
+	second := callInterrupt(t) // RF-11: the second call must behave like the first
+	if first["interrupted"] != true || second["interrupted"] != true {
+		t.Fatalf("interrupt results = %v then %v; both calls must report interrupted:true", first, second)
 	}
 }
 
