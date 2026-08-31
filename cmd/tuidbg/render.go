@@ -39,14 +39,19 @@ import (
 // 下面三个都必须重新量，否则字形会溢出自己的格子或在格子里缩成一团。
 // charW/lineH/ascent 与字体运行时报出的度量之间没有任何自动对账 —— 这是有意的，
 // 见 renderGrid 关于「按格定位而非按步进累加」的注释。
+// charW 是一个网格列的像素宽。darwin（及其余平台）量的是 Menlo；Windows
+// 主字体是 Consolas（同档位实测：步进一律 15、Ascent 21，Height 恰好同为 33）。
+// 平台分支是编译期的，同一平台内的值永远不变 —— 「图片尺寸只取决于网格，
+// 不取决于这一屏的字符」的保证仍然成立。
 const (
 	// fontSize、fontDPI 是量出上面那组数字时用的档位。
 	fontSize = 14.0
 	fontDPI  = 144.0
+)
 
-	// charW 是一个网格列的像素宽（Menlo 在上述档位下的字符步进）。
+var (
 	charW = 17
-	// lineH 是一个网格行的像素高（Menlo 的 Height）。
+	// lineH 是一个网格行的像素高（Menlo 的 Height；Consolas 同档位也是 33）。
 	lineH = 33
 	// ascent 是从行顶到基线的像素距离（Menlo 的 Ascent）。
 	ascent = 26
@@ -54,6 +59,12 @@ const (
 	// 字形不至于贴着图片边缘被裁掉半个像素。
 	pad = 8
 )
+
+func init() {
+	if runtime.GOOS == "windows" {
+		charW, ascent = 15, 21
+	}
+}
 
 // fontCandidate 是一个待尝试的字体文件，以及它在文件内的字体下标。
 //

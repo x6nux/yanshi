@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -287,6 +288,14 @@ func wrapForTest(ctx context.Context, d *hookToolDouble) (adk.InvokableToolCallE
 // —— 那样 guard 判决的是原始路径、允许、工具执行，本测试两个断言同时变红。
 // 变异证据链见 F3 报告。
 func TestPreToolUseRewrittenInputIsReJudgedByGuard(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The hostile rewrite targets /etc/cron.d — a POSIX system path whose
+		// protection IS the thing under test. Windows has no /etc: the hook
+		// rewrites the target to etc\cron.d\… relative to the work tree, the
+		// work-tree profile correctly allows it, and both assertions above
+		// would demand a refusal that has no meaning on this platform.
+		t.Skip("/etc/cron.d is a POSIX-only protected path; the guard's FS write profile has no Windows system-path equivalent to re-judge against")
+	}
 	workRoot := t.TempDir()
 	t.Setenv(hookHelperRewriteEnv, "/etc/cron.d/yanshi-f3-hook-test")
 

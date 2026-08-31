@@ -34,6 +34,17 @@ jobs:
       - name: install bubblewrap and Noto CJK fonts (linux sandbox + tuidbg render tests)
         if: matrix.os == 'ubuntu'
         run: sudo apt-get update && sudo apt-get install -y bubblewrap fonts-noto-cjk
+      # ubuntu-24.04 images ship AppArmor's unprivileged-userns restriction,
+      # which makes EVERY bwrap invocation fail with exit 1 even with the
+      # binary installed. Sandbox probes then walk the degraded fallback
+      # (landlock-helper retry + managed-proxy spin-up per subprocess), and
+      # under -race that overhead compounded past the 10m package deadline.
+      # Lifting the restriction is the documented GitHub-Actions workaround:
+      # the runner is a single-tenant VM, so userns buys back containment
+      # that only CI's own tests consume.
+      - name: allow unprivileged user namespaces (bwrap needs them on 24.04)
+        if: matrix.os == 'ubuntu'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # e2e_real build tag is off by default -> codex/claudecode CLIs are not
       # needed. eino/bootstrap t.Skip on missing providers is expected, not a fail.
       - run: go test ./...
@@ -113,6 +124,11 @@ jobs:
       # failed on the missing ink rather than on any code defect.
       - name: install bubblewrap and Noto CJK fonts (linux-only test deps)
         run: sudo apt-get update && sudo apt-get install -y bubblewrap fonts-noto-cjk
+      # See the same step in the test job: 24.04's AppArmor userns restriction
+      # defeats bwrap entirely, and the degraded sandbox fallback is what blew
+      # both this job's and the test job's deadlines under -race.
+      - name: allow unprivileged user namespaces (bwrap needs them on 24.04)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -386,6 +402,11 @@ jobs:
       # render tests find real CJK ink under -cover too.
       - name: install bubblewrap and Noto CJK fonts (coverage needs what test needs)
         run: sudo apt-get update && sudo apt-get install -y bubblewrap fonts-noto-cjk
+      # Same userns lift as the other ubuntu legs: bwrap installed but unable
+      # to create a sandbox still means degraded-fallback slowdowns, and that
+      # is what timed this job out even after bwrap landed here.
+      - name: allow unprivileged user namespaces (bwrap needs them on 24.04)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod

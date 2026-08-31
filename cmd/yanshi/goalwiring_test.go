@@ -204,6 +204,14 @@ func TestAbsWorkdirIsCleaned(t *testing.T) {
 		{"/repo/thing/./", "/repo/thing"},
 		{"/repo/other/../thing", "/repo/thing"},
 	}
+	for i := range cases {
+		// The slash-rooted inputs are normalised by filepath.Clean, whose
+		// Windows spelling is the current drive's root ("\repo\thing").
+		// Deriving `want` from the same Clean keeps the table asserting the
+		// CONTRACT (duplicates, dot segments and trailing separators collapse)
+		// instead of one platform's spelling of it.
+		cases[i].want = filepath.Clean(cases[i].want)
+	}
 	for _, tc := range cases {
 		got, err := absWorkdir(tc.in)
 		require.NoError(t, err)
