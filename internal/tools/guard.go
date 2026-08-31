@@ -403,17 +403,14 @@ func (g *GuardedTool) InvokableRun(ctx context.Context, argsJSON string, _ ...to
 		// trip the breaker. (Preserves the pre-rewrite DenyErr carve-out.)
 		var d *DenyErr
 		if !errors.As(runErr, &d) {
-			if c := getErrCounter(ctx); c != nil {
-				*c++
-				if *c >= 5 {
-					return "", fmt.Errorf("tool %q failed %d consecutive times; aborting turn", g.name, *c)
-				}
+			if c := getErrCounter(ctx); c != nil && c.fail(5) {
+				return "", fmt.Errorf("tool %q failed %d consecutive times; aborting turn", g.name, c.value())
 			}
 		}
 		return g.redactResult(ctx, result.String()), nil
 	}
 	if c := getErrCounter(ctx); c != nil {
-		*c = 0
+		c.reset()
 	}
 	return spillIfTooLong(ctx, g.name, g.redactResult(ctx, result.String())), nil
 }
