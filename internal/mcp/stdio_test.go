@@ -127,23 +127,40 @@ func (s *bidirServer) handleOne() {
 	s.w.Flush()
 }
 
-// handshake performs the standard client→server initialize + ping.
+// handshake performs the standard client→server initialize handshake.
 func (s *bidirServer) handshake(cli *StdioClient) {
 	s.t.Helper()
 	// Initialize sends: initialize request + notifications/initialized notification.
-	// handleOne reads and responds to the initialize request, then continues reading
-	// to drain the notifications/initialized notification (otherwise the client's
-	// notify write blocks on the pipe).
+	// handleOne reads and responds to the initialize request; the loop then
+	// consumes the notifications/initialized notification (otherwise the
+	// client's notify write blocks on the pipe).
+	//
+	// 两条纪律，都来自实测的偶发失败：
+	//  1. 排空必须 content-aware（读到 initialized 为止），不能盲读一条 ——
+	//     排空若迟到，盲读会把 -32601 甚至 ping 偷走丢掉，respondLoop 就
+	//     永远等不到它（测试 20s 超时，1/15 复现）。
+	//  2. handshake 返回前必须等排空完成，否则 respondLoop 接手的是一个
+	//     读点未定的流，谁先读到 initialized 未定义。
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		s.handleOne()
-		// Drain the notifications/initialized notification (id=nil, just consume).
-		s.mu.Lock()
-		_, _ = ReadMessage(s.buf)
-		s.mu.Unlock()
+		for {
+			s.mu.Lock()
+			msg, err := ReadMessage(s.buf)
+			s.mu.Unlock()
+			if err != nil {
+				return
+			}
+			if m, _ := msg["method"].(string); m == "notifications/initialized" {
+				return
+			}
+		}
 	}()
 	if err := cli.Initialize(context.Background(), "/"); err != nil {
 		s.t.Fatalf("Initialize: %v", err)
 	}
+	<-done
 }
 
 // SendNotification writes a server-initiated notification (no id) to the client.
@@ -154,6 +171,11 @@ func (s *bidirServer) SendNotification(method string, params map[string]any) {
 		msg["params"] = params
 	}
 	data, _ := json.Marshal(msg)
+	// s.w 是共享 bufio.Writer：respondLoop/handleOne 的写都持 s.mu，
+	// 这里不持锁就与它们构成并发写 —— 帧会互相撕裂（client 读到半帧，
+	// readLoop 以 unmarshal 错误退出）。实测 1/5 复现后才补上这把锁。
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.w.Write(data)
 	s.w.WriteByte('\n')
 	s.w.Flush()
@@ -168,12 +190,13 @@ func (s *bidirServer) SendRequest(id int64, method string, params map[string]any
 		msg["params"] = params
 	}
 	data, _ := json.Marshal(msg)
+	// 同 SendNotification：s.w 的写必须全部互斥（见那里的注释）。
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.w.Write(data)
 	s.w.WriteByte('\n')
 	s.w.Flush()
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	resp, err := ReadMessage(s.buf)
 	if err != nil {
 		s.t.Fatalf("SendRequest: read response: %v", err)
@@ -189,6 +212,9 @@ func (s *bidirServer) SendRequestNoReply(id int64, method string, params map[str
 		msg["params"] = params
 	}
 	data, _ := json.Marshal(msg)
+	// 同 SendNotification：s.w 的写必须全部互斥（见那里的注释）。
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.w.Write(data)
 	s.w.WriteByte('\n')
 	s.w.Flush()
@@ -364,21 +390,29 @@ func TestStdioClient_ServerRequestParamsForwardedVerbatim(t *testing.T) {
 
 // respondLoop 持续读 client 的请求并回通用结果（notification 直接吞掉），
 // 供无 handler 场景下验证 client 仍可用。
+//
+// 只回带 method 的请求（client→server 方向的响应 —— 如对 server 发起请求
+// 的 -32601 错误回复 —— 有 id 无 method，必须跳过而不是回写）：把响应当
+// 请求回写会让一条无人 pending 的假响应窜进 client 的读流，并污染帧边界。
+//
+// 读不加 s.mu，写才加：s.buf 在 handshake 的 <-done 之后由本 goroutine
+// 独占（唯一读者），而 s.mu 必须绝不跨阻塞读持有 —— 否则本 goroutine 等
+// 下一条消息时持锁阻塞，测试 goroutine 的 Send* 全部跟着死锁（这正是
+// RF-1 的形状：锁跨阻塞 I/O；实测 1/5 复现后按此修）。
 func (s *bidirServer) respondLoop() {
 	for {
-		s.mu.Lock()
 		msg, err := ReadMessage(s.buf)
 		if err != nil {
-			s.mu.Unlock()
 			return
 		}
 		id := msg["id"]
-		if id == nil {
-			s.mu.Unlock()
+		method, hasMethod := msg["method"].(string)
+		if id == nil || !hasMethod || method == "" {
 			continue
 		}
 		resp := map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{}}
 		data, _ := json.Marshal(resp)
+		s.mu.Lock()
 		s.w.Write(data)
 		s.w.WriteByte('\n')
 		s.w.Flush()
@@ -502,6 +536,74 @@ func TestStdioClient_HandlerRunsSynchronouslyOnReadLoop(t *testing.T) {
 			t.Fatal("notification B never dispatched after handler released")
 		case <-time.After(10 * time.Millisecond):
 		}
+	}
+}
+
+// 钉住写锁与 pending 表解耦的修复（评审 RF-1）：一条被楔死的写不得拖死
+// Close。server 在握手后停止读 stdin，Ping 的写永远阻塞 —— 旧代码里这个
+// 写持 pending 表的锁阻塞在 pipe 上，Close 的第一句就要同一把锁，整个
+// client（含 Close）永久楔死。修复后写串行化是独立的锁，Close 照常关
+// pipe、被楔死的 Ping 以错误返回。
+//
+// 判据用 in-test 超时而不是 go test 的全局超时：并发请求测试对这个缺陷
+// 只有约一半的捕获率（io.Pipe 的时序窗口），而这个形状是确定的 ——
+// server 永不再读，写永不返回。红要快、要稳定。
+func TestStdioClient_CloseSurvivesAWedgedWrite(t *testing.T) {
+	srvInR, srvInW := io.Pipe()
+	srvOutR, srvOutW := io.Pipe()
+	park := make(chan struct{})
+	go func() {
+		defer srvInR.Close()
+		defer srvOutW.Close()
+		buf := bufio.NewReader(srvInR)
+		// 读两条：initialize 请求（要应答）+ initialized 通知（无 id，
+		// 消费掉即可）—— 少读一条会让 Initialize 自己楔死而不是 Ping。
+		for i := 0; i < 2; i++ {
+			msg, err := ReadMessage(buf)
+			if err != nil {
+				return
+			}
+			if msg["id"] == nil {
+				continue
+			}
+			resp := map[string]any{"jsonrpc": "2.0", "id": msg["id"],
+				"result": map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}}}
+			if err := WriteLineMessage(srvOutW, resp); err != nil {
+				return
+			}
+		}
+		<-park // 握手完成后停止读 stdin：后续写将永远阻塞，pipe 保持打开
+	}()
+	defer func() { close(park); srvInW.Close(); srvOutR.Close() }()
+
+	cli := NewStdioClient(srvOutR, srvInW)
+	if err := cli.Initialize(context.Background(), "/"); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	pingDone := make(chan error, 1)
+	go func() { pingDone <- cli.Ping(context.Background()) }()
+	// 给 Ping 时间进入永远阻塞的写（此刻它正持着那把锁，若锁没解耦）。
+	time.Sleep(200 * time.Millisecond)
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- cli.Close() }()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close did not return within 3s while a write was wedged — " +
+			"a wedged writer must not hold the lock Close needs")
+	}
+	select {
+	case err := <-pingDone:
+		if err == nil {
+			t.Fatal("wedged Ping returned nil after Close; want an error")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("wedged Ping did not return after Close — closing the writer must break blocked writes")
 	}
 }
 
