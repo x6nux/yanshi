@@ -33,6 +33,22 @@ type Manager struct {
 	// legitimate state (no secrets backend configured); buildTokenSource then
 	// declines to build an authorization_code source and says so.
 	tokens TokenStore
+	// push carries per-connection notification state for stdio servers, keyed
+	// by server name. It exists because of an ordering trap: the client's
+	// handler must be registered BEFORE Initialize (the readLoop starts
+	// there), but the first tools/list merge has not happened yet at that
+	// point — a list_changed arriving before it must not spawn a refresh that
+	// races (and interleaves) with the initial merge, or a stale snapshot can
+	// overwrite the fresh one. Notifications seen before ready are buffered
+	// as pending and drained after the first merge.
+	push map[string]*serverPush
+}
+
+// serverPush is the notification bookkeeping for one live stdio connection.
+// Guarded by Manager.mu — both fields are plain memory ops.
+type serverPush struct {
+	ready   bool // the initial catalog merge has completed
+	pending bool // a list_changed arrived before ready; refresh after
 }
 
 // SetTokenStore binds the credential backend used by authorization_code
@@ -131,6 +147,7 @@ func NewManager(servers map[string]*ServerConfig) *Manager {
 		status:            map[string]ConnectionStatus{},
 		errs:              map[string]string{},
 		reconnectInflight: map[string]struct{}{},
+		push:              map[string]*serverPush{},
 		health:            DefaultHealthConfig(),
 	}
 	for name, sc := range servers {
@@ -170,13 +187,33 @@ func (m *Manager) StartAll(ctx context.Context) []ServerStatus {
 			m.mu.Unlock()
 			continue
 		}
-		m.mu.Lock()
-		m.clients[name] = cli
-		m.status[name] = StatusReady
-		delete(m.errs, name)
-		m.mu.Unlock()
+		m.installReadyClient(name, cli)
 	}
 	return m.Snapshot(ctx)
+}
+
+// installReadyClient registers a freshly started connection as the live
+// client for name, marks it Ready, and opens the notification gate. The gate
+// opens HERE rather than inside startOne because refreshTools resolves the
+// client through m.clients: a pending list_changed drained before the client
+// is installed would find nothing to refresh through and silently drop the
+// server's signal.
+func (m *Manager) installReadyClient(name string, cli Client) {
+	m.mu.Lock()
+	m.clients[name] = cli
+	m.status[name] = StatusReady
+	delete(m.errs, name)
+	st := m.push[name]
+	drain := false
+	if st != nil {
+		st.ready = true
+		drain = st.pending
+		st.pending = false
+	}
+	m.mu.Unlock()
+	if drain {
+		go m.refreshTools(name)
+	}
 }
 
 // stdioServerEnv builds the environment for a stdio MCP server.
@@ -226,7 +263,15 @@ func (m *Manager) startOne(ctx context.Context, cfg *ServerConfig) (Client, erro
 		if err := cmd.Start(); err != nil {
 			return nil, fmt.Errorf("start %q: %w", cfg.Command, err)
 		}
-		cli = NewStdioClient(stdout, stdin).SetTimeout(cfg.Timeout).SetCmd(cmd)
+		sc := NewStdioClient(stdout, stdin).SetTimeout(cfg.Timeout).SetCmd(cmd)
+		// F1 移交（RF-2）的消费半：server 主动推送从此有人接。必须注册在
+		// Initialize 之前 —— readLoop 在 Initialize 里启动，晚注册收不到
+		// 早期消息。ready/pending 的时序见 serverPush。
+		m.mu.Lock()
+		m.push[cfg.Name] = &serverPush{}
+		m.mu.Unlock()
+		sc.SetHandler(m.handleServerPush(cfg.Name))
+		cli = sc
 	default:
 		return nil, fmt.Errorf("mcp: unknown transport %q", cfg.Transport)
 	}
@@ -260,30 +305,12 @@ func (m *Manager) startOne(ctx context.Context, cfg *ServerConfig) (Client, erro
 		catalogStore(key, tools)
 	}
 	m.mu.Lock()
-	temp := make(map[string]ToolDescriptor, len(tools))
-	for _, td := range tools {
-		// W-F-12: the per-server allow/deny filter is registration-side
-		// narrowing only — dropped here, before anything downstream (the
-		// guard's mcp dimension, GOV5's profile reconciliation) can see the
-		// name. Empty allow admits all, so every config predating the field
-		// registers exactly what it registered before.
-		if !cfg.AdmitsTool(td.ToolName) {
-			continue
-		}
-		td.ServerName = cfg.Name
-		td.Qualified = QualifyToolName(cfg.Name, td.ToolName)
-		if _, exists := m.toolMap[td.Qualified]; exists {
-			m.mu.Unlock()
-			_ = cli.Close()
-			return nil, fmt.Errorf("mcp: tool name collision on %q (server %q)", td.Qualified, cfg.Name)
-		}
-		temp[td.Qualified] = td
-	}
-	// Atomic swap into toolMap after all names validated (review #2 orphan fix).
-	for k, v := range temp {
-		m.toolMap[k] = v
-	}
+	err := m.mergeToolsLocked(cfg, tools, false)
 	m.mu.Unlock()
+	if err != nil {
+		_ = cli.Close()
+		return nil, err
+	}
 
 	// Resources are advertised alongside tools but were never collected:
 	// ListResources had an interface entry and two implementations and ZERO
@@ -304,7 +331,125 @@ func (m *Manager) startOne(ctx context.Context, cfg *ServerConfig) (Client, erro
 	return cli, nil
 }
 
-// newHTTPClientFor 根据 cfg.OAuth 选择 bearer / client-credentials / authorization_code。
+// mergeToolsLocked filters the advertised tools through the per-server
+// allow/deny filter (W-F-12), qualifies the names and merges them into
+// m.toolMap. Caller holds m.mu.
+//
+// replace=false is the startOne shape: the server's entries are not yet in
+// the map, so any qualified-name clash is a cross-server collision and fails
+// the whole merge. replace=true is the list_changed refresh shape: the
+// server's previous entries are dropped first, so a re-advertised name is a
+// normal update rather than a collision. Validation of the full new set
+// happens BEFORE any mutation (the review #2 orphan fix: a failed merge must
+// leave the map untouched), and intra-batch duplicates are refused for the
+// same reason — a server advertising the same tool twice is broken, not
+// two tools.
+func (m *Manager) mergeToolsLocked(cfg *ServerConfig, tools []ToolDescriptor, replace bool) error {
+	temp := make(map[string]ToolDescriptor, len(tools))
+	for _, td := range tools {
+		// W-F-12: the per-server allow/deny filter is registration-side
+		// narrowing only — applied here, before anything downstream (the
+		// guard's mcp dimension, GOV5's profile reconciliation) can see the
+		// name. Empty allow admits all, so every config predating the field
+		// registers exactly what it registered before.
+		if !cfg.AdmitsTool(td.ToolName) {
+			continue
+		}
+		td.ServerName = cfg.Name
+		td.Qualified = QualifyToolName(cfg.Name, td.ToolName)
+		if _, dup := temp[td.Qualified]; dup {
+			return fmt.Errorf("mcp: server %q advertises duplicate tool name %q", cfg.Name, td.ToolName)
+		}
+		temp[td.Qualified] = td
+	}
+	for q := range temp {
+		if existing, clash := m.toolMap[q]; clash && !(replace && existing.ServerName == cfg.Name) {
+			return fmt.Errorf("mcp: tool name collision on %q (server %q)", q, cfg.Name)
+		}
+	}
+	if replace {
+		for q, td := range m.toolMap {
+			if td.ServerName == cfg.Name {
+				delete(m.toolMap, q)
+			}
+		}
+	}
+	for q, td := range temp {
+		m.toolMap[q] = td
+	}
+	return nil
+}
+
+// handleServerPush is the ServerHandler the Manager binds to every stdio
+// client at construction (the consumer half F1's SetHandler mechanism was
+// waiting for). The handler runs SYNCHRONOUSLY on the client's readLoop —
+// a pinned property — so anything slow here stalls every later message;
+// refreshTools does a blocking tools/list round trip and MUST run in its own
+// goroutine (inline execution is the client waiting on itself).
+//
+// 不可信输入标注（ServerHandler 的约定，消费接线落地时兑现）：params 的
+// 内容来自外部 server，是通知载荷。这里只把它当信号用 —— list_changed 的
+// 刷新路径完全不读 params，工具表一律以重新 tools/list 拿到的目录为准；
+// 载荷里自称的任何目录内容都不会进入 toolMap、日志或任何判定。
+func (m *Manager) handleServerPush(server string) ServerHandler {
+	return func(method string, params map[string]any) {
+		_ = params // untrusted notification payload; see the doc above
+		if method != "notifications/tools/list_changed" {
+			return
+		}
+		m.mu.Lock()
+		st := m.push[server]
+		spawn := false
+		if st != nil {
+			if st.ready {
+				spawn = true
+			} else {
+				// The initial catalog merge has not landed yet; refreshing
+				// now could interleave with it and let a stale snapshot
+				// win. Buffer the signal; startOne drains it after the
+				// first merge.
+				st.pending = true
+			}
+		}
+		m.mu.Unlock()
+		if spawn {
+			go m.refreshTools(server)
+		}
+	}
+}
+
+// refreshTools re-fetches one server's catalog after tools/list_changed and
+// swaps it into the tool table. Runs in its own goroutine (see
+// handleServerPush); safe to race with Disable — a missing client or config
+// means the connection is gone and there is nothing to refresh.
+func (m *Manager) refreshTools(server string) {
+	m.mu.Lock()
+	cli := m.clients[server]
+	cfg := m.servers[server]
+	m.mu.Unlock()
+	if cli == nil || cfg == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tools, err := cli.ListTools(ctx)
+	if err != nil {
+		slog.Warn("mcp: tools/list refresh after list_changed failed", "server", server, "error", err.Error())
+		return
+	}
+	// Invalidate first, then store the fresh catalog: a config that flips
+	// away and back must not resurrect the pre-change entry.
+	catalogInvalidateServer(server)
+	catalogStore(catalogKey{server: server, fingerprint: catalogFingerprint(cfg)}, tools)
+	m.mu.Lock()
+	err = m.mergeToolsLocked(cfg, tools, true)
+	m.mu.Unlock()
+	if err != nil {
+		slog.Warn("mcp: refreshed catalog rejected", "server", server, "error", err.Error())
+	}
+}
+
+
 //
 // An authorization_code server whose token source cannot be constructed —
 // no store bound, missing client_id — falls back to the configured bearer
@@ -313,6 +458,7 @@ func (m *Manager) startOne(ctx context.Context, cfg *ServerConfig) (Client, erro
 // reason. Returning an error instead would make one misconfigured server abort
 // the whole MCP subsystem, which is the opposite of the soft-degrade posture
 // StartAll already has.
+// newHTTPClientFor 根据 cfg.OAuth 选择 bearer / client-credentials / authorization_code。
 func newHTTPClientFor(cfg *ServerConfig, store TokenStore) *HTTPClient {
 	if src := buildTokenSource(cfg, store); src != nil {
 		return NewHTTPClientWithTokenSource(cfg.URL, src)
@@ -397,6 +543,7 @@ func (m *Manager) Disable(_ context.Context, name string) error {
 		_ = cli.Close()
 	}
 	delete(m.clients, name)
+	delete(m.push, name)
 	for q, td := range m.toolMap {
 		if td.ServerName == name {
 			delete(m.toolMap, q)
@@ -423,11 +570,7 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 		m.mu.Unlock()
 		return err
 	}
-	m.mu.Lock()
-	m.clients[name] = cli
-	m.status[name] = StatusReady
-	delete(m.errs, name)
-	m.mu.Unlock()
+	m.installReadyClient(name, cli)
 	return nil
 }
 

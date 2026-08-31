@@ -175,11 +175,7 @@ func (m *Manager) reconnect(ctx context.Context, name string) error {
 		}
 		cli, err := m.startOne(ctx, &cfgCopy)
 		if err == nil {
-			m.mu.Lock()
-			m.clients[name] = cli
-			m.status[name] = StatusReady
-			delete(m.errs, name)
-			m.mu.Unlock()
+			m.installReadyClient(name, cli)
 			return nil
 		}
 		m.markFailed(name, fmt.Sprintf("reconnect attempt %d: %v", attempt, err))
