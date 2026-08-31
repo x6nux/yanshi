@@ -221,6 +221,32 @@ func TestStdioClient_ServerNotificationDispatched(t *testing.T) {
 	}
 }
 
+// AC2: server-initiated request gets a "method not found" response.
+func TestStdioClient_ServerRequestGetsResponse(t *testing.T) {
+	srv, cli := newBidirServer(t)
+
+	cli.SetHandler(func(method string, params map[string]any) {})
+
+	srv.handshake(cli)
+
+	// Server sends a request with id=100.
+	resp := srv.SendRequest(100, "sampling/createMessage", map[string]any{
+		"messages": []any{},
+	})
+
+	// Client should respond with a JSON-RPC error.
+	if resp["id"] != float64(100) {
+		t.Fatalf("expected id=100, got %v", resp["id"])
+	}
+	errObj, ok := resp["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected error object, got %v", resp)
+	}
+	if errObj["code"] != float64(-32601) {
+		t.Fatalf("expected code -32601, got %v", errObj["code"])
+	}
+}
+
 // AC3: progress notifications from a long task reach the handler.
 func TestStdioClient_ProgressNotificationDelivered(t *testing.T) {
 	srv, cli := newBidirServer(t)
@@ -289,15 +315,17 @@ func TestStdioClient_ListChangedNotification(t *testing.T) {
 	}
 }
 
-// No handler registered: notifications are silently dropped without panic.
+// No handler registered: notifications and server requests are silently
+// handled without panic.
 func TestStdioClient_NoHandlerDropsSilently(t *testing.T) {
 	srv, cli := newBidirServer(t)
 	// No SetHandler call.
 
 	srv.handshake(cli)
 
-	// Send a notification — should not panic.
+	// Send a notification and a server request — neither should panic.
 	srv.SendNotification("notifications/tools/list_changed", nil)
+	srv.SendRequestNoReply(500, "sampling/createMessage", map[string]any{})
 
 	time.Sleep(50 * time.Millisecond)
 	// No assertion needed — we're testing that it doesn't panic.

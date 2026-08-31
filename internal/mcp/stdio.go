@@ -24,7 +24,8 @@ type ServerHandler func(method string, params map[string]any)
 // 时 cmd 为 nil，Close 只关闭 writer。
 //
 // readLoop goroutine 持续读入站消息并 demux：带 id 的响应投递到
-// pending[id] channel，通知按 method 路由到 ServerHandler。
+// pending[id] channel，通知按 method 路由到 ServerHandler，server
+// 发起的请求回复 method-not-found 以免对端挂死。
 type StdioClient struct {
 	r       *bufio.Reader
 	rawR    io.Reader // 原始 reader，Close 时如实现 io.Closer 则关闭
@@ -145,13 +146,10 @@ func (c *StdioClient) notify(method string, params any) error {
 }
 
 // readLoop 持续读入站消息并 demux，直到 ReadMessage 出错（EOF/pipe 关）。
-// 两类消息分发：
+// 三类消息分发：
 //   - 响应（有 id，无 method）→ 投递给 pending[id] channel
 //   - notification（无 id，有 method）→ 交给 handleServerMessage
-//
-// server 发起的 request（带 id 且带 method）目前与畸形消息一样落入 default
-// 被丢弃 —— 与改造前的行为一致（严格 req→resp 模式会静默消费它们）。
-// 支持反向 request 是后续提交的工作。
+//   - server 发起的 request（有 id 且有 method）→ 回复 "method not found"
 //
 // 退出时 close(done)，唤醒所有阻塞在 select 上的 doRequest。
 func (c *StdioClient) readLoop() {
@@ -171,9 +169,11 @@ func (c *StdioClient) readLoop() {
 		case hasMethod && !hasID:
 			// Server-initiated notification.
 			c.handleServerMessage(method, msg)
+		case hasID && hasMethod:
+			// Server-initiated request — reply so the server doesn't hang.
+			c.handleServerRequest(id, method, msg)
 		default:
-			// Server-initiated request (id + method, handled in a later
-			// commit) or malformed JSON-RPC — drop.
+			// Malformed JSON-RPC (no id, no method) — drop.
 		}
 	}
 }
@@ -202,6 +202,31 @@ func (c *StdioClient) handleServerMessage(method string, msg map[string]any) {
 	}
 	params, _ := msg["params"].(map[string]any)
 	h(method, params)
+}
+
+// handleServerRequest 处理 server 发起的请求：回复 JSON-RPC error（"method
+// not found"）。当前 client 没有通用的 request dispatcher——具体协议的
+// request handler 是后续提交的工作，这里先保证 server 不会因无响应而挂死。
+//
+// 响应写放在 goroutine 中而非 readLoop 内联执行：write 阻塞（server 不消费
+// stdin）时 readLoop 仍能继续分发后续通知/请求。c.mu 序列化写操作，不影响顺序。
+func (c *StdioClient) handleServerRequest(id int64, _ string, _ map[string]any) {
+	// Reply with "method not found" so the server doesn't hang. The write
+	// runs in its own goroutine: a blocked write (server not consuming stdin)
+	// must not stall the readLoop's dispatch of subsequent messages.
+	go func() {
+		resp := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      id,
+			"error": map[string]any{
+				"code":    -32601,
+				"message": "method not found",
+			},
+		}
+		c.mu.Lock()
+		_ = WriteLineMessage(c.w, resp)
+		c.mu.Unlock()
+	}()
 }
 
 // ListTools returns tools advertised by the MCP server over stdio.
