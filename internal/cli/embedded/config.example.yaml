@@ -595,8 +595,8 @@ i18n:
 #
 # 接线现状(照抄本文件建 config.yaml 前先读这段):本块字段自 W8 起经
 # cmd/yanshi/main.go 读入 tui.Preferences 项目层(flags > env > user >
-# project > defaults 四级级联的最低一级 —— 见
-# internal/cli/tui/preferences.go),同时 `yanshi doctor`
+# project 四层稀疏层级中的最低一层,defaults 是这四层之下的基线而不是第五层
+# —— 见 internal/cli/tui/preferences.go 的 mergeTUIPrefs),同时 `yanshi doctor`
 # (checkKeymapConfig / checkHighContrastConfig)仍会独立校验并在体检报告
 # 中复述同一批键。两条消费路径都是真的。vim/high_contrast/frecency/notify
 # 是 *bool,省略与显式 false 在配置层可区分。权威说明见

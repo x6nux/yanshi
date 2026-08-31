@@ -230,9 +230,13 @@ type I18NConfig struct {
 // exist: this comment used to claim "the TUI does not read them... no
 // preferences file is loaded" — that was true when written but went stale
 // without being updated. As of W8, cmd/yanshi/main.go DOES read every field
-// below into a tui.Preferences project layer (the lowest tier of the
-// flags > env > user > project > defaults cascade — see
-// internal/cli/tui/preferences.go), and `yanshi doctor`
+// below into a tui.Preferences project layer — the lowest of the FOUR sparse
+// layers (flags > env > user > project), sitting on top of a defaults
+// baseline that is not itself a layer; see mergeTUIPrefs in
+// internal/cli/tui/preferences.go, whose signature takes exactly those four.
+// (RE-35: this used to call project "the lowest tier of the flags > env >
+// user > project > defaults cascade", which puts defaults below the thing it
+// calls lowest.) `yanshi doctor`
 // (checkKeymapConfig / checkHighContrastConfig) separately validates and
 // reports the same keys. Both consumers are real; do not let this comment
 // drift again without checking cmd/yanshi/main.go's tui.Preferences{...}

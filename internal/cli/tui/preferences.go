@@ -40,9 +40,15 @@ type Preferences struct {
 }
 
 // EffectivePreferences is the fully merged, non-sparse result of the cascade.
-// It never contains tri-state values. newModel populates one from hardcoded
-// defaults but never reads it back, so nothing in the TUI is driven by these
-// values yet — see the wiring note on preferencesPath.
+// It never contains tri-state values.
+//
+// The wiring note that used to end this comment ("newModel populates one from
+// hardcoded defaults but never reads it back, so nothing in the TUI is driven
+// by these values yet") went stale in W8 and was false when found: newModel
+// reads UILocale for the i18n bundle, the merged prefs for theme and keymap,
+// Vim to install the vim machine, Frecency to decide whether to load the
+// store at all, and Notify into m.notifyEnabled. It is the same "true when
+// written, never updated" shape TUIConfig's doc comment was rewritten for.
 type EffectivePreferences struct {
 	UILocale     string
 	ThemeName    string
@@ -119,8 +125,11 @@ func randomSuffix() (string, error) {
 }
 
 // mergeTUIPrefs applies sparse layers from lowest to highest priority:
-// defaults < project config < user prefs < env < flags. All five fields are
-// merged uniformly; pointer booleans make explicit false override lower
+// defaults < project config < user prefs < env < flags — four layers over a
+// defaults baseline, which is why this takes exactly four arguments. Every
+// field is merged uniformly (the count that used to stand here said "five"
+// and the struct has had eight for some time); pointer booleans make explicit
+// false override lower
 // true. KeymapReset participates in the same cascade so a stored keymap-reset
 // tombstone would survive a project config carrying tui.bindings.
 func mergeTUIPrefs(flags, env, user, project Preferences) EffectivePreferences {
