@@ -1,6 +1,7 @@
 package http
 
 import (
+	"time"
 	"encoding/json"
 	"net/http/httptest"
 	"os"
@@ -139,9 +140,19 @@ func TestWS_WorkspaceDiff_RealTurnBoundary(t *testing.T) {
 	drainTurn(t, c)
 
 	require.NoError(t, c.WriteJSON(proto.NewListWorkspaceDiff()))
+	// tool_chunk and friends are written by the tool-execution goroutine while
+	// done is written by the main loop, so the wsConn doc's ordering caveat
+	// applies: a late tool_chunk can land in the queue AFTER drainTurn saw
+	// done. Skip any such straggler until the diff reply arrives, bounded by a
+	// read deadline so a missing reply still fails the test.
 	var sf proto.ServerFrame
-	require.NoError(t, c.ReadJSON(&sf))
-	require.Equal(t, "workspace_diff", sf.Type)
+	require.NoError(t, c.SetReadDeadline(time.Now().Add(10*time.Second)))
+	for {
+		require.NoError(t, c.ReadJSON(&sf))
+		if sf.Type == "workspace_diff" {
+			break
+		}
+	}
 	require.Len(t, sf.WorkspaceDiff, 1)
 	got := sf.WorkspaceDiff[0]
 	assert.Equal(t, "hello.go", got.Path)
@@ -163,8 +174,18 @@ func TestWS_WorkspaceDiff_EmptyWhenNothingPending(t *testing.T) {
 	defer c.Close()
 
 	require.NoError(t, c.WriteJSON(proto.NewListWorkspaceDiff()))
+	// tool_chunk and friends are written by the tool-execution goroutine while
+	// done is written by the main loop, so the wsConn doc's ordering caveat
+	// applies: a late tool_chunk can land in the queue AFTER drainTurn saw
+	// done. Skip any such straggler until the diff reply arrives, bounded by a
+	// read deadline so a missing reply still fails the test.
 	var sf proto.ServerFrame
-	require.NoError(t, c.ReadJSON(&sf))
-	require.Equal(t, "workspace_diff", sf.Type)
+	require.NoError(t, c.SetReadDeadline(time.Now().Add(10*time.Second)))
+	for {
+		require.NoError(t, c.ReadJSON(&sf))
+		if sf.Type == "workspace_diff" {
+			break
+		}
+	}
 	assert.Empty(t, sf.WorkspaceDiff)
 }

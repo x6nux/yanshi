@@ -37,8 +37,16 @@ func TestM7_ConfiguredQPMThrottlesRealArrivals(t *testing.T) {
 		n           = 4
 		qpm         = 600 // one token per 100ms
 		perToken    = 100 * time.Millisecond
-		minExpected = 3 * perToken // n-1 refills after the single burst token
+		minExpected = 2 * perToken // n-1 refills, minus one refill of slack
 	)
+	// Why minExpected is n-2 refills, not n-1: 300ms is the EXACT boundary —
+	// the last refill lands at t=300ms and the arrival stamp is taken after
+	// the goroutine wakes, so timer jitter or scheduler delay on the FIRST
+	// arrival pushes the measured spread a fraction below 300ms and the
+	// assertion flakes under full-suite load (seen 2026-09-01 on -race).
+	// 200ms still keeps two orders of magnitude between a throttled spread
+	// and an unthrottled loopback fan-out (~single-digit ms), which is the
+	// property this test exists to pin.
 	s := newStubProvider(t, nil)
 	inner, _ := buildStubModel(t, s, nil)
 	limiter := NewRateLimiter(RateLimitConfig{}, map[string]RateLimitConfig{
