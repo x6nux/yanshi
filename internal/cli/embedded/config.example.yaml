@@ -683,3 +683,20 @@ tui:
 goal:
   max_tokens: 0
   max_iterations: 0
+
+# W-F-27：web_search 后端可插拔。省略整块 = 内置 duckduckgo 后端 + 默认端点，
+# 与可插拔之前的装配逐字节一致。
+#
+# backend: "" / "duckduckgo"（默认）—— POST DuckDuckGo HTML 端点、正则刮结果；
+#   改版即碎的那条路径，现在带失败检测（解析不出结果页会如实报 parse_error，
+#   不再冒充「没有命中」）。
+# backend: "searxng" —— 自托管实例的 JSON API，内网/离线路径；endpoint 必填。
+#
+# endpoint 覆盖后端 URL：duckduckgo 可指向镜像；searxng 指向实例的 search 路径。
+# 注意 endpoint 的主机还要过 security.network 的出网策略（默认 deny），内网
+# 实例记得显式放行。
+#
+# tools:
+#   web_search:
+#     backend: searxng
+#     endpoint: https://searx.internal/search

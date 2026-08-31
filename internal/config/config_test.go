@@ -1280,3 +1280,43 @@ mcp:
 	assert.Empty(t, plain.ToolAllow)
 	assert.Empty(t, plain.ToolDeny)
 }
+
+// TestWFS27_WebSearchConfigPinsTheConfigSeam pins the tools.web_search block
+// end to end at the config layer: the default is the empty pair (tools package
+// falls back to duckduckgo), a named backend reaches the struct, searxng
+// without an endpoint is rejected at load (the operator is looking), an
+// unknown backend is rejected with the known names, and a non-URL endpoint is
+// rejected rather than failing on every search forever.
+func TestWFS27_WebSearchConfigPinsTheConfigSeam(t *testing.T) {
+	t.Run("default keeps built-in backend", func(t *testing.T) {
+		cfg, err := LoadBytes([]byte("server:\n  addr: \":0\"\n"))
+		require.NoError(t, err)
+		require.Equal(t, WebSearchConfig{}, cfg.Tools.WebSearch)
+	})
+
+	t.Run("searxng with endpoint loads", func(t *testing.T) {
+		cfg, err := LoadBytes([]byte(
+			"tools:\n  web_search:\n    backend: searxng\n    endpoint: https://searx.internal/search\n"))
+		require.NoError(t, err)
+		require.Equal(t, "searxng", cfg.Tools.WebSearch.Backend)
+		require.Equal(t, "https://searx.internal/search", cfg.Tools.WebSearch.Endpoint)
+	})
+
+	t.Run("searxng without endpoint is rejected", func(t *testing.T) {
+		_, err := LoadBytes([]byte("tools:\n  web_search:\n    backend: searxng\n"))
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "endpoint")
+	})
+
+	t.Run("unknown backend is rejected naming the known ones", func(t *testing.T) {
+		_, err := LoadBytes([]byte("tools:\n  web_search:\n    backend: startpage\n"))
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "duckduckgo")
+	})
+
+	t.Run("non-URL endpoint is rejected", func(t *testing.T) {
+		_, err := LoadBytes([]byte(
+			"tools:\n  web_search:\n    backend: duckduckgo\n    endpoint: not a url\n"))
+		require.Error(t, err)
+	})
+}

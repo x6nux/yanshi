@@ -41,7 +41,7 @@ func TestCov_WebRunSearchHTMLParse(t *testing.T) {
 	defer srv.Close()
 
 	w := NewWebTools(1024*32, time.Second)
-	w.searchBase = srv.URL
+	setSearchEndpoint(w, srv.URL)
 	ctx := WithProfile(context.Background(), guard.PermissionProfile{Tools: guard.ToolsPerm{Allow: []string{"web_*"}}})
 	ctx = WithNetworkPolicy(ctx, &netpolicy.Policy{Default: "allow", AllowPrivate: true})
 
@@ -53,18 +53,21 @@ func TestCov_WebRunSearchHTMLParse(t *testing.T) {
 
 func TestCov_WebRunSearchNetworkDegradation(t *testing.T) {
 	w := NewWebTools(1024*32, time.Second)
-	w.searchBase = "http://127.0.0.1:1"
+	setSearchEndpoint(w, "http://127.0.0.1:1")
 	ctx := WithProfile(context.Background(), guard.PermissionProfile{Tools: guard.ToolsPerm{Allow: []string{"web_*"}}})
 	ctx = WithNetworkPolicy(ctx, &netpolicy.Policy{Default: "allow", AllowPrivate: true})
 
 	out, err := runTool(ctx, w.Search, `{"query":"test"}`)
 	require.NoError(t, err)
-	assert.Contains(t, out, `"results":[]`)
+	// W-F-27: an unreachable backend is reported as backend_error, not as a
+	// successful empty search — the model must be able to tell the pipe broke
+	// from "the web has nothing".
+	assert.Contains(t, out, `"status":"backend_error"`)
 }
 
 func TestCov_WebRunSearchEmptyHost(t *testing.T) {
 	w := NewWebTools(1024*32, time.Second)
-	w.searchBase = "://invalid"
+	setSearchEndpoint(w, "://invalid")
 	ctx := WithProfile(context.Background(), guard.PermissionProfile{Tools: guard.ToolsPerm{Allow: []string{"web_*"}}})
 	ctx = WithNetworkPolicy(ctx, &netpolicy.Policy{Default: "allow", AllowPrivate: true})
 

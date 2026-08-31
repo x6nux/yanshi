@@ -46,7 +46,7 @@ func TestWebSearchReturnsTitleSnippetAndURL(t *testing.T) {
 	srv, _ := captureSearchForm(t, ddgPage)
 	ctx := WithNetworkPolicy(WithProfile(context.Background(), profileWithWebTool()), allowAllPolicy())
 	w := NewWebTools(1<<20, 5*time.Second)
-	w.searchBase = srv.URL
+	setSearchEndpoint(w, srv.URL)
 
 	out, err := w.Search.InvokableRun(ctx, `{"query":"go docs"}`)
 	if err != nil {
@@ -72,7 +72,7 @@ func TestWebSearchAppliesSiteAndFreshnessFilters(t *testing.T) {
 	srv, form := captureSearchForm(t, ddgPage)
 	ctx := WithNetworkPolicy(WithProfile(context.Background(), profileWithWebTool()), allowAllPolicy())
 	w := NewWebTools(1<<20, 5*time.Second)
-	w.searchBase = srv.URL
+	setSearchEndpoint(w, srv.URL)
 
 	if _, err := w.Search.InvokableRun(ctx,
 		`{"query":"generics","site":"go.dev","freshness":"week"}`); err != nil {
@@ -98,7 +98,7 @@ func TestWebSearchAppliesSiteAndFreshnessFilters(t *testing.T) {
 	// A caller who already wrote site: keeps theirs — two site: operators
 	// match nothing at all.
 	srv2, form2 := captureSearchForm(t, ddgPage)
-	w.searchBase = srv2.URL
+	setSearchEndpoint(w, srv2.URL)
 	if _, err := w.Search.InvokableRun(ctx,
 		`{"query":"generics site:pkg.go.dev","site":"go.dev"}`); err != nil {
 		t.Fatalf("search: %v", err)
@@ -128,7 +128,7 @@ func TestWebSearchRedirectStaysUnderPolicy(t *testing.T) {
 
 	ctx := WithNetworkPolicy(WithProfile(context.Background(), profileWithWebTool()), denyAllPolicy())
 	w := NewWebTools(1<<20, 5*time.Second)
-	w.searchBase = redirector.URL
+	setSearchEndpoint(w, redirector.URL)
 
 	out, err := w.Search.InvokableRun(ctx, `{"query":"anything"}`)
 	if err != nil {

@@ -47,23 +47,24 @@ func TestWebFetchMarksOversizeBodyDegraded(t *testing.T) {
 	}
 }
 
-// TestWebSearchReturnsEmptyOnUnreachable pins the degradation contract: an
-// unreachable backend yields an empty result set, not a hard failure that
-// blocks the turn.
+// TestWebSearchReturnsEmptyOnUnreachable pins the degradation contract, as
+// tightened by W-F-27: an unreachable backend still degrades instead of
+// aborting the turn, but the degradation is VISIBLE — status backend_error
+// plus a note — rather than an empty result set the model would read as
+// "nothing on the web matches".
 //
 // ledger: B3/T11#4 后端不可用降级
 func TestWebSearchReturnsEmptyOnUnreachable(t *testing.T) {
 	ctx := WithProfile(context.Background(), profileWithWebTool())
 	ctx = WithNetworkPolicy(ctx, allowAllPolicy())
 	w := NewWebTools(1<<20, 5*time.Second)
-	w.searchBase = "http://localhost:0/invalid"
+	setSearchEndpoint(w, "http://localhost:0/invalid")
 	out, err := w.Search.InvokableRun(ctx, `{"query":"test","max_results":5}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The search should return an empty result set (error packaged as result).
-	if !strings.Contains(out, "results") {
-		t.Fatalf("out=%s", out)
+	if !strings.Contains(out, `"status":"backend_error"`) {
+		t.Fatalf("unreachable backend must degrade VISIBLY, got %s", out)
 	}
 }
 

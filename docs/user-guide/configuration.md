@@ -407,4 +407,11 @@ export YANSHI_ALLOW_CHILD_ENV=NETRC,npm_config_registry,SSH_AUTH_SOCK
 | tui.high_contrast | *bool | |
 | tui.frecency | *bool | |
 | tui.notify | *bool | |
+
+### tools
+
+| key | type | 说明 |
+|---|---|---|
+| tools.web_search.backend | string | |
+| tools.web_search.endpoint | string | |
 <!-- END GENERATED: config-skeleton -->

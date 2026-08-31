@@ -156,9 +156,15 @@ func TestFormatDur(t *testing.T) {
 func TestWebRunSearchInitialization(t *testing.T) {
 	w := NewWebTools(1000, time.Second)
 	// The lite endpoint became an anti-bot page returning no results; the
-	// html endpoint is what serves results to a POSTed form (W6/T11).
-	if w.searchBase != "https://html.duckduckgo.com/html/" {
-		t.Fatalf("unexpected searchBase: %s", w.searchBase)
+	// html endpoint is what serves results to a POSTed form (W6/T11). W-F-27:
+	// it is the backend's default, overridable from config — but the default
+	// must keep being the endpoint that actually answers.
+	ddg, ok := w.search.(*DuckDuckGoSearch)
+	if !ok {
+		t.Fatalf("default backend is %T, want *DuckDuckGoSearch", w.search)
+	}
+	if ddg.endpoint != DefaultDuckDuckGoEndpoint {
+		t.Fatalf("unexpected default endpoint: %s", ddg.endpoint)
 	}
 }
 

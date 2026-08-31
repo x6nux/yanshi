@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -196,6 +197,31 @@ type Config struct {
 	// TUI carries C15 keymap / Vim / theme preferences. See TUIConfig for the
 	// wiring status — these are read by `yanshi doctor` only, not by the TUI.
 	TUI TUIConfig `yaml:"tui"`
+	// Tools configures individual tool backends (W-F-27). The zero value
+	// keeps every tool on its built-in default backend, so an absent block
+	// behaves exactly like the pre-pluggable wiring.
+	Tools ToolsConfig `yaml:"tools"`
+}
+
+// ToolsConfig configures individual tool backends.
+type ToolsConfig struct {
+	// WebSearch selects the web_search backend. See WebSearchConfig; the zero
+	// value is the built-in duckduckgo backend at its default endpoint.
+	WebSearch WebSearchConfig `yaml:"web_search"`
+}
+
+// WebSearchConfig configures the web_search backend (W-F-27).
+//
+// Backend picks the implementation: "" / "duckduckgo" (default; POSTs the
+// DuckDuckGo HTML endpoint and scrapes results) or "searxng" (a self-hosted
+// instance's JSON API — the intranet/offline path the default backend lacks).
+// Endpoint overrides the backend's URL; for duckduckgo it may point at a
+// mirror, for searxng it is REQUIRED (a self-hosted instance has no public
+// default, and guessing one would send queries to the wrong host). Validation
+// in Load rejects an unknown backend and a searxng block without an endpoint.
+type WebSearchConfig struct {
+	Backend  string `yaml:"backend"`
+	Endpoint string `yaml:"endpoint"`
 }
 
 // SecretsConfig configures the credential storage backend. Backend is "auto"
@@ -1222,7 +1248,36 @@ func (c *Config) validate() error {
 	if err := c.validateHooks(); err != nil {
 		return err
 	}
+	if err := c.validateWebSearch(); err != nil {
+		return err
+	}
 	return c.validateProfiles()
+}
+
+// validateWebSearch rejects a tools.web_search block the tools package would
+// refuse at first use. Load is the moment the operator is looking (same reason
+// as validateHooks): a misspelled backend name would otherwise fall back to a
+// DIFFERENT backend than the one the operator named — an intranet searxng
+// deployment that silently searches the public internet instead — and searxng
+// without an endpoint would fail on every search, in every turn.
+func (c *Config) validateWebSearch() error {
+	ws := c.Tools.WebSearch
+	switch ws.Backend {
+	case "", "duckduckgo":
+	case "searxng":
+		if strings.TrimSpace(ws.Endpoint) == "" {
+			return errors.New("tools.web_search: backend \"searxng\" requires tools.web_search.endpoint")
+		}
+	default:
+		return fmt.Errorf("tools.web_search: unknown backend %q (known: duckduckgo, searxng)", ws.Backend)
+	}
+	if ws.Endpoint != "" {
+		u, err := url.Parse(ws.Endpoint)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("tools.web_search: endpoint %q is not an absolute http(s) URL", ws.Endpoint)
+		}
+	}
+	return nil
 }
 
 // validateHooks rejects a hook entry whose program is empty. The failure this

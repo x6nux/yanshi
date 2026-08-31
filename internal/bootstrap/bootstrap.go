@@ -842,7 +842,16 @@ func Build(opts Options) (*App, error) {
 	// Build tools.
 	backgroundMgr := BuildBackgroundManager()
 	memTools := tools.NewMemoryTools(st)
-	webTools := tools.NewWebTools(0, 0) // 0 → defaults: 1 MiB body, 30s timeout
+	// W-F-27: the web_search backend comes from config (tools.web_search) —
+	// the endpoint is no longer hardcoded in the constructor and self-hosted
+	// (searxng) deployments have a real path. Load already validated the
+	// pair, so an error here means the validation and the factory disagree;
+	// refuse the build rather than silently searching the default backend.
+	searchBackend, err := tools.NewSearchBackend(cfg.Tools.WebSearch.Backend, cfg.Tools.WebSearch.Endpoint, 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap: %w", err)
+	}
+	webTools := tools.NewWebToolsWithSearch(0, 0, searchBackend) // 0 → defaults: 1 MiB body, 30s timeout
 
 	var visionUsageSink visionUsageAccumulator
 

@@ -468,7 +468,7 @@ func TestNetGrantAdmitsTheLaterFetch(t *testing.T) {
 		}},
 		{"web_search", func(t *testing.T, ctx context.Context, base string) error {
 			w := NewWebTools(1024*32, 0)
-			w.searchBase = base
+			setSearchEndpoint(w, base)
 			_, err := w.runSearch(ctx, `{"query":"x"}`)
 			return err
 		}},
