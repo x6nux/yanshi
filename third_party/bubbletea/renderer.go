@@ -87,6 +87,16 @@ type renderer interface {
 	// requirement holds regardless of how the program stopped.
 	popWindowTitle()
 
+	// notify sends a terminal desktop notification (OSC 9, W-E-04). Unlike
+	// setWindowTitle there is no push/pop pair: a notification is a one-shot
+	// event, not terminal-held state that needs restoring on exit.
+	notify(string)
+
+	// bell writes a plain BEL byte — the fallback tier callers use instead of
+	// notify() when the terminal shouldn't be trusted with an OSC 9 escape
+	// (W-E-04).
+	bell()
+
 	// reportFocus returns whether reporting focus events is enabled.
 	reportFocus() bool
 

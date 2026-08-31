@@ -387,6 +387,17 @@ type model struct {
 	// it. Zero value (false) in every test that builds a model directly.
 	titleEnabled bool
 
+	// notifyEnabled is W-E-04's desktop-notification PREFERENCE (config
+	// tui.notify, default OFF — see TUIConfig.Notify's doc comment for why
+	// this one field defaults opposite of Frecency). It is preference-derived
+	// like frecency, not capability-derived like titleEnabled, so it is set in
+	// newModelWithPrefs and deliberately has NO entry in
+	// capability_wiring_test.go's census. notifyCmd (notify.go) ANDs this with
+	// titleEnabled to pick OSC 9 vs plain BEL vs nothing — reusing titleEnabled
+	// as the capability signal rather than adding a second cap.AltScreen-derived
+	// field that would just duplicate it.
+	notifyEnabled bool
+
 	// W-E-11: Esc-Esc rollback/fork. lastEsc timestamps the most recent Esc
 	// press so handlers.go's bottom KeyEscape case can detect a second press
 	// within escDoublePressWindow (rollback.go) without disturbing what a
@@ -482,6 +493,10 @@ func newModelWithPrefs(sess tuiSession, root string, project Preferences) model 
 	if eff.Frecency {
 		m.frecency, _ = LoadFrecency(frecencyPath())
 	}
+	// W-E-04: preference only — see notifyEnabled's doc comment for why the
+	// capability half of the gate (OSC 9 vs BEL) is applied separately, in
+	// notifyCmd, against titleEnabled.
+	m.notifyEnabled = eff.Notify
 	m.stash, _ = LoadStash(stashPath())
 	m.history, _ = LoadHistory(historyPath(), defaultHistoryCap)
 	m.saveQueue = make(chan saveCmd, 16)
@@ -766,6 +781,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// "done" is the turn actually ending, not a queue hop.
 		if msg.ev.Kind == "done" && !drained {
 			cmds = append(cmds, m.windowTitleCmd(false))
+			// W-E-04: same "turn actually ending, not a queue hop" guard as the
+			// title revert above — a drain immediately starts the next turn, so
+			// there is nothing finished to notify about yet.
+			cmds = append(cmds, m.notifyCmd())
 		}
 		if !drained && m.streamCh != nil {
 			cmds = append(cmds, m.waitForEvent())

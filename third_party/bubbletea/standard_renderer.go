@@ -522,6 +522,25 @@ func (r *standardRenderer) popWindowTitle() {
 	r.execute(ansi.WindowOp(23, 2))
 }
 
+// notify sends a terminal desktop notification via OSC 9 — the
+// iTerm2/kitty/wezterm/Windows Terminal convention. x/ansi has no OSC 9
+// helper (unlike ansi.SetWindowTitle for OSC 2), so it's hand-built here per
+// the convention: "\x1b]9;" + text + BEL. BEL, not ST, terminates it — every
+// OSC 9 implementation in the wild expects BEL, and a String Terminator would
+// leave some of them hanging.
+func (r *standardRenderer) notify(message string) {
+	r.execute("\x1b]9;" + message + "\a")
+}
+
+// bell writes a plain BEL byte. Callers reach for this instead of notify()
+// when the terminal shouldn't be trusted with an OSC 9 escape (W-E-04) —
+// unlike CSI sequences (see pushWindowTitle's doc comment on ECMA-48's
+// ignore-unrecognized rule), an unrecognized OSC sequence is not guaranteed
+// to be silently discarded, so degrading to bare BEL avoids printing garbage.
+func (r *standardRenderer) bell() {
+	r.execute("\a")
+}
+
 // setIgnoredLines specifies lines not to be touched by the standard Bubble Tea
 // renderer.
 func (r *standardRenderer) setIgnoredLines(from int, to int) {

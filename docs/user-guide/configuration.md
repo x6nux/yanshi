@@ -398,4 +398,5 @@ export YANSHI_ALLOW_CHILD_ENV=NETRC,npm_config_registry,SSH_AUTH_SOCK
 | tui.theme | string | |
 | tui.high_contrast | *bool | |
 | tui.frecency | *bool | |
+| tui.notify | *bool | |
 <!-- END GENERATED: config-skeleton -->

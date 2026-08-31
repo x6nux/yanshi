@@ -26,6 +26,12 @@ type Preferences struct {
 	// false: the default is ON, so a nil here means "use the default" and a
 	// false means "the user turned it off".
 	Frecency *bool `json:"frecency,omitempty"`
+	// Notify gates W-E-04's desktop notifications. A *bool because unset must
+	// stay distinguishable from explicit false, same as the other switches
+	// here — but unlike Frecency, the merged default (see mergeTUIPrefs) is
+	// OFF: an agent that pings the desktop by default on every finished turn
+	// is the "obnoxious default" this batch's brief explicitly warned against.
+	Notify *bool `json:"notify,omitempty"`
 	// KeymapReset is a sparse user-level tombstone for project tui.bindings:
 	// a stored true would let defaults survive the next startup, nil means
 	// project bindings may still apply. Nothing writes it outside tests —
@@ -44,6 +50,7 @@ type EffectivePreferences struct {
 	HighContrast bool
 	Vim          bool
 	Frecency     bool
+	Notify       bool
 	KeymapReset  bool
 }
 
@@ -126,6 +133,10 @@ func mergeTUIPrefs(flags, env, user, project Preferences) EffectivePreferences {
 		// keep. The switch exists for users who do not want a usage profile
 		// stored at all.
 		Frecency: true,
+		// Notify defaults OFF (see Preferences.Notify's doc comment) — no
+		// explicit assignment needed since EffectivePreferences' zero value
+		// already is false; stated here so the asymmetry with Frecency reads
+		// as deliberate rather than an oversight.
 	}
 	apply := func(layer Preferences) {
 		if layer.UILocale != "" {
@@ -145,6 +156,9 @@ func mergeTUIPrefs(flags, env, user, project Preferences) EffectivePreferences {
 		}
 		if layer.Frecency != nil {
 			out.Frecency = *layer.Frecency
+		}
+		if layer.Notify != nil {
+			out.Notify = *layer.Notify
 		}
 		if layer.KeymapReset != nil {
 			out.KeymapReset = *layer.KeymapReset

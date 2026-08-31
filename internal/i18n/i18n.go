@@ -96,6 +96,8 @@ var requiredCatalogKeys = []string{
 	// W-E-05: terminal window-title text (project + session status).
 	"tui.title.idle",
 	"tui.title.busy",
+	// W-E-04: desktop notification text (long-running turn finished).
+	"tui.notify.done",
 }
 
 // Bundle is a locale catalog. Persistent is the user's configured value

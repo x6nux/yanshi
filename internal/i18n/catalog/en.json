@@ -53,6 +53,7 @@
   "tui.error.send_failed": "send failed",
   "tui.error.unknown_command": "unknown command: /{name} (try /help)",
   "tui.input.placeholder": "Type a message... (Enter to send, Ctrl+Enter for newline)",
+  "tui.notify.done": "{project} — turn finished",
   "tui.status.model": "model",
   "tui.status.thinking": "thinking",
   "tui.status.tokens_in": "tokens in",

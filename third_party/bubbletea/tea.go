@@ -493,6 +493,12 @@ func (p *Program) eventLoop(model Model, cmds chan Cmd) (Model, error) {
 			case setWindowTitleMsg:
 				p.SetWindowTitle(string(msg))
 
+			case notifyMsg:
+				p.Notify(string(msg))
+
+			case bellMsg:
+				p.Bell()
+
 			case windowSizeMsg:
 				go p.checkResize()
 			}

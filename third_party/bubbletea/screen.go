@@ -258,3 +258,23 @@ func (p *Program) SetWindowTitle(title string) {
 		p.startupTitle = title
 	}
 }
+
+// Notify sends a terminal desktop notification (W-E-04). Unlike
+// SetWindowTitle there is no startup-time buffering path: a notification
+// sent before the renderer starts has no terminal to reach and is simply
+// dropped, since (unlike a title) there is nothing meaningful to replay once
+// one becomes available.
+func (p *Program) Notify(message string) {
+	if p.renderer != nil {
+		p.renderer.notify(message)
+	}
+}
+
+// Bell rings the terminal bell by writing a plain BEL byte (\a) — the
+// unsupported-terminal fallback tier for Notify (W-E-04). Like Notify, a
+// call before the renderer starts has no terminal to reach and is dropped.
+func (p *Program) Bell() {
+	if p.renderer != nil {
+		p.renderer.bell()
+	}
+}

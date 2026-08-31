@@ -53,6 +53,7 @@
   "tui.error.send_failed": "发送失败",
   "tui.error.unknown_command": "未知命令：/{name}（可尝试 /help）",
   "tui.input.placeholder": "输入消息…（Enter 发送，Ctrl+Enter 换行）",
+  "tui.notify.done": "{project} — 回合已完成",
   "tui.status.model": "模型",
   "tui.status.thinking": "思考",
   "tui.status.tokens_in": "输入 token",
