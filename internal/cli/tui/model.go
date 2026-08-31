@@ -450,6 +450,21 @@ type model struct {
 	// is active. It names the action the user wants to rebind; the NEXT keypress
 	// (other than Esc) is captured and saved as the new binding.
 	keymapCapture string
+
+	// W-E-16: onboarding is the first-run wizard state. Non-nil means the
+	// wizard is showing; step tracks which stage the user is on (0 = welcome/
+	// skip-or-continue, 1 = pick permission mode). The wizard is only armed at
+	// startup when the effective cascade's OnboardingDone is false.
+	onboarding *onboardingState
+}
+
+// onboardingState tracks the W-E-16 first-run wizard. It is deliberately
+// minimal: two steps (welcome + permission-mode pick), then either the user
+// finishes (mode applied, tombstone written) or skips (tombstone written,
+// nothing applied).
+type onboardingState struct {
+	step      int
+	cursorIdx int
 }
 
 // newModel builds a model with no project preference layer. Kept as the
@@ -530,6 +545,12 @@ func newModelWithPrefs(sess tuiSession, root string, project Preferences) model 
 	m.stash, _ = LoadStash(stashPath())
 	m.history, _ = LoadHistory(historyPath(), defaultHistoryCap)
 	m.saveQueue = make(chan saveCmd, 16)
+	// W-E-16: arm the first-run wizard only when no layer of the cascade has
+	// recorded OnboardingDone. The tombstone is written on BOTH finish and
+	// skip, so the wizard never appears twice for the same user.
+	if !eff.OnboardingDone {
+		m.onboarding = &onboardingState{step: 0}
+	}
 	m.refresh()
 	return m
 }

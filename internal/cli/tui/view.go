@@ -356,6 +356,13 @@ func (m model) renderScreen() string {
 	if m.pagerVisible {
 		return lipgloss.JoinVertical(lipgloss.Left, m.viewport.View(), m.pagerHint())
 	}
+	// W-E-16: first-run onboarding wizard. Modal like the pager but rendered
+	// in the normal block flow (above the input) — it shows at startup before
+	// anything else can be open.
+	if ob := m.onboardingPopup(); ob != "" {
+		return lipgloss.JoinVertical(lipgloss.Left, m.viewport.View(), ob,
+			inputBorder.Render(m.input.View()), m.statusHeader())
+	}
 	// C2 — UX7: toast stack overlays the TOP of the viewport (above the
 	// transcript, below popups). Rendered first so it sits visually closest to
 	// the conversation flow (turn-end receipts) rather than over the input.

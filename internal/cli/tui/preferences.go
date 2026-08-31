@@ -42,6 +42,11 @@ type Preferences struct {
 	// "cancel"). Written by /keymap bind <action>, overrides project bindings
 	// but is itself overridden by the env/flags layers.
 	KeymapBindings map[string]string `json:"keymap_bindings,omitempty"`
+	// OnboardingDone is the user-level tombstone for the W-E-16 first-run
+	// wizard: a stored true means "do not show the onboarding again", nil
+	// means the wizard may appear on the next startup. Written when the user
+	// either completes the wizard or explicitly skips it.
+	OnboardingDone *bool `json:"onboarding_done,omitempty"`
 }
 
 // EffectivePreferences is the fully merged, non-sparse result of the cascade.
@@ -64,6 +69,7 @@ type EffectivePreferences struct {
 	Notify         bool
 	KeymapReset    bool
 	KeymapBindings map[string]string
+	OnboardingDone bool
 }
 
 // preferencesPersistDisabled mirrors persistPermMode: tests flip it to skip
@@ -185,6 +191,9 @@ func mergeTUIPrefs(flags, env, user, project Preferences) EffectivePreferences {
 				out.KeymapBindings = make(map[string]string)
 			}
 			out.KeymapBindings[k] = v
+		}
+		if layer.OnboardingDone != nil {
+			out.OnboardingDone = *layer.OnboardingDone
 		}
 	}
 	apply(project)

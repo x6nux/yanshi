@@ -11,11 +11,19 @@ import (
 )
 
 // withTempPrefs points the preferences file at a temp dir for one test and
-// restores the real path afterwards.
+// restores the real path afterwards. It also seeds the W-E-16 onboarding
+// tombstone: an empty temp prefs file is a "first run", which would arm the
+// onboarding wizard and have it consume every keystroke the calling test
+// sends. Tests that want the wizard itself (onboarding_test.go) construct
+// their own untombeded state rather than going through here.
 func withTempPrefs(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "prefs.json")
+	yes := true
+	if err := persistPreferences(path, Preferences{OnboardingDone: &yes}); err != nil {
+		t.Fatalf("seed onboarding tombstone: %v", err)
+	}
 	prev := preferencesPathFn
 	preferencesPathFn = func() string { return path }
 	t.Cleanup(func() { preferencesPathFn = prev })

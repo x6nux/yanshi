@@ -26,6 +26,15 @@ import (
 //
 // nolint:gocyclo // this is a 1:1 extraction of known hotkey dispatch logic
 func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
+	// W-E-16: first-run onboarding wizard is modal — checked FIRST, ahead of
+	// everything else, because it must own every keystroke until the user
+	// either finishes or skips it. Letting keys through here would let the
+	// user start typing into the input box underneath the wizard.
+	if m.onboarding != nil {
+		mm, cmd := m.onboardingKey(msg)
+		return mm, cmd, true
+	}
+
 	// W-E-03: fullscreen pager (Ctrl+T) is modal — checked FIRST, ahead of
 	// every other modal below, because it owns the whole screen: a stray
 	// Up/Down must scroll the pager, not move a picker cursor that cannot

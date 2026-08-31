@@ -37,6 +37,12 @@ func TestKeymapCaptureEscCancels(t *testing.T) {
 	old := preferencesPathFn
 	preferencesPathFn = func() string { return path }
 	t.Cleanup(func() { preferencesPathFn = old })
+	// Seed the W-E-16 tombstone so newModel does not arm the onboarding
+	// wizard over this temp prefs file (it would eat the keys this test sends).
+	yes := true
+	if err := persistPreferences(path, Preferences{OnboardingDone: &yes}); err != nil {
+		t.Fatal(err)
+	}
 
 	m := newModel(&fakeSession{}, "/proj")
 	m.keymapCapture = "cancel"
@@ -47,9 +53,12 @@ func TestKeymapCaptureEscCancels(t *testing.T) {
 	if mm.keymapCapture != "" {
 		t.Fatalf("Esc should clear keymapCapture, got %q", mm.keymapCapture)
 	}
-	// No prefs file should have been written (cancel means no write)
-	if _, err := os.Stat(path); err == nil {
-		t.Fatal("Esc should not write prefs file")
+	// Esc means no BINDING write: the file may exist (the tombstone seeded
+	// it above) but must not carry the cancelled binding.
+	if data, err := os.ReadFile(path); err == nil {
+		if containsSubstrKW(string(data), "keymap_bindings") {
+			t.Fatalf("Esc should cancel without writing a binding, file carries:\n%s", data)
+		}
 	}
 }
 
@@ -66,6 +75,12 @@ func TestKeymapCaptureConflictBlocksWrite(t *testing.T) {
 	old := preferencesPathFn
 	preferencesPathFn = func() string { return path }
 	t.Cleanup(func() { preferencesPathFn = old })
+	// Seed the W-E-16 tombstone so newModel does not arm the onboarding
+	// wizard over this temp prefs file (it would eat the keys this test sends).
+	yes := true
+	if err := persistPreferences(path, Preferences{OnboardingDone: &yes}); err != nil {
+		t.Fatal(err)
+	}
 
 	m := newModel(&fakeSession{}, "/proj")
 	// f1 is the built-in "help" key; try to bind it to "cancel"
@@ -78,10 +93,13 @@ func TestKeymapCaptureConflictBlocksWrite(t *testing.T) {
 	if mm.keymapCapture != "" {
 		t.Fatalf("keymapCapture should be cleared after capture, got %q", mm.keymapCapture)
 	}
-	// Conflict: prefs must NOT have been written (no file)
-	if _, err := os.Stat(path); err == nil {
-		data, _ := os.ReadFile(path)
-		t.Fatalf("conflict should block write, but prefs file was created:\n%s", data)
+	// Conflict: the rejected binding must NOT be in the prefs file. The file
+	// itself exists (the tombstone was seeded before newModel), so the check
+	// is on content: "f1" must not appear as a bound key.
+	if data, err := os.ReadFile(path); err == nil {
+		if containsSubstrKW(string(data), "f1") || containsSubstrKW(string(data), "\"cancel\"") {
+			t.Fatalf("conflict should block write, but prefs file carries the rejected binding:\n%s", data)
+		}
 	}
 
 	// Verify an error entry was added mentioning the conflict
@@ -108,6 +126,12 @@ func TestKeymapCaptureWritesAtomically(t *testing.T) {
 	old := preferencesPathFn
 	preferencesPathFn = func() string { return path }
 	t.Cleanup(func() { preferencesPathFn = old })
+	// Seed the W-E-16 tombstone so newModel does not arm the onboarding
+	// wizard over this temp prefs file (it would eat the keys this test sends).
+	yes := true
+	if err := persistPreferences(path, Preferences{OnboardingDone: &yes}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Intercept replacePreferencesFile to prove the atomic path is called.
 	atomicCalled := false
@@ -221,6 +245,12 @@ func TestKeymapCaptureRebindExistingUserKey(t *testing.T) {
 	old := preferencesPathFn
 	preferencesPathFn = func() string { return path }
 	t.Cleanup(func() { preferencesPathFn = old })
+	// Seed the W-E-16 tombstone so newModel does not arm the onboarding
+	// wizard over this temp prefs file (it would eat the keys this test sends).
+	yes := true
+	if err := persistPreferences(path, Preferences{OnboardingDone: &yes}); err != nil {
+		t.Fatal(err)
+	}
 
 	m := newModel(&fakeSession{}, "/proj")
 	// pre-set a user binding: ctrl+u = cancel
@@ -237,12 +267,14 @@ func TestKeymapCaptureRebindExistingUserKey(t *testing.T) {
 	if v, ok := mm.prefs.KeymapBindings["ctrl+u"]; ok && v != "cancel" {
 		t.Fatalf("conflict should not overwrite existing binding, got %q", v)
 	}
-	// And no write should have occurred to disk
-	if _, err := os.Stat(path); err == nil {
-		t.Fatal("conflict should block write, but prefs file was created")
+	// And no write should have occurred to disk: the only content the file
+	// may carry is the tombstone seeded above, not the rejected binding.
+	if data, err := os.ReadFile(path); err == nil {
+		if containsSubstrKW(string(data), "ctrl+u") || containsSubstrKW(string(data), "\"help\"") {
+			t.Fatalf("conflict should block write, but prefs file carries the rejected binding:\n%s", data)
+		}
 	}
 
 	// Reference the keymap package to confirm ActionCancel is what we used
 	_ = keymap.ActionCancel
 }
-
