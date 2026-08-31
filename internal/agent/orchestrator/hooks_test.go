@@ -34,6 +34,7 @@ import (
 
 	"github.com/x6nux/yanshi/internal/guard"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
+	"github.com/x6nux/yanshi/internal/secproc"
 	"github.com/x6nux/yanshi/internal/shell"
 	"github.com/x6nux/yanshi/internal/tools"
 )
@@ -860,4 +861,82 @@ func TestHookBlockedCallsStillConsumeToolBudget(t *testing.T) {
 		"hook 拒掉的那次必须已计入预算：第二次调用应撞预算，不是再撞一次 hook")
 	assert.NotContains(t, out2, "blocked by pre_tool_use hook")
 	assert.Empty(t, d.ran())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RF-19：提前放弃路径的僵尸回收必须有行为观测。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// reapingFactory 包装真实的 UnsandboxedSecureFactory：发射照常走完整管线
+// （secproc 语义不变），只把返回进程的 Wait 换成一个会发信号的版本 ——
+// 「被放弃的进程最终有人收尸」从读代码确认变成可断言的事实。
+type reapingFactory struct {
+	inner  secproc.Factory
+	reaped chan struct{}
+}
+
+func (f *reapingFactory) Start(ctx context.Context, spec secproc.SecureProcessSpec) (*secproc.StartedProcess, error) {
+	p, err := f.inner.Start(ctx, spec)
+	if err != nil || p == nil || p.Wait == nil {
+		return p, err
+	}
+	inner, reaped := p.Wait, f.reaped
+	p.Wait = func() error {
+		werr := inner()
+		select {
+		case reaped <- struct{}{}:
+		default:
+		}
+		return werr
+	}
+	return p, nil
+}
+
+// TestPreToolUseAbandonedHookProcessesAreReaped 钉住 RF-19 的行为面：hook
+// 超时与 verdict 超限这两条「提前放弃」路径上，实现放弃的是**等待**，不是
+// 收尸 —— 进程必须被 reap，不能留僵尸。变异：删掉超时分支里的
+// reapInBackground 调用，reaped 断言红。
+func TestPreToolUseAbandonedHookProcessesAreReaped(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		mode  string
+		limit time.Duration
+	}{
+		{"timeout", "sleep", 200 * time.Millisecond},
+		{"oversize verdict", "big", 30 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workRoot := t.TempDir()
+			if tc.mode == "sleep" {
+				t.Setenv(hookHelperSleepEnv, "10s")
+			}
+
+			cfg := HooksConfig{PreToolUse: []HookConfig{{
+				Program: hookTestProgram(t, tc.mode).Program,
+				Args:    hookTestProgram(t, tc.mode).Args,
+				Timeout: tc.limit,
+			}}}
+			ctx := tools.WithProfile(context.Background(), fsWriteProfile())
+			ctx = tools.WithWorkRoot(ctx, workRoot)
+			rf := &reapingFactory{inner: shell.UnsandboxedSecureFactory(), reaped: make(chan struct{}, 1)}
+			ctx = tools.WithSecureProcessFactory(ctx, rf)
+			ctx = withTurnHooks(ctx, cfg)
+			d := &hookToolDouble{workRoot: workRoot}
+
+			ep, err := wrapForTest(ctx, d)
+			require.NoError(t, err)
+
+			out, err := ep(ctx, `{"path":"notes.txt"}`)
+			require.NoError(t, err, "放弃路径的拒绝仍是工具结果")
+			assert.Contains(t, out, "✗ pre_tool_use hook ")
+			assert.Empty(t, d.ran())
+
+			select {
+			case <-rf.reaped:
+				// 收尸完成 —— 这就是本测试要的可观测证据。
+			case <-time.After(10 * time.Second):
+				t.Fatal("被放弃的 hook 进程没有在 10 秒内被 reap（僵尸）")
+			}
+		})
+	}
 }
