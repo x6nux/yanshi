@@ -144,6 +144,12 @@ type Config struct {
 	// leaves turn behaviour byte-identical to before the guard existed. See
 	// LoopGuardConfig for why that asymmetry with Compaction is deliberate.
 	LoopGuard LoopGuardConfig `yaml:"loop_guard"`
+	// Hooks configures the lifecycle hook bus (W-F-02): operator-configured
+	// external programs the orchestrator consults around agent events. The
+	// zero value runs no hooks and spawns nothing; once a hook IS configured
+	// its failures fail closed — see HooksConfig. Load rejects a hook entry
+	// with an empty program at load time rather than at the first tool call.
+	Hooks HooksConfig `yaml:"hooks"`
 	// Memory configures MEM1 user memory (cross-session preference notes
 	// injected into the system prompt as an independent suffix). All fields
 	// optional; Enabled=false (default) makes bootstrap skip the subsystem.
@@ -553,6 +559,44 @@ type LoopGuardConfig struct {
 	// providers report prompt tokens cumulatively and summing them would fire
 	// the budget at a fraction of its nominal value. 0 = unlimited.
 	MaxTurnTokens int `yaml:"max_turn_tokens"`
+}
+
+// HooksConfig configures the lifecycle hook bus (W-F-02, spec §1.2 INF4).
+//
+// Zero value runs no hooks: nothing is spawned, nothing is consulted, every
+// tool call behaves exactly as it did before the bus existed. Once a hook IS
+// configured, its failures fail closed — a hook that times out, crashes or
+// emits unreadable output refuses THAT tool call (as a tool result, the turn
+// continues). That is the orchestrator's Ruling, recorded in ADR-0027 and the
+// hook bus's doc comment; the short version is that the model writes the tool
+// arguments, so a model that can crash a weak hook must not thereby silence
+// it.
+type HooksConfig struct {
+	// PreToolUse lists the programs consulted before each tool call, in
+	// declaration order. Later hooks see earlier hooks' rewritten arguments;
+	// the permission guard re-judges the final arguments from scratch, and a
+	// hook can never turn a guard denial into an allow. A hook blocks by
+	// answering {"block":true,"reason":"..."} on stdout.
+	PreToolUse []HookConfig `yaml:"pre_tool_use"`
+}
+
+// HookConfig is one hook program: an executable path (never a shell line —
+// no quoting or expansion happens; an operator who wants shell semantics
+// writes the /bin/sh -c shape explicitly and it passes the guard's shell
+// dimension like any other spawn), fixed arguments, and a per-call timeout.
+type HookConfig struct {
+	// Program is the hook executable. Required: Load rejects an entry with an
+	// empty program at load time, because a typo would otherwise surface only
+	// as a fail-closed refusal of every tool call at runtime. A path that does
+	// not exist (or is not executable) still fails at first use — load checks
+	// presence of the string, not of the file.
+	Program string `yaml:"program"`
+	// Args are the fixed arguments passed to Program, uninterpreted.
+	Args []string `yaml:"args"`
+	// Timeout bounds one hook invocation. "10s" style strings per time.ParseDuration;
+	// 0 selects the orchestrator's default (10s). A unitless number fails at
+	// load, exactly like loop_guard.turn_timeout.
+	Timeout time.Duration `yaml:"timeout"`
 }
 
 // VCSConfig configures the built-in autoVCS tracker. Zero value (no vcs block
@@ -1166,7 +1210,31 @@ func (c *Config) validate() error {
 	if err := c.validateNetworkMethods(); err != nil {
 		return err
 	}
+	if err := c.validateHooks(); err != nil {
+		return err
+	}
 	return c.validateProfiles()
+}
+
+// validateHooks rejects a hook entry whose program is empty. The failure this
+// closes is the silent one: yaml.v3 drops unknown/mistyped keys without a
+// word, so "program:" with the value on the wrong indentation level would
+// reach the orchestrator as an empty string and — because hook failures fail
+// closed — refuse every tool call with "hook  failed: ..." at runtime, in
+// every turn, forever. Load is the one moment the operator is guaranteed to
+// be looking; the error names the event and the entry index.
+//
+// Presence of the FILE is deliberately not checked here: the program may sit
+// on a different machine's PATH shape, be built after boot, or live behind a
+// mount that comes up later. First use reports it fail-closed with the spawn
+// error verbatim.
+func (c *Config) validateHooks() error {
+	for i, h := range c.Hooks.PreToolUse {
+		if strings.TrimSpace(h.Program) == "" {
+			return fmt.Errorf("hooks.pre_tool_use[%d]: program is required (a hook with no program would fail closed on every tool call)", i)
+		}
+	}
+	return nil
 }
 
 // validateProviderThresholds rejects a per-provider auto_compact_threshold

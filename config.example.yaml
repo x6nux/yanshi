@@ -238,6 +238,32 @@ loop_guard:
                              # boundaries only — it bounds the loop, not a single tool
                              # call. Duration string ("90s", "5m"); 0s = unlimited
   max_turn_tokens: 0         # accumulated token spend per turn; 0 = unlimited
+# Lifecycle hooks (W-F-02). External programs consulted around agent events.
+# The zero block (what ships here, commented out) spawns nothing; once a hook
+# IS configured its failures FAIL CLOSED — a hook that times out, crashes or
+# emits unreadable output refuses that tool call (the turn itself survives).
+# A hook can block a call, but it can never turn a guard denial into an
+# allow: after a hook rewrites the arguments the permission guard re-judges
+# the final arguments from scratch.
+#
+# pre_tool_use hooks run, in declaration order, before every tool call. Each
+# receives one JSON value on stdin:
+#   {"event":"pre_tool_use","tool":"fs_write","args":{...the call arguments...}}
+# and must answer with one JSON value on stdout, then exit 0:
+#   {"block":false}                                        # allow, say nothing
+#   {"block":true,"reason":"why"}                          # refuse the call
+#   {"block":false,"updated_input":{...}}                  # rewrite arguments
+#   {"block":false,"additional_context":["..."]}           # context for the model
+# Read ONE value from stdin — do not wait for EOF (the launcher's stdin close
+# is a console teardown, not a half-close). Observe-only hooks MUST still
+# print {"block":false}: empty output is a failure, not an abstention.
+# program is an executable path, never a shell line; timeout is a duration
+# string, 0 selects the 10s default.
+# hooks:
+#   pre_tool_use:
+#     - program: /usr/local/bin/yanshi-hook-check
+#       args: ["--strict"]
+#       timeout: 5s
 # Permission profiles. The MAP KEY is what selects a profile — there is no
 # indirection through the `agents:` block above (agents[].profile has no
 # production reader today; setting it changes nothing and warns about nothing).

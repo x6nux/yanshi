@@ -1546,6 +1546,12 @@ func Build(opts Options) (*App, error) {
 			TurnTimeout:         cfg.LoopGuard.TurnTimeout,
 			MaxTurnTokens:       cfg.LoopGuard.MaxTurnTokens,
 		},
+		// W-F-02 lifecycle hook bus. Same MUST-be-in-the-literal rule as the
+		// two blocks above: orchestrator.New takes Config by value. The zero
+		// config runs no hook processes; once configured, a hook failure fails
+		// closed on that tool call (ADR-0027), which is why a hook with an
+		// empty program is already rejected at load time.
+		Hooks: toOrchestratorHooks(cfg.Hooks),
 	}
 	// Wire the main scope (Agent="orchestrator") so chat/orchestrator edits
 	// auto-track to main. Only set when InitRepo succeeded; otherwise the
@@ -2142,6 +2148,27 @@ func networkMethodRules(in []config.NetworkMethodRule) []netpolicy.MethodRule {
 			Host:    rule.Host,
 			Methods: append([]string(nil), rule.Methods...),
 			Allow:   strings.EqualFold(strings.TrimSpace(rule.Action), "allow"),
+		})
+	}
+	return out
+}
+
+// toOrchestratorHooks maps the config hooks block onto the orchestrator's bus
+// configuration. The two types are field-identical today, and a reflection
+// copy (or a shared type) would hide the seam; what the mapping buys is a
+// place for the per-event fan-out to grow (Stop / PostToolUse / 压缩生命周期
+// 挂进同一个总线时) without the composition root learning each event's shape.
+// An empty block maps to the zero value: no hook process is ever spawned.
+func toOrchestratorHooks(in config.HooksConfig) orchestrator.HooksConfig {
+	if len(in.PreToolUse) == 0 {
+		return orchestrator.HooksConfig{}
+	}
+	out := orchestrator.HooksConfig{PreToolUse: make([]orchestrator.HookConfig, 0, len(in.PreToolUse))}
+	for _, h := range in.PreToolUse {
+		out.PreToolUse = append(out.PreToolUse, orchestrator.HookConfig{
+			Program: h.Program,
+			Args:    append([]string(nil), h.Args...),
+			Timeout: h.Timeout,
 		})
 	}
 	return out

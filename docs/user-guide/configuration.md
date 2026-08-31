@@ -280,6 +280,12 @@ export YANSHI_ALLOW_CHILD_ENV=NETRC,npm_config_registry,SSH_AUTH_SOCK
 | loop_guard.turn_timeout | duration | |
 | loop_guard.max_turn_tokens | int | |
 
+### hooks
+
+| key | type | 说明 |
+|---|---|---|
+| hooks.pre_tool_use | []HookConfig | |
+
 ### memory
 
 | key | type | 说明 |
