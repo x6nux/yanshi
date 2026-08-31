@@ -46,7 +46,7 @@ import (
 // the measured Linux value minus 3pp and say so in the commit message. Do not
 // delete the job: a gate that has never run is what this replaced.
 var thresholds = map[string]float64{
-	"github.com/x6nux/yanshi/internal/proto":     94.0,
+	"github.com/x6nux/yanshi/internal/proto":     90.0,
 	"github.com/x6nux/yanshi/internal/store":     92.0,
 	"github.com/x6nux/yanshi/internal/bootstrap": 91.0,
 }

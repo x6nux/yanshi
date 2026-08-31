@@ -75,3 +75,22 @@ func tryLockFileExclusive(f *os.File) (bool, error) {
 		}
 	}
 }
+
+// unlinkHeldLockFile removes a lock file the caller has just proven free
+// (tryLockFileExclusive returned true). It ALWAYS closes f, including on the
+// error paths, so callers must not touch f afterwards.
+//
+// POSIX unlink on an open file only detaches the path: the inode survives on
+// the held descriptor, so a second process that opens the same path before the
+// unlink would create a different inode and the two domains could not see each
+// other's locks. removeIfSameInode is what rules that out — the file is
+// unlinked only while this descriptor still names the same inode the probe
+// locked, and the lock itself (flock) stays held until close for the duration
+// of the compare-and-delete.
+func unlinkHeldLockFile(f *os.File, name string) error {
+	if err := removeIfSameInode(f, name); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
