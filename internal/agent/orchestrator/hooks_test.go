@@ -27,10 +27,12 @@ import (
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/x6nux/yanshi/internal/guard"
+	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/shell"
 	"github.com/x6nux/yanshi/internal/tools"
 )
@@ -572,4 +574,62 @@ func TestPreToolUseUntrustedOutputIsRefusedNotTrusted(t *testing.T) {
 			assert.Empty(t, d.ran(), "读不懂的 verdict 后面绝不能跟着执行")
 		})
 	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 装配证明：中间件真的在 orchestratorMiddlewares() 里。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestE2E_PreToolUseHookBlocksRealToolInRealTurn 是装配半边的证明。上面的测试
+// 都直接调用 WrapInvokableToolCall —— 它们证明中间件**正确**，证明不了它被
+// **安装**（「零件造好了，总装线没接上」正是本仓的主导失效形状，orchestrator
+// Middlewares 自己的注释点名了这一点）。这条测试走完整 ADK 管线：Query →
+// runnerFor → orchestratorMiddlewares → ReAct → hook 进程 → 真实 fs_edit。
+//
+// profile 与 TestE2E_ModelDrivenFSEditMutatesRealFile 完全相同（那条测试里同
+// 一次 fs_edit 会真实改写文件）——所以文件未被改写只能归因于 hook 的拦截，
+// 归因是对照给的。变异：把 newHookMiddleware() 从 orchestratorMiddlewares()
+// 里删掉，本测试立刻红。
+func TestE2E_PreToolUseHookBlocksRealToolInRealTurn(t *testing.T) {
+	workdir := t.TempDir()
+	readme := filepath.Join(workdir, "readme.txt")
+	require.NoError(t, os.WriteFile(readme, []byte("Helo world"), 0o644))
+	t.Setenv(hookHelperReasonEnv, "change window #4153 is closed")
+
+	step1 := schema.AssistantMessage("", []schema.ToolCall{
+		{ID: "c1", Type: "function", Function: schema.FunctionCall{
+			Name:      "fs_edit",
+			Arguments: `{"path":"readme.txt","old_string":"Helo","new_string":"Hello"}`,
+		}},
+	})
+	step2 := schema.AssistantMessage("done", nil)
+	mdl := einollm.NewFakeModelWithMessages([]*schema.Message{step1, step2}, nil)
+
+	fs := tools.NewFSTools(workdir)
+	profile := guard.PermissionProfile{
+		Tools: guard.ToolsPerm{Allow: []string{"fs_*"}},
+		FS: guard.FSPerm{
+			Read:  []string{workdir + "/**"},
+			Write: []string{workdir + "/**"},
+		},
+	}
+
+	o, err := New(Config{
+		Model:    mdl,
+		Tools:    []BaseTool{fs.Edit},
+		Profile:  profile,
+		WorkRoot: workdir,
+		Hooks:    HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "block")}},
+	})
+	require.NoError(t, err)
+
+	// turn 必须完好地结束：hook 的拦截是工具结果，不是 NodeRunError。
+	out, err := o.Query(context.Background(), "fix the typo in readme.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "done", out)
+
+	got, err := os.ReadFile(readme)
+	require.NoError(t, err)
+	assert.Equal(t, "Helo world", string(got),
+		"hook 拦截的调用绝不能抵达真实 fs_edit")
 }
