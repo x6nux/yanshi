@@ -353,3 +353,61 @@ func TestPreToolUseAdditionalContextReachesResultAsData(t *testing.T) {
 	assert.Contains(t, out, "only run this on Fridays")
 	assert.Equal(t, []string{filepath.Join(workRoot, "notes.txt")}, d.ran())
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 验收 3：hook 无法把 guard 的拒绝翻成允许。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestPreToolUseHookCannotFlipGuardDenial 是翻案测试：guard 拒绝这次调用
+// （fs 写路径白名单为空，拒绝出自 guard 自己的 profile 维度），hook 却显式
+// 宣称允许 —— 协议里没有 allow 字段，verdict 是 {"block":false,"allow":true}。
+// 最终结果必须仍是拒绝，工具必须仍不执行。
+//
+// 这条测试保护的是 ADR-0027 的约束 2：将来有人给 hookResponse 加上 allow /
+// approve 字段并在实现里消费它，这条测试就是点名会红的那个。当前实现里
+// 「翻案」甚至不可表达 —— hook 输出能影响执行的唯一通道是 updated_input，
+// 而改写后的入参会被 guard 重新判决（验收 2）。
+func TestPreToolUseHookCannotFlipGuardDenial(t *testing.T) {
+	workRoot := t.TempDir()
+
+	// 与验收 1/2 相同的 profile，唯独 fs 写白名单为空：guard 对任何写路径
+	// 都是拒绝，与 hook 无关。
+	deniedProfile := guard.PermissionProfile{
+		Tools: guard.ToolsPerm{Allow: []string{"fs_*"}},
+		FS:    guard.FSPerm{Read: []string{"**"}},
+	}
+	cfg := HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "approve")}}
+	ctx := newHookTurnContext(t, deniedProfile, workRoot, cfg)
+	d := &hookToolDouble{workRoot: workRoot}
+
+	ep, err := wrapForTest(ctx, d)
+	require.NoError(t, err)
+
+	out, err := ep(ctx, `{"path":"notes.txt"}`)
+	require.NoError(t, err, "拒绝仍是工具结果而非 Go error")
+	assert.Contains(t, out, "permission denied",
+		"hook 宣称 allow 之后，guard 的拒绝必须原样成立")
+	assert.NotContains(t, out, "i vouch for this call",
+		"hook 的放行宣言不得进入结果文本")
+	assert.Empty(t, d.ran(), "guard 拒绝的调用绝不能因 hook 的允许而执行")
+}
+
+// TestPreToolUseHookAllowDoesNotShortCircuitTool 钉住另一半：hook 说允许且
+// guard 也允许时，调用正常执行 —— 翻案测试证明的是「hook 的允许没有额外
+// 权力」，这条证明的是「它也没有副作用」：结果与没有任何 hook 时一致。
+func TestPreToolUseHookAllowDoesNotShortCircuitTool(t *testing.T) {
+	workRoot := t.TempDir()
+
+	cfg := HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "approve")}}
+	ctx := newHookTurnContext(t, fsWriteProfile(), workRoot, cfg)
+	d := &hookToolDouble{workRoot: workRoot}
+
+	ep, err := wrapForTest(ctx, d)
+	require.NoError(t, err)
+
+	out, err := ep(ctx, `{"path":"notes.txt"}`)
+	require.NoError(t, err)
+	assert.Contains(t, out, "wrote ")
+	assert.NotContains(t, out, "i vouch for this call")
+	assert.Equal(t, []string{filepath.Join(workRoot, "notes.txt")}, d.ran())
+}
