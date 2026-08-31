@@ -1,4 +1,4 @@
-//go:build linux
+//go:build !windows
 package sandbox
 
 import (
@@ -25,15 +25,9 @@ func encodeRawForTest(t *testing.T, payload string) string {
 // developer machines this was written on, so the portable half is where the
 // behaviour has to be pinned.
 
-// contains reports whether xs holds want.
-func contains(xs []string, want string) bool {
-	for _, x := range xs {
-		if x == want {
-			return true
-		}
-	}
-	return false
-}
+// contains lives in unenforced_test.go (no build tag): the windows leg
+// compiles the package's untagged tests too, and its only consumer there is
+// in that file.
 
 // TestBuildLandlockRulesReadOnly pins the read-only policy: read the whole
 // filesystem, write only the device nodes.
