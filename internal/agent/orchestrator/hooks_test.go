@@ -10,9 +10,9 @@ package orchestrator
 // 这样「改写后的入参是否重新走 guard」才是一个可观测的事实而不是一个断言
 // 自己证明自己的循环。
 //
-// 每个 hook 进程通过环境变量 YANSHI_TEST_HOOK_MODE 选择剧本（allow / rewrite /
-// block / crash / …），verdict 一律写 stdout 后立即退出。协议细节见 hooks.go
-// 的 hookResponse 文档。
+// 每个 hook 进程通过 re-exec 参数选择剧本（allow / rewrite / block / crash /
+// …），verdict 一律写 stdout 后立即退出。协议细节见 hooks.go 的 hookResponse
+// 文档。
 
 import (
 	"context"
@@ -35,23 +35,24 @@ import (
 	"github.com/x6nux/yanshi/internal/tools"
 )
 
-// helper 进程的剧本选择与环境参数。
+// helper 进程的参数（剧本走 re-exec 参数，见 hookTestProgram）。
 const (
-	hookHelperModeEnv    = "YANSHI_TEST_HOOK_MODE"
 	hookHelperRewriteEnv = "YANSHI_TEST_HOOK_REWRITE_TO"
 	hookHelperReasonEnv  = "YANSHI_TEST_HOOK_REASON"
 	hookHelperSleepEnv   = "YANSHI_TEST_HOOK_SLEEP"
 )
 
 // TestHookHelperProcess 不是一条测试：它是本文件所有 hook 测试共用的那个
-// 「外部程序」。父测试通过 secproc 把 go test 二进制 re-exec 起来并注入
-// YANSHI_TEST_HOOK_MODE；helper 从 stdin 读一个 JSON 请求，按剧本写一个
-// verdict 到 stdout，随即退出。
+// 「外部程序」。父测试通过 secproc 把 go test 二进制 re-exec 起来；剧本名走
+// re-exec 参数（"-- " 之后的第一段），参数（改写目标、理由、睡眠时长）走
+// 环境变量。剧本必须能按 hook 各不相同 —— 环境变量做不到这一点，两个 hook
+// 子进程会继承同一份 env，这正是链式语义测试最初抓出来的 harness 缺陷。
 //
-// 正常的 `go test ./...` 运行里这个函数在第一行就返回（环境变量未设），
+// helper 从 stdin 读一个 JSON 请求，按剧本写一个 verdict 到 stdout，随即退出。
+// 正常的 `go test ./...` 运行里这个函数在第一行就返回（没有剧本参数），
 // 既不算跳过也不做任何事 —— 它只在被父测试 re-exec 时才活过来。
 func TestHookHelperProcess(t *testing.T) {
-	mode := os.Getenv(hookHelperModeEnv)
+	mode := hookHelperMode()
 	if mode == "" {
 		return
 	}
@@ -66,6 +67,17 @@ func TestHookHelperProcess(t *testing.T) {
 	}
 	_, _ = os.Stdout.WriteString(out)
 	os.Exit(0)
+}
+
+// hookHelperMode 从 os.Args 里取 "--" 之后的第一段。test 二进制的 flag 解析
+// 在 "--" 处停止，但它不改动 os.Args，所以原始位置仍然可读。
+func hookHelperMode() string {
+	for i, a := range os.Args {
+		if a == "--" && i+1 < len(os.Args) {
+			return os.Args[i+1]
+		}
+	}
+	return ""
 }
 
 // hookHelperVerdict 按 mode 返回 verdict JSON；空串表示「以退出码 3 崩溃」。
@@ -178,14 +190,14 @@ func fsWriteProfile() guard.PermissionProfile {
 	}
 }
 
-// hookTestProgram 返回指向 re-exec helper 的 hook 配置。
-func hookTestProgram(t *testing.T) HookConfig {
+// hookTestProgram 返回指向 re-exec helper 的 hook 配置；mode 是该 hook 的剧本。
+func hookTestProgram(t *testing.T, mode string) HookConfig {
 	t.Helper()
 	exe, err := os.Executable()
 	require.NoError(t, err)
 	return HookConfig{
 		Program: exe,
-		Args:    []string{"-test.run=^TestHookHelperProcess$"},
+		Args:    []string{"-test.run=^TestHookHelperProcess$", "--", mode},
 		Timeout: 30 * time.Second,
 	}
 }
@@ -217,10 +229,9 @@ func wrapForTest(ctx context.Context, d *hookToolDouble) (adk.InvokableToolCallE
 // 变异证据链见 F3 报告。
 func TestPreToolUseRewrittenInputIsReJudgedByGuard(t *testing.T) {
 	workRoot := t.TempDir()
-	t.Setenv(hookHelperModeEnv, "rewrite")
 	t.Setenv(hookHelperRewriteEnv, "/etc/cron.d/yanshi-f3-hook-test")
 
-	cfg := HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t)}}
+	cfg := HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "rewrite")}}
 	ctx := newHookTurnContext(t, fsWriteProfile(), workRoot, cfg)
 	d := &hookToolDouble{workRoot: workRoot}
 
@@ -267,4 +278,78 @@ func TestWithTurnHooksWithoutHooksIsPassthrough(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out, "wrote ")
 	assert.Equal(t, []string{filepath.Join(workRoot, "passthrough.txt")}, d.ran())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 验收 1：PreToolUse 可阻断工具调用并给出理由。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestPreToolUseBlocksWithReason 钉住最直接的一条：hook 返回 block=true 时，
+// 工具不执行，hook 给的理由原文进入模型可见的工具结果（拒绝不是 Go error，
+// turn 不中断）。理由里故意带一个不会在别处出现的词，证明到达结果的是 hook
+// 写的那段文本本身。
+func TestPreToolUseBlocksWithReason(t *testing.T) {
+	workRoot := t.TempDir()
+	t.Setenv(hookHelperReasonEnv, "no fs writes outside change window #4153")
+
+	cfg := HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "block")}}
+	ctx := newHookTurnContext(t, fsWriteProfile(), workRoot, cfg)
+	d := &hookToolDouble{workRoot: workRoot}
+
+	ep, err := wrapForTest(ctx, d)
+	require.NoError(t, err)
+
+	out, err := ep(ctx, `{"path":"notes.txt"}`)
+	require.NoError(t, err, "hook 拒绝必须是工具结果而非 Go error（否则拆掉整个 turn）")
+	assert.Contains(t, out, "blocked by pre_tool_use hook",
+		"拒绝文本必须说明它来自 hook")
+	assert.Contains(t, out, "no fs writes outside change window #4153",
+		"hook 给的理由必须原文可见")
+	assert.Empty(t, d.ran(), "被 hook 拦截的调用绝不能执行")
+}
+
+// TestPreToolUseHooksRunAsPipeline 钉住链式语义：hook 按声明顺序运行，后一级
+// 看到的是前一级**改写后**的入参。第一级把路径改写成目标值，第二级只在看到
+// 改写值时拦截 —— 它拦了，证明改写真的在 hook 之间流动；guard 最终对第二级
+// 之后的入参（与第一级改写一致）负责。
+func TestPreToolUseHooksRunAsPipeline(t *testing.T) {
+	workRoot := t.TempDir()
+	t.Setenv(hookHelperRewriteEnv, "rewritten-by-stage-1.txt")
+
+	cfg := HooksConfig{PreToolUse: []HookConfig{
+		hookTestProgram(t, "rewrite"),            // 第一级：改写路径
+		hookTestProgram(t, "block_if_rewritten"), // 第二级：看到改写才拦
+	}}
+	ctx := newHookTurnContext(t, fsWriteProfile(), workRoot, cfg)
+	d := &hookToolDouble{workRoot: workRoot}
+
+	ep, err := wrapForTest(ctx, d)
+	require.NoError(t, err)
+
+	out, err := ep(ctx, `{"path":"notes.txt"}`)
+	require.NoError(t, err)
+	assert.Contains(t, out, "chained hook saw the rewritten args",
+		"第二级 hook 必须看到第一级改写后的入参")
+	assert.Empty(t, d.ran())
+}
+
+// TestPreToolUseAdditionalContextReachesResultAsData 钉住 additional_context
+// 的消费端：非拦截 hook 的附加上下文以 hook 名标注追加到工具结果里 —— 它是
+// 数据不是指令，标注（[hook <名>]）是它与工具自身产出的分界线。
+func TestPreToolUseAdditionalContextReachesResultAsData(t *testing.T) {
+	workRoot := t.TempDir()
+
+	cfg := HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "context")}}
+	ctx := newHookTurnContext(t, fsWriteProfile(), workRoot, cfg)
+	d := &hookToolDouble{workRoot: workRoot}
+
+	ep, err := wrapForTest(ctx, d)
+	require.NoError(t, err)
+
+	out, err := ep(ctx, `{"path":"notes.txt"}`)
+	require.NoError(t, err)
+	assert.Contains(t, out, "wrote ", "非拦截 hook 不得影响调用本身")
+	assert.Contains(t, out, "[hook ", "附加上下文必须带 hook 名标注")
+	assert.Contains(t, out, "only run this on Fridays")
+	assert.Equal(t, []string{filepath.Join(workRoot, "notes.txt")}, d.ran())
 }
