@@ -61,6 +61,18 @@ type model struct {
 	// value-receiver Update/applyEvent, and a copied non-zero Builder panics on
 	// the next WriteString. Concatenation is cheap for chat-sized text.
 	pending string
+	// pendingRendered/pendingRenderedText/pendingRenderedWidth/pendingRenderedAt
+	// cache the last throttled progressive-markdown pass over m.pending
+	// (W-E-07 — see refreshPendingMarkdown in events.go and renderPendingBody
+	// in view.go). pendingRenderedText is always a byte-prefix of m.pending:
+	// both only ever grow by append between flushes, so renderPendingBody can
+	// slice the plain-text tail at len(pendingRenderedText) without risking a
+	// split multi-byte rune. flushAssistant zeroes all four when m.pending is
+	// cleared, so a new turn's first chunk never reuses a stale cached render.
+	pendingRendered      string
+	pendingRenderedText  string
+	pendingRenderedWidth int
+	pendingRenderedAt    time.Time
 	// assistantContinuation suppresses repeated "assistant:" labels when one
 	// ReAct turn produces multiple assistant text blocks around tool calls.
 	// It is reset for each user turn and set after the first flushAssistant.
@@ -983,6 +995,9 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 			m.pending += ev.Text
 			// Assistant text is streaming → we're thinking, not running a tool.
 			m.activity = "Thinking…"
+			// W-E-07: throttled progressive markdown pass — see
+			// refreshPendingMarkdown's doc comment (events.go).
+			m = m.refreshPendingMarkdown()
 		}
 	case "tool_call":
 		m.retryAttempt = 0 // a pending retry resolved

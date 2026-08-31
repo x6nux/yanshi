@@ -986,13 +986,49 @@ func (m model) renderBody() string {
 		if streamingThought != nil {
 			b.WriteString("\n" + strings.TrimRight(streamingThought.render(m.width, m.spinner), "\n"))
 		}
-		// Streaming pending text is rendered PLAIN (no markdown) so the UI can
-		// keep up with high-frequency agent_chunk deltas — glamour per chunk is
-		// the dominant CPU cost of streaming. On flushAssistant the text moves
-		// into an assistantEntry and is markdown-rendered exactly once (cached).
-		b.WriteString("\n" + strings.TrimRight(pendingStyle.Render(m.pending), "\n") + "\n")
+		// W-E-07: progressive markdown — renderPendingBody shows the last
+		// throttled glamour pass (refreshPendingMarkdown, events.go) plus a
+		// plain-text tail of whatever has streamed in since, rather than
+		// leaving the whole buffer plain until flushAssistant. See its doc
+		// comment for why this stays cheap under high-frequency agent_chunk
+		// deltas.
+		b.WriteString("\n" + strings.TrimRight(m.renderPendingBody(), "\n") + "\n")
 	}
 	return b.String()
+}
+
+// renderPendingBody composes the streaming assistant block for W-E-07:
+// m.pendingRendered (the last throttled glamour pass over m.pending — see
+// refreshPendingMarkdown's doc comment in events.go) plus a plain-text tail
+// of whatever has arrived since that pass. By construction
+// m.pendingRenderedText is always a byte-prefix of m.pending (both only ever
+// grow by append between flushAssistant calls, which zero both together), so
+// slicing at len(m.pendingRenderedText) can never split a multi-byte rune —
+// but the strings.HasPrefix check below does not TRUST that invariant, it
+// VERIFIES it: if some future edit ever reset one of the pair without the
+// other (the exact shape of bug flushAssistant's reset exists to prevent —
+// see its own comment), a bare length-based slice would either panic (stale
+// text longer than the new pending) or silently splice an unrelated stale
+// prefix onto real content. Falling back to the whole buffer plain in that
+// case is the fail-safe direction: an interrupted/malformed render must
+// never crash the TUI or show corrupted output, only (at worst) revert one
+// frame to the pre-W-E-07 plain-text behavior.
+//
+// Also falls back to plain when no pass has run yet at the current width
+// (turn just started, or the terminal was resized since the last pass) — the
+// next agent_chunk's refreshPendingMarkdown re-establishes the cache at the
+// new width; there is no dedicated resize handler for this because that
+// self-heals within one chunk and a mid-stream resize is rare enough not to
+// warrant one.
+func (m model) renderPendingBody() string {
+	if m.pendingRenderedText == "" || m.pendingRenderedWidth != m.width || !strings.HasPrefix(m.pending, m.pendingRenderedText) {
+		return pendingStyle.Render(m.pending)
+	}
+	tail := m.pending[len(m.pendingRenderedText):]
+	if tail == "" {
+		return m.pendingRendered
+	}
+	return m.pendingRendered + pendingStyle.Render(tail)
 }
 
 // assistantRenderKey returns the fingerprint used to memoize an assistantEntry's

@@ -402,14 +402,15 @@ func resetEntryRenderCacheForTest() {
 	entryCacheCount.Store(0)
 }
 
-// pendingStyle renders the streaming (not-yet-finalized) assistant text as
-// plain text — NO glamour markdown rendering. Streaming chunks arrive many
-// times per second, and rendering markdown per chunk is the dominant CPU cost
-// of streaming; the plain-text path lets the UI keep up with the model's token
-// rate. Once the turn finalizes (flushAssistant), the accumulated text becomes
-// an assistantEntry and is rendered through markdown exactly once (and cached
-// via entryRenderCache) — so the user sees raw markdown briefly during
-// streaming, then the fully-rendered version on completion.
+// pendingStyle renders plain (non-markdown) text within the streaming
+// (not-yet-finalized) assistant block: the trailing tail that has arrived
+// since the last throttled glamour pass (W-E-07 — see renderPendingBody in
+// view.go and refreshPendingMarkdown in events.go for the throttle that
+// keeps that pass off the hot path of every agent_chunk delta), and the
+// whole buffer for the brief window before the first pass of a turn has run.
+// Once the turn finalizes (flushAssistant), the accumulated text becomes an
+// assistantEntry and is rendered through markdown once more at its final,
+// complete form (and cached via entryRenderCache).
 var pendingStyle = lipgloss.NewStyle()
 
 // truncate clips s to n bytes with an ellipsis.

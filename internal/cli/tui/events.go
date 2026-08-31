@@ -135,6 +135,14 @@ func (m *model) flushAssistant() {
 		continuation: m.assistantContinuation,
 	}
 	m.pending = ""
+	// W-E-07: clear the progressive-render cache alongside m.pending — see
+	// pendingRendered's doc comment on the model struct (model.go) for why a
+	// stale pendingRenderedText left set here could otherwise be mistaken for
+	// a valid prefix of a LATER turn's m.pending.
+	m.pendingRendered = ""
+	m.pendingRenderedText = ""
+	m.pendingRenderedWidth = 0
+	m.pendingRenderedAt = time.Time{}
 	m.assistantContinuation = true
 	// Attach the run of finalized thinking blocks preceding the answer so they
 	// render between the "assistant:" label and the content. Detaching the WHOLE
@@ -144,6 +152,54 @@ func (m *model) flushAssistant() {
 	// bug). See detachTrailingThoughts.
 	m.entries, ae.thought = detachTrailingThoughts(m.entries)
 	m.entries = append(m.entries, ae)
+}
+
+// pendingMarkdownThrottle bounds how often refreshPendingMarkdown re-runs
+// glamour over the streaming pending buffer (W-E-07). glamour is the
+// dominant CPU cost of streaming (see pendingStyle's doc comment in
+// styles.go for the plain-text default this throttle now supplements);
+// re-parsing the whole buffer on literal every agent_chunk event — which can
+// arrive many times per second — would reintroduce exactly the cost the
+// plain-text path was built to avoid. 200ms bounds that to at most 5 glamour
+// passes/sec regardless of chunk rate, while still refreshing well within a
+// human's perception of "instant" — tables and formatting materialize
+// progressively rather than only once the turn finalizes.
+const pendingMarkdownThrottle = 200 * time.Millisecond
+
+// refreshPendingMarkdown re-renders m.pending through renderMarkdown
+// (styles.go) — the SAME function assistantEntry.render uses for finalized
+// answers, already gated through E1's capability layer (renderMarkdown →
+// renderer → activeProfile, plus the Ascii-profile ANSI strip) — so this
+// adds no new escape-sequence surface, only a new call site of one that
+// already exists.
+//
+// It is a no-op unless either m.pending has grown since the last pass or the
+// terminal width has changed, AND at least pendingMarkdownThrottle has
+// elapsed since the last pass (the very first pass of a turn always runs
+// immediately: pendingRenderedAt is zeroed by flushAssistant). Between
+// passes renderPendingBody (view.go) shows the last cached m.pendingRendered
+// plus a plain-text tail of whatever has arrived since — see its doc comment
+// for why that tail can never split a multi-byte rune.
+//
+// Deliberately NOT using entryRenderCache (styles.go): that cache is
+// content-addressed and bounded for FINALIZED, reused blocks. Every
+// intermediate streaming state is unique and read exactly once, so caching
+// each one there would burn through entryCacheCap on one-shot entries and
+// evict genuinely-reused finalized renders — this keeps its own single-slot
+// cache on the model instead, which needs no cap (one turn holds at most one
+// entry).
+func (m model) refreshPendingMarkdown() model {
+	if m.pending == m.pendingRenderedText && m.width == m.pendingRenderedWidth {
+		return m
+	}
+	if !m.pendingRenderedAt.IsZero() && time.Since(m.pendingRenderedAt) < pendingMarkdownThrottle {
+		return m
+	}
+	m.pendingRendered = renderMarkdown(m.width, m.pending)
+	m.pendingRenderedText = m.pending
+	m.pendingRenderedWidth = m.width
+	m.pendingRenderedAt = time.Now()
+	return m
 }
 
 // detachTrailingThoughts removes the run of finalized thinkingEntries from the
