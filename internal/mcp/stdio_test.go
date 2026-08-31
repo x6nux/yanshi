@@ -362,20 +362,52 @@ func TestStdioClient_ServerRequestParamsForwardedVerbatim(t *testing.T) {
 	}
 }
 
-// No handler registered: notifications and server requests are silently dropped
-// without panic.
+// respondLoop 持续读 client 的请求并回通用结果（notification 直接吞掉），
+// 供无 handler 场景下验证 client 仍可用。
+func (s *bidirServer) respondLoop() {
+	for {
+		s.mu.Lock()
+		msg, err := ReadMessage(s.buf)
+		if err != nil {
+			s.mu.Unlock()
+			return
+		}
+		id := msg["id"]
+		if id == nil {
+			s.mu.Unlock()
+			continue
+		}
+		resp := map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{}}
+		data, _ := json.Marshal(resp)
+		s.w.Write(data)
+		s.w.WriteByte('\n')
+		s.w.Flush()
+		s.mu.Unlock()
+	}
+}
+
+// 无 handler 时：notification 与 server 发起的 request 都被安静处理，
+// 且 client 之后仍能正常完成请求（readLoop 没有被这两类消息卡死或击穿）。
+//
+// 断言判据：若对 nil handler 的处理回归（比如丢了 nil 检查直接调用），panic
+// 会击穿 readLoop 使测试二进制崩溃；若处理路径楔死，末尾的 Ping 会超时。
+// 变异：删掉 handleServerMessage 的 nil 检查 → 本测试因 panic 变红。
 func TestStdioClient_NoHandlerDropsSilently(t *testing.T) {
 	srv, cli := newBidirServer(t)
-	// No SetHandler call.
+	// 故意不调 SetHandler —— handler 恒为 nil。
 
 	srv.handshake(cli)
+	go srv.respondLoop()
 
-	// Send a notification and a server request — neither should panic.
 	srv.SendNotification("notifications/tools/list_changed", nil)
 	srv.SendRequestNoReply(500, "sampling/createMessage", map[string]any{})
 
-	time.Sleep(50 * time.Millisecond)
-	// No assertion needed — we're testing that it doesn't panic.
+	// 丢弃之后 client 必须仍然可用。
+	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := cli.Ping(pingCtx); err != nil {
+		t.Fatalf("client unusable after dropping handlerless messages: %v", err)
+	}
 }
 
 // 并发请求各自拿到自己的响应，且互不楔死。
