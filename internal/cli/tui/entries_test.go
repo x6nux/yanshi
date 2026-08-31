@@ -1,11 +1,14 @@
 package tui
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // newSpinner returns a ready-to-render spinner for toolEntry.render tests,
@@ -452,4 +455,53 @@ func TestLongPastedCollapsed(t *testing.T) {
 	if !strings.Contains(out, "粘贴") {
 		t.Fatalf("粘贴的长文本应折叠:\n%s", out)
 	}
+}
+
+// ---- RE-J (fix-e1 review of W-E-01): shell_run's JSON-enveloped result ----
+
+// TestToolResultOutput_StripsANSIAfterJSONDecode proves toolResultOutput
+// strips ESC bytes from the decoded "output" field. This is the half of
+// RE-J applyEvent's ingestion-time strip (model.go) cannot reach: a raw ESC
+// byte cannot appear literally inside valid JSON text — encoding/json always
+// escapes it — so the literal byte only exists again once json.Unmarshal
+// decodes the field, which happens inside this function, after the
+// ingestion-time strip already ran on the (still harmless) JSON text.
+func TestToolResultOutput_StripsANSIAfterJSONDecode(t *testing.T) {
+	raw, err := json.Marshal(map[string]any{
+		"output":      "before\x1b[31mRED\x1b[0mafter",
+		"exit":        0,
+		"duration_ms": 5,
+	})
+	require.NoError(t, err)
+	// Sanity: confirm the premise this test exists to cover — the wire form
+	// carries no literal ESC byte at all (encoding/json escaped it), so a
+	// strip applied to the wire text itself (as applyEvent's ingestion-time
+	// strip does) would find nothing to remove here.
+	require.NotContains(t, string(raw), "\x1b", "json.Marshal must not emit a literal ESC byte")
+
+	// Confirm the literal ESC byte genuinely reappears the moment the JSON is
+	// decoded — this is the step toolResultOutput's own strip has to guard,
+	// independent of applyEvent's ingestion-time strip.
+	var v struct {
+		Output string `json:"output"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &v))
+	require.Contains(t, v.Output, "\x1b", "decoding must recover the literal ESC byte — otherwise this test is not exercising the bug RE-J found")
+
+	got := toolResultOutput(string(raw))
+	assert.NotContains(t, got, "\x1b", "toolResultOutput must strip ANSI after decoding the JSON envelope")
+	assert.Equal(t, "beforeREDafter", got)
+}
+
+// TestToolResultOutput_UnparseableFallbackAlreadyStripped proves the
+// not-JSON fallback path (malformed/plain result) does not need its own
+// strip: it returns its input unchanged, and by the time anything reaches
+// toolEntry.result that input has already been through applyEvent's
+// ingestion-time stripANSI (model.go) — this test documents that invariant
+// by feeding toolResultOutput text that already has no ESC byte and
+// confirming it survives unparsed, rather than being (harmlessly but
+// misleadingly) re-stripped a second time.
+func TestToolResultOutput_UnparseableFallbackAlreadyStripped(t *testing.T) {
+	got := toolResultOutput("not json, just plain text")
+	assert.Equal(t, "not json, just plain text", got)
 }

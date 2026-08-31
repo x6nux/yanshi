@@ -1340,7 +1340,7 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 				case "session_list_archived":
 					handleArchivedSessionList(s, conn)
 				case "fork_session":
-					handleForkSession(s, conn, &cs, cf.Seq)
+					handleForkSession(s, conn, &cs, cf.Seq, cf.TurnsBack)
 				case "distill_memories":
 					// A2/W-A-05: /distill slash command triggers this frame.
 					// handleDistillMemories runs the consolidation pass and replies
@@ -1510,6 +1510,8 @@ func (s *Server) ChatWS(o *orchestrator.Orchestrator, models map[string]model.Ba
 					runUserTurn(cf)
 				case "list_seams":
 					handleListSeams(s, conn, &cs)
+				case "list_workspace_diff":
+					handleWorkspaceDiff(s, conn, &cs)
 				case "restore_turn":
 					handleRestoreTurn(s, conn, &cs, cf.ID, cf.ConfirmedHead)
 				default:

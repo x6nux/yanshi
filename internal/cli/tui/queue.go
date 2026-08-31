@@ -62,7 +62,11 @@ func (m model) dispatchSend(text string, pasted bool) (model, tea.Cmd) {
 	}
 	m.reflow()
 	m.viewport.GotoBottom()
-	return m, tea.Batch(m.waitForEvent(), activityTick())
+	// W-E-05: every turn — manual submit and queue drain alike — starts here,
+	// so this is the single call site for the "busy" title (see
+	// windowTitleCmd's doc comment on why the "idle" side lives in Update's
+	// streamMsg/"done" case instead of being paired 1:1 with this one).
+	return m, tea.Batch(m.waitForEvent(), activityTick(), m.windowTitleCmd(true))
 }
 
 // editLastQueued (C2 — UX6 Alt+↑) pops the most recently queued message back

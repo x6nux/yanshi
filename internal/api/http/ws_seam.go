@@ -86,10 +86,16 @@ func truncationSeq(s *Server, cs *connSession, truncLen int) (int, error) {
 // handleListSeams replies with the recent seams for the session (filtered by
 // cs.sessionID when set — D7: never pass "" here or other sessions' seams leak)
 // + the current main_head (short for display, full for binding). When VCS is
-// unconfigured the reply is an empty list (the TUI renders "(no seams)").
+// unconfigured the reply is an error frame, not an empty list (RE-6): an
+// empty list on the wire is indistinguishable from "VCS is enabled and there
+// are simply no seams yet", which told a user on a VCS-less server that
+// /seams had "nothing to show" instead of that the feature isn't available
+// at all — see handleWorkspaceDiff for the same fix applied to /diff's
+// analogous nil-VCS branch. The cs.sessionID=="" branch below is unrelated
+// (VCS present, session just not established yet) and keeps its empty reply.
 func handleListSeams(s *Server, conn *wsConn, cs *connSession) {
 	if s.vcs == nil || s.repoID == "" {
-		conn.write(proto.NewSeams(nil, "", ""))
+		conn.write(proto.NewError("list_seams: vcs is not enabled for this repo"))
 		return
 	}
 	if cs.sessionID == "" {

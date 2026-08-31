@@ -30,6 +30,10 @@ func themeForPrefs(eff EffectivePreferences) ThemeName {
 // carries tui.bindings. That field existed with no writer and no reader, which
 // made it a specification with no implementation.
 //
+// User-level bindings (eff.KeymapBindings, written by /keymap bind) are merged
+// over project bindings so the user's personal shortcuts survive a project
+// config change.
+//
 // A build error is NOT fatal. Map is still returned populated by
 // buildInternal, and Diagnostics() carries the reason — which is exactly what
 // /keymap diagnostics prints and what doctor's failure message points users
@@ -38,7 +42,16 @@ func themeForPrefs(eff EffectivePreferences) ThemeName {
 func buildKeymap(eff EffectivePreferences, project Preferences) *keymap.Map {
 	var overrides map[string]string
 	if !eff.KeymapReset {
-		overrides = projectBindings
+		// Merge project bindings then user bindings (user wins on conflict).
+		if len(projectBindings)+len(eff.KeymapBindings) > 0 {
+			overrides = make(map[string]string, len(projectBindings)+len(eff.KeymapBindings))
+			for k, v := range projectBindings {
+				overrides[k] = v
+			}
+			for k, v := range eff.KeymapBindings {
+				overrides[k] = v
+			}
+		}
 	}
 	_ = project
 	m, _ := keymap.NewDefaultBuilder(overrides).Build()

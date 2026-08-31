@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/x6nux/yanshi/internal/difflib"
 	"github.com/x6nux/yanshi/internal/lsp"
 )
 
@@ -370,7 +371,7 @@ func countLines(b []byte) int {
 // prefixLines prefixes every line of b with prefix and rejoins with a trailing
 // newline (each line becomes one +/- entry in the diff body).
 func prefixLines(prefix string, b []byte) string {
-	lines := splitDiffLines(string(b))
+	lines := difflib.SplitLines(string(b))
 	for i, l := range lines {
 		lines[i] = prefix + l
 	}

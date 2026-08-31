@@ -152,13 +152,16 @@ func cmdLocale(m model, args []string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// cmdKeymap handles /keymap [name|reset|diagnostics].
+// cmdKeymap handles /keymap [name|reset|diagnostics|bind|list].
 //
 // The diagnostics subcommand is not a convenience: internal/cli's
 // checkKeymapConfig tells the operator verbatim to run "/keymap diagnostics"
 // when their bindings fail validation, so for as long as this did not exist,
 // the single piece of remedial advice the product offered was itself a dead
 // end.
+//
+// W-E-15: "bind <action>" enters the capture wizard. "list" shows all active
+// bindings. Both require no server round-trip — pure preference state.
 func cmdKeymap(m model, args []string) (tea.Model, tea.Cmd) {
 	if len(args) == 0 {
 		m.entries = append(m.entries, ackEntry{
@@ -181,6 +184,33 @@ func cmdKeymap(m model, args []string) (tea.Model, tea.Cmd) {
 		m.prefs.KeymapName = ""
 		m = m.savePrefs().remerge()
 		m.entries = append(m.entries, ackEntry{text: m.bundle.Get("keymap.diagnostics.reset")})
+	case "list":
+		// W-E-15: show all currently active bindings.
+		m.entries = append(m.entries, ackEntry{text: renderKeymapList(m)})
+	case "bind":
+		// W-E-15: enter capture mode for the named action. The next
+		// keypress (other than Esc to cancel) becomes the binding.
+		if len(args) < 2 {
+			m.entries = append(m.entries, errorEntry{
+				text: "usage: /keymap bind <action>  (actions: " + keymapActionNames() + ")",
+			})
+			m.refresh()
+			return m, nil
+		}
+		action := strings.TrimSpace(args[1])
+		if !isKnownKeymapAction(action) {
+			m.entries = append(m.entries, errorEntry{
+				text: "unknown action \"" + action + "\" (known: " + keymapActionNames() + ")",
+			})
+			m.refresh()
+			return m, nil
+		}
+		m.keymapCapture = action
+		m.entries = append(m.entries, ackEntry{
+			text: "press the key to bind to \"" + action + "\" (Esc to cancel)",
+		})
+		m.refresh()
+		return m, nil
 	default:
 		name := strings.TrimSpace(args[0])
 		if name != "default" {
@@ -201,6 +231,102 @@ func cmdKeymap(m model, args []string) (tea.Model, tea.Cmd) {
 	}
 	m.refresh()
 	return m, nil
+}
+
+// commitKeymapCapture processes a keypress while the /keymap bind wizard is
+// active. It validates the key, checks for conflicts against the combined
+// project + user bindings, and atomically writes the new binding to prefs.
+//
+// Conflict detection: if the key is already assigned to another action, the
+// write is blocked — only the conflict message is shown, no partial write.
+// The test for this is TestKeymapCaptureConflictBlocksWrite (keymap_wizard_test.go).
+func (m model) commitKeymapCapture(msg tea.KeyMsg) (model, tea.Cmd) {
+	action := m.keymapCapture
+	m.keymapCapture = ""
+
+	normalized, ok := keymap.NormalizeKey(msg)
+	if !ok {
+		m.entries = append(m.entries, errorEntry{
+			text: "key cannot be bound (paste, multi-rune, or unsupported key type)",
+		})
+		m.reflow()
+		return m, nil
+	}
+
+	// Conflict check: build the effective binding map and see if the key is
+	// already assigned to a different action.
+	effective := buildKeymap(m.effective, m.project)
+	if existing := effective.Lookup(msg); existing != keymap.ActionNone && string(existing) != action {
+		m.entries = append(m.entries, errorEntry{
+			text: "conflict: " + normalized + " is already bound to \"" + string(existing) +
+				"\" — unbind it first with /keymap bind " + string(existing),
+		})
+		m.reflow()
+		// Conflict detected: write blocked. Test: TestKeymapCaptureConflictBlocksWrite
+		return m, nil
+	}
+
+	// Write the binding atomically via the existing persistPreferences machinery.
+	if m.prefs.KeymapBindings == nil {
+		m.prefs.KeymapBindings = make(map[string]string)
+	}
+	m.prefs.KeymapBindings[normalized] = action
+	m = m.savePrefs().remerge()
+	m.entries = append(m.entries, ackEntry{
+		text: "bound: " + normalized + " → " + action,
+	})
+	m.reflow()
+	return m, nil
+}
+func renderKeymapList(m model) string {
+	if len(m.effective.KeymapBindings) == 0 {
+		return "no custom user-level bindings (use /keymap bind <action> to add one)"
+	}
+	keys := make([]string, 0, len(m.effective.KeymapBindings))
+	for k := range m.effective.KeymapBindings {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var sb strings.Builder
+	sb.WriteString("user key bindings:\n")
+	for _, k := range keys {
+		sb.WriteString("  " + k + " → " + m.effective.KeymapBindings[k] + "\n")
+	}
+	return sb.String()
+}
+
+// isKnownKeymapAction reports whether action is a rebindable action name.
+func isKnownKeymapAction(action string) bool {
+	for _, a := range keymapActions() {
+		if string(a) == action {
+			return true
+		}
+	}
+	return false
+}
+
+// keymapActionNames returns a comma-separated list of rebindable action names
+// for error messages.
+func keymapActionNames() string {
+	as := keymapActions()
+	names := make([]string, len(as))
+	for i, a := range as {
+		names[i] = string(a)
+	}
+	return strings.Join(names, ", ")
+}
+
+// keymapActions returns the rebindable action set. ActionNone is excluded
+// because it is not a real action but the zero value, and ActionSend /
+// ActionNewline are excluded — those are handled by the textarea's own Enter
+// logic and the custom bubbletea fork, and rebinding them without the same
+// wiring would confuse users.
+func keymapActions() []keymap.Action {
+	return []keymap.Action{
+		keymap.ActionCancel, keymap.ActionScrollUp, keymap.ActionScrollDown,
+		keymap.ActionClear, keymap.ActionHelp, keymap.ActionQuit,
+		keymap.ActionCommandMode,
+	}
 }
 
 // renderKeymapDiagnostics turns Map.Diagnostics into the localized report.

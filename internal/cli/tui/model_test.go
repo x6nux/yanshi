@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -264,6 +265,105 @@ func TestToolArgSummary(t *testing.T) {
 		assert.Equalf(t, tc.want, toolArgSummary(tc.name, tc.args, tc.root),
 			"toolArgSummary(%q,%q,%q)", tc.name, tc.args, tc.root)
 	}
+}
+
+// TestToolArgSummary_HyperlinksDisabledByDefault proves toolArgSummary emits
+// plain text — byte-identical to the pre-W-E-06 output above — when
+// SetHyperlinksEnabled has never been called (the zero value of
+// hyperlinksEnabled). This is the state every other test in the package
+// observes, and the state a TERM=dumb session runs in for its entire
+// lifetime (buildModelForCapability calls SetHyperlinksEnabled(false) for
+// it) — a corrupted-escape regression here would otherwise ship as garbage
+// on an unsupported terminal.
+func TestToolArgSummary_HyperlinksDisabledByDefault(t *testing.T) {
+	hyperlinksEnabled.Store(false)
+	got := toolArgSummary("fs_read", `{"path":"src/main.go"}`, "/proj")
+	want := "(src/main.go)"
+	assert.Equal(t, want, got)
+	assert.NotContains(t, got, "\x1b]8;;", "OSC 8 bytes must not appear when hyperlinks are disabled")
+}
+
+// TestToolArgSummary_HyperlinksEnabledWrapsPath proves that once
+// SetHyperlinksEnabled(true) has run (the capable-terminal branch of
+// buildModelForCapability), a "path" arg is wrapped in a real OSC 8 escape
+// (termenv.Hyperlink) around the same display text toolArgSummary would
+// otherwise show plain — clicking it must not open the wrong file, so the
+// URI is asserted exactly, not just "contains file://".
+func TestToolArgSummary_HyperlinksEnabledWrapsPath(t *testing.T) {
+	hyperlinksEnabled.Store(true)
+	t.Cleanup(func() { hyperlinksEnabled.Store(false) })
+
+	got := toolArgSummary("fs_read", `{"path":"src/main.go"}`, "/proj")
+	wantLink := termenv.Hyperlink("file:///proj/src/main.go", "src/main.go")
+	want := "(" + wantLink + ")"
+	assert.Equal(t, want, got)
+}
+
+// TestToolArgSummary_AsciiSuppressesHyperlinks is the mandatory negative
+// control for W-E-06's escape sequence, the one decoration that used to skip
+// it (RE-27): under termenv.Ascii — the profile NO_COLOR=1 and TERM=dumb
+// both resolve to — a "path" arg must render as plain text with zero \x1b
+// bytes, even though hyperlinksEnabled is true (NO_COLOR keeps
+// cap.AltScreen true, so buildModelForCapability really does leave it on).
+//
+// The ANSI256 leg is not decoration: without it a broken toolArgSummary that
+// never links anything would satisfy the Ascii assertion, and the failure
+// would be indistinguishable from the fix working. Both legs use the same
+// input and the same hyperlinksEnabled value, so the only variable is the
+// profile.
+func TestToolArgSummary_AsciiSuppressesHyperlinks(t *testing.T) {
+	hyperlinksEnabled.Store(true)
+	t.Cleanup(func() { hyperlinksEnabled.Store(false) })
+
+	const args = `{"path":"src/main.go"}`
+
+	// withColorProfile's restore is a t.Cleanup, so these two calls nest
+	// rather than sequence; LIFO unwinding still lands back on the original.
+	withColorProfile(t, termenv.Ascii)
+	got := toolArgSummary("fs_read", args, "/proj")
+	assert.Equal(t, "(src/main.go)", got)
+	assert.NotContainsf(t, got, "\x1b", "Ascii profile must emit zero escape bytes, got %q", got)
+
+	withColorProfile(t, termenv.ANSI256)
+	linked := toolArgSummary("fs_read", args, "/proj")
+	assert.Equal(t, "("+termenv.Hyperlink("file:///proj/src/main.go", "src/main.go")+")", linked)
+}
+
+// TestToolArgSummary_HyperlinksEnabledGlobStaysPlain proves the "glob" key
+// is deliberately excluded from hyperlink-wrapping even when enabled: a glob
+// like "**/*.go" is a pattern, not a single file a click could open (see
+// toolArgSummary's body comment on the key == "path" check).
+func TestToolArgSummary_HyperlinksEnabledGlobStaysPlain(t *testing.T) {
+	hyperlinksEnabled.Store(true)
+	t.Cleanup(func() { hyperlinksEnabled.Store(false) })
+
+	got := toolArgSummary("fs_glob", `{"glob":"**/*.go"}`, "/proj")
+	assert.Equal(t, "(**/*.go)", got)
+	assert.NotContains(t, got, "\x1b]8;;")
+}
+
+// TestToolArgSummary_HyperlinksEnabledRelativeNoRootStaysPlain proves that a
+// relative path with no root to anchor it to degrades to plain text rather
+// than emitting a URI that would open the wrong file (fileHyperlinkURI
+// returns "" in that case — see its doc comment).
+func TestToolArgSummary_HyperlinksEnabledRelativeNoRootStaysPlain(t *testing.T) {
+	hyperlinksEnabled.Store(true)
+	t.Cleanup(func() { hyperlinksEnabled.Store(false) })
+
+	got := toolArgSummary("fs_read", `{"path":"src/main.go"}`, "")
+	assert.Equal(t, "(src/main.go)", got)
+	assert.NotContains(t, got, "\x1b]8;;")
+}
+
+// TestFileHyperlinkURI covers fileHyperlinkURI directly: root-relative,
+// already-absolute, Windows drive-letter, and the two "cannot build safely"
+// cases (empty path, relative path with no root).
+func TestFileHyperlinkURI(t *testing.T) {
+	assert.Equal(t, "file:///proj/src/main.go", fileHyperlinkURI("src/main.go", "/proj"))
+	assert.Equal(t, "file:///abs/elsewhere/main.go", fileHyperlinkURI("/abs/elsewhere/main.go", "/proj"))
+	assert.Equal(t, "file:///C:/proj/main.go", fileHyperlinkURI("C:/proj/main.go", "/ignored"))
+	assert.Equal(t, "", fileHyperlinkURI("", "/proj"))
+	assert.Equal(t, "", fileHyperlinkURI("src/main.go", ""))
 }
 
 // TestToolEntry_RenderFriendlyFormat proves the rendered tool block uses the
@@ -878,10 +978,35 @@ func TestModel_FooterAccountsForViewportHeight(t *testing.T) {
 	assert.Greater(t, footerH, 0, "footer has a measurable height")
 }
 
-// TestModel_FooterColorized proves each status-bar segment has a distinct colour
-// configuration in the default theme, so the footer reads at a glance. We check
-// the theme's segmentColors map directly (rather than rendered ANSI escapes)
-// to keep the test independent of the terminal environment.
+// TestModel_FooterColorized proves each footer segment statusHeader
+// (view.go) actually renders has a distinct colour configuration in every
+// built-in theme, so the Powerline bar has visible contrast between pills.
+// The key list below is the exact set of literal keys statusHeader passes to
+// its tc(key) lookup (view.go) — read off every tc("...") call site by hand,
+// not copied from any theme table.
+//
+// RE-H (fix-e1 review of W-E-01) found the prior version of this test used
+// its own 10-key list, checked against ThemeDefault only, disconnected from
+// both directions of the real consumer: it included three keys ("name",
+// "think", "cache") statusHeader never looks up — theme-table entries with
+// zero readers, rendered permanently dead by tc()'s silent fallback — and
+// omitted two it does ("total", the four "perm_*" keys), so the test neither
+// caught the dead keys nor covered half of what actually renders. Extending
+// the key list to the real set surfaced three more real collisions the old
+// list's blind spot had hidden in every theme it checked (ThemeDefault) and
+// every one it never checked at all (ThemeHighContrast, ThemeMuted):
+// "perm_edits" was byte-identical to "mode" in all three tables, and
+// "perm_default"/"tools" were byte-identical in ThemeMuted — same pill,
+// different meanings. All four are now distinct colours (styles.go, RE-H
+// comments on those entries) and this test loops themeList instead of just
+// ThemeDefault so a fourth can't hide the same way.
+//
+// The require.Len(tm.Colors)==len(keys) assertion below is what makes this
+// self-enforcing going forward: a table entry added without a matching
+// tc() call (recreating RE-H) changes tm.Colors' size without keys', and a
+// keys entry added without a matching table entry fails the "missing
+// segment" check — either drift is caught here instead of silently
+// tolerated by tc()'s fallback.
 func TestModel_FooterColorized(t *testing.T) {
 	m := newModel(&fakeSession{}, "/proj")
 	m = m.applyEvent(cli.StreamEvent{
@@ -895,26 +1020,33 @@ func TestModel_FooterColorized(t *testing.T) {
 	assert.Contains(t, footer, "1.6%")
 	assert.Contains(t, footer, "总消耗") // unified consumption segment (in+out)
 
-	// Default theme: every segment with a distinct (fg,bg,bold) tuple so the
-	// Powerline bar has visible contrast between pills.
-	tm, ok := themeByName(ThemeDefault)
-	require.True(t, ok, "default theme must exist")
-	keys := []string{"name", "mode", "dir", "git", "model", "ctx", "think", "cache", "tools", "queue"}
-	seen := make(map[string]string, len(keys))
-	for _, k := range keys {
-		c, ok2 := tm.Colors[k]
-		if !ok2 {
-			t.Fatalf("default theme missing segment %q", k)
-		}
-		// Colour must be set.
-		assert.NotEmptyf(t, c.fg, "default theme %q fg must be set", k)
-		assert.NotEmptyf(t, c.bg, "default theme %q bg must be set", k)
-		// (fg,bg,bold) tuple must be unique so pills are distinguishable.
-		key := fmt.Sprintf("fg=%s bg=%s bold=%v", c.fg, c.bg, c.bold)
-		if prev, dup := seen[key]; dup {
-			t.Fatalf("segment %q reuses the colour tuple of %q — segments must differ", k, prev)
-		}
-		seen[key] = k
+	keys := []string{
+		"dir", "mode", "git", "model", "ctx", "total",
+		"perm_default", "perm_edits", "perm_auto", "perm_yolo",
+		"tools", "queue",
+	}
+	for _, tm := range themeList {
+		t.Run(string(tm.Name), func(t *testing.T) {
+			require.Lenf(t, tm.Colors, len(keys),
+				"theme %q has %d segment(s) but statusHeader only looks up %d keys — table and consumer have drifted (RE-H)",
+				tm.Name, len(tm.Colors), len(keys))
+			seen := make(map[string]string, len(keys))
+			for _, k := range keys {
+				c, ok2 := tm.Colors[k]
+				if !ok2 {
+					t.Fatalf("theme %q missing segment %q that statusHeader looks up", tm.Name, k)
+				}
+				// Colour must be set.
+				assert.NotEmptyf(t, c.fg, "theme %q %q fg must be set", tm.Name, k)
+				assert.NotEmptyf(t, c.bg, "theme %q %q bg must be set", tm.Name, k)
+				// (fg,bg,bold) tuple must be unique so pills are distinguishable.
+				key := fmt.Sprintf("fg=%s bg=%s bold=%v", c.fg, c.bg, c.bold)
+				if prev, dup := seen[key]; dup {
+					t.Fatalf("theme %q: segment %q reuses the colour tuple of %q — segments must differ", tm.Name, k, prev)
+				}
+				seen[key] = k
+			}
+		})
 	}
 }
 
@@ -1791,4 +1923,103 @@ func TestModel_StartupBannerAsyncTools(t *testing.T) {
 	mm2, _ := m.Update(startupToolsMsg{rows: ""})
 	m = mm2.(model)
 	assert.Equal(t, prev, m.startupBanner.info, "empty rows must not mutate the banner")
+}
+
+// ---- RE-J (fix-e1 review of W-E-01): server-sent tool-output text must not
+// carry escape sequences into the terminal ----
+//
+// applyEvent's doc comment names the four toolEntry fields this covers
+// (result, progress, nestedText, nestedThought); these tests exercise each
+// one THROUGH applyEvent (not by constructing a toolEntry directly and
+// calling stripANSI by hand) so a future edit that reorders or drops one of
+// the seven ev.Text assignment sites fails here, not just in a unit test of
+// stripANSI itself. escPayload mirrors the review's named example
+// ("ls --color=always" emitting live SGR codes: ESC [ 3 1 m ... ESC [ 0 m).
+const escPayload = "before\x1b[31mRED\x1b[0mafter"
+
+// TestApplyEvent_StripsANSIFromToolResult proves a finished tool's plain-text
+// result (the toolDispNormal / toolDispTail-while-JSON-fails shape) has its
+// ESC bytes removed before landing in toolEntry.result, so renderNormal's
+// direct resultStyle.Render(e.result) (entries.go) never sees them.
+func TestApplyEvent_StripsANSIFromToolResult(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	m = m.applyEvent(cli.StreamEvent{Kind: "tool_call", ToolName: "memory_save", ToolStatus: "running"})
+	m = m.applyEvent(cli.StreamEvent{Kind: "tool_result", ToolName: "memory_save", Text: escPayload, ToolStatus: "ok"})
+	got := m.entries[len(m.entries)-1].(*toolEntry).result
+	assert.NotContains(t, got, "\x1b", "tool_result text must be stripped of ESC bytes")
+	assert.Equal(t, "beforeREDafter", got)
+}
+
+// TestApplyEvent_StripsANSIFromStandaloneToolResult covers the same field via
+// the OTHER assignment site (model.go's "no preceding tool_call" fallback
+// branch, used for out-of-order frame delivery) — a fix that only touched
+// the primary branch would leave this one live.
+func TestApplyEvent_StripsANSIFromStandaloneToolResult(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	m = m.applyEvent(cli.StreamEvent{Kind: "tool_result", ToolName: "memory_save", Text: escPayload, ToolStatus: "ok"})
+	got := m.entries[len(m.entries)-1].(*toolEntry).result
+	assert.NotContains(t, got, "\x1b", "standalone tool_result text must be stripped of ESC bytes")
+	assert.Equal(t, "beforeREDafter", got)
+}
+
+// TestApplyEvent_StripsANSIFromToolProgress proves a RUNNING shell_run's live
+// stdout chunks (tool_progress events) are stripped before landing in
+// toolEntry.progress — this is the primary RE-J surface: renderTail joins
+// e.progress and renders it through renderToolOutput while the command is
+// still running, well before any JSON envelope exists to decode.
+func TestApplyEvent_StripsANSIFromToolProgress(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	m = m.applyEvent(cli.StreamEvent{Kind: "tool_call", ToolName: "shell_run", ToolStatus: "running"})
+	m = m.applyEvent(cli.StreamEvent{Kind: "tool_progress", ToolName: "shell_run", Text: escPayload})
+	got := m.entries[len(m.entries)-1].(*toolEntry).progress
+	require.Len(t, got, 1)
+	assert.NotContains(t, got[0], "\x1b", "tool_progress text must be stripped of ESC bytes")
+	assert.Equal(t, "beforeREDafter", got[0])
+}
+
+// TestApplyEvent_StripsANSIFromToolChunk covers tool_chunk's two branches
+// (Overwrite=true replaces progress wholesale; Overwrite=false appends) —
+// both are separate assignment sites in model.go and both must strip.
+func TestApplyEvent_StripsANSIFromToolChunk(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	m = m.applyEvent(cli.StreamEvent{Kind: "tool_call", ToolName: "workflow_start", ToolStatus: "running"})
+
+	m = m.applyEvent(cli.StreamEvent{Kind: "tool_chunk", ToolName: "workflow_start", Text: escPayload, Overwrite: true})
+	e := m.entries[len(m.entries)-1].(*toolEntry)
+	require.Len(t, e.progress, 1)
+	assert.NotContains(t, e.progress[0], "\x1b", "overwrite tool_chunk text must be stripped of ESC bytes")
+	assert.Equal(t, "beforeREDafter", e.progress[0])
+
+	m = m.applyEvent(cli.StreamEvent{Kind: "tool_chunk", ToolName: "workflow_start", Text: escPayload, Overwrite: false})
+	e = m.entries[len(m.entries)-1].(*toolEntry)
+	require.Len(t, e.progress, 2)
+	assert.NotContains(t, e.progress[1], "\x1b", "appended tool_chunk text must be stripped of ESC bytes")
+	assert.Equal(t, "beforeREDafter", e.progress[1])
+}
+
+// TestApplyEvent_StripsANSIFromNestedText proves a sub-agent's streamed
+// answer text (agent_chunk while a nested agent tool is running, routed into
+// nestedText) is stripped — this feeds renderAgent's expanded body, which
+// funnels into the same renderToolOutput/resultStyle.Render consumer as
+// shell_run's output.
+func TestApplyEvent_StripsANSIFromNestedText(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	m = startRunningAnalysis(m)
+	m = m.applyEvent(cli.StreamEvent{Kind: "agent_chunk", Text: escPayload})
+	nt := findNestedTool(t, m)
+	assert.NotContains(t, nt.nestedText, "\x1b", "nestedText must be stripped of ESC bytes")
+	assert.Equal(t, "beforeREDafter", nt.nestedText)
+}
+
+// TestApplyEvent_StripsANSIFromNestedThought mirrors
+// TestApplyEvent_StripsANSIFromNestedText for the "thinking" branch's
+// nestedThought field (rendered as the expanded-body fallback in renderAgent
+// when neither activity nor nestedText is present).
+func TestApplyEvent_StripsANSIFromNestedThought(t *testing.T) {
+	m := newModel(&fakeSession{}, "/proj")
+	m = startRunningAnalysis(m)
+	m = m.applyEvent(cli.StreamEvent{Kind: "thinking", Text: escPayload})
+	nt := findNestedTool(t, m)
+	assert.NotContains(t, nt.nestedThought, "\x1b", "nestedThought must be stripped of ESC bytes")
+	assert.Equal(t, "beforeREDafter", nt.nestedThought)
 }

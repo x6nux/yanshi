@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -40,7 +41,7 @@ func TestPreferences_FourLevelMerge(t *testing.T) {
 		// future default flip fails this test instead of passing silently.
 		HighContrast: false, Vim: false, Frecency: true,
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("flag precedence: got %#v want %#v", got, want)
 	}
 
@@ -51,7 +52,7 @@ func TestPreferences_FourLevelMerge(t *testing.T) {
 		HighContrast: true, Vim: true,
 		Frecency: true,
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("env precedence: got %#v want %#v", got, want)
 	}
 
@@ -62,7 +63,7 @@ func TestPreferences_FourLevelMerge(t *testing.T) {
 		HighContrast: false, Vim: false,
 		Frecency: true,
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("user precedence: got %#v want %#v", got, want)
 	}
 
@@ -73,7 +74,7 @@ func TestPreferences_FourLevelMerge(t *testing.T) {
 		HighContrast: false, Vim: false,
 		Frecency: true,
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("defaults: got %#v want %#v", got, want)
 	}
 }

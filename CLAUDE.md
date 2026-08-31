@@ -16,6 +16,7 @@
 go build -o yanshi ./cmd/yanshi              # 构建 CLI
 go run ./cmd/testchanged [flags]             # 仅测有变更的包（见下方说明）
 go test ./...                                # 全量测试套件（缓存生效）
+go test -C third_party/bubbletea ./...       # fork 的测试（独立 module，上一行够不着）
 go test ./internal/tools -run TestName       # 跑单个测试（或 -run /TestSub/）
 go test -tags e2e_real ./internal/acp/...    # 真实 CLI 的端到端测试（构建标签）
 go vet ./...                                 # vet（仓库内不存在 golangci-lint 配置）

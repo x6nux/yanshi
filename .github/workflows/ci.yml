@@ -38,6 +38,22 @@ jobs:
       # e2e_real build tag is off by default -> codex/claudecode CLIs are not
       # needed. eino/bootstrap t.Skip on missing providers is expected, not a fail.
       - run: go test ./...
+      # RE-26: third_party/bubbletea is a SEPARATE module (go.mod there, wired
+      # in by a replace directive), so the main module's `go test ./...` above
+      # cannot reach it -- `go list ./...` does not even mention it. Every test
+      # in the fork had therefore never run in CI, including
+      # key_windows_ctrlenter_test.go, the sole automated guard on the one
+      # behaviour CLAUDE.md names as the reason the fork exists (telling
+      # Ctrl+Enter from Enter on Windows), and the six title/notify tests W-E
+      # listed as its byte-level acceptance evidence.
+      #
+      # This is a STEP on the existing test matrix rather than a new job on
+      # purpose: the fork's load-bearing divergence from upstream is
+      # Windows-only, so it has to run on the same ubuntu/windows/macos legs
+      # the main suite already has -- a standalone ubuntu job would still leave
+      # the Ctrl+Enter test unexecuted.
+      - name: go test (third_party/bubbletea fork -- separate module)
+        run: go test -C third_party/bubbletea ./...
 
   vet:
     name: vet

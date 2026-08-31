@@ -3,59 +3,142 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/muesli/termenv"
+
+	"github.com/x6nux/yanshi/internal/difflib"
 )
 
-// ---- B4: unified diff for fs_edit/fs_write (T3 diff) ---------------------
+// The LCS algorithm itself (Compute/Compact/Unified/SplitLines) is tested in
+// internal/difflib — this file only covers the tui-local rendering built on
+// top of it: the line-number gutter, add/del counting, and colored output.
 
-// TestUnifiedDiff proves unifiedDiff produces a minimal line-level LCS diff:
-// unchanged lines carry a leading " ", removed lines "-", added lines "+".
-// The classic invariant — equal lines never appear with + or - — catches a
-// broken DP table (e.g. swapped indices, off-by-one in backtrack).
-func TestUnifiedDiff(t *testing.T) {
-	d := unifiedDiff("a\nb\nc", "a\nx\nc")
-	if !strings.Contains(d, "-b") || !strings.Contains(d, "+x") {
-		t.Fatalf("diff 缺增删行:\n%s", d)
-	}
-	if strings.Contains(d, "-a") || strings.Contains(d, "+a") || strings.Contains(d, "-c") || strings.Contains(d, "+c") {
-		t.Fatalf("未变行 a/c 不应在 diff:\n%s", d)
+// TestCountOps proves countOps tallies Insert/Delete and ignores Equal.
+func TestCountOps(t *testing.T) {
+	ops := difflib.Compute("a\nb\nc", "a\nx\nc")
+	add, del := countOps(ops)
+	if add != 1 || del != 1 {
+		t.Fatalf("got add=%d del=%d, want add=1 del=1", add, del)
 	}
 }
 
-// TestUnifiedDiffAllInsert proves the all-insert case (empty old → multi-line
-// new) produces only "+" lines; the empty-old edge case must not panic or
-// silently drop content.
-func TestUnifiedDiffAllInsert(t *testing.T) {
-	d := unifiedDiff("", "x\ny")
-	if !strings.Contains(d, "+x") || !strings.Contains(d, "+y") {
-		t.Fatalf("全增:\n%s", d)
-	}
-	if strings.Contains(d, "-") {
-		t.Fatalf("空 old 不应有删除行:\n%s", d)
+// TestCountOps_Identical proves an all-context diff counts zero add/del.
+func TestCountOps_Identical(t *testing.T) {
+	ops := difflib.Compute("a\nb", "a\nb")
+	add, del := countOps(ops)
+	if add != 0 || del != 0 {
+		t.Fatalf("got add=%d del=%d, want 0/0", add, del)
 	}
 }
 
-// TestUnifiedDiffAllDelete proves the all-delete case (non-empty old → empty
-// new) produces only "-" lines.
-func TestUnifiedDiffAllDelete(t *testing.T) {
-	d := unifiedDiff("x\ny", "")
-	if !strings.Contains(d, "-x") || !strings.Contains(d, "-y") {
-		t.Fatalf("全删:\n%s", d)
+// TestDiffGutterWidth proves the gutter width is the digit count of the
+// largest old/new line number appearing in the ops — a 9-line diff gets a
+// 1-wide gutter, a 10-line diff gets 2-wide.
+func TestDiffGutterWidth(t *testing.T) {
+	// Same line count on both sides (one line changed in the middle) keeps
+	// the max old/new line number equal to the total line count, so a
+	// 9-line file yields width 1 and a 10-line file yields width 2.
+	nineOld := strings.Repeat("x\n", 9)
+	nineNew := strings.Repeat("x\n", 4) + "y\n" + strings.Repeat("x\n", 4)
+	nine := difflib.Compute(nineOld, nineNew)
+	if w := diffGutterWidth(nine); w != 1 {
+		t.Fatalf("9-line diff: got width %d, want 1", w)
 	}
-	if strings.Contains(d, "+") {
-		t.Fatalf("空 new 不应有新增行:\n%s", d)
+	tenOld := strings.Repeat("x\n", 10)
+	tenNew := strings.Repeat("x\n", 5) + "y\n" + strings.Repeat("x\n", 4)
+	ten := difflib.Compute(tenOld, tenNew)
+	if w := diffGutterWidth(ten); w != 2 {
+		t.Fatalf("10-line diff: got width %d, want 2", w)
 	}
 }
 
-// TestUnifiedDiffIdentical proves equal inputs produce only context (" ")
-// lines, never + or -.
-func TestUnifiedDiffIdentical(t *testing.T) {
-	d := unifiedDiff("a\nb", "a\nb")
-	for _, ln := range strings.Split(d, "\n") {
-		if len(ln) == 0 || ln[0] != ' ' {
-			t.Fatalf("全等输入应全为 context 行: got %q in %q", ln, d)
-		}
+// TestDiffGutterText proves the gutter blanks the side that does not apply
+// (no OldLine for Insert, no NewLine for Delete) rather than printing a
+// misleading "0" — a reader must be able to tell "not applicable" apart from
+// "line 0".
+func TestDiffGutterText(t *testing.T) {
+	eq := diffGutterText(difflib.Op{Kind: difflib.Equal, OldLine: 3, NewLine: 5}, 2)
+	if !strings.Contains(eq, "3") || !strings.Contains(eq, "5") {
+		t.Fatalf("Equal gutter missing a line number: %q", eq)
+	}
+	ins := diffGutterText(difflib.Op{Kind: difflib.Insert, NewLine: 7}, 2)
+	if strings.Contains(ins, "0") {
+		t.Fatalf("Insert gutter should not show OldLine as 0: %q", ins)
+	}
+	if !strings.Contains(ins, "7") {
+		t.Fatalf("Insert gutter missing NewLine: %q", ins)
+	}
+	del := diffGutterText(difflib.Op{Kind: difflib.Delete, OldLine: 4}, 2)
+	if strings.Contains(del, "0") {
+		t.Fatalf("Delete gutter should not show NewLine as 0: %q", del)
+	}
+	if !strings.Contains(del, "4") {
+		t.Fatalf("Delete gutter missing OldLine: %q", del)
 	}
 }
+
+// TestRenderColoredDiff_LineNumbers proves renderColoredDiff embeds both
+// old and new line numbers alongside the sigil-prefixed content (W-E-02's
+// "diff 带行号" acceptance criterion) — not just the sigil.
+func TestRenderColoredDiff_LineNumbers(t *testing.T) {
+	ops := difflib.Compute("a\nb\nc", "a\nx\nc")
+	out := renderColoredDiff(ops)
+	if !strings.Contains(out, "-b") || !strings.Contains(out, "+x") {
+		t.Fatalf("diff missing add/remove content:\n%s", out)
+	}
+	// Line 2 is the deleted "b" (old line 2, no new line) and line 2 is also
+	// where "x" is inserted (new line 2, no old line) — both numerals must
+	// appear somewhere in the gutter output.
+	if !strings.Contains(out, "2") {
+		t.Fatalf("diff missing line-number gutter:\n%s", out)
+	}
+}
+
+// TestRenderColoredDiff_AsciiSuppressesColor is the mandatory negative
+// control for W-E-02's new diff-rendering path (line-number gutter +
+// tiered coloring): under termenv.Ascii (what NO_COLOR degrades to via
+// cli.DetectCapability), rendering a diff must emit ZERO ANSI escape bytes,
+// proving the gutter and sigil styles go through the same
+// ApplyColorProfile-governed lipgloss renderer as the rest of the package —
+// not a hand-rolled ANSI path (E1 found and fixed three such bypasses; this
+// proves renderColoredDiff is not a fourth).
+func TestRenderColoredDiff_AsciiSuppressesColor(t *testing.T) {
+	withColorProfile(t, termenv.Ascii)
+	ops := difflib.Compute("a\nb\nc", "a\nx\nc")
+	out := renderColoredDiff(ops)
+	if strings.ContainsRune(out, '\x1b') {
+		t.Fatalf("Ascii profile: renderColoredDiff output still contains an ANSI escape byte: %q", out)
+	}
+	// Positive control for the negative control above: the same ops under a
+	// color-capable profile DO produce escape bytes, proving the zero count
+	// under Ascii is the profile suppressing color, not the function simply
+	// never emitting any.
+	withColorProfile(t, termenv.ANSI256)
+	colored := renderColoredDiff(ops)
+	if !strings.ContainsRune(colored, '\x1b') {
+		t.Fatalf("ANSI256 profile: expected renderColoredDiff to emit ANSI escapes, got %q", colored)
+	}
+}
+
+// TestRenderColoredDiff_BlankLinePadded covers the blank-content-line case:
+// an Equal op with Line == "" still renders its gutter and 4-space indent
+// rather than collapsing to nothing.
+func TestRenderColoredDiff_BlankLinePadded(t *testing.T) {
+	ops := []difflib.Op{
+		{Kind: difflib.Equal, Line: "a", OldLine: 1, NewLine: 1},
+		{Kind: difflib.Equal, Line: "", OldLine: 2, NewLine: 2},
+		{Kind: difflib.Insert, Line: "b", NewLine: 3},
+	}
+	out := renderColoredDiff(ops)
+	if !strings.Contains(out, "+b") {
+		t.Fatalf("missing +b line:\n%s", out)
+	}
+	if !strings.Contains(out, "    ") {
+		t.Fatalf("blank diff line should still carry the 4-space indent:\n%s", out)
+	}
+}
+
+// ---- B4: unified diff rendering integration (T3 diff) ----------------------
 
 // TestRenderEditDiff proves an fs_edit tool call renders an "Edit" header and
 // either a colored diff (expanded) or a compact "+N -M 行" fold hint with the

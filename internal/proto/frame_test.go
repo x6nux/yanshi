@@ -455,6 +455,7 @@ func goldenFrames() []ServerFrame {
 		NewMemoriesDistilled(7, 2),
 		NewMemoriesCleared(3, ""),
 		NewCheckpointResult("checkpoint abc123 taken"),
+		NewWorkspaceDiff(nil),
 	}
 }
 

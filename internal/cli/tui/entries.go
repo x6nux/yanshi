@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/x6nux/yanshi/internal/difflib"
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/task/work"
 )
@@ -179,6 +180,34 @@ func (e seamRestoredEntry) render(_ int, _ spinner.Model) string {
 			toolMeta.Render("undo:"),
 			okStyle.Render("/restore-turn "+e.undoID+" yes"),
 		))
+	}
+	return b.String()
+}
+
+// workspaceDiffEntry (W-E-13) renders the /diff command's reply: the
+// workspace's pending (uncommitted) main-scope changeset, one file at a time.
+// Per file it feeds difflib.Compute(OldText, NewText) into renderColoredDiff
+// (W-E-02's function, diff.go) — the same line-numbered, tiered-color diff a
+// tool-call block shows — rather than a separate, weaker rendering path.
+// Op=="added" naturally renders all-Insert (OldText is ""), Op=="deleted"
+// naturally renders all-Delete (NewText is ""); no special-casing needed.
+type workspaceDiffEntry struct {
+	files []proto.WorkspaceDiffFile
+}
+
+func (e workspaceDiffEntry) render(_ int, _ spinner.Model) string {
+	if len(e.files) == 0 {
+		return toolMeta.Render("  (no pending workspace changes)") + "\n"
+	}
+	var b strings.Builder
+	b.WriteString(okStyle.Render(fmt.Sprintf("  workspace changes (%s):", pluralCount(len(e.files), "file"))) + "\n")
+	for _, f := range e.files {
+		b.WriteString(fmt.Sprintf("  %s %s\n", toolMeta.Render("["+f.Op+"]"), f.Path))
+		ops := difflib.Compute(f.OldText, f.NewText)
+		if len(ops) == 0 {
+			continue
+		}
+		b.WriteString(renderColoredDiff(ops) + "\n\n")
 	}
 	return b.String()
 }
@@ -667,14 +696,14 @@ func (e *toolEntry) renderDiff(sp spinner.Model) string {
 			// still surfaces the result rather than rendering empty.
 			return e.renderNormal(sp)
 		}
-		diff := unifiedDiff(oldS, newS)
-		if diff == "" {
+		ops := difflib.Compute(oldS, newS)
+		if len(ops) == 0 {
 			return out + "\n"
 		}
 		if e.expanded {
-			out += renderColoredDiff(diff) + "\n\n"
+			out += renderColoredDiff(ops) + "\n\n"
 		} else {
-			add, del := countDiffAddDel(diff)
+			add, del := countOps(ops)
 			hint := fmt.Sprintf("+%d -%d 行", add, del) + "  " + warnStyle.Render("(ctrl+o expand)")
 			out += "  " + toolMeta.Render(hint) + "\n\n"
 		}
@@ -684,44 +713,23 @@ func (e *toolEntry) renderDiff(sp spinner.Model) string {
 		lines := lineCount(content)
 		footprint := "wrote " + pluralCount(lines, "line")
 		if e.expanded && content != "" {
-			preview := truncate(firstLine(content), 80)
-			footprint += "  " + warnStyle.Render("(ctrl+o expand)")
+			// W-E-02: a brand-new file has no "old" to diff against, but that
+			// is not a reason to show only a first-line preview — render it
+			// as an all-Insert diff (every line numbered and green) so the
+			// expanded view shows the actual content, matching fs_edit's
+			// expanded behavior instead of a separate, weaker code path.
 			out += "  " + toolMeta.Render(footprint) + "\n"
-			out += "  " + diffCtxStyle.Render(preview) + "\n\n"
+			out += renderColoredDiff(difflib.Compute("", content)) + "\n\n"
 		} else {
-			out += "  " + toolMeta.Render(footprint) + "\n\n"
+			hint := ""
+			if content != "" {
+				hint = "  " + warnStyle.Render("(ctrl+o expand)")
+			}
+			out += "  " + toolMeta.Render(footprint) + hint + "\n\n"
 		}
 		return out
 	}
 	return out
-}
-
-// renderColoredDiff renders a unified diff (as produced by unifiedDiff) with
-// each line colored by its sigil and indented by 4 spaces so the diff visually
-// nests under the tool-call header like the ⎿ result line of renderNormal.
-// The bare sigil byte is preserved inside the colored output so a reader can
-// still distinguish + / - / " at a glance.
-func renderColoredDiff(diff string) string {
-	const pad = "    "
-	var b strings.Builder
-	for i, ln := range strings.Split(diff, "\n") {
-		if i > 0 {
-			b.WriteByte('\n')
-		}
-		if ln == "" {
-			b.WriteString(pad)
-			continue
-		}
-		switch ln[0] {
-		case '-':
-			b.WriteString(pad + diffDelStyle.Render(ln))
-		case '+':
-			b.WriteString(pad + diffAddStyle.Render(ln))
-		default:
-			b.WriteString(pad + diffCtxStyle.Render(ln))
-		}
-	}
-	return b.String()
 }
 
 // lineCount counts the lines in s using the convention that a trailing "\n"
@@ -868,6 +876,17 @@ func renderToolOutput(s string) string {
 // Returns just the output string (the exit code and duration are LLM metadata,
 // not shown to the TUI user). When the JSON is not parseable it falls back to
 // the raw result string so nothing is silently lost.
+//
+// v.Output is run through stripANSI here, separately from applyEvent's
+// ingestion-time strip on the raw event text (RE-J, fix-e1 review of W-E-01):
+// a literal ESC byte cannot survive inside valid JSON text (encoding/json
+// escapes it to the 6-byte sequence backslash, u, 0, 0, 1, b on the wire),
+// so applyEvent's strip on the still-JSON-encoded result is a no-op for this
+// field — the byte only becomes a real 0x1b again right here, when
+// json.Unmarshal decodes the "output" string, which is why the strip has to
+// be repeated at this second decode point rather than relying on the first
+// one. The plain-result fallback below does not need its own strip: it
+// returns the same string applyEvent already stripped, unparsed.
 func toolResultOutput(result string) string {
 	if result == "" {
 		return ""
@@ -876,12 +895,12 @@ func toolResultOutput(result string) string {
 		Output string `json:"output"`
 	}
 	if json.Unmarshal([]byte(result), &v) == nil {
-		return v.Output
+		return stripANSI(v.Output)
 	}
 	return result
 }
 
-var runningNameStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true) // blue
+var runningNameStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(hueCyan)).Bold(true) // blue (see styles.go's palette consts)
 
 // isAsciiDigits reports whether s is non-empty and all ASCII digits (a cheap
 // check that the token before a tab is an fs_read line number, not content).

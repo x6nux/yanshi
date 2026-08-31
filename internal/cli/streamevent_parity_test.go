@@ -85,6 +85,7 @@ var streamEventFieldMap = map[string]string{
 	"AgentRole":         "AgentRole",
 	"Event":             "AgentEvent",
 	"AgentStatus":       "AgentStatus",
+	"WorkspaceDiff":     "WorkspaceDiff",
 }
 
 // streamEventNotCarried lists the proto.ServerFrame fields toStreamEvent

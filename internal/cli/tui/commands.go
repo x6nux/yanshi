@@ -87,6 +87,7 @@ var commandTable = []command{
 	{name: "plan", help: "enter read-only plan mode (WS only)", run: cmdPlan},
 	{name: "plan-off", help: "exit plan mode, restore previous permission mode", run: cmdPlanOff},
 	{name: "restore-turn", help: "list main seams or revert to a prior turn", run: cmdRestoreTurn},
+	{name: "diff", help: "show pending workspace changes (WS only)", run: cmdDiff},
 	{name: "memory", help: "show active memory file path", run: cmdMemory},
 	{name: "distill", help: "merge redundant memories", helpKey: "tui.command.help.distill", run: cmdDistill},
 	{name: "memory-clear", help: "delete memories: /memory-clear <session|agent <id>|all> yes", run: cmdMemoryClear},
@@ -912,6 +913,30 @@ func cmdRestoreTurn(m model, args []string) (tea.Model, tea.Cmd) {
 	}
 }
 
+// cmdDiff implements /diff (W-E-13): shows the pending (uncommitted) main-scope
+// workspace changeset without switching windows — the reply is rendered by
+// workspaceDiffEntry, which reuses W-E-02's renderColoredDiff. Takes no
+// arguments. SSE is rejected for the same reason cmdRestoreTurn rejects it:
+// list_workspace_diff is a control frame with no SSE-side handling (SSE has
+// no persistent server-side history/session state to query).
+func cmdDiff(m model, args []string) (tea.Model, tea.Cmd) {
+	if m.sess.Mode() == "sse" {
+		m.entries = append(m.entries, errorEntry{
+			text: "/diff requires the WebSocket transport (SSE is stateless)",
+		})
+		m.refresh()
+		m.viewport.GotoBottom()
+		return m, nil
+	}
+	if len(args) != 0 {
+		m.entries = append(m.entries, errorEntry{text: "usage: /diff"})
+		m.refresh()
+		m.viewport.GotoBottom()
+		return m, nil
+	}
+	return m.sendControlFrame(proto.NewListWorkspaceDiff())
+}
+
 // cmdPermissions: /permissions                  → list all approval rules
 //
 //	/permissions revoke <rule-id> → revoke one rule
@@ -1012,21 +1037,15 @@ func newCmdHelpEntry(b *i18n.Bundle, table []command) cmdHelpEntry {
 	sb.WriteString(strings.Join(rows, "\n") + "\n\n")
 	// Keyboard shortcuts section (C3 UX: makes shortcuts discoverable without
 	// reading docs — especially helpful for new users).
-	sb.WriteString(roleAsst.Render("▌ Keyboard shortcuts") + "\n")
-	shortcuts := []struct{ key, action string }{
-		{"Enter", "send message"},
-		{"Ctrl+Enter", "newline"},
-		{"Ctrl+C", "cancel running turn / copy"},
-		{"Ctrl+O", "toggle expand tool block"},
-		{"Ctrl+E", "toggle history view"},
-		{"Ctrl+K", "clear input"},
-		{"Ctrl+S", "toggle spinner/sound"},
-		{"Up/Dn", "scroll transcript"},
-		{"Tab", "autocomplete /command"},
-		{"Esc", "interrupt / close palette"},
-	}
-	for _, sc := range shortcuts {
-		sb.WriteString(fmt.Sprintf("  %-13s  %s\n", sc.key, toolMeta.Render(sc.action)))
+	//
+	// RE-15: this used to be a second, independently-hardcoded shortcut list
+	// that drifted from help.go's keyBindings (F1 popup) — wrong Ctrl+E/Ctrl+K/
+	// Ctrl+S hints and a missing Ctrl+T entry, found because two people had to
+	// maintain the same table twice and only one copy got updated. Rendering
+	// straight from keyBindings makes that a structural impossibility: there is
+	// only one table left to drift.
+	for _, kb := range keyBindings {
+		sb.WriteString(fmt.Sprintf("  %-13s  %s\n", kb.Label, toolMeta.Render(kb.Hint)))
 	}
 	sb.WriteString("\n")
 	return cmdHelpEntry{rows: sb.String()}

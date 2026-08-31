@@ -60,20 +60,52 @@ func TestForkSession_SeqOutOfBoundsRejected(t *testing.T) {
 		"err should mention out-of-range, got: %v", err)
 }
 
-// GB5: only -1 means "all"; -2 and smaller negatives are illegal inputs and must
-// not be silently treated as "all".
-func TestForkSession_NegativeOtherThanMinusOneRejected(t *testing.T) {
+// GB5: only -1 ("all") and -2 ("empty", W-E-11) carry meaning; anything below
+// -2 is an illegal input and must not be silently treated as either.
+func TestForkSession_NegativeBelowMinusTwoRejected(t *testing.T) {
 	st := openTestStore(t)
 	src, _ := st.CreateSession("orig")
 	require.NoError(t, st.AppendMessage(src, 0, "user", "only"))
 
 	before, err := st.ListSessions(0)
 	require.NoError(t, err)
-	_, err = st.ForkSession(src, -2)
+	_, err = st.ForkSession(src, -3)
 	require.Error(t, err)
 	after, err := st.ListSessions(0)
 	require.NoError(t, err)
 	assert.Len(t, after, len(before), "illegal negative must not create a fork row")
+}
+
+// TestForkSession_MinusTwoForksEmptySession proves the W-E-11 sentinel: -2
+// creates a new session with zero messages (not "all", -1's meaning), while
+// still inheriting title/model/thinking and resetting usage per GB6 — the
+// same session-row semantics as every other fork, just with an empty
+// transcript. This is the case "roll back to before my very first message"
+// needs and that -1 cannot express (see ForkSession's doc comment).
+func TestForkSession_MinusTwoForksEmptySession(t *testing.T) {
+	st := openTestStore(t)
+	src, _ := st.CreateSession("orig")
+	require.NoError(t, st.AppendMessage(src, 0, "user", "only"))
+	require.NoError(t, st.UpdateSessionMeta(src, "model-x", "high", 101, 202, 3, 44, 55, BillingMeta{}))
+
+	forkID, err := st.ForkSession(src, -2)
+	require.NoError(t, err)
+	require.NotEqual(t, src, forkID)
+
+	msgs, err := st.Messages(forkID)
+	require.NoError(t, err)
+	assert.Empty(t, msgs, "-2 must copy zero messages")
+
+	fork, err := st.GetSession(forkID)
+	require.NoError(t, err)
+	require.NotNil(t, fork)
+	assert.Equal(t, "model-x", fork.Model, "model must still be inherited on an empty fork")
+	assert.Equal(t, "high", fork.Thinking)
+	assert.Zero(t, fork.TokensIn)
+
+	// Source session is untouched.
+	origMsgs, _ := st.Messages(src)
+	assert.Len(t, origMsgs, 1, "source session row count must not change")
 }
 
 // GB6: the message prefix is copied, but cumulative usage/turns cannot be carried

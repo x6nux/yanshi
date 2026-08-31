@@ -120,8 +120,12 @@ func TestChatWS_PermissionRevokeNoManager(t *testing.T) {
 	assert.Equal(t, "error", f.Type)
 }
 
-// TestChatWS_ListSeamsNoVCS proves list_seams returns empty list when VCS is
-// not configured.
+// TestChatWS_ListSeamsNoVCS proves list_seams returns an error frame — not an
+// empty list — when VCS is not configured (RE-6): an empty list is
+// indistinguishable on the wire from "VCS enabled, no seams yet", which used
+// to tell a user on a VCS-less server that /seams had nothing to show
+// instead of that the feature isn't available at all. Matches
+// TestChatWS_RestoreTurnNoVCS below, which already expected an error here.
 func TestChatWS_ListSeamsNoVCS(t *testing.T) {
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
@@ -134,8 +138,8 @@ func TestChatWS_ListSeamsNoVCS(t *testing.T) {
 
 	require.NoError(t, c.WriteJSON(proto.NewListSeams()))
 	f := readFrame(t, c)
-	assert.Equal(t, "seams", f.Type)
-	assert.Empty(t, f.Seams)
+	assert.Equal(t, "error", f.Type)
+	assert.Contains(t, f.Text, "list_seams")
 }
 
 // TestChatWS_RestoreTurnNoVCS proves restore_turn returns an error when VCS

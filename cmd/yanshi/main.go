@@ -804,6 +804,7 @@ func runTUI(ctx context.Context, opts cli.Options) error {
 			HighContrast: cfg.TUI.HighContrast,
 			Vim:          cfg.TUI.Vim,
 			Frecency:     cfg.TUI.Frecency,
+			Notify:       cfg.TUI.Notify,
 		}
 		tui.SetProjectBindings(cfg.TUI.Bindings)
 	}

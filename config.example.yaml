@@ -593,13 +593,14 @@ i18n:
 # D3-C15 TUI 键位/主题偏好。bindings 的方向固定为 key: action(与 keymap
 # 内置 builder 一致)。
 #
-# 接线现状(照抄本文件建 config.yaml 前先读这段):本块四个键当前只被
-# `yanshi doctor` 消费(internal/cli/doctor.go 的 checkKeymapConfig /
-# checkHighContrastConfig),TUI 不读它们——主题与键位都是硬编码默认值;
-# 没有任何运行时命令回写它们,也不加载任何 preferences 文件。也就是说:
-# 这几个键会被校验和体检报告,但不会被应用。vim/high_contrast 是 *bool,
-# 省略与显式 false 在配置层可区分,但目前两者的运行时效果相同(都不生效)。
-# 权威说明见 internal/config.TUIConfig 的 doc 注释。
+# 接线现状(照抄本文件建 config.yaml 前先读这段):本块字段自 W8 起经
+# cmd/yanshi/main.go 读入 tui.Preferences 项目层(flags > env > user >
+# project 四层稀疏层级中的最低一层,defaults 是这四层之下的基线而不是第五层
+# —— 见 internal/cli/tui/preferences.go 的 mergeTUIPrefs),同时 `yanshi doctor`
+# (checkKeymapConfig / checkHighContrastConfig)仍会独立校验并在体检报告
+# 中复述同一批键。两条消费路径都是真的。vim/high_contrast/frecency/notify
+# 是 *bool,省略与显式 false 在配置层可区分。权威说明见
+# internal/config.TUIConfig 的 doc 注释。
 tui:
   keymap: default
   theme: default
@@ -610,6 +611,10 @@ tui:
   # 一点的文件使用画像。存储位置与 prefs.json 同目录（全局单文件），项目隔离
   # 是读取时按 work root 过滤，不是每项目一个文件。
   frecency: true
+  # W-E-04：任务结束时的桌面通知（能力受支持的终端用 OSC 9，TERM=dumb 这类
+  # 降级为纯 BEL 响铃，不支持时保持静默）。默认 false —— 与 frecency 的默认
+  # 相反：一个默认就对着桌面弹通知的 agent 是本批次明确要避免的「烦人默认值」。
+  notify: false
   bindings:
     enter: send
     ctrl+enter: newline

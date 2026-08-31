@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/x6nux/yanshi/internal/guard"
 )
@@ -50,9 +51,14 @@ func (m model) sessionPickerPopup() string {
 		if s.Model != "" {
 			modelInfo = " " + s.Model
 		}
-		line := fmt.Sprintf("  %-4s  %s\n    %s  %s  %d msgs%s",
+		// W-E-08: show the last message snippet when the server provided one.
+		previewLine := ""
+		if s.Preview != "" {
+			previewLine = "\n    " + toolMeta.Render(truncate(s.Preview, 60))
+		}
+		line := fmt.Sprintf("  %-4s  %s\n    %s  %s  %d msgs%s%s",
 			toolMeta.Render(s.ID), title,
-			created, okStyle.Render("•"), s.MsgCount, modelInfo)
+			created, okStyle.Render("•"), s.MsgCount, modelInfo, previewLine)
 		if i == m.restoreCursor {
 			b.WriteString(selPaletteStyle.Render("▶ " + line))
 		} else {
@@ -187,8 +193,32 @@ func (m *model) reflow() {
 	if hp := m.historyPopup(); hp != "" {
 		historyH = blockHeight(hp, m.width)
 	}
+	// W-E-11: Esc-Esc rollback picker. Modal; reserve height.
+	rollbackH := 0
+	if rp := m.rollbackPopup(); rp != "" {
+		rollbackH = blockHeight(rp, m.width)
+	}
 	m.viewport.Width = m.width
-	m.viewport.Height = max(3, m.height-footerH-inputH-statusH-paletteH-permH-yoloH-pickerH-cmdPickerH-queueH-toastH-actionH-helpH-historyH)
+	if m.pagerVisible {
+		// W-E-03: fullscreen takeover. Skip every other block's reserved
+		// height and give the whole screen to the shared viewport except
+		// the pager's own one-line control hint.
+		//
+		// RE-16: this used to claim the skipped blocks "cannot be showing"
+		// because Ctrl+T's guard in handlers.go refuses to open the pager
+		// while any of them is already open — true for every OTHER modal
+		// (palette/picker/action/help), but false for the permission popup,
+		// which has no early-return modal block of its own and can go
+		// pending asynchronously (server push) at any time, including while
+		// the pager is already open. That gap is closed at the source
+		// instead: model.go's streamMsg case force-closes the pager the
+		// instant a permission goes pending, so by the time reflow ever
+		// runs with m.pagerVisible still true, no permission can be
+		// pending — pinned by TestPermissionRequest_ForceClosesPager.
+		m.viewport.Height = max(3, m.height-blockHeight(m.pagerHint(), m.width))
+	} else {
+		m.viewport.Height = max(3, m.height-footerH-inputH-statusH-paletteH-permH-yoloH-pickerH-cmdPickerH-queueH-toastH-actionH-helpH-historyH-rollbackH)
+	}
 	m.refresh()
 	// Re-clamp YOffset after a Height change. A GotoBottom from an event that
 	// arrived BEFORE WindowSizeMsg (e.g. fetchInitialStatus) runs against the
@@ -312,6 +342,27 @@ func (m *model) refresh() {
 // factored out so selection can operate on the whole screen (covering the
 // footer too, not just the transcript).
 func (m model) renderScreen() string {
+	// W-E-03: fullscreen pager takeover — bypass every other block (toasts,
+	// input, footer, all popups) entirely.
+	//
+	// RE-16: that bypass is only safe for modals handlers.go's Ctrl+T guard
+	// keeps from opening under the pager (palette/picker/action/help) — the
+	// permission popup is not one of them (see reflow's matching comment
+	// above). model.go's streamMsg handler force-closes the pager as soon
+	// as a permission goes pending, so this branch never actually runs
+	// while one is — but that invariant lives in model.go, not here; if it
+	// ever stops holding, this is where a pending permission would silently
+	// stop rendering.
+	if m.pagerVisible {
+		return lipgloss.JoinVertical(lipgloss.Left, m.viewport.View(), m.pagerHint())
+	}
+	// W-E-16: first-run onboarding wizard. Modal like the pager but rendered
+	// in the normal block flow (above the input) — it shows at startup before
+	// anything else can be open.
+	if ob := m.onboardingPopup(); ob != "" {
+		return lipgloss.JoinVertical(lipgloss.Left, m.viewport.View(), ob,
+			inputBorder.Render(m.input.View()), m.statusHeader())
+	}
 	// C2 — UX7: toast stack overlays the TOP of the viewport (above the
 	// transcript, below popups). Rendered first so it sits visually closest to
 	// the conversation flow (turn-end receipts) rather than over the input.
@@ -347,6 +398,10 @@ func (m model) renderScreen() string {
 	// C2 — UX6: history search popup (Alt+R). Rendered alongside other popups.
 	if hp := m.historyPopup(); hp != "" {
 		blocks = append(blocks, hp)
+	}
+	// W-E-11: Esc-Esc rollback picker. Rendered alongside other popups.
+	if rp := m.rollbackPopup(); rp != "" {
+		blocks = append(blocks, rp)
 	}
 	if pb := m.paletteBlock(); pb != "" {
 		blocks = append(blocks, pb)
@@ -615,6 +670,70 @@ type segmentDef struct {
 	bold bool
 }
 
+// footerColorSeq converts a raw ANSI-256 color code (e.g. "236", as stored in
+// segmentDef/theme tables) into the SGR parameter string appropriate for the
+// terminal color profile most recently applied via ApplyColorProfile — "" for
+// termenv.Ascii (NO_COLOR / TERM=dumb), a downgraded 16-color code for
+// termenv.ANSI, or the code unchanged for ANSI256/TrueColor. code == "" (no
+// color wanted on this side) also yields "". bg selects background (true) vs
+// foreground (false).
+func footerColorSeq(code string, bg bool) string {
+	c := currentColorProfile().Color(code)
+	if c == nil {
+		return ""
+	}
+	return c.Sequence(bg)
+}
+
+// footerSGRParts builds the SGR parameter list for a footer chunk: bold (if
+// set and the profile allows it) followed by whichever of fg/bg survive
+// footerColorSeq's profile downgrade. An empty result means "no escape
+// needed at all" — the caller (sgrWrap) then emits the plain text with no
+// \x1b bytes, which is what makes NO_COLOR / TERM=dumb produce byte-for-byte
+// colorless footer output instead of degrading to colorless-looking-but-
+// still-escaped output.
+//
+// bold is dropped under termenv.Ascii specifically to match termenv.Style's
+// own Styled() (style.go: "if t.profile == Ascii { return s }") — under
+// Ascii, termenv suppresses ALL styling, not just color, for every
+// lipgloss-rendered element elsewhere in this package. A real tuidbg capture
+// under NO_COLOR=1 confirmed this: roleUser (Bold+Foreground, rendering
+// "you:") produced zero escape bytes end to end.
+//
+// This footer is not the only hand-rolled path that needed its own downgrade
+// — an earlier version of this comment claimed keeping bold here would make
+// the footer "the one element in the UI that still emits an escape under
+// NO_COLOR"; that claim was false. glamour's markdown renderer (renderMarkdown
+// in styles.go) hit the same rule from a different bug: glamour v1.0.0's
+// termenv-backed bold/underline styling ignores the profile it was
+// constructed with (termenv@v0.16.0's Style.String() hardcodes profile=ANSI
+// internally), so under Ascii it kept emitting \x1b[1m/\x1b[4m/degenerate
+// empty SGR sequences until renderMarkdown started stripping its output
+// post-hoc. If a third such path turns up, fix this comment again rather
+// than let it keep asserting uniqueness that isn't real.
+func footerSGRParts(fg, bg string, bold bool) []string {
+	var parts []string
+	if bold && currentColorProfile() != termenv.Ascii {
+		parts = append(parts, "1")
+	}
+	if seq := footerColorSeq(fg, false); seq != "" {
+		parts = append(parts, seq)
+	}
+	if seq := footerColorSeq(bg, true); seq != "" {
+		parts = append(parts, seq)
+	}
+	return parts
+}
+
+// sgrWrap wraps text in the given SGR parts ("\x1b[<parts>m" ... "\x1b[0m"),
+// or returns text unchanged when parts is empty — see footerSGRParts.
+func sgrWrap(text string, parts []string) string {
+	if len(parts) == 0 {
+		return text
+	}
+	return "\x1b[" + strings.Join(parts, ";") + "m" + text + "\x1b[0m"
+}
+
 // renderFooter assembles a Powerline-style footer bar from segments. Each
 // segment has its own background color; adjacent segments are joined by a
 // Powerline arrow (U+E0B0) whose foreground transitions from the previous
@@ -629,30 +748,33 @@ type segmentDef struct {
 // The bar is right-filled to width with the default footer background so it
 // spans the entire terminal width edge-to-edge. When width < 4 (uninitialised)
 // no right-fill is applied.
+//
+// Every color code here is routed through footerSGRParts/footerColorSeq
+// rather than written as a raw "\x1b[38;5;N...m" literal (W-E-01): this bar
+// is built by hand, outside lipgloss's Style.Render path that
+// ApplyColorProfile otherwise governs for the rest of this package, so
+// without this indirection NO_COLOR/TERM=dumb/COLORTERM would have no effect
+// on it at all — exactly what a real tuidbg capture under NO_COLOR=1 caught.
 func renderFooter(segs []segmentDef, width int) string {
 	const footerBg = "236"
 	var b strings.Builder
 
 	// Left padding: space on the default footer background.
-	b.WriteString("\x1b[48;5;" + footerBg + "m \x1b[0m")
+	b.WriteString(sgrWrap(" ", footerSGRParts("", footerBg, false)))
 
 	for i, s := range segs {
 		if i > 0 {
 			prevBg := segs[i-1].bg
 			if s.bg == footerBg && prevBg == footerBg {
 				// Both on default bg → simple dim separator, no colour transition.
-				b.WriteString("\x1b[38;5;240;48;5;" + footerBg + "m │ \x1b[0m")
+				b.WriteString(sgrWrap(" │ ", footerSGRParts("240", footerBg, false)))
 			} else {
 				// Powerline arrow: foreground = previous bg, background = this bg.
-				b.WriteString("\x1b[38;5;" + prevBg + ";48;5;" + s.bg + "m\U0000E0B0\x1b[0m")
+				b.WriteString(sgrWrap("\U0000E0B0", footerSGRParts(prevBg, s.bg, false)))
 			}
 		}
 		// Segment body with its own background and foreground.
-		if s.bold {
-			b.WriteString("\x1b[1;38;5;" + s.fg + ";48;5;" + s.bg + "m" + s.text + "\x1b[0m")
-		} else {
-			b.WriteString("\x1b[38;5;" + s.fg + ";48;5;" + s.bg + "m" + s.text + "\x1b[0m")
-		}
+		b.WriteString(sgrWrap(s.text, footerSGRParts(s.fg, s.bg, s.bold)))
 	}
 
 	// Right-fill: extend the default footer background to the terminal width
@@ -661,7 +783,7 @@ func renderFooter(segs []segmentDef, width int) string {
 		plain := ansiRe.ReplaceAllString(b.String(), "")
 		visWidth := lipgloss.Width(plain)
 		if remaining := width - visWidth; remaining > 0 {
-			b.WriteString("\x1b[48;5;" + footerBg + "m" + strings.Repeat(" ", remaining) + "\x1b[0m")
+			b.WriteString(sgrWrap(strings.Repeat(" ", remaining), footerSGRParts("", footerBg, false)))
 		}
 	}
 	return b.String()
@@ -680,10 +802,20 @@ func (m model) statusHeader() string {
 		t = themeList[0]
 	}
 	tc := func(key string) segmentColors {
-		if c, ok2 := t.Colors[key]; ok2 {
-			return c
+		c, ok2 := t.Colors[key]
+		if !ok2 {
+			c = segmentColors{fg: "255", bg: "236", bold: false}
 		}
-		return segmentColors{fg: "255", bg: "236", bold: false}
+		// RE-E (fix-e1 review of W-E-01): a handful of segments have a
+		// hand-picked replacement for termenv's mechanical 256→16 nearest-
+		// color downgrade (see segmentColors.ansiBg's doc comment for why);
+		// substitute it here, at lookup time, so every caller of tc() — and
+		// the generic footerColorSeq downgrade path both use — gets it for
+		// free without needing to know which keys carry an override.
+		if c.ansiBg != "" && currentColorProfile() == termenv.ANSI {
+			c.bg = c.ansiBg
+		}
+		return c
 	}
 	var segs []segmentDef
 	var c segmentColors
@@ -703,10 +835,28 @@ func (m model) statusHeader() string {
 		segs = append(segs, segmentDef{text: " " + label + " ", fg: c.fg, bg: c.bg, bold: c.bold})
 	}
 
-	// 4. Git branch.
+	// 4. Git branch + W-E-09 diff-stat and open-PR indicator.
 	if m.gitBranch != "" {
+		branchText := " " + m.gitBranch
+		if m.gitDiffStat != "" {
+			branchText += " " + m.gitDiffStat
+		}
+		branchText += " "
 		c = tc("git")
-		segs = append(segs, segmentDef{text: " " + m.gitBranch + " ", fg: c.fg, bg: c.bg, bold: c.bold})
+		segs = append(segs, segmentDef{text: branchText, fg: c.fg, bg: c.bg, bold: c.bold})
+	}
+	// 4b. Open PR (W-E-06 + W-E-09): only when hyperlinks are on and a PR URL exists.
+	if m.gitOpenPRURL != "" {
+		c = tc("git")
+		label := "PR"
+		if m.gitOpenPRTitle != "" {
+			label = truncate(m.gitOpenPRTitle, 22)
+		}
+		text := " " + label + " "
+		if hyperlinksEnabled.Load() && currentColorProfile() != termenv.Ascii {
+			text = " " + termenv.Hyperlink(m.gitOpenPRURL, label) + " "
+		}
+		segs = append(segs, segmentDef{text: text, fg: c.fg, bg: c.bg, bold: c.bold})
 	}
 
 	// 5. Model name.
@@ -866,13 +1016,49 @@ func (m model) renderBody() string {
 		if streamingThought != nil {
 			b.WriteString("\n" + strings.TrimRight(streamingThought.render(m.width, m.spinner), "\n"))
 		}
-		// Streaming pending text is rendered PLAIN (no markdown) so the UI can
-		// keep up with high-frequency agent_chunk deltas — glamour per chunk is
-		// the dominant CPU cost of streaming. On flushAssistant the text moves
-		// into an assistantEntry and is markdown-rendered exactly once (cached).
-		b.WriteString("\n" + strings.TrimRight(pendingStyle.Render(m.pending), "\n") + "\n")
+		// W-E-07: progressive markdown — renderPendingBody shows the last
+		// throttled glamour pass (refreshPendingMarkdown, events.go) plus a
+		// plain-text tail of whatever has streamed in since, rather than
+		// leaving the whole buffer plain until flushAssistant. See its doc
+		// comment for why this stays cheap under high-frequency agent_chunk
+		// deltas.
+		b.WriteString("\n" + strings.TrimRight(m.renderPendingBody(), "\n") + "\n")
 	}
 	return b.String()
+}
+
+// renderPendingBody composes the streaming assistant block for W-E-07:
+// m.pendingRendered (the last throttled glamour pass over m.pending — see
+// refreshPendingMarkdown's doc comment in events.go) plus a plain-text tail
+// of whatever has arrived since that pass. By construction
+// m.pendingRenderedText is always a byte-prefix of m.pending (both only ever
+// grow by append between flushAssistant calls, which zero both together), so
+// slicing at len(m.pendingRenderedText) can never split a multi-byte rune —
+// but the strings.HasPrefix check below does not TRUST that invariant, it
+// VERIFIES it: if some future edit ever reset one of the pair without the
+// other (the exact shape of bug flushAssistant's reset exists to prevent —
+// see its own comment), a bare length-based slice would either panic (stale
+// text longer than the new pending) or silently splice an unrelated stale
+// prefix onto real content. Falling back to the whole buffer plain in that
+// case is the fail-safe direction: an interrupted/malformed render must
+// never crash the TUI or show corrupted output, only (at worst) revert one
+// frame to the pre-W-E-07 plain-text behavior.
+//
+// Also falls back to plain when no pass has run yet at the current width
+// (turn just started, or the terminal was resized since the last pass) — the
+// next agent_chunk's refreshPendingMarkdown re-establishes the cache at the
+// new width; there is no dedicated resize handler for this because that
+// self-heals within one chunk and a mid-stream resize is rare enough not to
+// warrant one.
+func (m model) renderPendingBody() string {
+	if m.pendingRenderedText == "" || m.pendingRenderedWidth != m.width || !strings.HasPrefix(m.pending, m.pendingRenderedText) {
+		return pendingStyle.Render(m.pending)
+	}
+	tail := m.pending[len(m.pendingRenderedText):]
+	if tail == "" {
+		return m.pendingRendered
+	}
+	return m.pendingRendered + pendingStyle.Render(tail)
 }
 
 // assistantRenderKey returns the fingerprint used to memoize an assistantEntry's

@@ -26,25 +26,50 @@ type Preferences struct {
 	// false: the default is ON, so a nil here means "use the default" and a
 	// false means "the user turned it off".
 	Frecency *bool `json:"frecency,omitempty"`
+	// Notify gates W-E-04's desktop notifications. A *bool because unset must
+	// stay distinguishable from explicit false, same as the other switches
+	// here — but unlike Frecency, the merged default (see mergeTUIPrefs) is
+	// OFF: an agent that pings the desktop by default on every finished turn
+	// is the "obnoxious default" this batch's brief explicitly warned against.
+	Notify *bool `json:"notify,omitempty"`
 	// KeymapReset is a sparse user-level tombstone for project tui.bindings:
 	// a stored true would let defaults survive the next startup, nil means
 	// project bindings may still apply. Nothing writes it outside tests —
 	// see the package note on preferencesPath.
 	KeymapReset *bool `json:"keymap_reset,omitempty"`
+	// KeymapBindings is the user-level custom keybindings map. Keys are
+	// normalized key strings (e.g. "ctrl+z"); values are action names (e.g.
+	// "cancel"). Written by /keymap bind <action>, overrides project bindings
+	// but is itself overridden by the env/flags layers.
+	KeymapBindings map[string]string `json:"keymap_bindings,omitempty"`
+	// OnboardingDone is the user-level tombstone for the W-E-16 first-run
+	// wizard: a stored true means "do not show the onboarding again", nil
+	// means the wizard may appear on the next startup. Written when the user
+	// either completes the wizard or explicitly skips it.
+	OnboardingDone *bool `json:"onboarding_done,omitempty"`
 }
 
 // EffectivePreferences is the fully merged, non-sparse result of the cascade.
-// It never contains tri-state values. newModel populates one from hardcoded
-// defaults but never reads it back, so nothing in the TUI is driven by these
-// values yet — see the wiring note on preferencesPath.
+// It never contains tri-state values.
+//
+// The wiring note that used to end this comment ("newModel populates one from
+// hardcoded defaults but never reads it back, so nothing in the TUI is driven
+// by these values yet") went stale in W8 and was false when found: newModel
+// reads UILocale for the i18n bundle, the merged prefs for theme and keymap,
+// Vim to install the vim machine, Frecency to decide whether to load the
+// store at all, and Notify into m.notifyEnabled. It is the same "true when
+// written, never updated" shape TUIConfig's doc comment was rewritten for.
 type EffectivePreferences struct {
-	UILocale     string
-	ThemeName    string
-	KeymapName   string
-	HighContrast bool
-	Vim          bool
-	Frecency     bool
-	KeymapReset  bool
+	UILocale       string
+	ThemeName      string
+	KeymapName     string
+	HighContrast   bool
+	Vim            bool
+	Frecency       bool
+	Notify         bool
+	KeymapReset    bool
+	KeymapBindings map[string]string
+	OnboardingDone bool
 }
 
 // preferencesPersistDisabled mirrors persistPermMode: tests flip it to skip
@@ -112,8 +137,11 @@ func randomSuffix() (string, error) {
 }
 
 // mergeTUIPrefs applies sparse layers from lowest to highest priority:
-// defaults < project config < user prefs < env < flags. All five fields are
-// merged uniformly; pointer booleans make explicit false override lower
+// defaults < project config < user prefs < env < flags — four layers over a
+// defaults baseline, which is why this takes exactly four arguments. Every
+// field is merged uniformly (the count that used to stand here said "five"
+// and the struct has had eight for some time); pointer booleans make explicit
+// false override lower
 // true. KeymapReset participates in the same cascade so a stored keymap-reset
 // tombstone would survive a project config carrying tui.bindings.
 func mergeTUIPrefs(flags, env, user, project Preferences) EffectivePreferences {
@@ -126,6 +154,10 @@ func mergeTUIPrefs(flags, env, user, project Preferences) EffectivePreferences {
 		// keep. The switch exists for users who do not want a usage profile
 		// stored at all.
 		Frecency: true,
+		// Notify defaults OFF (see Preferences.Notify's doc comment) — no
+		// explicit assignment needed since EffectivePreferences' zero value
+		// already is false; stated here so the asymmetry with Frecency reads
+		// as deliberate rather than an oversight.
 	}
 	apply := func(layer Preferences) {
 		if layer.UILocale != "" {
@@ -146,8 +178,22 @@ func mergeTUIPrefs(flags, env, user, project Preferences) EffectivePreferences {
 		if layer.Frecency != nil {
 			out.Frecency = *layer.Frecency
 		}
+		if layer.Notify != nil {
+			out.Notify = *layer.Notify
+		}
 		if layer.KeymapReset != nil {
 			out.KeymapReset = *layer.KeymapReset
+		}
+		// KeymapBindings: each layer is merged entry-by-entry so a user can
+		// add a binding without wiping out the project's other bindings.
+		for k, v := range layer.KeymapBindings {
+			if out.KeymapBindings == nil {
+				out.KeymapBindings = make(map[string]string)
+			}
+			out.KeymapBindings[k] = v
+		}
+		if layer.OnboardingDone != nil {
+			out.OnboardingDone = *layer.OnboardingDone
 		}
 	}
 	apply(project)

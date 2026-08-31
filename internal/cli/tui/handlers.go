@@ -10,6 +10,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -25,6 +26,63 @@ import (
 //
 // nolint:gocyclo // this is a 1:1 extraction of known hotkey dispatch logic
 func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
+	// W-E-16: first-run onboarding wizard is modal — checked FIRST, ahead of
+	// everything else, because it must own every keystroke until the user
+	// either finishes or skips it. Letting keys through here would let the
+	// user start typing into the input box underneath the wizard.
+	if m.onboarding != nil {
+		mm, cmd := m.onboardingKey(msg)
+		return mm, cmd, true
+	}
+
+	// W-E-03: fullscreen pager (Ctrl+T) is modal — checked FIRST, ahead of
+	// every other modal below, because it owns the whole screen: a stray
+	// Up/Down must scroll the pager, not move a picker cursor that cannot
+	// even be on screen right now. Ctrl+T itself is deliberately NOT handled
+	// in this block: it falls through (empty case, no return) all the way to
+	// the shared open/close toggle in the switch at the bottom of this
+	// function — the same pattern F1/helpVisible uses, where the modal's own
+	// hotkey closes it via the SAME case that opened it, not a copy living
+	// inside the modal's dedicated block.
+	if m.pagerVisible {
+		switch msg.Type {
+		case tea.KeyCtrlT:
+			// Falls through — see the comment above.
+		case tea.KeyEscape:
+			cmd := m.closePager()
+			m.reflow()
+			return m, cmd, true
+		case tea.KeyHome:
+			m.viewport.GotoTop()
+			return m, nil, true
+		case tea.KeyEnd:
+			m.viewport.GotoBottom()
+			return m, nil, true
+		case tea.KeyRunes:
+			switch string(msg.Runes) {
+			case "q":
+				cmd := m.closePager()
+				m.reflow()
+				return m, cmd, true
+			case "r":
+				return m, m.togglePagerRawCopy(), true
+			}
+			// Any other rune: forward to the viewport, which owns its own
+			// vi-style bindings (j/k/f/b/u/d — bubbles/viewport's
+			// DefaultKeyMap) rather than re-deriving that keymap here.
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(msg)
+			return m, cmd, true
+		default:
+			// ↑↓ PgUp/PgDn and anything else the viewport recognises;
+			// unrecognised key types are a harmless no-op cmd. Absorbed
+			// either way so nothing leaks into a textarea the pager has
+			// hidden from view.
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(msg)
+			return m, cmd, true
+		}
+	}
 	// C2 — UX2: help panel is read-only modal. Consume ↑↓/Enter/Esc +
 	// printable/backspace so query search works without leaking keystrokes
 	// into the textarea. F1/Esc close; everything else falls through after
@@ -91,6 +149,36 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 			return m, nil, true
 		}
 		// All other keys are consumed while picker is active.
+		return m, nil, true
+	}
+
+	// W-E-11: Esc-Esc rollback picker. Capture Up/Down/Enter/Escape like the
+	// restore-session picker above; all other keys are swallowed while it is
+	// open so nothing leaks into the textarea underneath it, and — because
+	// this block runs before the bottom-level KeyEscape case below — no
+	// other modal's own hotkey (Ctrl+T/E/S/K, F1, Alt+R, …) can open while
+	// the picker owns the keyboard.
+	if m.rollback != nil {
+		switch msg.Type {
+		case tea.KeyUp:
+			if m.rollback.cursor > 0 {
+				m.rollback.cursor--
+			}
+			return m, nil, true
+		case tea.KeyDown:
+			if m.rollback.cursor < len(m.rollback.items)-1 {
+				m.rollback.cursor++
+			}
+			return m, nil, true
+		case tea.KeyEnter:
+			mm, cmd := m.rollbackConfirm()
+			return mm.(model), cmd, true
+		case tea.KeyEscape:
+			m.rollback = nil
+			m.reflow()
+			return m, nil, true
+		}
+		// All other keys are consumed while the picker is active.
 		return m, nil, true
 	}
 
@@ -232,6 +320,19 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		return m, nil, true
 	}
 
+	// W-E-15: keymap capture wizard. /keymap bind <action> sets keymapCapture;
+	// here we intercept the very next keypress and save it as the binding.
+	if m.keymapCapture != "" {
+		if msg.Type == tea.KeyEscape {
+			m.entries = append(m.entries, ackEntry{text: "keymap bind cancelled"})
+			m.keymapCapture = ""
+			m.reflow()
+			return m, nil, true
+		}
+		mm, cmd := m.commitKeymapCapture(msg)
+		return mm, cmd, true
+	}
+
 	if m.yoloConfirm > 0 && msg.Type != tea.KeyEnter && msg.Type != tea.KeyShiftTab {
 		m.yoloConfirm = 0
 		return m, nil, true
@@ -269,19 +370,113 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 
 	switch msg.Type {
 	case tea.KeyEscape:
-		// C2 — UX7: dismiss the most-recent error toast (if any) on Esc.
-		// Returns immediately when there is no error toast so Esc keeps
-		// its existing meaning elsewhere (close picker, etc.). The toast
-		// tick handler prunes the now-empty queue and stops the tick on
-		// the next 500ms cadence.
+		// W-E-11: a second Esc landing within escDoublePressWindow of the
+		// first opens the rollback picker instead of repeating whatever a
+		// lone Esc does. A SINGLE Esc is byte-for-byte unaffected: m.lastEsc
+		// starts zero-valued (and is re-zeroed after every consumed pair),
+		// so the first press of any Esc-Esc pair always takes the
+		// isDouble==false branch below — it only records the timestamp and
+		// falls through to the pre-existing toast-dismiss/no-op logic.
+		//
+		// RE-17: a FAST double-press (the exact gesture this feature exists
+		// for) usually never reaches this handler as two separate KeyMsg
+		// calls at all. When both ESC bytes land in the same terminal
+		// read(), bubbletea's own sequence table collapses them into one
+		// message before handleKeyMsg ever sees it: key_sequences.go has
+		// `s["\x1b\x1b"] = Key{Type: KeyEscape, Alt: true}`. The time-diff
+		// state machine below needs two separate calls to ever set
+		// isDouble — fed a single collapsed message it takes the
+		// isDouble==false branch, records one timestamp, and the picker
+		// never opens no matter how fast the user presses. There is also no
+		// real ambiguity to preserve here: a terminal's own encoding of
+		// "Alt+Escape" is the identical byte sequence (Alt is sent as an
+		// ESC prefix), so this collapsed message and a genuine fast
+		// double-press are the same wire event — treating msg.Alt as an
+		// immediate double-press is not a heuristic, it is decoding what
+		// bubbletea already told us.
+		now := time.Now()
+		isDouble := msg.Alt || (!m.lastEsc.IsZero() && now.Sub(m.lastEsc) < escDoublePressWindow)
+		m.lastEsc = now
+
+		// RE-21: an error toast wins over the rollback picker, checked
+		// BEFORE isDouble, even on the second press of a double-press pair.
+		// Pre-W-E-11, Esc's one job was dismissing the most-recent error
+		// toast, and a user clearing a stack of several toasts does it by
+		// pressing Esc repeatedly and fast — exactly the input shape
+		// isDouble is watching for. Without this ordering, the second press
+		// of that habitual repeat would silently stop dismissing toasts and
+		// open the rollback picker instead (measured in review-e3.md RE-21:
+		// `after 2nd Esc: hasErrorToast=true rollbackOpen=true`), and if the
+		// user's next reflexive keystroke is Enter (as it would be if they
+		// were still expecting toast-clearing, not a picker), rollbackConfirm
+		// forks the session and overwrites the input with the rolled-back
+		// turn's text — a surprising, semi-destructive action triggered by a
+		// muscle-memory gesture that meant something else entirely. Dismissing
+		// a toast is cheap and reversible; opening the picker is not free to
+		// walk back once a stray Enter lands on it, so ambiguity resolves
+		// toward the cheaper action. This does not lose the pairing: m.lastEsc
+		// is already updated to `now` above (not reset), so if a toast keeps
+		// eating presses, the NEXT fast press after the last toast clears
+		// still sees isDouble==true and opens the picker — the gesture is
+		// deferred, not dropped.
 		if m.hasErrorToast() {
 			m.toasts.dismissLastError()
 			m.reflow()
 			return m, nil, true
 		}
+		if isDouble {
+			m.lastEsc = time.Time{} // consume the pair; a third press starts fresh
+			// RE-19: same transport gate cmdDiff (commands.go) uses for
+			// list_workspace_diff, and for the same reason — fork_session
+			// is a control frame SSE has no server-side handling for (SSE
+			// is stateless; there is no persistent session to fork). Gated
+			// BEFORE opening the picker, not after the user picks a turn
+			// to roll back to: RE-13 already stops a rejected fork's
+			// "error" reply from leaking pendingRollback state forever,
+			// but that path still walks the user through picking a
+			// candidate only to fail at the end with a transport-generic
+			// message. This mirrors /diff's UX exactly — refuse
+			// immediately, name the transport, name why — instead of
+			// leaving Esc-Esc as the one gesture in this package that
+			// finds out the hard way.
+			if m.sess.Mode() == "sse" {
+				m.entries = append(m.entries, errorEntry{
+					text: "rollback requires the WebSocket transport (SSE is stateless)",
+				})
+				m.refresh()
+				m.viewport.GotoBottom()
+				return m, nil, true
+			}
+			if items := m.rollbackCandidates(); m.streamCh == nil && len(items) > 0 {
+				m.rollback = &rollbackState{items: items}
+				m.reflow()
+				return m, nil, true
+			}
+			// Nothing to roll back to (no user turns yet), or a turn is
+			// streaming (mirrors /fork's own mid-stream block — submit()
+			// drops slash commands while m.streamCh != nil): fall through to
+			// ordinary single-Esc handling instead of silently swallowing
+			// the keypress.
+		}
 	case tea.KeyShiftTab:
 		mm, cmd := m.cycleMode()
 		return mm.(model), cmd, true
+	case tea.KeyCtrlZ:
+		// W-E-10: suspend to background (Unix Ctrl+Z / SIGTSTP). bubbletea's
+		// fork handles the actual terminal release + signal + restore cycle
+		// via tea.Suspend → p.suspend() → ReleaseTerminal/suspendProcess/
+		// RestoreTerminal + p.Send(ResumeMsg{}). On Windows suspendSupported
+		// is false so tea.Suspend is a no-op; the key still returns true here
+		// so it is not typed into the input box.
+		//
+		// Mid-turn ruling (W-E-10): if a stream is in flight when the user
+		// comes back (fg), the turn continues — the stream goroutine stays
+		// alive, bubbletea re-arms input, and the next waitForEvent Cmd that
+		// fires picks up where it left off. Cancelling mid-stream on suspend
+		// would surprise users who step away briefly; leaving it alone is the
+		// least-intrusive choice (mirrors what a terminal shell does when you
+		// Ctrl+Z and fg a blocking process: it keeps going).
+		return m, tea.Suspend, true
 	case tea.KeyCtrlC:
 		// First Ctrl-C during a stream cancels the turn; a second press
 		// (or any Ctrl-C when idle) quits.
@@ -326,10 +521,20 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 	case tea.KeyTab:
 		// Tab completes the selected command name into the input (and closes
 		// the palette) when the palette is open.
+		// W-E-14: when the @ popup is open, Tab cycles the filter mode instead
+		// of completing, so the user can switch between all/files/plugins without
+		// closing the popup first.
 		if m.pendingPermission() != nil {
 			return m, nil, true // modal: Tab does nothing
 		}
 		if m.paletteOpen() {
+			// If the first palette item is an @ path entry, this is the @
+			// completion popup — cycle the mode.
+			if len(m.paletteItems) > 0 && m.paletteItems[0].kind == cmdAtPath {
+				m.cycleAtMode()
+				m.reflow()
+				return m, nil, true
+			}
 			m.paletteComplete()
 			m.reflow()
 			return m, nil, true
@@ -428,6 +633,52 @@ func (m model) handleKeyMsg(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		m.reflow()
 		m.enqueueSave(m.stash.Save)
 		return m, m.pushToast("info", "draft stashed"), true
+	case tea.KeyCtrlE:
+		// W-E-12: open $VISUAL/$EDITOR (or the platform default) on the
+		// current input text. Blocked while a modal owns the keyboard,
+		// matching Ctrl+S's guard — the editor takes over the whole
+		// terminal, which no popup can survive being drawn under.
+		//
+		// pendingPermission() is in this guard (RE-16) even though it isn't
+		// one of the modal-priority `if` blocks above: the permission popup
+		// is rendered as an ordinary block inside renderScreen, not behind
+		// its own early-return block, so nothing else stopped Ctrl+E from
+		// shelling out to $EDITOR over an unresolved permission prompt —
+		// the prompt would still be queued in m.pendingPermissions but
+		// invisible and unanswerable until the editor exited.
+		if m.paletteOpen() || m.pickerKind != "" || m.action != nil || m.helpVisible || m.pendingPermission() != nil {
+			return m, nil, true
+		}
+		cmd, err := startExternalEditor(m.input.Value())
+		if err != nil {
+			return m, m.pushToast("warn", "could not start editor: "+err.Error()), true
+		}
+		return m, cmd, true
+	case tea.KeyCtrlT:
+		// W-E-03: fullscreen transcript pager. Reached on close too — the
+		// pagerVisible block above deliberately lets Ctrl+T fall through to
+		// here so open and close share one case, mirroring F1/help.
+		if m.pagerVisible {
+			cmd := m.closePager()
+			m.reflow()
+			return m, cmd, true
+		}
+		// Blocked while another modal owns the keyboard, matching Ctrl+E's
+		// guard — the pager takes over the whole screen, which no popup can
+		// survive being drawn under.
+		//
+		// pendingPermission() is in this guard for the same reason it's in
+		// Ctrl+E's (RE-16): the permission popup has no early-return modal
+		// block of its own, so without this check the pager could take the
+		// whole screen over a request the user still has to answer — the
+		// prompt keeps waiting in m.pendingPermissions but is drawn nowhere
+		// and unreachable by `y`/`a`/`n` until Ctrl+T is pressed again.
+		if m.paletteOpen() || m.pickerKind != "" || m.action != nil || m.helpVisible || m.pendingPermission() != nil {
+			return m, nil, true
+		}
+		m.pagerVisible = true
+		m.reflow()
+		return m, nil, true
 	case tea.KeyF1:
 		// C2 — UX2: toggle the F1 help panel. If already open, close it
 		// (acts as Esc); otherwise clear any prior query and open fresh.

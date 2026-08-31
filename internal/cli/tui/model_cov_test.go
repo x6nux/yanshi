@@ -66,6 +66,24 @@ func TestCov_ApplyEvent_NestedResultSegments(t *testing.T) {
 // constructs the program (it starts on Run), so a zero-value *cli.Session is
 // sufficient to exercise the entry.
 func TestCov_NewProgram(t *testing.T) {
+	// NewProgram applies the process's real terminal capability (W-E-01) via
+	// ApplyColorProfile, which mutates lipgloss's package-level shared
+	// renderer with no auto-detect-mode-restoring API (see
+	// capability_test.go's withColorProfile doc comment). Left unrestored,
+	// this leaks whatever this test machine's TERM/COLORTERM happen to be
+	// into every later test in the package that renders a lipgloss style.
+	// saveColorProfile restores BOTH pieces of state ApplyColorProfile writes;
+	// the hand-rolled version this replaced restored only lipgloss's, which in
+	// a non-TTY test binary is Ascii — so it pinned activeProfile to Ascii for
+	// the rest of the run.
+	saveColorProfile(t)
+	// W-E-06: NewProgram also calls SetHyperlinksEnabled(cap.AltScreen) from
+	// the machine's real detected capability — another process-global side
+	// effect this test's real (non-injected) capability detection can leak
+	// into later tests exactly like the color profile above.
+	prevHyperlinks := hyperlinksEnabled.Load()
+	t.Cleanup(func() { hyperlinksEnabled.Store(prevHyperlinks) })
+
 	p := NewProgram(&cli.Session{}, "/proj", Preferences{})
 	assert.NotNil(t, p)
 }

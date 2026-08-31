@@ -6,6 +6,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -19,15 +20,54 @@ import (
 	"github.com/muesli/termenv"
 )
 
+// palette holds the hex-RGB equivalents of this file's hue-bearing style
+// colors (W-E-01 follow-up: "所有颜色常量改为从 Palette 取"). They replace the
+// bare ANSI-256 palette-index strings (lipgloss.Color("39") etc.) that this
+// file used before termenv-based profile detection existed.
+//
+// Why hex and not the index string: termenv.Profile.Convert only ever
+// DOWNGRADES an already-typed color (RGBColor→256/16; it never upgrades an
+// ANSI256Color/ANSIColor to 24-bit — see capability_test.go's
+// TestApplyColorProfile_TrueColorEmits24Bit doc comment). A style declared as
+// lipgloss.Color("39") therefore renders identically under ANSI256 and
+// TrueColor profiles; only a hex-declared lipgloss.Color("#…") gets genuine
+// profile-dependent output, including real 24-bit under COLORTERM=truecolor
+// (acceptance criterion 3). Each constant documents the ANSI-256 index it
+// replaces (computed via the standard 6×6×6 xterm cube: index = 16 + 36r +
+// 6g + 1b, level(n) ∈ {0,95,135,175,215,255}) so ANSI256-profile output is
+// byte-identical to before this change — verified by the existing style
+// tests, which assert no output changed.
+//
+// Deliberately excluded: the five grayscale colors this file also uses (245,
+// 250, 252, 238, 255) are NOT converted here. xterm-256 has two disjoint
+// representations for near-gray colors — the 6×6×6 cube's r=g=b diagonal and
+// the dedicated 24-step grayscale ramp (232–255) — and termenv's hex→256
+// nearest-match walks both, so round-tripping e.g. "#8a8a8a" (245's exact
+// ramp value) back through Profile.Color under ANSI256 is not guaranteed to
+// land on index 245 again. Converting the hues (which live solely in the
+// cube, so hex→256 round-trips exactly) gets the TrueColor upgrade without
+// that risk; the grays stay as index literals.
+const (
+	hueCyan       = "#00afff" // was "39"  — roleUser
+	huePink       = "#ff87ff" // was "213" — roleAsst, footerThinkStyle
+	hueBrightCyan = "#87ffff" // was "123" — toolName, stashHeaderStyle
+	hueGreen      = "#00d787" // was "42"  — okStyle, diffAddStyle
+	hueRed        = "#ff5f5f" // was "203" — errStyle, diffDelStyle, errToastStyle
+	hueAmber      = "#d7af5f" // was "179" — warnStyle, warnToastStyle
+	hueBrightRed  = "#ff0000" // was "196" — warnStylePerm
+	hueLightBlue  = "#87d7ff" // was "117" — thinkingLiveStyle
+	hueDarkBlue   = "#005f87" // was "24"  — selPaletteStyle background
+)
+
 // Palette (256-color; degrades gracefully on minimal terminals).
 var (
-	roleUser    = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)  // cyan
-	roleAsst    = lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Bold(true) // pink
-	toolName    = lipgloss.NewStyle().Foreground(lipgloss.Color("123")).Bold(true) // bright cyan
-	toolMeta    = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))            // grey
-	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)  // green
-	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true) // red
-	warnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("179"))            // amber
+	roleUser    = lipgloss.NewStyle().Foreground(lipgloss.Color(hueCyan)).Bold(true)       // cyan
+	roleAsst    = lipgloss.NewStyle().Foreground(lipgloss.Color(huePink)).Bold(true)       // pink
+	toolName    = lipgloss.NewStyle().Foreground(lipgloss.Color(hueBrightCyan)).Bold(true) // bright cyan
+	toolMeta    = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))                    // grey
+	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color(hueGreen)).Bold(true)      // green
+	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color(hueRed)).Bold(true)        // red
+	warnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color(hueAmber))                 // amber
 	resultStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).PaddingLeft(4)
 
 	// diffAddStyle / diffDelStyle / diffCtxStyle color the per-line sigils of
@@ -36,18 +76,37 @@ var (
 	// and dim grey for unchanged context. They are intentionally shared with
 	// the ok/err palette so the diff reads as part of the transcript rather
 	// than a foreign element.
-	diffAddStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))  // green
-	diffDelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("203")) // red
-	diffCtxStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245")) // grey
+	diffAddStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(hueGreen)) // green
+	diffDelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(hueRed))   // red
+	diffCtxStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))    // grey
+
+	// diffGutterStyle renders the old/new line-number gutter W-E-02 adds in
+	// front of each diff line. It is deliberately a step darker (238) than
+	// diffCtxStyle's context grey (245) — both live on the 232-255 grayscale
+	// ramp, where a lower index is darker — so the four diff roles read as a
+	// genuine depth-graded tier (gutter < context < add/del in visual
+	// weight), not just three same-weight hues with numbers bolted on. This
+	// is the "调色板...按色深分档" requirement the spec calls out by name.
+	//
+	// This tier only genuinely holds under ANSI256/TrueColor. Under
+	// termenv.ANSI (16-color, no extended grayscale ramp), 238 and 245 both
+	// degrade to the same 16-color code ("\x1b[90m", bright-black) — gutter
+	// and context become visually identical, collapsing the tier to two
+	// levels (gutter==context < add/del). Pinned by
+	// TestApplyColorProfile_ANSICollapsesGutterIntoContext in
+	// capability_test.go.
+	diffGutterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
 
 	inputBorder = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
 
 	// footerThinkStyle is used by colorizeActivity to render the "Thinking…"
 	// activity text in pink (213) so it reads consistently with the live
 	// thinkingEntry hue. Despite its "footer" prefix it is NOT a footer-segment
-	// style — the footer's think segment uses the theme system below.
-	footerThinkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("213")) // magenta/pink
-	warnStylePerm    = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+	// style — the footer has no "think" segment at all (RE-H, fix-e1 review of
+	// W-E-01: the theme tables below used to carry a "think" key, but
+	// statusHeader (view.go) never looked it up, so it was dead data; removed).
+	footerThinkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(huePink)) // magenta/pink
+	warnStylePerm    = lipgloss.NewStyle().Foreground(lipgloss.Color(hueBrightRed)).Bold(true)
 	// queuePreviewStyle renders the queued-messages preview block above the input
 	// composer (C07): dim grey + italic, matching codex's PendingInputPreview so
 	// the backlog reads as pending context rather than part of the live transcript.
@@ -66,7 +125,7 @@ var (
 	// glance whether the displayed reasoning is actively being produced or has
 	// settled. The whole block (header + tail body) shares this style so the
 	// state transition is a single visual shift, not just a header-color tweak.
-	thinkingLiveStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("117")).Italic(true)
+	thinkingLiveStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(hueLightBlue)).Italic(true)
 	// thinkingDoneStyle renders a finalized thinkingEntry (collapsed "Thought
 	// for Xs" line and expanded markdown body). The dim grey (245) italic
 	// matches the historic single thinkingStyle and signals "this reasoning has
@@ -84,7 +143,7 @@ var (
 	// paletteStyle / selPaletteStyle render the command-palette popup rows; the
 	// selected row gets a distinct background + a "▶" marker.
 	paletteStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	selPaletteStyle = lipgloss.NewStyle().Background(lipgloss.Color("24")).Foreground(lipgloss.Color("255")).Bold(true)
+	selPaletteStyle = lipgloss.NewStyle().Background(lipgloss.Color(hueDarkBlue)).Foreground(lipgloss.Color("255")).Bold(true)
 
 	// C2 — UX7 toast styles. Each level keeps a stable colour identity: info
 	// is dim grey (recognition without alarm), warn is amber (matches the
@@ -92,13 +151,13 @@ var (
 	// UI), error is red. Only the body uses these styles — the prefix glyphs
 	// ("[!]", "[X]") still use warnStyle / errStyle for contrast at the glyph.
 	infoToastStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-	warnToastStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("179"))
-	errToastStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true)
+	warnToastStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(hueAmber))
+	errToastStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color(hueRed)).Bold(true)
 
 	// C2 — UX5 stash list styles. Header uses the same bold cyan family as
 	// other transcript section headers (e.g. "available models"); items stay
 	// neutral grey so the preview text reads as data, not styling.
-	stashHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("123")).Bold(true)
+	stashHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(hueBrightCyan)).Bold(true)
 	stashItemStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
 )
 
@@ -106,7 +165,89 @@ var (
 	mdRenderer   *glamour.TermRenderer
 	mdWidth      int
 	mdRendererMu sync.Mutex
+
+	// activeProfile is the terminal color profile applied via
+	// ApplyColorProfile (see that function's doc comment). It defaults to
+	// ANSI256 — the profile this file hardcoded before W-E-01 — so any code
+	// path that renders before NewProgram calls ApplyColorProfile (tests,
+	// helpers invoked outside a running program) keeps today's behavior.
+	activeProfile = termenv.ANSI256
 )
+
+// hyperlinksEnabled gates W-E-06's OSC 8 semantic hyperlinks (toolArgSummary
+// wrapping file paths via termenv.Hyperlink). Unlike activeProfile it needs
+// no mutex: it is a single independent bool with no paired cache to
+// invalidate, so atomic.Bool (already this file's pattern for a lone counter
+// — see entryCacheCount) is the smaller primitive that is still safe for
+// SetHyperlinksEnabled's one write racing toolArgSummary's many reads.
+// Zero value is false: any render before SetHyperlinksEnabled runs (tests,
+// the pre-detection window) emits plain text, the fail-safe direction for a
+// feature that did not exist before W-E-06.
+var hyperlinksEnabled atomic.Bool
+
+// SetHyperlinksEnabled toggles whether toolArgSummary wraps file paths in an
+// OSC 8 hyperlink escape (W-E-06). Call once at startup from
+// buildModelForCapability, gated on cap.AltScreen — the same signal
+// titleEnabled/mouseEnabled use, because a terminal E1 doesn't trust with
+// escape sequences (TERM=dumb) shouldn't be handed OSC 8 either.
+//
+// This is only HALF the capability signal, and deliberately so: cap.Profile
+// is the other half, and toolArgSummary reads it separately via
+// currentColorProfile() rather than having it folded in here (RE-27 — see
+// the body comment at toolArgSummary's `key == "path"` check for why the
+// Ascii tier is enforced at render time, not at this call site). So a true
+// value here means "the terminal tolerates escape sequences", not "OSC 8
+// will be emitted"; NO_COLOR=1 leaves this true and still gets plain text.
+// See
+// ApplyColorProfile's doc comment for why a package-level toggle rather than
+// threading a flag through every entry.render() call is the right shape:
+// entries do not carry the model or its capability, only styles.go's package
+// state does.
+func SetHyperlinksEnabled(v bool) {
+	hyperlinksEnabled.Store(v)
+}
+
+// ApplyColorProfile sets the terminal color profile used by every lipgloss
+// style declared in this package and by the glamour markdown renderer built
+// by renderer(). Call it once at startup, before any rendering happens (see
+// model.NewProgram, which derives the profile from cli.DetectCapability).
+//
+// lipgloss styles here are package-level vars, but Style.Render reads the
+// color profile from lipgloss's shared renderer at render time rather than
+// at var-declaration time, so a single lipgloss.SetColorProfile call
+// retroactively governs all of them without touching each var individually.
+//
+// Changing the profile also invalidates the cached glamour renderer:
+// renderer() keys its cache on width only, so without this the cache would
+// keep serving markdown rendered under the previous profile after a switch.
+// In production there is exactly one call site (NewProgram, once per
+// session) so this never fires there; the switch this guards against is
+// tests that probe more than one profile in the same process
+// (TestApplyColorProfile_InvalidatesGlamourCache pins it) — RE-G (fix-e1
+// review of W-E-01): an earlier draft of this comment named "/model changes
+// the detected capability" as a second scenario, but /model (commands.go's
+// cmdModel) never touches terminal capability or calls ApplyColorProfile —
+// that scenario does not exist in this codebase.
+func ApplyColorProfile(p termenv.Profile) {
+	lipgloss.SetColorProfile(p)
+	mdRendererMu.Lock()
+	defer mdRendererMu.Unlock()
+	if activeProfile != p {
+		activeProfile = p
+		mdRenderer = nil
+	}
+}
+
+// currentColorProfile returns the profile most recently applied via
+// ApplyColorProfile, safe for concurrent use. renderFooter (view.go) writes
+// raw ANSI escapes directly rather than through a lipgloss.Style — it never
+// goes through lipgloss's shared renderer, so it needs its own read of the
+// active profile to honor NO_COLOR / TERM=dumb / COLORTERM (W-E-01).
+func currentColorProfile() termenv.Profile {
+	mdRendererMu.Lock()
+	defer mdRendererMu.Unlock()
+	return activeProfile
+}
 
 func renderer(width int) *glamour.TermRenderer {
 	mdRendererMu.Lock()
@@ -133,8 +274,9 @@ func renderer(width int) *glamour.TermRenderer {
 	style.Code.StylePrimitive.Color = strPtr("51")
 	r, err := glamour.NewTermRenderer(
 		glamour.WithStyles(style),
-		glamour.WithColorProfile(termenv.ANSI256),
+		glamour.WithColorProfile(activeProfile),
 		glamour.WithWordWrap(width),
+		glamour.WithChromaFormatter(chromaFormatterFor(activeProfile)),
 	)
 	if err != nil {
 		return nil
@@ -147,6 +289,30 @@ func renderer(width int) *glamour.TermRenderer {
 // strPtr returns a pointer to s, for glamour's *string style fields.
 func strPtr(s string) *string { return &s }
 
+// chromaFormatterFor maps a termenv color profile to the chroma terminal
+// formatter name glamour should use for code-block syntax highlighting —
+// RE-I (fix-e1 review of W-E-01): glamour v1.0.0 hardcodes the formatter to
+// "terminal256" (ansi/codeblock.go's chromaFormatter const) and never
+// consults the renderer's own color profile, so a 16-color (termenv.ANSI)
+// terminal was receiving 8-bit palette codes ("38;5;N") it can't render —
+// measured at 17 occurrences in a single fenced code block under that
+// profile. This is a display-fidelity gap, not a no-color leak: glamour
+// skips chroma highlighting (and therefore the formatter) entirely under
+// termenv.Ascii (codeblock.go's own "ColorProfile != termenv.Ascii" gate),
+// so Ascii/TERM=dumb sessions were never affected by this. TrueColor and
+// ANSI256 both keep "terminal256" rather than TrueColor jumping to chroma's
+// "terminal16m": this package's own lipgloss styles don't distinguish
+// ANSI256 from TrueColor either (see the palette doc comment above), so
+// giving only code blocks finer resolution than every surrounding style
+// would make them the one element in the transcript that looks like a
+// different terminal.
+func chromaFormatterFor(p termenv.Profile) string {
+	if p == termenv.ANSI {
+		return "terminal16"
+	}
+	return "terminal256"
+}
+
 func renderMarkdown(width int, md string) string {
 	r := renderer(width)
 	if r == nil {
@@ -155,6 +321,25 @@ func renderMarkdown(width int, md string) string {
 	out, err := r.Render(md)
 	if err != nil {
 		return md
+	}
+	if currentColorProfile() == termenv.Ascii {
+		// glamour.WithColorProfile(activeProfile) (see renderer() above) is
+		// correctly wired, but it doesn't reach every escape glamour v1.0.0
+		// emits: its bold/underline styling goes through termenv.String(s)
+		// (ansi/baseelement.go's renderText), and termenv@v0.16.0's
+		// Style.String() constructor hardcodes profile=ANSI internally — so
+		// Styled()'s own "if t.profile == Ascii { return s }" early-return
+		// never fires, and \x1b[1m / \x1b[4m / degenerate empty-parameter SGR
+		// sequences survive regardless of the profile passed to glamour. This
+		// is the third instance of the same "Ascii drops ALL styling" rule
+		// being violated by a path outside lipgloss's shared renderer (the
+		// other two: the footer's independent ANSI path, and the footer bold
+		// flag not downgrading — see footerSGRParts in view.go). Stripping
+		// here rather than waiting on upstream keeps the same guarantee
+		// TestApplyColorProfile_AsciiSuppressesColor already pins for
+		// lipgloss-rendered styles: zero \x1b bytes under Ascii, not just
+		// plain-looking ones.
+		out = stripANSI(out)
 	}
 	return out
 }
@@ -226,14 +411,15 @@ func resetEntryRenderCacheForTest() {
 	entryCacheCount.Store(0)
 }
 
-// pendingStyle renders the streaming (not-yet-finalized) assistant text as
-// plain text — NO glamour markdown rendering. Streaming chunks arrive many
-// times per second, and rendering markdown per chunk is the dominant CPU cost
-// of streaming; the plain-text path lets the UI keep up with the model's token
-// rate. Once the turn finalizes (flushAssistant), the accumulated text becomes
-// an assistantEntry and is rendered through markdown exactly once (and cached
-// via entryRenderCache) — so the user sees raw markdown briefly during
-// streaming, then the fully-rendered version on completion.
+// pendingStyle renders plain (non-markdown) text within the streaming
+// (not-yet-finalized) assistant block: the trailing tail that has arrived
+// since the last throttled glamour pass (W-E-07 — see renderPendingBody in
+// view.go and refreshPendingMarkdown in events.go for the throttle that
+// keeps that pass off the hot path of every agent_chunk delta), and the
+// whole buffer for the brief window before the first pass of a turn has run.
+// Once the turn finalizes (flushAssistant), the accumulated text becomes an
+// assistantEntry and is rendered through markdown once more at its final,
+// complete form (and cached via entryRenderCache).
 var pendingStyle = lipgloss.NewStyle()
 
 // truncate clips s to n bytes with an ellipsis.
@@ -275,10 +461,29 @@ const (
 // for one footer segment. Colour values are ANSI 256-color palette codes ("0"–
 // "255"); the caller must also know the default footer background ("236") for
 // passages that should not render as a coloured pill.
+//
+// ansiBg is an optional override consulted only under termenv.ANSI (real
+// 16-color terminals) — RE-E (fix-e1 review of W-E-01): bg is fed through
+// termenv's Profile.Convert on every profile, including ANSI, and that
+// conversion is a mechanical nearest-256-to-16 lookup table, not a palette
+// anyone designed for 16 colors. Measured (env -u COLORTERM TERM=xterm-16color,
+// tuidbg raster compare against the 256-color render): "ctx" (bg 58, dark
+// olive) downgrades to SGR 43 (yellow) — white-on-yellow, low contrast;
+// "perm_auto" (bg 94, dark brown) downgrades to the same SGR 43; "total" (bg
+// 130, dark orange) downgrades to SGR 101 (bright red) — readable but
+// semantically backwards, since red is this same footer's error/yolo color
+// (see "perm_yolo"). When set, ansiBg is itself just another ANSI-256 index —
+// it goes through the identical Convert path, so its value is chosen for
+// where *it* lands under ANSI, not for how it would look under 256-color
+// (which never sees it). Left empty for every segment ansiBg doesn't name:
+// the mechanical downgrade is unreviewed there too (see RE-E's review note on
+// A31, a full 16-color-aware palette, as future work) but wasn't measured as
+// failing the "distinguishable, not misleading" bar this fix targets.
 type segmentColors struct {
-	fg   string // ANSI 256-colour foreground code e.g. "255"
-	bg   string // ANSI 256-colour background code e.g. "17"
-	bold bool
+	fg     string // ANSI 256-colour foreground code e.g. "255"
+	bg     string // ANSI 256-colour background code e.g. "17"
+	bold   bool
+	ansiBg string // optional ANSI-256 index used instead of bg when profile == termenv.ANSI
 }
 
 // Theme defines a named footer colour theme with per-segment colour mappings.
@@ -311,21 +516,18 @@ var themeDefault = Theme{
 	Name:        ThemeDefault,
 	Description: "white text on coloured dark backgrounds",
 	Colors: map[string]segmentColors{
-		"name":         {fg: "255", bg: "17", bold: true},   // white on navy
-		"mode":         {fg: "255", bg: "22", bold: false},  // white on dark green
-		"dir":          {fg: "255", bg: "24", bold: false},  // white on dark blue
-		"git":          {fg: "255", bg: "53", bold: false},  // white on dark purple
-		"model":        {fg: "255", bg: "23", bold: false},  // white on dark teal
-		"ctx":          {fg: "255", bg: "58", bold: false},  // white on dark olive
-		"total":        {fg: "255", bg: "130", bold: false}, // white on dark orange (consumption tally)
-		"think":        {fg: "255", bg: "55", bold: false},  // white on brighter purple
-		"cache":        {fg: "255", bg: "28", bold: false},  // white on dark green (darker than mode)
+		"mode":         {fg: "255", bg: "22", bold: false},                // white on dark green
+		"dir":          {fg: "255", bg: "24", bold: false},                // white on dark blue
+		"git":          {fg: "255", bg: "53", bold: false},                // white on dark purple
+		"model":        {fg: "255", bg: "23", bold: false},                // white on dark teal
+		"ctx":          {fg: "255", bg: "58", bold: false, ansiBg: "18"},  // white on dark olive; RE-E: 58 alone degrades to yellow(43) under 16-color, low contrast — 18 degrades to blue(44) instead
+		"total":        {fg: "255", bg: "130", bold: false, ansiBg: "87"}, // white on dark orange (consumption tally); RE-E: 130 alone degrades to bright-red(101) — reads as an error, but this pill is a cost tally, not perm_yolo's error color — 87 degrades to bright-cyan(106) instead
 		"perm_default": {fg: "245", bg: "236", bold: false},
-		"perm_edits":   {fg: "255", bg: "22", bold: false},
-		"perm_auto":    {fg: "255", bg: "94", bold: false},
+		"perm_edits":   {fg: "255", bg: "28", bold: false},               // RE-H: was bg 22, identical to "mode" — same pill, two meanings
+		"perm_auto":    {fg: "255", bg: "94", bold: false, ansiBg: "95"}, // RE-E: 94 alone degrades to yellow(43), same low-contrast defect as "ctx" — 95 degrades to bright-black(100) instead
 		"perm_yolo":    {fg: "255", bg: "52", bold: true},
 		"tools":        {fg: "245", bg: "235", bold: false},
-		"queue":        {fg: "255", bg: "94", bold: true},
+		"queue":        {fg: "255", bg: "94", bold: true, ansiBg: "134"}, // RE-E: shared the same source (94) as "perm_auto" pre-fix — both degraded to identical yellow(43) under 16-color even though the two pills can render side by side (permission mode + queue depth); 134 degrades to bright-magenta(105), distinct from perm_auto's new bright-black(100)
 	},
 }
 
@@ -335,21 +537,18 @@ var themeHighContrast = Theme{
 	Name:        ThemeHighContrast,
 	Description: "brighter backgrounds, bold text",
 	Colors: map[string]segmentColors{
-		"name":         {fg: "255", bg: "19", bold: true},
 		"mode":         {fg: "255", bg: "28", bold: true},
 		"dir":          {fg: "255", bg: "26", bold: true},
 		"git":          {fg: "255", bg: "55", bold: true},
 		"model":        {fg: "255", bg: "30", bold: true},
-		"ctx":          {fg: "255", bg: "59", bold: true},
-		"total":        {fg: "255", bg: "130", bold: true},
-		"think":        {fg: "255", bg: "56", bold: true},
-		"cache":        {fg: "255", bg: "28", bold: true},
+		"ctx":          {fg: "255", bg: "59", bold: true},                // RE-E: measured — 59 degrades to bright-black(100) under 16-color, still high contrast with bold white text, left as-is
+		"total":        {fg: "255", bg: "130", bold: true, ansiBg: "87"}, // RE-E: same 130→bright-red(101) defect as themeDefault's "total" — see that entry's comment
 		"perm_default": {fg: "255", bg: "236", bold: true},
-		"perm_edits":   {fg: "255", bg: "28", bold: true},
-		"perm_auto":    {fg: "255", bg: "100", bold: true},
+		"perm_edits":   {fg: "255", bg: "34", bold: true},                // RE-H: was bg 28, identical to "mode" — same pill, two meanings
+		"perm_auto":    {fg: "255", bg: "100", bold: true, ansiBg: "95"}, // RE-E: 100 also degrades to yellow(43) — same defect as themeDefault's "perm_auto", different source index, same downgrade table entry
 		"perm_yolo":    {fg: "15", bg: "88", bold: true},
 		"tools":        {fg: "255", bg: "237", bold: true},
-		"queue":        {fg: "255", bg: "100", bold: true},
+		"queue":        {fg: "255", bg: "63", bold: true}, // RE-H: was bg 100, identical to "perm_auto" — same pill, two meanings
 	},
 }
 
@@ -360,20 +559,17 @@ var themeMuted = Theme{
 	Name:        ThemeMuted,
 	Description: "minimal, text-only on plain background",
 	Colors: map[string]segmentColors{
-		"name":         {fg: "255", bg: "236", bold: true},
 		"mode":         {fg: "42", bg: "236", bold: false},
 		"dir":          {fg: "75", bg: "236", bold: false},
 		"git":          {fg: "141", bg: "236", bold: false},
 		"model":        {fg: "51", bg: "236", bold: false},
 		"ctx":          {fg: "221", bg: "236", bold: false},
 		"total":        {fg: "215", bg: "236", bold: false},
-		"think":        {fg: "213", bg: "236", bold: false},
-		"cache":        {fg: "156", bg: "236", bold: false},
 		"perm_default": {fg: "245", bg: "236", bold: false},
-		"perm_edits":   {fg: "42", bg: "236", bold: false},
+		"perm_edits":   {fg: "82", bg: "236", bold: false}, // RE-H: was fg 42, identical to "mode" — same text colour, two meanings
 		"perm_auto":    {fg: "179", bg: "236", bold: false},
 		"perm_yolo":    {fg: "203", bg: "236", bold: true},
-		"tools":        {fg: "245", bg: "236", bold: false},
+		"tools":        {fg: "250", bg: "236", bold: false}, // RE-H: was fg 245, identical to "perm_default" — same text colour, two meanings
 		"queue":        {fg: "179", bg: "236", bold: true},
 	},
 }
@@ -475,6 +671,10 @@ func toolArgSummary(name, argsJSON, root string) string {
 	if s == "" {
 		return ""
 	}
+	// raw keeps the un-shortened value for fileHyperlinkURI below: shortenPath
+	// is display-only (root-relative, or reduced to a basename) and can throw
+	// away the part of the path a file:// URI needs.
+	raw := s
 	switch key {
 	case "path", "glob":
 		s = shortenPath(s, root)
@@ -488,7 +688,29 @@ func toolArgSummary(name, argsJSON, root string) string {
 			s = strconv.Quote(s)
 		}
 	}
-	return "(" + truncate(s, 40) + ")"
+	s = truncate(s, 40)
+	// W-E-06: OSC 8 semantic hyperlink, strictly AFTER truncate — wrapping
+	// first would let the 40-char budget cut into the escape sequence itself.
+	// "path" only, not "glob": a glob is a pattern ("*.go"), not a location a
+	// click could open.
+	//
+	// RE-27: the Ascii profile suppresses this too, and the check lives HERE
+	// rather than at SetHyperlinksEnabled's call site because
+	// currentColorProfile() is how this package decides "am I in the Ascii
+	// tier" everywhere else (renderMarkdown's stripANSI, renderFooter's
+	// footerSGRParts) — the two knobs are independently exported, so a gate
+	// computed once at wiring time would go stale the moment
+	// ApplyColorProfile is called again. The rule being upheld is the one
+	// renderMarkdown's body comment states: zero \x1b bytes under Ascii, not
+	// just plain-looking ones. Before this, NO_COLOR=1 (which yields
+	// Profile=Ascii but AltScreen=true, so hyperlinksEnabled was true) still
+	// received the full OSC 8 escape.
+	if key == "path" && hyperlinksEnabled.Load() && currentColorProfile() != termenv.Ascii {
+		if uri := fileHyperlinkURI(raw, root); uri != "" {
+			s = termenv.Hyperlink(uri, s)
+		}
+	}
+	return "(" + s + ")"
 }
 
 // pickArgKey selects the most relevant arg key for the tool family. fs tools
@@ -584,4 +806,38 @@ func isAbsPath(pr string) bool {
 		return true
 	}
 	return len(pr) >= 3 && pr[1] == ':' && pr[2] == '/'
+}
+
+// fileHyperlinkURI builds a file:// URI for path (W-E-06), or "" when one
+// cannot be built safely. path is resolved against root first when it isn't
+// already absolute — a relative path with no root to anchor it to would
+// produce a URI that opens the wrong file, so that case returns "" rather
+// than guessing (the caller then shows plain, unlinked text — the same
+// degrade as an unsupported terminal, just for a different reason).
+//
+// url.URL.String() percent-encodes the path (spaces, non-ASCII, etc.), which
+// a bare string concatenation would not. Windows drive-letter paths
+// ("C:/foo", already caught by isAbsPath) are prefixed with "/" first, which
+// is the conventional Windows file URI form ("file:///C:/foo") — url.URL has
+// no drive-letter concept of its own, but treating "/C:/foo" as an ordinary
+// absolute path produces exactly that string.
+func fileHyperlinkURI(path, root string) string {
+	pr := filepath.ToSlash(strings.TrimSpace(path))
+	if pr == "" {
+		return ""
+	}
+	if !isAbsPath(pr) {
+		if root == "" {
+			return ""
+		}
+		rr := strings.TrimSuffix(filepath.ToSlash(root), "/")
+		if rr == "" {
+			return ""
+		}
+		pr = rr + "/" + pr
+	}
+	if !strings.HasPrefix(pr, "/") {
+		pr = "/" + pr
+	}
+	return (&url.URL{Scheme: "file", Path: pr}).String()
 }

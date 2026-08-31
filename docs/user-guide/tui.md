@@ -16,7 +16,7 @@ yanshi 的默认入口是一个 Bubble Tea 全屏 TUI（alt-screen）。它是�
 - **Enter**：发送一个 turn。
 - **Ctrl+Enter**：在输入框换行。
 
-> 区分 Enter 与 Ctrl+Enter 依赖本地 bubbletea fork（上游在 Windows 上把两者都收敛为 `KeyEnter`）；详见 [../../CONTRIBUTING.md](../../CONTRIBUTING.md)。**键位方案目前不可切换**：TUI 运行时的键位是写死的 default（见 `internal/cli/tui/model.go::newModel`），`config.yaml` 的 `tui.keymap` 目前只被 `yanshi doctor` 读来做校验，不影响运行时。
+> 区分 Enter 与 Ctrl+Enter 依赖本地 bubbletea fork（上游在 Windows 上把两者都收敛为 `KeyEnter`）；详见 [../../CONTRIBUTING.md](../../CONTRIBUTING.md)。**键位方案当前为 default**（见 `internal/cli/tui/model.go::newModel`），可通过 `config.yaml` 的 `tui.keymap` 指定、`YANSHI_KEYMAP` 环境变量覆盖，或 TUI 运行时 `/keymap bind` 交互式重新绑定（后者写入 `prefs.json`，优先级最高）。
 
 ## `/` 前缀命令
 
@@ -30,7 +30,7 @@ yanshi 的默认入口是一个 Bubble Tea 全屏 TUI（alt-screen）。它是�
 >
 > | 命令 | 作用 |
 > |---|---|
-> | `/keymap` | 查看当前方案；`/keymap reset` 恢复内置默认并写下 tombstone（项目 `tui.bindings` 从此不再覆盖）；`/keymap diagnostics` 打印键位诊断 |
+> | `/keymap` | 查看当前方案；`/keymap bind` 交互式捕获按键并写回偏好文件（原子写，冲突时拦截）；`/keymap reset` 恢复内置默认并写下 tombstone（项目 `tui.bindings` 从此不再覆盖）；`/keymap diagnostics` 打印键位诊断 |
 > | `/vim on\|off` | 开关 vim 模式编辑 |
 > | `/contrast on\|off` | 开关高对比主题 |
 > | `/locale auto\|en\|zh-Hans` | 切换界面语言 |

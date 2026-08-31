@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/x6nux/yanshi/internal/difflib"
 )
 
 // This file lifts entries.go coverage by exercising the render branches the
@@ -88,10 +90,10 @@ func TestCov_RenderDiffFSEditBadArgsFallsBack(t *testing.T) {
 
 // TestCov_RenderDiffFSEditNoChangeCollapsed covers renderDiff's collapsed
 // fs_edit footprint path: identical old/new yields a "+0 -0 行" footprint.
-// (The separate `diff == ""` branch is unreachable here — parseEditStrings
-// rejects both-empty args, and unifiedDiff only returns "" when ops is empty,
-// which needs both inputs empty — so identical non-empty strings still produce
-// a zero-change context diff rather than an empty one.)
+// (The separate `len(ops) == 0` branch is unreachable here — parseEditStrings
+// rejects both-empty args, and difflib.Compute only returns an empty slice
+// when both inputs are empty — so identical non-empty strings still produce a
+// zero-change context diff rather than an empty one.)
 func TestCov_RenderDiffFSEditNoChangeCollapsed(t *testing.T) {
 	e := &toolEntry{
 		name:   "fs_edit",
@@ -104,7 +106,10 @@ func TestCov_RenderDiffFSEditNoChangeCollapsed(t *testing.T) {
 }
 
 // TestCov_RenderDiffFSWriteExpanded covers the fs_write expanded path: a
-// "wrote N lines" footprint plus a first-line preview of the content.
+// "wrote N lines" footprint plus the FULL content rendered as an all-Insert
+// colored diff (W-E-02) — not just a truncated first-line preview. Asserting
+// on the second and third source lines (not just the first) is what actually
+// distinguishes this from the old first-line-only behavior.
 func TestCov_RenderDiffFSWriteExpanded(t *testing.T) {
 	e := &toolEntry{
 		name:     "fs_write",
@@ -115,7 +120,9 @@ func TestCov_RenderDiffFSWriteExpanded(t *testing.T) {
 	}
 	out := e.render(80, newSpinner())
 	assert.Contains(t, out, "wrote 3 lines")
-	assert.Contains(t, out, "package main", "expanded shows the first-line preview")
+	assert.Contains(t, out, "package main", "expanded shows the file content")
+	assert.Contains(t, out, "func main() {}", "expanded shows content past the first line")
+	assert.Contains(t, out, "+package main", "content lines render as an all-Insert diff")
 }
 
 // TestCov_RenderAgentActivityJoinsProgressAndNested covers the activity-join
@@ -135,11 +142,17 @@ func TestCov_RenderAgentActivityJoinsProgressAndNested(t *testing.T) {
 	assert.Contains(t, out, "Read(foo.go)", "progress line present")
 }
 
-// TestCov_RenderColoredDiffBlankLine covers the empty-line branch of
-// renderColoredDiff: a blank context line renders as just the 4-space indent.
+// TestCov_RenderColoredDiffBlankLine covers the blank-context-line case of
+// renderColoredDiff: a blank Equal line still renders its gutter + 4-space
+// indent even though its Line field is "".
 func TestCov_RenderColoredDiffBlankLine(t *testing.T) {
-	out := renderColoredDiff("a\n\n+b")
-	// The blank middle line becomes a bare indent line; the +b line is present.
+	ops := []difflib.Op{
+		{Kind: difflib.Equal, Line: "a", OldLine: 1, NewLine: 1},
+		{Kind: difflib.Equal, Line: "", OldLine: 2, NewLine: 2},
+		{Kind: difflib.Insert, Line: "b", NewLine: 3},
+	}
+	out := renderColoredDiff(ops)
+	// The blank middle line still carries its gutter+indent; the +b line is present.
 	assert.Contains(t, out, "+b")
 	assert.True(t, strings.Contains(out, "    "), "blank diff line is padded")
 }

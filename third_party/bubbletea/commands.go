@@ -208,6 +208,41 @@ func SetWindowTitle(title string) Cmd {
 	}
 }
 
+// notifyMsg is an internal message used to send a terminal desktop
+// notification (W-E-04).
+type notifyMsg string
+
+// Notify produces a command that sends a terminal desktop notification (OSC
+// 9 — the iTerm2/kitty/wezterm/Windows Terminal convention, distinct from
+// termenv's Notify which emits OSC 777 and is unsupported by that wider set).
+// Unlike SetWindowTitle, there is nothing to push/pop: a notification is a
+// one-shot event with no terminal-held state to restore on exit.
+//
+// For example:
+//
+//	func (m model) Update(msg Msg) (Model, Cmd) {
+//	    // ...
+//	    return m, tea.Notify("build finished")
+//	}
+func Notify(message string) Cmd {
+	return func() Msg {
+		return notifyMsg(message)
+	}
+}
+
+// bellMsg is an internal message used to ring the terminal bell.
+type bellMsg struct{}
+
+// Bell produces a command that writes a plain BEL byte (\a) — the fallback
+// tier for Notify on terminals that can't be trusted with OSC 9 (W-E-04):
+// BEL has been part of ASCII since the teletype era, so it degrades safely
+// where a hand-rolled escape sequence risks printing as garbage.
+func Bell() Cmd {
+	return func() Msg {
+		return bellMsg{}
+	}
+}
+
 type windowSizeMsg struct{}
 
 // WindowSize is a command that queries the terminal for its current size. It

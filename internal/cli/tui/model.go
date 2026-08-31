@@ -61,6 +61,18 @@ type model struct {
 	// value-receiver Update/applyEvent, and a copied non-zero Builder panics on
 	// the next WriteString. Concatenation is cheap for chat-sized text.
 	pending string
+	// pendingRendered/pendingRenderedText/pendingRenderedWidth/pendingRenderedAt
+	// cache the last throttled progressive-markdown pass over m.pending
+	// (W-E-07 — see refreshPendingMarkdown in events.go and renderPendingBody
+	// in view.go). pendingRenderedText is always a byte-prefix of m.pending:
+	// both only ever grow by append between flushes, so renderPendingBody can
+	// slice the plain-text tail at len(pendingRenderedText) without risking a
+	// split multi-byte rune. flushAssistant zeroes all four when m.pending is
+	// cleared, so a new turn's first chunk never reuses a stale cached render.
+	pendingRendered      string
+	pendingRenderedText  string
+	pendingRenderedWidth int
+	pendingRenderedAt    time.Time
 	// assistantContinuation suppresses repeated "assistant:" labels when one
 	// ReAct turn produces multiple assistant text blocks around tool calls.
 	// It is reset for each user turn and set after the first flushAssistant.
@@ -135,6 +147,19 @@ type model struct {
 	// rootPath is the full filesystem path of the project root, stored so that
 	// gitBranch can be re-detected on each gitRefreshMsg without shelling out.
 	rootPath string
+
+	// W-E-09: branch diff-stat (+N/-M vs default branch) and open PR info.
+	// Both are derived asynchronously by gitStatusMsg so startup is not blocked
+	// on a shell-out. gitDiffStat is the pre-formatted "+N -M" string (empty
+	// when on the default branch or no git). gitOpenPRURL and gitOpenPRTitle
+	// are from `gh pr view --json url,title` (empty when gh is absent or no
+	// open PR for the current branch).
+	gitDiffStat   string
+	gitOpenPRURL  string
+	gitOpenPRTitle string
+	// atMode selects the @ completion filter (W-E-14): 0 = all, 1 = files only,
+	// 2 = plugins only. Cycle with Tab inside the @ popup.
+	atMode int
 
 	// In-app mouse text selection (the terminal's native selection is disabled
 	// while mouse reporting is on, so the app implements selection itself).
@@ -354,6 +379,92 @@ type model struct {
 	// (internal/clipimg). Tests substitute a fake to stay off the desktop.
 	pendingImages []proto.ImageAttach
 	clipImage     clipImageFunc
+
+	// W-E-03: fullscreen transcript pager (Ctrl+T). pagerVisible reuses the
+	// SAME m.viewport the normal screen already scrolls instead of holding a
+	// second one — a pager showing a copy of the transcript would need its
+	// own content AND scroll position kept in sync with the original for no
+	// benefit, since the content is identical either way. pagerVisible only
+	// changes how reflow()/renderScreen() (view.go) size and compose that
+	// shared viewport; it also means "real-time tail" is free — applyEvent's
+	// existing unconditional m.viewport.GotoBottom() already applies to
+	// whatever the viewport is currently showing. pagerRawCopy toggles OFF
+	// the app's in-app mouse-drag text selection (tea.DisableMouse) so the
+	// user can fall back to the TERMINAL's own native selection, which mouse
+	// reporting normally suppresses — see pager.go.
+	pagerVisible bool
+	pagerRawCopy bool
+	// mouseEnabled mirrors programOptions' cap.AltScreen gate (RE-D): mouse
+	// cell-motion capture is only ever turned on at startup when the detected
+	// capability allows it (TERM=dumb does not), so pagerRawCopy's toggle
+	// must know whether there is anything to disable/re-enable — sending a
+	// mouse-mode escape sequence to a terminal that never had mouse mode on
+	// is exactly the escape-noise RE-D exists to avoid. Set once in
+	// NewProgram; zero value (false) in every test that builds a model
+	// directly, which is the safe default (no mouse escapes fire).
+	mouseEnabled bool
+
+	// titleEnabled gates W-E-05's terminal window-title updates on the same
+	// cap.AltScreen signal mouseEnabled uses — a dumb terminal gets no OSC 2 /
+	// XTWINOPS title-stack bytes, matching E1's "TERM=dumb stays escape-free"
+	// contract for every feature this batch adds, not just the ones E1 itself
+	// gated. See windowTitleCmd (title.go) for the single call site that reads
+	// it. Zero value (false) in every test that builds a model directly.
+	titleEnabled bool
+
+	// notifyEnabled is W-E-04's desktop-notification PREFERENCE (config
+	// tui.notify, default OFF — see TUIConfig.Notify's doc comment for why
+	// this one field defaults opposite of Frecency). It is preference-derived
+	// like frecency, not capability-derived like titleEnabled, so it is set in
+	// newModelWithPrefs and deliberately has NO entry in
+	// capability_wiring_test.go's census. notifyCmd (notify.go) ANDs this with
+	// titleEnabled to pick OSC 9 vs plain BEL vs nothing — reusing titleEnabled
+	// as the capability signal rather than adding a second cap.AltScreen-derived
+	// field that would just duplicate it.
+	notifyEnabled bool
+
+	// W-E-11: Esc-Esc rollback/fork. lastEsc timestamps the most recent Esc
+	// press so handlers.go's bottom KeyEscape case can detect a second press
+	// within escDoublePressWindow (rollback.go) without disturbing what a
+	// LONE Esc does — see that case's comment. rollback is non-nil while the
+	// picker popup is open (nil the rest of the time, matching action/
+	// historySearch's "nil means closed" convention). pendingRollback +
+	// pendingRollbackText/Index are set by rollbackConfirm right before
+	// sending the fork_session{turns_back} request and consumed by
+	// applyEvent's case "session_forked" on success. RE-13 (fix-e3a): this
+	// comment used to claim that case "cannot be reached any other way" —
+	// false, and disproved by TestSessionForked_PendingRollbackDoesNotLeakAcrossFailedFork:
+	// "session_forked" fires for ANY successful fork_session reply, not just
+	// the one rollbackConfirm sent, so a rejected rollback fork (case "error"
+	// below) that left these three fields armed gets its stale state consumed
+	// by the very next successful fork — plain /fork included. That is why
+	// applyEvent's case "error" now clears all three alongside
+	// pendingSeamRestore.
+	lastEsc              time.Time
+	rollback             *rollbackState
+	pendingRollback      bool
+	pendingRollbackText  string
+	pendingRollbackIndex int
+
+	// W-E-15: keymapCapture is non-empty while the /keymap bind <action> wizard
+	// is active. It names the action the user wants to rebind; the NEXT keypress
+	// (other than Esc) is captured and saved as the new binding.
+	keymapCapture string
+
+	// W-E-16: onboarding is the first-run wizard state. Non-nil means the
+	// wizard is showing; step tracks which stage the user is on (0 = welcome/
+	// skip-or-continue, 1 = pick permission mode). The wizard is only armed at
+	// startup when the effective cascade's OnboardingDone is false.
+	onboarding *onboardingState
+}
+
+// onboardingState tracks the W-E-16 first-run wizard. It is deliberately
+// minimal: two steps (welcome + permission-mode pick), then either the user
+// finishes (mode applied, tombstone written) or skips (tombstone written,
+// nothing applied).
+type onboardingState struct {
+	step      int
+	cursorIdx int
 }
 
 // newModel builds a model with no project preference layer. Kept as the
@@ -427,15 +538,28 @@ func newModelWithPrefs(sess tuiSession, root string, project Preferences) model 
 	if eff.Frecency {
 		m.frecency, _ = LoadFrecency(frecencyPath())
 	}
+	// W-E-04: preference only — see notifyEnabled's doc comment for why the
+	// capability half of the gate (OSC 9 vs BEL) is applied separately, in
+	// notifyCmd, against titleEnabled.
+	m.notifyEnabled = eff.Notify
 	m.stash, _ = LoadStash(stashPath())
 	m.history, _ = LoadHistory(historyPath(), defaultHistoryCap)
 	m.saveQueue = make(chan saveCmd, 16)
+	// W-E-16: arm the first-run wizard only when no layer of the cascade has
+	// recorded OnboardingDone. The tombstone is written on BOTH finish and
+	// skip, so the wizard never appears twice for the same user.
+	if !eff.OnboardingDone {
+		m.onboarding = &onboardingState{step: 0}
+	}
 	m.refresh()
 	return m
 }
 
 // NewProgram builds the bubbletea program for a session. Mouse cell-motion
-// capture is ON so BOTH work with a plain mouse:
+// capture is on whenever the detected capability allows alt-screen (see
+// programOptions / TermCapability.AltScreen — RE-D gated it off for
+// TERM=dumb, where it was previously always on), so BOTH work with a plain
+// mouse in every other case:
 //   - the WHEEL scrolls the viewport (routed in the MouseMsg handler), and
 //   - a LEFT-BUTTON DRAG selects text in-app (the terminal's native selection
 //     is disabled while mouse reporting is on, so the app implements selection
@@ -449,8 +573,82 @@ func newModelWithPrefs(sess tuiSession, root string, project Preferences) model 
 // having the TUI load config itself keeps package tui free of internal/config,
 // which is what lets cmd/yanshi stay the only place that knows both halves.
 func NewProgram(sess *cli.Session, root string, project Preferences) *tea.Program {
+	// W-E-01 (INF5): detect terminal capability from the environment before
+	// anything renders. See buildModelForCapability for what gets wired from
+	// it (RE-12: that used to happen inline here, where tea.Program hides the
+	// initialModel it wraps — third_party/bubbletea's Program.initialModel is
+	// unexported — so no test could ever observe a wiring line added or
+	// broken in this function; capability_wiring_test.go's AST census over
+	// buildModelForCapability's body is what closes that hole now).
+	cap := cli.DetectCapability(os.Getenv)
+	m := buildModelForCapability(sess, root, project, cap)
+	return tea.NewProgram(m, programOptions(cap)...)
+}
+
+// buildModelForCapability builds the full initial model NewProgram wraps in
+// a *tea.Program, including every field derived from the detected terminal
+// capability. It exists as its own function — rather than inlined in
+// NewProgram — purely so a test can call it directly with an arbitrary cap
+// and inspect the result: NewProgram's return type (*tea.Program) offers no
+// way to get the model back out, so this is the only seam through which
+// "does NewProgram actually wire cap.X into m.Y" can be answered by running
+// real production code instead of a hand-rolled re-derivation of it.
+//
+// capability_wiring_test.go's capabilityWiredFields census (checked by
+// TestCapabilityWiredFieldsMatchCensus via an AST walk of this function's
+// body) requires every `m.<field> = …` assignment added here to be
+// registered with a low/high capability pair that TestBuildModelForCapability_
+// FieldsFollowCapability proves actually changes the field — the mechanism
+// RE-12 asked for so the next line like `m.mouseEnabled = cap.AltScreen`
+// cannot land silently uncovered the way this one did.
+func buildModelForCapability(sess *cli.Session, root string, project Preferences, cap cli.TermCapability) model {
 	m := newModelWithPrefs(sess, root, project)
-	return tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	// W-E-01 (INF5): apply the detected profile to every lipgloss/glamour
+	// style in this package (see ApplyColorProfile's doc comment for why one
+	// call suffices for all of them).
+	ApplyColorProfile(cap.Profile)
+	// W-E-06: gates OSC 8 hyperlinks in toolArgSummary — a package-level
+	// toggle, not an `m.<field>` assignment, so (like ApplyColorProfile above)
+	// it is intentionally outside capabilityWiredFields' census; see
+	// SetHyperlinksEnabled's doc comment.
+	SetHyperlinksEnabled(cap.AltScreen)
+	// W-E-03: mirrors programOptions' own gate below — see mouseEnabled's
+	// doc comment on the model struct for why the pager's raw-copy toggle
+	// needs to know this at runtime, not just at startup.
+	m.mouseEnabled = cap.AltScreen
+	// W-E-05: see titleEnabled's doc comment on the model struct.
+	m.titleEnabled = cap.AltScreen
+	return m
+}
+
+// programOptions builds the bubbletea startup options for cap: mouse
+// cell-motion capture and alt-screen are both gated on cap.AltScreen (see
+// TermCapability.AltScreen's doc comment for why TERM=dumb sets it false, and
+// this function's own body comment for why mouse joined the gate in RE-D).
+// Extracted as its own function — rather than left inline in NewProgram —
+// because tea.Program exposes no way to inspect which options a constructed
+// *tea.Program was built with, so the only way to test this gating logic at
+// all is to call it directly on a TermCapability value and inspect the
+// returned slice; see TestProgramOptions_AltScreenGatedByCapability.
+func programOptions(cap cli.TermCapability) []tea.ProgramOption {
+	// RE-D: mouse cell-motion capture is gated on the same signal as
+	// alt-screen, not unconditional — a dumb terminal (log pipe, some CI
+	// runners) gets nothing but noise from mouse-tracking enable/disable
+	// sequences, exactly as it does from the alt-screen switch. This also
+	// closes the OSC 52 clipboard-write path for TERM=dumb as a side effect:
+	// copyClipboard (view.go) is only reachable from handleSelectMouse's
+	// mouse-drag-release, which never fires without mouse mode enabled.
+	//
+	// This does NOT make TERM=dumb escape-free: bubbletea's fork bakes
+	// cursor-hide and cursor-addressed repaint into its renderer with no
+	// independent toggle short of WithoutRenderer (which breaks the whole
+	// interactive TUI) — see TermCapability.AltScreen's doc comment for what
+	// remains unaddressed.
+	var opts []tea.ProgramOption
+	if cap.AltScreen {
+		opts = append(opts, tea.WithMouseCellMotion(), tea.WithAltScreen())
+	}
+	return opts
 }
 
 func (m model) Init() tea.Cmd {
@@ -473,6 +671,11 @@ func (m model) Init() tea.Cmd {
 		repaintTick(),
 		watchGitHead(m.rootPath),
 		probeStartupTools(),
+		// W-E-09: fetch diff-stat and open PR info asynchronously at startup.
+		fetchGitStatus(m.rootPath),
+		// W-E-05: set the initial idle title. nil under titleEnabled==false
+		// (TERM=dumb), so tea.Batch drops it — see windowTitleCmd.
+		m.windowTitleCmd(false),
 	)
 }
 
@@ -550,9 +753,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case gitRefreshMsg:
 		// Refresh the git branch display when .git/HEAD changes (detected by the
 		// fsnotify file watcher). Re-arm the watcher immediately so the next
-		// branch switch is caught.
+		// branch switch is caught. Also re-fetch diff-stat and PR info (W-E-09).
 		m.gitBranch = detectGitBranch(m.rootPath)
-		return m, watchGitHead(m.rootPath)
+		return m, tea.Batch(watchGitHead(m.rootPath), fetchGitStatus(m.rootPath))
+
+	case gitStatusMsg:
+		// W-E-09: async result from fetchGitStatus. Update diff-stat and PR fields.
+		m.gitDiffStat = msg.diffStat
+		m.gitOpenPRURL = msg.prURL
+		m.gitOpenPRTitle = msg.prTitle
+		return m, nil
 
 	case debounceMsg:
 		// The deferred input reflow has come due. consume() first so the next
@@ -566,6 +776,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updatePalette()
 		m.reflow()
 		return m, nil
+
+	case externalEditorMsg:
+		// W-E-12: the Ctrl+E editor process has exited. A non-nil err covers
+		// both failure modes (missing binary, non-zero exit) identically —
+		// the temp file is discarded and the input box is left untouched,
+		// so a spawn failure never loses already-typed text.
+		if msg.err != nil {
+			os.Remove(msg.tmpFile)
+			return m, m.pushToast("warn", "editor exited with an error: "+msg.err.Error())
+		}
+		data, readErr := os.ReadFile(msg.tmpFile)
+		os.Remove(msg.tmpFile)
+		if readErr != nil {
+			return m, m.pushToast("warn", "could not read editor output: "+readErr.Error())
+		}
+		m.input.SetValue(strings.TrimSuffix(string(data), "\n"))
+		m.growInput()
+		m.reflow()
+		return m, nil
+
+	case tea.ResumeMsg:
+		// W-E-10: sent by bubbletea's suspend() after RestoreTerminal returns,
+		// so this fires on every fg. Reflow + repaint because the terminal may
+		// have been resized while we were in the background, and the renderer
+		// needs a clean state to avoid stale lines.
+		m.reflow()
+		m.refresh()
+		return m, tea.Repaint
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -582,6 +820,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamMsg:
 		m = m.applyEvent(msg.ev)
 		var cmds []tea.Cmd
+		// RE-16: a permission_request is server-pushed and arrives on this
+		// path regardless of what key state the UI is in — Ctrl+T/Ctrl+E's
+		// handlers.go guard only stops the pager/editor from being OPENED
+		// over an already-pending permission; it can't stop a NEW request
+		// from landing while the pager is already open. renderScreen's
+		// pagerVisible branch is the one modal that returns early and skips
+		// every other block including the permission popup, and the
+		// pagerVisible key-handling block (handlers.go) forwards every rune
+		// — including y/a/n — to the viewport, never to respondPermission.
+		// Left alone, that combination hides an approval prompt AND makes it
+		// unanswerable until the user thinks to press Ctrl+T themselves.
+		// Force-closing the pager the moment a permission actually goes
+		// pending restores both: the popup renders on the very next frame,
+		// and y/a/n reach it again immediately.
+		if m.pagerVisible && m.pendingPermission() != nil {
+			cmds = append(cmds, m.closePager())
+		}
 		// C07: when a turn ends with queued messages waiting, drain per
 		// queueMode. drainQueue's Cmd (from dispatchSend) arms waitForEvent +
 		// activityTick for the next turn, so on a real drain we skip the
@@ -594,6 +849,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, dcmd)
 				drained = true
 			}
+		}
+		// W-E-05: a real drain immediately starts the NEXT turn (dispatchSend
+		// already re-set the busy title), so only revert to idle when this
+		// "done" is the turn actually ending, not a queue hop.
+		if msg.ev.Kind == "done" && !drained {
+			cmds = append(cmds, m.windowTitleCmd(false))
+			// W-E-04: same "turn actually ending, not a queue hop" guard as the
+			// title revert above — a drain immediately starts the next turn, so
+			// there is nothing finished to notify about yet.
+			cmds = append(cmds, m.notifyCmd())
 		}
 		if !drained && m.streamCh != nil {
 			cmds = append(cmds, m.waitForEvent())
@@ -702,6 +967,40 @@ func (m model) waitForEvent() tea.Cmd {
 	}
 }
 
+// applyEvent folds one server-sent StreamEvent into the model. Every ev.Text
+// assignment into a toolEntry field below (result, progress, nestedText,
+// nestedThought) goes through stripANSI first — RE-J (fix-e1 review of
+// W-E-01): ev.Text is server-controlled and, for shell_run in particular,
+// carries the target command's raw stdout verbatim (e.g. "ls --color=always"
+// emits live SGR codes); entries.go's renderTail/renderNormal/renderAgent all
+// eventually funnel these fields into resultStyle.Render (renderToolOutput)
+// unmodified, so an unstripped assignment here is an escape-sequence
+// injection into the user's real terminal, not just a display glitch.
+// Stripping at ingestion — the one place all these fields are written —
+// covers every downstream renderer in one edit, including the ones that
+// don't call renderToolOutput (renderNormal's direct resultStyle.Render(e.
+// result), renderAgent's errStyle.Render(e.result) error line): a per-call-
+// site fix would have to be repeated at each one and would silently miss the
+// next new consumer. It is applied unconditionally (not gated on color
+// profile, unlike RE-A's renderMarkdown fix) because this is a terminal-
+// injection concern, not a profile-downgrade leak — the byte sequence is
+// unsafe to emit under any profile, including TrueColor.
+//
+// This intentionally does NOT cover colorProgressLines' own output
+// (entries.go): that closure runs AFTER these fields are read back out in
+// renderAgent, wrapping already-stripped text in okStyle/errStyle — its SGR
+// codes are yanshi's own, added downstream of this boundary, not part of the
+// untrusted input being neutralized here.
+//
+// shell_run's FINISHED result is the one field this boundary cannot reach:
+// t.result there is a JSON envelope ({"output":"...","exit":N}), and a raw
+// ESC byte cannot appear literally inside valid JSON text (encoding/json
+// always escapes control bytes as the literal 6-byte sequence backslash-u-0-0-1-b,
+// never a raw 0x1b byte — stripANSI's regex (anchored on the raw ESC byte)
+// is therefore a no-op on it here. The literal ESC byte reappears only after
+// json.Unmarshal decodes the "output" field back into a plain string, which
+// happens later, inside entries.go's toolResultOutput — that function strips
+// its own return value for the same reason, after its own decode.
 func (m model) applyEvent(ev cli.StreamEvent) model {
 	// lastEventAt threads the "previous non-thinking event" timestamp through to
 	// appendThinkingDelta, which stamps a new thinkingEntry.startedAt from it. It
@@ -729,7 +1028,7 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 		// inverted (the child's reasoning would appear above the parent's call).
 		m.retryAttempt = 0 // a pending retry resolved (content is flowing again)
 		if t := m.lastRunningNestedTool(); t != nil {
-			t.nestedThought += ev.Text
+			t.nestedThought += stripANSI(ev.Text)
 		} else {
 			m.appendThinkingDelta(ev.Text)
 		}
@@ -748,11 +1047,14 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 			// Accumulate as continuous text (natural \n splits lines), not one
 			// progress line per chunk — chunks are short text deltas, so
 			// per-chunk lines produced "two chars per line" breakage.
-			nt.nestedText += ev.Text
+			nt.nestedText += stripANSI(ev.Text)
 		} else {
 			m.pending += ev.Text
 			// Assistant text is streaming → we're thinking, not running a tool.
 			m.activity = "Thinking…"
+			// W-E-07: throttled progressive markdown pass — see
+			// refreshPendingMarkdown's doc comment (events.go).
+			m = m.refreshPendingMarkdown()
 		}
 	case "tool_call":
 		m.retryAttempt = 0 // a pending retry resolved
@@ -799,7 +1101,7 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 		// block instead of appending to its nestedProgress.
 		if t := m.lastRunningTool(ev.ToolName); t != nil {
 			m.flushAssistant()
-			t.result = ev.Text
+			t.result = stripANSI(ev.Text)
 			t.status = ev.ToolStatus
 			// Stamp endedAt to bracket the block's lifetime for the done
 			// summary's "Mm Ss" duration (startedAt was set on the tool_call).
@@ -846,7 +1148,7 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 			m.entries = append(m.entries, &toolEntry{
 				name:      ev.ToolName,
 				root:      m.sess.Root(),
-				result:    ev.Text,
+				result:    stripANSI(ev.Text),
 				status:    ev.ToolStatus,
 				nested:    toolDisplayFor(ev.ToolName) == toolDispAgent,
 				endedAt:   time.Now(),
@@ -855,7 +1157,7 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 		}
 	case "tool_progress":
 		if t := m.lastRunningTool(ev.ToolName); t != nil {
-			t.progress = append(t.progress, ev.Text)
+			t.progress = append(t.progress, stripANSI(ev.Text))
 		}
 	case "tool_chunk":
 		// Stream chunk from a tool's Stream channel (Lane 4). Text is appended to
@@ -865,10 +1167,10 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 		// error path.
 		if t := m.lastRunningTool(ev.ToolName); t != nil {
 			if ev.Overwrite {
-				t.progress = []string{ev.Text}
+				t.progress = []string{stripANSI(ev.Text)}
 				t.progressOverwrite = true
 			} else if ev.Text != "" {
-				t.progress = append(t.progress, ev.Text)
+				t.progress = append(t.progress, stripANSI(ev.Text))
 			}
 			if ev.ToolStatus != "" {
 				t.statusPanel = ev.ToolStatus
@@ -880,6 +1182,24 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 		// not leave the user in a "reverting…" limbo when the server rejects.
 		if m.pendingSeamRestore != nil {
 			m.pendingSeamRestore = nil
+		}
+		// RE-13 (fix-e3a): same shape, one line above. rollbackConfirm arms
+		// pendingRollback/*Text/*Index BEFORE the fork_session frame is even
+		// sent (rollback.go), so a server rejection — a "session_forked" reply
+		// never arriving — must disarm them here too. Left armed, the NEXT
+		// "session_forked" this session ever receives (a plain /fork, a
+		// second successful Esc-Esc, even one from an unrelated side session)
+		// consumes this stale state: truncates m.entries at a now-meaningless
+		// index and overwrites whatever the user has typed since with the old
+		// picked prompt. Reachable without any compaction involved — see
+		// TestApplyEvent_ErrorClearsPendingRollback for the SSE path (a
+		// control frame rejected with "control frames require the WebSocket
+		// transport") and the side-session path (fork rejected because
+		// cs.sessionID was cleared by /exit-side).
+		if m.pendingRollback {
+			m.pendingRollback = false
+			m.pendingRollbackText = ""
+			m.pendingRollbackIndex = 0
 		}
 		m.entries = append(m.entries, errorEntry{text: ev.Text})
 	case "models":
@@ -998,15 +1318,32 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 			text: formatSessionAck(ev.Action, ev.SessionID, ev.Text),
 		})
 	case "session_forked":
-		// Reply to /fork: Task 7 already switched the SAME server connSession
-		// to forkID before sending this frame. Mirror that active id locally;
-		// no extra /restore is needed and the next turn persists only to the
-		// fork.
+		// Reply to /fork or the Esc-Esc rollback picker (W-E-11): Task 7
+		// already switched the SAME server connSession to forkID before
+		// sending this frame. Mirror that active id locally; no extra
+		// /restore is needed and the next turn persists only to the fork.
 		m.flushAssistant()
+		if m.pendingRollback && m.pendingRollbackIndex >= 0 && m.pendingRollbackIndex <= len(m.entries) {
+			// W-E-11: the server's forkID has no messages from the picked
+			// user turn onward — truncate the LOCAL transcript to match,
+			// using the index rollbackConfirm captured when the picker
+			// opened, before appending the ack below.
+			m.entries = append([]entry(nil), m.entries[:m.pendingRollbackIndex]...)
+		}
 		m.entries = append(m.entries, ackEntry{
 			text: "forked and switched to " + ev.SessionID,
 		})
 		m.sessionID = ev.SessionID
+		if m.pendingRollback {
+			// Refill the original prompt so the user can re-send (or edit)
+			// it without retyping — spec: "确认后 fork 并把原 prompt 自动
+			// 填回编辑框".
+			m.input.SetValue(m.pendingRollbackText)
+			m.growInput()
+			m.pendingRollback = false
+			m.pendingRollbackText = ""
+			m.pendingRollbackIndex = 0
+		}
 	case "memories_distilled", "memories_cleared", "checkpoint_result":
 		// A2/W-A-05, W-D-12 and W-D-06: replies to /distill, /memory-clear and
 		// /checkpoint. Render the server's summary as an ack. Without this case
@@ -1202,6 +1539,12 @@ func (m model) applyEvent(ev cli.StreamEvent) model {
 			undoID:  ev.UndoSeamID,
 			summary: text,
 		})
+	case "workspace_diff":
+		// W-E-13: /diff reply. Unlike "seams" there is no Kind filtering and
+		// no head to cache — it is a plain snapshot of the pending main-scope
+		// changeset, rendered in full by workspaceDiffEntry.
+		m.flushAssistant()
+		m.entries = append(m.entries, workspaceDiffEntry{files: ev.WorkspaceDiff})
 	case "compact_chunk":
 		// bug⑧: compaction is a meta-op; its status lives on the activity line
 		// (the "Running…" row rendered separately from the transcript), NOT as a

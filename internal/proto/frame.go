@@ -58,8 +58,17 @@ type ClientFrame struct {
 	MCPServer     string `json:"mcp_server,omitempty"`
 	MCPAction     string `json:"mcp_action,omitempty"`
 	// Seq selects the inclusive upper bound for fork_session (-1 = all messages,
-	// >=0 = up to that seq). Other frames leave it zero.
+	// >=0 = up to that seq). Other frames leave it zero. Ignored by fork_session
+	// when TurnsBack > 0 — the two are mutually exclusive ways of picking the
+	// same target, kept as separate fields rather than overloading Seq with a
+	// second meaning (W-E-11).
 	Seq int `json:"seq,omitempty"`
+	// TurnsBack requests a fork_session that rolls back N user turns (W-E-11's
+	// Esc-Esc picker): the server resolves it to a concrete Seq via
+	// resolveRollbackSeq (ws_handlers.go) before calling store.ForkSession.
+	// Zero (the default) means "not a rollback fork, use Seq as before" — fully
+	// additive, existing fork_session{seq} callers are unaffected.
+	TurnsBack int `json:"turns_back,omitempty"`
 	// Source carries the install source for skill install requests
 	// (e.g. "github:owner/repo"). Other frames leave it empty.
 	Source string `json:"source,omitempty"`
@@ -276,6 +285,10 @@ type SessionInfo struct {
 	// absent from the pricing table; renderers must show "N/A", not "$0".
 	CostUSD   float64 `json:"cost_usd,omitempty"`
 	CostKnown bool    `json:"cost_known,omitempty"`
+	// Preview is the last user or assistant message snippet (W-E-08). Fetched
+	// via a bounded reverse scan (MessagesPage{Newest:true,Limit:1}) so it
+	// never loads the whole transcript; empty when no messages exist.
+	Preview string `json:"preview,omitempty"`
 }
 
 // SeamInfo carries one seam row for the seams list response (type "seams").
@@ -290,6 +303,21 @@ type SeamInfo struct {
 	CommitShort string `json:"commit_short,omitempty"`
 	Label       string `json:"label,omitempty"`
 	CreatedAt   int64  `json:"created_at,omitempty"`
+}
+
+// WorkspaceDiffFile carries one path's pending (uncommitted) change for the
+// workspace_diff reply (W-E-13's /diff command). It mirrors
+// vcs.UncommittedFile on the wire rather than importing internal/vcs
+// directly — proto has no internal dependencies (see the package doc), and
+// keeping the wire shape a plain struct means the client renders it without
+// ever needing to link the vcs package. OldText is empty for Op=="added",
+// NewText is empty for Op=="deleted"; either can also be empty for a binary
+// path (vcs.UncommittedDiff leaves non-UTF8 content out of the text fields).
+type WorkspaceDiffFile struct {
+	Path    string `json:"path"`
+	Op      string `json:"op"` // added | modified | deleted
+	OldText string `json:"old_text,omitempty"`
+	NewText string `json:"new_text,omitempty"`
 }
 
 // ServerFrame is a server->client frame.
@@ -484,6 +512,13 @@ type ServerFrame struct {
 	// reconnecting client can render the current snapshot. omitempty keeps the
 	// legacy status shape when no flag table is configured.
 	Features []FeatureRow `json:"features,omitempty"`
+	// WorkspaceDiff carries the current workspace's pending (uncommitted)
+	// changeset, reply to list_workspace_diff (W-E-13's /diff command). Empty
+	// (non-nil) when nothing is pending. When VCS is unconfigured the reply
+	// is a separate "error" frame instead (RE-6) — the client must not
+	// conflate the two: one means "nothing changed yet", the other means
+	// "the feature is unavailable on this server".
+	WorkspaceDiff []WorkspaceDiffFile `json:"workspace_diff,omitempty"`
 }
 
 // FeatureRow is the on-the-wire shape of one entry in the features table
@@ -932,6 +967,26 @@ func NewSeamRestored(undoSeamID, commitShort, head, text string) ServerFrame {
 	return ServerFrame{Type: "seam_restored", ID: undoSeamID, CommitShort: commitShort, Head: head, Text: text}
 }
 
+// --- W-E-13 workspace diff frames ---
+//
+// list_workspace_diff / workspace_diff follow the same request/reply naming
+// as list_seams / seams: a no-argument client request, a server reply
+// carrying the full current snapshot (no incremental/delta protocol — the
+// changeset is small enough, and per-file diffing already happens client
+// side in internal/cli/tui, reusing W-E-02's renderColoredDiff).
+
+// NewListWorkspaceDiff requests the current workspace's pending (uncommitted)
+// changes for W-E-13's /diff command (reply: workspace_diff).
+func NewListWorkspaceDiff() ClientFrame { return ClientFrame{Type: "list_workspace_diff"} }
+
+// NewWorkspaceDiff replies with the pending changeset's per-file old/new
+// text (W-E-13). files is empty (never nil on the wire, thanks to
+// omitempty+nil-slice both marshaling to nothing) when VCS is unconfigured or
+// nothing is pending.
+func NewWorkspaceDiff(files []WorkspaceDiffFile) ServerFrame {
+	return ServerFrame{Type: "workspace_diff", WorkspaceDiff: files}
+}
+
 // --- V09 fork frames ---
 
 // NewForkSession requests a fork of the current session (V09). seq=-1 forks
@@ -939,6 +994,15 @@ func NewSeamRestored(undoSeamID, commitShort, head, text string) ServerFrame {
 // range is rejected by the server. Reply: session_forked{session_id: forkID}.
 func NewForkSession(seq int) ClientFrame {
 	return ClientFrame{Type: "fork_session", Seq: seq}
+}
+
+// NewForkSessionRollback requests a fork_session that rolls back turnsBack
+// user turns (W-E-11's Esc-Esc picker), letting the server resolve the target
+// seq instead of the client having to know row seq numbers. turnsBack must be
+// >0; the server rejects it otherwise (same "reuse fork_session, don't invent
+// a frame type" shape as NewForkSession — see reply, still session_forked).
+func NewForkSessionRollback(turnsBack int) ClientFrame {
+	return ClientFrame{Type: "fork_session", TurnsBack: turnsBack}
 }
 
 // NewSessionForked is the reply to fork_session, carrying the new session id.

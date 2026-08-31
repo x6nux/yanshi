@@ -300,6 +300,7 @@ func isControlReply(kind string) bool {
 		"permissions", "permission_rule_hit",
 		"jobs", "job_event",
 		"seams", "seam_restored", // B2-RB1 必修项 I
+		"workspace_diff", // W-E-13: /diff reply is a single-frame control reply
 		"session_forked", "side_state", "skills_list", "skill_ack",
 		"features",           // OBS3: /features reply is a single-frame control reply
 		"memories_distilled", // A2/W-A-05: /distill reply is a single-frame control reply
@@ -382,6 +383,8 @@ func toStreamEvent(f proto.ServerFrame) StreamEvent {
 		Seams:       f.Seams,
 		CommitShort: f.CommitShort,
 		Head:        f.Head,
+		// W-E-13: workspace_diff reply payload.
+		WorkspaceDiff: f.WorkspaceDiff,
 	}
 	if f.Type == "seam_restored" {
 		ev.UndoSeamID = f.ID

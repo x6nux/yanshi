@@ -150,21 +150,76 @@ func isSpaceByte(b byte) bool { return b == ' ' || b == '\t' || b == '\n' }
 // two cannot both be open — the input either starts with "/" or it does not —
 // so sharing paletteItems keeps one popup, one selection index and one Tab
 // handler instead of a second set that would drift.
+//
+// W-E-14: atMode (model.atMode) selects the filter applied to candidates:
+//
+//	0 = all (FS + plugins)
+//	1 = FS only
+//	2 = plugins only (MCP tool names from m.paletteMCPServers)
+//
+// Tab inside the popup cycles the mode. Mode label is injected into the
+// command's help text so the popup header stays informative.
 func (m *model) updateAtPalette() bool {
 	prefix, ok := atPrefixAtCursor(m.input.Value())
 	if !ok {
 		return false
 	}
-	cands := m.atCandidates(prefix)
-	items := make([]command, 0, len(cands))
-	for _, c := range cands {
-		items = append(items, command{name: c, help: "attach file", kind: cmdAtPath})
+
+	const (
+		atModeAll     = 0
+		atModeFS      = 1
+		atModePlugins = 2
+		atModeLast    = 2
+	)
+
+	modeLabel := []string{"all", "files", "plugins"}[m.atMode]
+
+	var items []command
+
+	switch m.atMode {
+	case atModeAll, atModeFS:
+		cands := m.atCandidates(prefix)
+		for _, c := range cands {
+			items = append(items, command{name: c, help: "attach file [" + modeLabel + "]", kind: cmdAtPath})
+		}
+		if m.atMode == atModeAll {
+			// Also add plugin (MCP tool) names.
+			items = append(items, atPluginCandidates(m, prefix, modeLabel)...)
+		}
+	case atModePlugins:
+		items = atPluginCandidates(m, prefix, modeLabel)
 	}
+
 	m.paletteItems = items
 	if m.paletteSel >= len(items) || m.paletteSel < 0 {
 		m.paletteSel = 0
 	}
 	return true
+}
+
+// atPluginCandidates returns MCP tool names as @-completion candidates.
+// Each entry has kind=cmdAtPath so the existing Tab-complete machinery works.
+func atPluginCandidates(m *model, prefix, modeLabel string) []command {
+	var out []command
+	prefix = strings.ToLower(prefix)
+	for _, srv := range m.paletteMCPServers {
+		for _, tool := range srv.Tools {
+			name := tool.Name
+			if prefix != "" && !strings.Contains(strings.ToLower(name), prefix) {
+				continue
+			}
+			out = append(out, command{name: name, help: "MCP tool [" + modeLabel + "]", kind: cmdAtPath})
+		}
+	}
+	return out
+}
+
+// cycleAtMode advances m.atMode to the next filter and rebuilds the palette.
+// Called by the Tab handler when the @ popup is open.
+func (m *model) cycleAtMode() {
+	m.atMode = (m.atMode + 1) % 3
+	m.updateAtPalette()
+	m.paletteSel = 0
 }
 
 // completeAtPath replaces the partial @token with the selected path.
@@ -177,5 +232,6 @@ func (m *model) completeAtPath(sel command) {
 	m.input.SetValue(v[:at+1] + sel.name + " ")
 	m.input.CursorEnd()
 	m.paletteItems = nil
+	m.atMode = 0 // reset for the next @
 	m.growInput()
 }

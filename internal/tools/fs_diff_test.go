@@ -35,9 +35,3 @@ func TestUnifiedDiff_AllRemoved(t *testing.T) {
 func TestUnifiedDiff_NoChange(t *testing.T) {
 	assert.Equal(t, "", unifiedDiff("same\nsame\n", "same\nsame\n"))
 }
-
-func TestSplitDiffLines(t *testing.T) {
-	assert.Nil(t, splitDiffLines(""))
-	assert.Equal(t, []string{"a", "b"}, splitDiffLines("a\nb\n"))
-	assert.Equal(t, []string{"a", "b"}, splitDiffLines("a\nb")) // no trailing newline
-}
