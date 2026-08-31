@@ -9,7 +9,9 @@ import (
 
 	"github.com/cloudwego/eino/components/model"
 
+	"github.com/x6nux/yanshi/internal/agent/orchestrator"
 	"github.com/x6nux/yanshi/internal/approval"
+	"github.com/x6nux/yanshi/internal/ctxcompact"
 	"github.com/x6nux/yanshi/internal/features"
 	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/llm/eino"
@@ -58,6 +60,12 @@ type Config struct {
 	// MCP is the MCP connection manager. When non-nil, mcp_action frames dispatch
 	// through it. bootstrap wires the same manager the orchestrator uses.
 	MCP *mcp.Manager
+	// Hooks carries the hook-bus segments the transport-side compaction paths
+	// need (W-F-08): bootstrap maps the config hooks block once and hands the
+	// SAME value to the orchestrator and here, so pre-turn auto-compact and
+	// manual /compact fire the same lifecycle hooks the mid-turn path does.
+	// The zero value binds no sink and compaction behaves exactly as before.
+	Hooks orchestrator.HooksConfig
 	// MemoryPath is the active user memory file path (MEM1), surfaced on
 	// status frames so the TUI can display it. Empty when MEM1 is disabled.
 	MemoryPath string
@@ -222,34 +230,39 @@ type Server struct {
 	// guardianPrompt is Config.GuardianPrompt, copied onto each connSession so
 	// the permission callback can reach it without a Server pointer.
 	guardianPrompt string
+	// compactionHooks is the transport-side lifecycle sink (W-F-08), built once
+	// from Config.Hooks. nil when no compaction hook is configured; the bind
+	// sites treat nil as "no bus" (WithLifecycleSink passes ctx through).
+	compactionHooks ctxcompact.LifecycleSink
 }
 
 // New creates a Server with the given configuration.
 func New(cfg Config) *Server {
 	return &Server{
-		mux:            http.NewServeMux(),
-		token:          cfg.Token,
-		compaction:     cfg.Compaction,
-		store:          cfg.Store,
-		vcs:            cfg.VCS,
-		repoID:         cfg.RepoID,
-		approvals:      cfg.Approvals,
-		approvalAudit:  cfg.ApprovalAudit,
-		shellManager:   cfg.ShellManager,
-		mcp:            cfg.MCP,
-		memoryPath:     cfg.MemoryPath,
-		logPath:        cfg.LogPath,
-		skillsRegistry: cfg.SkillsRegistry,
-		skillsLoader:   cfg.SkillsLoader,
-		skillsDstRoot:  cfg.SkillsDstRoot,
-		skillsCloner:   cfg.SkillsCloner,
-		skillsFetcher:  cfg.SkillsFetcher,
-		priceTab:       cfg.PriceTab,
-		featuresReg:    cfg.FeaturesReg,
-		redactor:       cfg.Redactor,
-		permTimeout:    cfg.PermissionTimeout.resolve(),
-		distillModel:   cfg.DistillModel,
-		guardianPrompt: cfg.GuardianPrompt,
+		mux:             http.NewServeMux(),
+		token:           cfg.Token,
+		compaction:      cfg.Compaction,
+		store:           cfg.Store,
+		vcs:             cfg.VCS,
+		repoID:          cfg.RepoID,
+		approvals:       cfg.Approvals,
+		approvalAudit:   cfg.ApprovalAudit,
+		shellManager:    cfg.ShellManager,
+		mcp:             cfg.MCP,
+		memoryPath:      cfg.MemoryPath,
+		logPath:         cfg.LogPath,
+		skillsRegistry:  cfg.SkillsRegistry,
+		skillsLoader:    cfg.SkillsLoader,
+		skillsDstRoot:   cfg.SkillsDstRoot,
+		skillsCloner:    cfg.SkillsCloner,
+		skillsFetcher:   cfg.SkillsFetcher,
+		priceTab:        cfg.PriceTab,
+		featuresReg:     cfg.FeaturesReg,
+		redactor:        cfg.Redactor,
+		permTimeout:     cfg.PermissionTimeout.resolve(),
+		distillModel:    cfg.DistillModel,
+		guardianPrompt:  cfg.GuardianPrompt,
+		compactionHooks: orchestrator.NewCompactionHookSink(cfg.Hooks),
 	}
 }
 

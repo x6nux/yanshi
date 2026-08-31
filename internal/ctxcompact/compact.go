@@ -62,6 +62,13 @@ type Options struct {
 	// EvictionMapBudget bounds the rendered map in characters; 0 selects
 	// DefaultEvictionMapBudget.
 	EvictionMapBudget int
+
+	// Trigger names the compression path for the lifecycle events (W-F-08),
+	// one of the hooks.go Trigger* constants. The transport entries share
+	// Options while the mid-turn path (CompactingModel) builds RunOpts
+	// directly and sets the field there — either way the value that reaches
+	// the hook is the caller's own name for its path, not a guess.
+	Trigger string
 }
 
 // runOpts builds the RunOpts for a compaction against contextWindow.
@@ -80,6 +87,7 @@ func (o Options) runOpts(contextWindow int) RunOpts {
 		CoveredSeq:         o.CoveredSeq,
 		EvictionMap:        o.EvictionMap,
 		EvictionMapBudget:  o.EvictionMapBudget,
+		Trigger:            o.Trigger,
 	}
 }
 

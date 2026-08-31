@@ -743,7 +743,9 @@ func (cs *connSession) loadSession(s *Server, sessionID string) error {
 }
 
 // compactionOptions builds the ctxcompact.Options for this server, wiring the
-// process-wide secrets redactor into compaction (C11).
+// process-wide secrets redactor into compaction (C11) and naming the path the
+// options serve (W-F-08: the trigger rides the lifecycle events so a hook can
+// tell a pre-turn auto-compact from a manual /compact).
 //
 // THE NIL CHECK IS LOAD-BEARING AND CANNOT BE DROPPED. s.redactor is a
 // *secrets.Redactor and is documented as nil when no secrets backend is
@@ -754,11 +756,11 @@ func (cs *connSession) loadSession(s *Server, sessionID string) error {
 // pre-turn path of every chat request on any deployment without a secrets
 // backend. Returning the zero Options instead keeps that case on the exact
 // historical code path.
-func (s *Server) compactionOptions() ctxcompact.Options {
+func (s *Server) compactionOptions(trigger string) ctxcompact.Options {
 	if s.redactor == nil {
-		return ctxcompact.Options{}
+		return ctxcompact.Options{Trigger: trigger}
 	}
-	return ctxcompact.Options{Redactor: s.redactor}
+	return ctxcompact.Options{Redactor: s.redactor, Trigger: trigger}
 }
 
 // maybeAutoCompact runs threshold-gated compaction before a user_message turn.
@@ -797,10 +799,14 @@ func maybeAutoCompact(ctx context.Context, s *Server,
 		cs.reportCompactionBlocked(s, conn, compactionNotDurable)
 		return
 	}
-	newHist, tb, ta, did := ctxcompact.MaybeCompactWithOptions(ctx, cs.history,
+	// W-F-08: bind the compaction lifecycle sink (if any hooks are configured)
+	// and name this path pre_turn. The ctx reaching MaybeCompactWithOptions is
+	// the connection ctx — no turn has started, so nothing else has bound a bus.
+	newHist, tb, ta, did := ctxcompact.MaybeCompactWithOptions(
+		ctxcompact.WithLifecycleSink(ctx, s.compactionHooks), cs.history,
 		thresholdFor(cs.model, s.compaction), cw, kr, sumModel,
 		func(chunk string) { conn.write(proto.NewCompactChunk(chunk)) },
-		s.compactionOptions())
+		s.compactionOptions(ctxcompact.TriggerPreTurn))
 	if !did {
 		return
 	}
@@ -877,9 +883,10 @@ func compactNow(ctx context.Context, s *Server,
 	if cw <= 0 {
 		cw = 256000
 	}
-	newHist, tb, ta, did := ctxcompact.ForceCompactWithOptions(ctx, cs.history, cw, kr, sumModel,
+	newHist, tb, ta, did := ctxcompact.ForceCompactWithOptions(
+		ctxcompact.WithLifecycleSink(ctx, s.compactionHooks), cs.history, cw, kr, sumModel,
 		func(chunk string) { conn.write(proto.NewCompactChunk(chunk)) },
-		s.compactionOptions())
+		s.compactionOptions(ctxcompact.TriggerManual))
 	if !did {
 		conn.write(cs.statusFrame(s))
 		return

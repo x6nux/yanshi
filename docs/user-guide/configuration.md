@@ -285,6 +285,8 @@ export YANSHI_ALLOW_CHILD_ENV=NETRC,npm_config_registry,SSH_AUTH_SOCK
 | key | type | 说明 |
 |---|---|---|
 | hooks.pre_tool_use | []HookConfig | |
+| hooks.pre_compact | []HookConfig | |
+| hooks.post_compact | []HookConfig | |
 
 ### memory
 

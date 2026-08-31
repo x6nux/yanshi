@@ -264,6 +264,27 @@ loop_guard:
 #     - program: /usr/local/bin/yanshi-hook-check
 #       args: ["--strict"]
 #       timeout: 5s
+#
+# Compaction lifecycle hooks (W-F-08). pre_compact / post_compact run around
+# EVERY compaction attempt on all three paths (pre-turn auto-compact, mid-turn
+# threshold compaction, manual /compact). They are OBSERVERS with a different
+# contract from pre_tool_use: each hook receives ONE lifecycle-event JSON value
+# on stdin and exits 0 —
+#   {"event":"pre_compact","trigger":"pre_turn","tokens_before":81234}
+#   {"event":"post_compact","trigger":"manual","tokens_before":81234,
+#    "tokens_after":9100,"overflow":false}
+# trigger is one of pre_turn / mid_turn / manual / new_window. stdout is
+# discarded, and a hook that fails (crash, timeout, unreadable spawn) is only
+# logged — compaction continues (the deliberate OPPOSITE of pre_tool_use's
+# fail-closed; a broken observer must not upgrade itself into "the history
+# stopped being compacted").
+# hooks:
+#   pre_compact:
+#     - program: /usr/local/bin/yanshi-hook-compact
+#       timeout: 5s
+#   post_compact:
+#     - program: /usr/local/bin/yanshi-hook-compact
+#       timeout: 5s
 # Permission profiles. The MAP KEY is what selects a profile — there is no
 # indirection through the `agents:` block above (agents[].profile has no
 # production reader today; setting it changes nothing and warns about nothing).

@@ -28,7 +28,7 @@ func TestCompactionOptionsCarriesTheRedactor(t *testing.T) {
 	red.Register("sk-live-must-not-leak")
 	s := &Server{redactor: red}
 
-	opts := s.compactionOptions()
+	opts := s.compactionOptions("pre_turn")
 	if opts.Redactor == nil {
 		t.Fatal("compactionOptions dropped the redactor: compaction would ship " +
 			"registered secrets to the summary model, and the summary is pinned")
@@ -52,7 +52,7 @@ func TestCompactionOptionsCarriesTheRedactor(t *testing.T) {
 func TestCompactionOptionsWithoutRedactorIsUsable(t *testing.T) {
 	s := &Server{}
 
-	opts := s.compactionOptions()
+	opts := s.compactionOptions("pre_turn")
 	if opts.Redactor != nil {
 		t.Fatalf("a nil *secrets.Redactor must not become a non-nil interface; "+
 			"ctxcompact's own nil guard cannot see through it, got %#v", opts.Redactor)

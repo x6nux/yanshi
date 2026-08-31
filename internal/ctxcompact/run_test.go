@@ -216,7 +216,7 @@ func TestOpenNewWindow_NeverCallsAModel(t *testing.T) {
 		{Role: schema.Assistant, Content: strings.Repeat("even more ", 100)}, // 3 summarize (DROPPED)
 		{Role: schema.User, Content: "recent"},                               // 4 user+tail (pin)
 	}
-	res := ctxcompact.OpenNewWindow(msgs, ctxcompact.PlanOpts{KeepRecent: 1},
+	res := ctxcompact.OpenNewWindow(context.Background(), msgs, ctxcompact.PlanOpts{KeepRecent: 1},
 		ctxcompact.RunOpts{ModelWindow: 10000, ChunkThreshold: 0.9})
 	assert.True(t, res.Fallback, "OpenNewWindow shares the W-C-04 fallback Result shape")
 	assert.Less(t, res.TokensAfter, res.TokensBefore, "the summarize-only messages are dropped, not kept")
@@ -241,7 +241,7 @@ func TestOpenNewWindow_PreservesEveryPinCategory(t *testing.T) {
 		{Role: schema.Assistant, Content: strings.Repeat("more noise ", 100)},      // 5 tail (pin)
 		{Role: schema.User, Content: "recent"},                                     // 6 tail (pin)
 	}
-	res := ctxcompact.OpenNewWindow(msgs, ctxcompact.PlanOpts{KeepRecent: 1},
+	res := ctxcompact.OpenNewWindow(context.Background(), msgs, ctxcompact.PlanOpts{KeepRecent: 1},
 		ctxcompact.RunOpts{ModelWindow: 10000, ChunkThreshold: 0.9})
 	require.True(t, res.Fallback)
 

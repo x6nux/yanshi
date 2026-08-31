@@ -578,6 +578,15 @@ type HooksConfig struct {
 	// hook can never turn a guard denial into an allow. A hook blocks by
 	// answering {"block":true,"reason":"..."} on stdout.
 	PreToolUse []HookConfig `yaml:"pre_tool_use"`
+	// PreCompact / PostCompact (W-F-08) run before and after every compaction
+	// attempt, on all three compaction paths (pre-turn, mid-turn, manual
+	// /compact). They are OBSERVERS: the hook reads one lifecycle-event JSON
+	// object on stdin (event, trigger, token counts, failure/fallback flags)
+	// and exits; its stdout is discarded. A failed compaction hook is logged
+	// and skipped — the deliberate opposite of pre_tool_use's fail-closed,
+	// see the ctxcompact lifecycle-bus doc for the reasoning.
+	PreCompact  []HookConfig `yaml:"pre_compact"`
+	PostCompact []HookConfig `yaml:"post_compact"`
 }
 
 // HookConfig is one hook program: an executable path (never a shell line —
@@ -1232,6 +1241,23 @@ func (c *Config) validateHooks() error {
 	for i, h := range c.Hooks.PreToolUse {
 		if strings.TrimSpace(h.Program) == "" {
 			return fmt.Errorf("hooks.pre_tool_use[%d]: program is required (a hook with no program would fail closed on every tool call)", i)
+		}
+	}
+	// 压缩段（W-F-08）走同一条检查。错误文案不提 fail-closed —— 这两段
+	// 的 hook 失败是 fail-open，空 program 的实际后果是每次压缩各记一条
+	// 日志；仍然在加载期拒绝，是因为一个缩错进的空值同样只在运行期才显形，
+	// 而日志不是操作员保证在看的地方。
+	for _, section := range []struct {
+		name  string
+		hooks []HookConfig
+	}{
+		{"hooks.pre_compact", c.Hooks.PreCompact},
+		{"hooks.post_compact", c.Hooks.PostCompact},
+	} {
+		for i, h := range section.hooks {
+			if strings.TrimSpace(h.Program) == "" {
+				return fmt.Errorf("%s[%d]: program is required", section.name, i)
+			}
 		}
 	}
 	return nil

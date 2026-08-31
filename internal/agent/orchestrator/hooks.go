@@ -64,6 +64,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -72,7 +73,10 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
 
+	"github.com/x6nux/yanshi/internal/ctxcompact"
+	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/secproc"
+	"github.com/x6nux/yanshi/internal/shell"
 	"github.com/x6nux/yanshi/internal/tools"
 )
 
@@ -92,14 +96,22 @@ type HookConfig struct {
 	Timeout time.Duration
 }
 
-// HooksConfig 是 hook 总线的配置。事件集按 INF4 的 codex 子集逐步接入，本批
-// 只有 PreToolUse；后续批次（Stop / PostToolUse / 压缩生命周期）挂进同一个
-// 结构，而不是各自再造一条分发链。
+// HooksConfig 是 hook 总线的配置。事件集按 INF4 的 codex 子集逐步接入：
+// PreToolUse（W-F-02）与压缩生命周期（W-F-08）挂进同一个结构，而不是各自
+// 再造一条分发链。
 type HooksConfig struct {
 	// PreToolUse 在每次工具调用执行前按声明顺序逐个运行。语义是流水线：
 	// 后一级 hook 看到的是前一级 hook 改写后的入参；guard 对**全部 hook
 	// 结束后**的最终入参做判决。
 	PreToolUse []HookConfig
+	// PreCompact / PostCompact 在每次压缩尝试的前后运行（W-F-08）。它们是
+	// **观察者**：事件的形状见 ctxcompact.LifecycleEvent，hook 对压缩没有
+	// 判决权（Ruling 见 ctxcompact 总线文件头 —— 与 PreToolUse 的 fail-closed
+	// 相反，这里的 hook 失败只记日志，压缩照常）。PreToolUse 与压缩 hook
+	// 共享 HookConfig 的形状（同一套 program/args/timeout），但协议不同：
+	// 压缩 hook 从 stdin 收到一条事件 JSON 后退出，stdout 被丢弃。
+	PreCompact  []HookConfig
+	PostCompact []HookConfig
 }
 
 // defaultHookTimeout 是未配置 Timeout 时的单次 hook 上限。选 10s 是因为 hook
@@ -451,4 +463,129 @@ func clipText(s string, limit int) string {
 		return s
 	}
 	return strings.ToValidUTF8(s[:limit], "") + "…(truncated)"
+}
+
+// ── W-F-08：压缩生命周期 hook 的发射器 ──
+//
+// lifecycleHookToolName 是压缩 hook 发射时 guard.Action.Tool 的名字。它**故意
+// 不是任何已注册工具**：压缩 hook 不挂在某次工具调用下，没有可借用的名字
+//（PreToolUse 借被 hook 工具的名字是因为那次调用本身就有名字）。授权语义
+// 与 BindAgentLaunchContext 同一条：操作员在 config.yaml 里写下这个程序就
+// 是批准 —— 发射 ctx 因此是新造的（不带 turn ctx 的 toolreg 绑定，否则
+// 「未注册即拒」的运行期检查会拦下这个合法名字），并绑一个只放行本名字的
+// 局部 profile。审计日志里出现的是这个名字，操作员看到的就是发生了什么。
+const lifecycleHookToolName = "lifecycle_hook"
+
+// lifecycleHookProfile 是压缩 hook 发射 ctx 的局部 profile：只放行
+// lifecycle_hook 这个名字，其余维度全零值（fail-closed 方向）。它是发射
+// 点私有的，不进 config 的 profiles —— GOV5 校验的是操作员可见的 profile
+// 表，这张内部表不占其中的名字。
+func lifecycleHookProfile() guard.PermissionProfile {
+	return guard.PermissionProfile{
+		Tools: guard.ToolsPerm{Allow: []string{lifecycleHookToolName}},
+	}
+}
+
+// NewCompactionHookSink 把 HooksConfig 里的压缩段适配成 ctxcompact 的
+// LifecycleSink。这是三条压缩路径（mid-turn 经 withTurnContext 绑定、
+// pre-turn 与手动 /compact 经 WS/SSE 传输层绑定）共用的**同一个**发射器 ——
+// 「共用同一总线」在装配层的含义就是它们拿到的是同一个构造函数的产物。
+// 两段 hook 都为空时返回 nil：WithLifecycleSink 对 nil 是直通，未配置的
+// 部署不产生任何行为差异。
+//
+// 事件按 phase 分发到 PreCompact / PostCompact 段，段内按声明顺序逐个
+// 运行；任何一个 hook 失败（发射被拒、超时、崩溃）只记日志 —— Ruling
+// 见 ctxcompact 总线文件头，压缩对 hook 的失败 fail-open。
+func NewCompactionHookSink(cfg HooksConfig) ctxcompact.LifecycleSink {
+	if len(cfg.PreCompact) == 0 && len(cfg.PostCompact) == 0 {
+		return nil
+	}
+	return func(ctx context.Context, ev ctxcompact.LifecycleEvent) {
+		var hooks []HookConfig
+		switch ev.Phase {
+		case ctxcompact.LifecyclePreCompact:
+			hooks = cfg.PreCompact
+		case ctxcompact.LifecyclePostCompact:
+			hooks = cfg.PostCompact
+		default:
+			// 未知事件名：未识别的事件不发出去。hook 配置是按事件段声明
+			// 的，一个两边都没声明的名字说明调用方先行引入了新事件 ——
+			// 静默丢弃比硬塞给错误段诚实。
+			return
+		}
+		for _, h := range hooks {
+			if err := runLifecycleHook(ctx, h, ev); err != nil {
+				slog.Warn("compaction lifecycle hook failed; compaction continues (fail-open)",
+					"hook", filepath.Base(h.Program), "event", ev.Phase, "trigger", ev.Trigger, "err", err)
+			}
+		}
+	}
+}
+
+// runLifecycleHook 发射一次压缩 hook：stdin 给一条事件 JSON，stdout 丢弃
+// （有界排空，chatty 的 hook 撑不爆管道），等退出。协议比 PreToolUse 简单
+// —— 压缩 hook 没有判决可给，stdout 不参与任何决定；读一个 JSON 事件即
+// 退出的约定与 PreToolUse 相同（不要等 EOF，生产 factory 的 Stdin.Close
+// 是整条控制台的 teardown）。
+//
+// 发射走 secproc.Launch（与 PreToolUse hook 同一条不受信程序管线：凭据
+// 清洗、审计、fail-closed 的 factory 检查全部白拿），授权按文件头的 Ruling
+// 走 launch 私有的局部 profile。factory 从事件 ctx 读，读不到（WS/SSE 的
+// 连接 ctx 不绑 factory）回落到 shell.UnsandboxedSecureFactory —— 与
+// bindExecutionContext 对 nil factory 的替换同一条，非沙箱部署的既定形状。
+func runLifecycleHook(ctx context.Context, h HookConfig, ev ctxcompact.LifecycleEvent) error {
+	timeout := h.Timeout
+	if timeout <= 0 {
+		timeout = defaultHookTimeout
+	}
+	launchCtx := tools.WithProfile(context.Background(), lifecycleHookProfile())
+	if f, ok := secproc.FromContext(ctx); ok {
+		launchCtx = tools.WithSecureProcessFactory(launchCtx, f)
+	} else {
+		launchCtx = tools.WithSecureProcessFactory(launchCtx, shell.UnsandboxedSecureFactory())
+	}
+	lctx, cancel := context.WithTimeout(launchCtx, timeout)
+	defer cancel()
+
+	req, err := json.Marshal(ev)
+	if err != nil {
+		return fmt.Errorf("lifecycle event encode: %w", err)
+	}
+	started, err := secproc.Launch(lctx, secproc.SecureProcessSpec{
+		Tool:    lifecycleHookToolName,
+		Program: h.Program,
+		Args:    h.Args,
+		Dir:     tools.WorkRootFromContext(ctx),
+		Workdir: tools.WorkRootFromContext(ctx),
+		// 弹窗/审计里展示的是事件原文，与 PreToolUse 同一姿态。
+		ArgsJSON: string(req),
+	})
+	if err != nil {
+		return err
+	}
+	if started.Stdin == nil || started.Stdout == nil {
+		reapInBackground(started)
+		return fmt.Errorf("factory returned a process without stdin/stdout (fail-closed)")
+	}
+	if _, err := started.Stdin.Write(req); err != nil {
+		reapInBackground(started)
+		return fmt.Errorf("lifecycle hook stdin: %w", err)
+	}
+	// stdout 排空到 EOF（上限之内），stderr 消费后丢弃 —— 它们在这里都是
+	// 诊断不是数据。
+	go func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(started.Stdout, hookOutputLimit))
+	}()
+	if started.Stderr != nil {
+		go func() { _, _ = io.Copy(io.Discard, started.Stderr) }()
+	}
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- started.Wait() }()
+	select {
+	case waitErr := <-waitCh:
+		return waitErr
+	case <-lctx.Done():
+		reapInBackground(started)
+		return fmt.Errorf("timed out after %s", timeout)
+	}
 }

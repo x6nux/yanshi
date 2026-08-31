@@ -310,6 +310,12 @@ type Orchestrator struct {
 	// exactly as it did before the bus existed.
 	hooks HooksConfig
 
+	// compactionSink 是压缩生命周期 hook 的发射器（W-F-08），由 New 从
+	// cfg.Hooks 的压缩段一次性构造。挂在 Orchestrator 上而不是每 turn 构造，
+	// 与 hooks 字段同一理由：withTurnContext 每次 turn 都跑，构造必须是
+	// 纯查表。两段都为空时为 nil，withTurnContext 对 nil 直通。
+	compactionSink ctxcompact.LifecycleSink
+
 	// background owns tool calls moved to the background at their foreground
 	// deadline (T3). PROCESS-scoped, not per-turn: a run that is cancelled
 	// when its turn ends is not a background run, it is the same timeout with
@@ -445,6 +451,7 @@ func New(cfg Config) (*Orchestrator, error) {
 		availableModels:            cfg.AvailableModels,
 		loopGuard:                  cfg.LoopGuard,
 		hooks:                      cfg.Hooks,
+		compactionSink:             NewCompactionHookSink(cfg.Hooks),
 		background:                 cfg.Background,
 		sessionRules:               make(map[string]*guard.RuleSet),
 	}, nil
@@ -741,6 +748,11 @@ func (o *Orchestrator) withTurnContext(ctx context.Context, opts TurnOpts) conte
 	// their own Orchestrator's withTurnContext and inherit that one's bus;
 	// nothing hooks twice. Empty config binds nothing.
 	ctx = withTurnHooks(ctx, o.hooks)
+	// W-F-08: 压缩生命周期总线与上面的 hook 总线同一次绑定、同一个作用域
+	// —— mid-turn 路径（CompactingModel）从 turn ctx 里读 sink，所以这里
+	// 绑了它，三条压缩路径里的这一条就接上了。nil（未配置压缩 hook）时
+	// WithLifecycleSink 是直通。
+	ctx = ctxcompact.WithLifecycleSink(ctx, o.compactionSink)
 	// W-C-14: a fresh new-window signal per turn, same reasoning as the
 	// loop-guard bind immediately above — this is the pointer the
 	// context_new_window tool writes and the NEXT CompactingModel.Generate/

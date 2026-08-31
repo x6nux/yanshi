@@ -1607,6 +1607,10 @@ func Build(opts Options) (*App, error) {
 		ApprovalAudit: approvalBus,
 		ShellManager:  shellManager,
 		MCP:           mcpManager,
+		// W-F-08: the same mapped bus config the orchestrator gets, so the
+		// transport-side compaction paths (pre-turn auto-compact and manual
+		// /compact) fire the same lifecycle hooks the mid-turn path does.
+		Hooks: toOrchestratorHooks(cfg.Hooks),
 	}
 	if cfg.Memory.Enabled {
 		// SC2: only surface the path when the subsystem is on. Empty otherwise.
@@ -2160,18 +2164,38 @@ func networkMethodRules(in []config.NetworkMethodRule) []netpolicy.MethodRule {
 // 挂进同一个总线时) without the composition root learning each event's shape.
 // An empty block maps to the zero value: no hook process is ever spawned.
 func toOrchestratorHooks(in config.HooksConfig) orchestrator.HooksConfig {
-	if len(in.PreToolUse) == 0 {
-		return orchestrator.HooksConfig{}
+	out := orchestrator.HooksConfig{}
+	if len(in.PreToolUse) > 0 {
+		out.PreToolUse = make([]orchestrator.HookConfig, 0, len(in.PreToolUse))
+		for _, h := range in.PreToolUse {
+			out.PreToolUse = append(out.PreToolUse, hookConfigMapping(h))
+		}
 	}
-	out := orchestrator.HooksConfig{PreToolUse: make([]orchestrator.HookConfig, 0, len(in.PreToolUse))}
-	for _, h := range in.PreToolUse {
-		out.PreToolUse = append(out.PreToolUse, orchestrator.HookConfig{
-			Program: h.Program,
-			Args:    append([]string(nil), h.Args...),
-			Timeout: h.Timeout,
-		})
+	// W-F-08: the compaction lifecycle segments ride the same bus config.
+	if len(in.PreCompact) > 0 {
+		out.PreCompact = make([]orchestrator.HookConfig, 0, len(in.PreCompact))
+		for _, h := range in.PreCompact {
+			out.PreCompact = append(out.PreCompact, hookConfigMapping(h))
+		}
+	}
+	if len(in.PostCompact) > 0 {
+		out.PostCompact = make([]orchestrator.HookConfig, 0, len(in.PostCompact))
+		for _, h := range in.PostCompact {
+			out.PostCompact = append(out.PostCompact, hookConfigMapping(h))
+		}
 	}
 	return out
+}
+
+// hookConfigMapping copies one hook entry. Split out of toOrchestratorHooks
+// once a second segment appeared — three inline copies of the same three
+// fields is how a fourth field gets added to two of them.
+func hookConfigMapping(h config.HookConfig) orchestrator.HookConfig {
+	return orchestrator.HookConfig{
+		Program: h.Program,
+		Args:    append([]string(nil), h.Args...),
+		Timeout: h.Timeout,
+	}
 }
 
 // expandHome resolves a leading "~" to the user's home directory. Empty input

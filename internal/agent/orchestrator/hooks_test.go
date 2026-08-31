@@ -60,12 +60,16 @@ func TestHookHelperProcess(t *testing.T) {
 	if mode == "" {
 		return
 	}
-	var req hookRequest
-	if err := json.NewDecoder(os.Stdin).Decode(&req); err != nil {
+	// 原始字节先留一份：W-F-08 的 record_lifecycle 剧本要的是未经 hookRequest
+	// 形状过滤的完整事件 JSON（压缩 hook 的请求不是 hookRequest）。
+	var raw json.RawMessage
+	if err := json.NewDecoder(os.Stdin).Decode(&raw); err != nil {
 		// 连入参都读不懂：与崩溃同判，测试靠这条验证「hook 坏了」的路径。
 		os.Exit(2)
 	}
-	out := hookHelperVerdict(mode, req)
+	var req hookRequest
+	_ = json.Unmarshal(raw, &req)
+	out := hookHelperVerdict(mode, req, raw)
 	if out == "" {
 		os.Exit(3)
 	}
@@ -85,7 +89,8 @@ func hookHelperMode() string {
 }
 
 // hookHelperVerdict 按 mode 返回 verdict JSON；空串表示「以退出码 3 崩溃」。
-func hookHelperVerdict(mode string, req hookRequest) string {
+// raw 是 stdin 上未经形状过滤的原始请求，只有 record_lifecycle 剧本用它。
+func hookHelperVerdict(mode string, req hookRequest, raw json.RawMessage) string {
 	switch mode {
 	case "allow":
 		return `{"block":false}`
@@ -162,6 +167,25 @@ func hookHelperVerdict(mode string, req hookRequest) string {
 		window := "WINDOWHEAD-f3|" + strings.Repeat("x", 4096-len("WINDOWHEAD-f3|")-1) + "\n"
 		_, _ = os.Stderr.WriteString(head + window)
 		return "not json at all"
+	case "record_lifecycle":
+		// W-F-08 探针：把收到的完整事件 JSON 原样追加到
+		// YANSHI_TEST_LIFECYCLE_LOG 指定的文件（JSONL，每行一条）。
+		path := os.Getenv("YANSHI_TEST_LIFECYCLE_LOG")
+		if path == "" {
+			os.Exit(4)
+		}
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			os.Exit(4)
+		}
+		if _, err := f.Write(append(raw, '\n')); err != nil {
+			f.Close()
+			os.Exit(4)
+		}
+		if err := f.Close(); err != nil {
+			os.Exit(4)
+		}
+		return `{"block":false}`
 	}
 	return ""
 }

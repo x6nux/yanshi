@@ -404,7 +404,7 @@ func (c *CompactingModel) maybeCompact(ctx context.Context, msgs []*schema.Messa
 	cb := compactCallback(ctx)
 	res, err := ctxcompact.Run(ctx, msgs,
 		ctxcompact.PlanOpts{KeepRecent: c.planKeepRecent()},
-		ctxcompact.RunOpts{ModelWindow: c.ContextWindow, ChunkThreshold: 0.9, Redactor: c.Redactor},
+		ctxcompact.RunOpts{ModelWindow: c.ContextWindow, ChunkThreshold: 0.9, Redactor: c.Redactor, Trigger: ctxcompact.TriggerMidTurn},
 		summarizer, cb)
 
 	c.cmMu.Lock()
@@ -451,7 +451,7 @@ func (c *CompactingModel) openNewWindow(ctx context.Context, msgs []*schema.Mess
 	}
 	otelobs.RecordNewWindow(ctx)
 
-	res := ctxcompact.OpenNewWindow(msgs,
+	res := ctxcompact.OpenNewWindow(ctx, msgs,
 		ctxcompact.PlanOpts{KeepRecent: c.planKeepRecent()},
 		ctxcompact.RunOpts{ModelWindow: c.ContextWindow, ChunkThreshold: 0.9, Redactor: c.Redactor})
 

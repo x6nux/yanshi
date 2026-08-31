@@ -124,6 +124,14 @@ type RunOpts struct {
 	// EvictionMapBudget bounds the rendered map in characters. 0 selects
 	// DefaultEvictionMapBudget.
 	EvictionMapBudget int
+
+	// Trigger names the compression path that is running (one of the
+	// hooks.go Trigger* constants). It rides the lifecycle events so a hook
+	// can tell a pre-turn auto-compact from a manual /compact. The zero
+	// value reaches hooks as an empty string — acceptable for a caller that
+	// predates the lifecycle bus, but a NEW path should register itself
+	// there rather than ship an unnamed trigger.
+	Trigger string
 }
 
 // qualityPolicy returns the policy Run applies: none when the gate is

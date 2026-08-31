@@ -77,6 +77,28 @@ const NewWindowNotice = "[compaction-new-window] "
 // so they need not re-estimate.
 func Run(ctx context.Context, msgs []*schema.Message, planOpts PlanOpts, runOpts RunOpts, m ModelSummarizer, onChunk func(string)) (*Result, error) {
 	before := EstimateTokens(msgs)
+	// W-F-08: the lifecycle pre event fires once per ATTEMPT — Run is only
+	// reached after the caller's gates passed, so "pre" means "a compaction
+	// is actually being attempted", not "a threshold was crossed". The post
+	// event below fires at EVERY exit; the sink is read from ctx per emit,
+	// so a path that never binds the bus simply emits nothing.
+	emitLifecycle(ctx, LifecycleEvent{
+		Phase: LifecyclePreCompact, Trigger: runOpts.Trigger, TokensBefore: before,
+	})
+	// post reports the attempt's outcome. failure is non-empty exactly when
+	// this function returns an error; the caller then keeps the original
+	// history, which is the fact the hook cares about.
+	post := func(failure string, res *Result, fallback bool) {
+		ev := LifecycleEvent{
+			Phase: LifecyclePostCompact, Trigger: runOpts.Trigger,
+			TokensBefore: before, Failure: failure, Fallback: fallback,
+		}
+		if res != nil {
+			ev.TokensAfter = res.TokensAfter
+			ev.Overflow = res.Overflow != nil
+		}
+		emitLifecycle(ctx, ev)
+	}
 	plan := Plan(msgs, planOpts)
 
 	if len(plan.SummarizeIndices) == 0 {
@@ -94,11 +116,13 @@ func Run(ctx context.Context, msgs []*schema.Message, planOpts PlanOpts, runOpts
 		// pressure is real.
 		folded, foldStats := FoldToolResults(msgs, FoldOptions{Budget: budgetFor(runOpts)})
 		after := EstimateTokens(folded)
-		return &Result{
+		res := &Result{
 			Messages: folded, TokensBefore: before, TokensAfter: after,
 			Fold:     foldStats,
 			Overflow: checkOverflow(after, runOpts),
-		}, nil
+		}
+		post("", res, false)
+		return res, nil
 	}
 
 	toSummarize := make([]*schema.Message, 0, len(plan.SummarizeIndices))
@@ -139,6 +163,7 @@ func Run(ctx context.Context, msgs []*schema.Message, planOpts PlanOpts, runOpts
 		// (run_test.go) is the red assertion — deleting this branch turns
 		// that test's require.Error into require.NoError-shaped failure.
 		if isConfigOrWiringFailure(err) {
+			post(fmt.Sprintf("summary unavailable (config or wiring): %v", err), nil, false)
 			return nil, fmt.Errorf("compaction summary unavailable: %w", err)
 		}
 		// W-C-04: the model never gave us a summary — don't call it again,
@@ -149,7 +174,9 @@ func Run(ctx context.Context, msgs []*schema.Message, planOpts PlanOpts, runOpts
 		if onChunk != nil {
 			onChunk(FallbackNotice)
 		}
-		return pinsOnlyResult(msgs, plan, before, runOpts), nil
+		res := pinsOnlyResult(msgs, plan, before, runOpts)
+		post("", res, true)
+		return res, nil
 	}
 	if strings.TrimSpace(summary) == "" {
 		// An empty summary is a failed summarization wearing a success's
@@ -160,12 +187,15 @@ func Run(ctx context.Context, msgs []*schema.Message, planOpts PlanOpts, runOpts
 		// Erroring here makes MaybeCompact and CompactingModel keep the
 		// original history, which costs one wasted model call instead of the
 		// middle of the conversation.
-		return nil, fmt.Errorf("compaction summary: summarizer returned nothing for %d messages", len(toSummarize))
+		failure := fmt.Sprintf("summarizer returned nothing for %d messages", len(toSummarize))
+		post(failure, nil, false)
+		return nil, fmt.Errorf("compaction summary: %s", failure)
 	}
 	// C10. The reasons ride out on the error (SummaryRejectedError.Issues) so
 	// the layer that logs this can name the rule that fired instead of
 	// reporting a generic compaction failure.
 	if err := CheckQuality(summary, inputRunes, runOpts.qualityPolicy()); err != nil {
+		post(fmt.Sprintf("quality gate rejected the summary: %v", err), nil, false)
 		return nil, fmt.Errorf("compaction summary over %d messages: %w", len(toSummarize), err)
 	}
 
@@ -203,11 +233,13 @@ func Run(ctx context.Context, msgs []*schema.Message, planOpts PlanOpts, runOpts
 	// C9, measured on the ASSEMBLED result — the thing that will actually be
 	// sent. Reported, not raised; see the doc above for why raising it would
 	// make the caller forward something larger.
-	return &Result{
+	res := &Result{
 		Messages: out, TokensBefore: before, TokensAfter: after,
 		Fold:     foldStats,
 		Overflow: checkOverflow(after, runOpts),
-	}, nil
+	}
+	post("", res, false)
+	return res, nil
 }
 
 // pinsOnlyResult builds Run's W-C-04 fallback Result: everything Plan pinned,
@@ -255,10 +287,22 @@ func pinsOnlyResult(msgs []*schema.Message, plan *PlanResult, before int, runOpt
 // to run at all. Exported (unlike pinsOnlyResult) because its caller lives
 // in a different package (einollm.CompactingModel), mirroring Run's own
 // cross-package export.
-func OpenNewWindow(msgs []*schema.Message, planOpts PlanOpts, runOpts RunOpts) *Result {
+func OpenNewWindow(ctx context.Context, msgs []*schema.Message, planOpts PlanOpts, runOpts RunOpts) *Result {
 	before := EstimateTokens(msgs)
+	// The trigger is FORCED here, not read from runOpts: OpenNewWindow IS the
+	// model-requested reset, whoever calls it. A caller-supplied Trigger would
+	// let a future mid-turn caller mislabel this event. The sink comes from
+	// the caller's ctx — the same one the turn bound the bus on.
+	emitLifecycle(ctx, LifecycleEvent{
+		Phase: LifecyclePreCompact, Trigger: TriggerNewWindow, TokensBefore: before,
+	})
 	plan := Plan(msgs, planOpts)
-	return pinsOnlyResult(msgs, plan, before, runOpts)
+	res := pinsOnlyResult(msgs, plan, before, runOpts)
+	emitLifecycle(ctx, LifecycleEvent{
+		Phase: LifecyclePostCompact, Trigger: TriggerNewWindow,
+		TokensBefore: before, TokensAfter: res.TokensAfter, Overflow: res.Overflow != nil,
+	})
+	return res
 }
 
 // transcriptRunes is the rune length of the text the summarizer is shown. It
