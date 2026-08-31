@@ -789,7 +789,7 @@ $X -rf /`, want: wantFloor},
 	{cmd: `tee -a ~/.ssh/authorized_keys`, want: wantPrompt},
 	{cmd: `cp /dev/null ~/.ssh/authorized_keys`, want: wantPrompt},
 	{cmd: `mv /tmp/k ~/.ssh/authorized_keys`, want: wantPrompt},
-	{cmd: `ln -sf /etc/passwd ~/.ssh/authorized_keys`, want: wantPrompt},
+	{cmd: `ln -sf /etc/passwd ~/.ssh/authorized_keys`, want: wantPrompt, tableOnly: noUtilityShim},
 	{cmd: `install -m 600 /dev/stdin ~/.ssh/authorized_keys`, want: wantPrompt},
 	{cmd: `sed -i s/x/y/ ~/.ssh/authorized_keys`, want: wantPrompt},
 	// sed writes from inside its SCRIPT too, which the `-i` requirement above
@@ -1094,7 +1094,7 @@ func TestNoSpellingTheShellExecutesIsAllowed(t *testing.T) {
 // would be a second reader). The fourth is the accepted over-strictness row
 // `git commit -m "tee ~/.ssh/authorized_keys"`, where nothing is dispatched
 // because no variable is set, so there is no execution for the shell to show.
-const tableOnlyRowCount = 47
+const tableOnlyRowCount = 48
 
 // unwitnessedAllowRowCount is the same measurement for rows pinned to Allow,
 // counted SEPARATELY because the two admissions are not the same size.
