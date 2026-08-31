@@ -243,10 +243,21 @@ func (m *Manager) startOne(ctx context.Context, cfg *ServerConfig) (Client, erro
 		_ = cli.Close()
 		return nil, fmt.Errorf("initialize: %w", err)
 	}
-	tools, err := cli.ListTools(startCtx)
-	if err != nil {
-		_ = cli.Close()
-		return nil, fmt.Errorf("tools/list: %w", err)
+	// W-F-28: the tool catalog is served from the LRU cache when this
+	// connection (server name) was last seen with an identical config
+	// fingerprint — a Disable/Enable or a daemon reload skips the tools/list
+	// round trip entirely. A config change misses by construction and
+	// refetches; tools/list_changed invalidates by server (catalog.go).
+	key := catalogKey{server: cfg.Name, fingerprint: catalogFingerprint(cfg)}
+	tools, cached := catalogLookup(key)
+	if !cached {
+		var err error
+		tools, err = cli.ListTools(startCtx)
+		if err != nil {
+			_ = cli.Close()
+			return nil, fmt.Errorf("tools/list: %w", err)
+		}
+		catalogStore(key, tools)
 	}
 	m.mu.Lock()
 	temp := make(map[string]ToolDescriptor, len(tools))
