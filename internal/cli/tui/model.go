@@ -148,6 +148,19 @@ type model struct {
 	// gitBranch can be re-detected on each gitRefreshMsg without shelling out.
 	rootPath string
 
+	// W-E-09: branch diff-stat (+N/-M vs default branch) and open PR info.
+	// Both are derived asynchronously by gitStatusMsg so startup is not blocked
+	// on a shell-out. gitDiffStat is the pre-formatted "+N -M" string (empty
+	// when on the default branch or no git). gitOpenPRURL and gitOpenPRTitle
+	// are from `gh pr view --json url,title` (empty when gh is absent or no
+	// open PR for the current branch).
+	gitDiffStat   string
+	gitOpenPRURL  string
+	gitOpenPRTitle string
+	// atMode selects the @ completion filter (W-E-14): 0 = all, 1 = files only,
+	// 2 = plugins only. Cycle with Tab inside the @ popup.
+	atMode int
+
 	// In-app mouse text selection (the terminal's native selection is disabled
 	// while mouse reporting is on, so the app implements selection itself).
 	// selecting is true during a left-button drag. selAnchor*/selLine* are 2D
@@ -632,6 +645,8 @@ func (m model) Init() tea.Cmd {
 		repaintTick(),
 		watchGitHead(m.rootPath),
 		probeStartupTools(),
+		// W-E-09: fetch diff-stat and open PR info asynchronously at startup.
+		fetchGitStatus(m.rootPath),
 		// W-E-05: set the initial idle title. nil under titleEnabled==false
 		// (TERM=dumb), so tea.Batch drops it — see windowTitleCmd.
 		m.windowTitleCmd(false),
@@ -712,9 +727,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case gitRefreshMsg:
 		// Refresh the git branch display when .git/HEAD changes (detected by the
 		// fsnotify file watcher). Re-arm the watcher immediately so the next
-		// branch switch is caught.
+		// branch switch is caught. Also re-fetch diff-stat and PR info (W-E-09).
 		m.gitBranch = detectGitBranch(m.rootPath)
-		return m, watchGitHead(m.rootPath)
+		return m, tea.Batch(watchGitHead(m.rootPath), fetchGitStatus(m.rootPath))
+
+	case gitStatusMsg:
+		// W-E-09: async result from fetchGitStatus. Update diff-stat and PR fields.
+		m.gitDiffStat = msg.diffStat
+		m.gitOpenPRURL = msg.prURL
+		m.gitOpenPRTitle = msg.prTitle
+		return m, nil
 
 	case debounceMsg:
 		// The deferred input reflow has come due. consume() first so the next

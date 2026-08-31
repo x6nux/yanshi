@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -112,6 +113,124 @@ func watchGitHead(rootPath string) tea.Cmd {
 			}
 		}
 	}
+}
+
+// gitStatusMsg carries the result of the async git diff-stat and gh PR lookup
+// (W-E-09). Both are fetched in a single background tea.Cmd started at
+// Init-time and on every gitRefreshMsg so the footer stays live.
+type gitStatusMsg struct {
+	diffStat string // "+N -M" vs default branch, or "" when on default/no git
+	prURL    string // open PR URL for the current branch, or ""
+	prTitle  string // PR title, or ""
+}
+
+// fetchGitStatus runs `git rev-parse --abbrev-ref HEAD@{upstream}` to find the
+// upstream tracking branch, then `git diff --shortstat <upstream>...HEAD` to
+// get added/removed counts, and `gh pr view --json url,title` for the open PR.
+// All shell-outs are gated by execprobe.Run's 3-second deadline so a slow git
+// or absent gh never hangs the TUI.
+//
+// The fallback chain is strictly additive: missing git → no diffStat; missing
+// gh or no PR → empty prURL. The caller renders whatever arrives.
+func fetchGitStatus(rootPath string) tea.Cmd {
+	if rootPath == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		msg := gitStatusMsg{}
+
+		// 1. Diff-stat vs upstream. Run in the project root by temporarily
+		//    changing to it; execprobe.Run does not take a working directory so
+		//    we use exec.Command directly here (gated by the same 3s deadline
+		//    pattern as execprobe.Run).
+		upstream := strings.TrimSpace(runInDir(rootPath, "git", "rev-parse",
+			"--abbrev-ref", "--symbolic-full-name", "@{upstream}"))
+		if upstream != "" && !strings.HasPrefix(upstream, "fatal") {
+			stat := strings.TrimSpace(runInDir(rootPath, "git", "diff",
+				"--shortstat", upstream+"...HEAD"))
+			// stat example: " 3 files changed, 47 insertions(+), 12 deletions(-)"
+			added := extractGitCount(stat, "insertion")
+			deleted := extractGitCount(stat, "deletion")
+			if added+deleted > 0 {
+				msg.diffStat = fmt.Sprintf("+%d -%d", added, deleted)
+			}
+		}
+
+		// 2. Open PR via gh. Absent gh or non-zero exit → empty, handled by
+		//    runInDir returning "".
+		prJSON := strings.TrimSpace(runInDir(rootPath, "gh", "pr", "view",
+			"--json", "url,title"))
+		if prJSON != "" && strings.Contains(prJSON, `"url"`) {
+			msg.prURL = extractJSONString(prJSON, "url")
+			msg.prTitle = extractJSONString(prJSON, "title")
+		}
+
+		return msg
+	}
+}
+
+// runInDir runs a command in a given working directory with a 3s deadline.
+// Returns the first line of combined output, or "" on any error.
+func runInDir(dir, cmd string, args ...string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	c := exec.CommandContext(ctx, cmd, args...)
+	c.Dir = dir
+	type result struct {
+		out []byte
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		out, err := c.CombinedOutput()
+		ch <- result{out, err}
+	}()
+	select {
+	case r := <-ch:
+		if r.err != nil || ctx.Err() == context.DeadlineExceeded {
+			return ""
+		}
+		lines := strings.SplitN(string(r.out), "\n", 2)
+		return strings.TrimSpace(lines[0])
+	case <-ctx.Done():
+		return ""
+	}
+}
+
+// extractGitCount pulls the first integer before "insertion" or "deletion"
+// from a git --shortstat line. Returns 0 on no match.
+func extractGitCount(stat, keyword string) int {
+	idx := strings.Index(stat, keyword)
+	if idx < 0 {
+		return 0
+	}
+	// Scan backwards past any letters/spaces to find the number.
+	part := stat[:idx]
+	part = strings.TrimRight(part, " \t(")
+	spaceIdx := strings.LastIndexAny(part, " \t,")
+	if spaceIdx >= 0 {
+		part = part[spaceIdx+1:]
+	}
+	n := 0
+	fmt.Sscanf(strings.TrimSpace(part), "%d", &n)
+	return n
+}
+
+// extractJSONString extracts the value of a simple string key from a JSON
+// object without importing encoding/json (which would pull in a much larger
+// dependency surface here). Handles only flat {"key":"value"} shapes.
+func extractJSONString(j, key string) string {
+	needle := `"` + key + `":"`
+	idx := strings.Index(j, needle)
+	if idx < 0 {
+		return ""
+	}
+	rest := j[idx+len(needle):]
+	end := strings.IndexByte(rest, '"')
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
 }
 
 // blockFont maps uppercase letters to 5-row × 5-column block glyphs (█ = full

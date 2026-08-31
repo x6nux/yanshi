@@ -192,6 +192,11 @@ var spawnEnvCensus = map[string]string{
 		"internal/shell/snapshot.go documents. Nothing it reads leaves the machine on its " +
 		"own, and a scrubbed PATH/HOME would break the operator's own editor configuration " +
 		"for a purely local edit.",
+	"internal/cli/tui/startup.go": "runInDir: INHERITS, deliberately. Runs `git diff --shortstat` " +
+		"and `gh pr view` in the project directory (W-E-09 branch summary). Both commands are " +
+		"purely local reads that summarise the working tree — no credentials leave the machine. " +
+		"Scrubbing PATH would break git and gh on installations that rely on shell profile vars. " +
+		"Callers: runInDir (called by fetchGitStatus).",
 	// ---- execve of THIS process: the environment is already whatever the
 	// ---- launcher built, and os.Environ() reads it back rather than adding to it
 	"internal/execbroker/shim.go": "RunShim: syscall.Exec with os.Environ() UNCHANGED. This " +
