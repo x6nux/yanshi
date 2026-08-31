@@ -567,6 +567,12 @@ func (o *Orchestrator) ProfileForTest() guard.PermissionProfile { return o.profi
 // bootstrap.go as text (F-2; see internal/bootstrap/wiring_test.go).
 func (o *Orchestrator) CompactionForTest() CompactionConfig { return o.compaction }
 
+// HooksForTest exposes the hook-bus config the same way CompactionForTest
+// exposes compaction: composition-root wiring tests assert against a
+// really-built App, because the config→orchestrator hop is a field-by-field
+// literal whose typos compile fine and silently deliver zero values.
+func (o *Orchestrator) HooksForTest() HooksConfig { return o.hooks }
+
 // truncationPolicyFor returns the resolved head/tail truncation policy
 // (W-C-09) for modelID, or the orchestrator's default (o.truncationPolicy)
 // when modelID is empty or has no entry in providerTruncationPolicies.
