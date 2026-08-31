@@ -32,12 +32,33 @@ func TestMCPHelperServerProcess(t *testing.T) {
 	serveMCPHelper(os.Stdin, os.Stdout)
 }
 
+// knobEnv reads an integer knob from the environment; 0 when absent or
+// malformed (knobs are opt-in test choreography, never defaults).
+func knobEnv(key string) int {
+	if d := os.Getenv(key); d != "" {
+		if n, err := strconv.Atoi(d); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
 func serveMCPHelper(r io.Reader, w io.Writer) {
 	buf := bufio.NewReader(r)
 	changed := false
 	servedList := false
 	resourcesGrew := false
 	subscribed := false
+	// 两个确定性旋钮（环境变量下发）：
+	//   NOTIFY_BEFORE=N —— 处理第 N 个请求前，先同步推一条 list_changed。
+	//     主循环内写，与响应无并发写。让「通知先于 ready」成为必然而非竞速。
+	//   ANSWER_LIMIT=N —— 答完第 N 个请求后永久 park（不再读不答）。之后的
+	//     client 写会永远阻塞 —— 用来让「install 路径上的刷新」可观测：
+	//     内联跑就堵死调用方，spawn 出去则调用方照常返回。进程由 Manager
+	//     Close→Kill 回收。
+	notifyBefore := knobEnv("YANSHI_TEST_MCP_NOTIFY_BEFORE")
+	answerLimit := knobEnv("YANSHI_TEST_MCP_ANSWER_LIMIT")
+	count := 0
 	for {
 		msg, err := ReadMessage(buf)
 		if err != nil {
@@ -47,6 +68,14 @@ func serveMCPHelper(r io.Reader, w io.Writer) {
 		method, _ := msg["method"].(string)
 		if id == nil {
 			continue // notifications/initialized etc.
+		}
+		count++
+		if notifyBefore > 0 && count == notifyBefore {
+			_ = WriteLineMessage(w, map[string]any{
+				"jsonrpc": "2.0",
+				"method":  "notifications/tools/list_changed",
+				"params":  map[string]any{"tools": []any{map[string]any{"name": "pwned"}}},
+			})
 		}
 		resp := map[string]any{"jsonrpc": "2.0", "id": id}
 		tools := []map[string]any{{"name": "echo", "inputSchema": map[string]any{"type": "object"}}}
@@ -117,6 +146,16 @@ func serveMCPHelper(r io.Reader, w io.Writer) {
 		if err := WriteLineMessage(w, resp); err != nil {
 			return
 		}
+		if answerLimit > 0 && count >= answerLimit {
+			// park：此后不再读不答。必须留一个长 timer 作 keepalive —— 裸
+			// select{} 会在最后一个 timer goroutine 退出后触发 runtime 的
+			// 死锁检测器（「all goroutines are asleep」）把进程整个杀掉，
+			// client 侧随后的写拿到 broken pipe、阻塞测试假绿（RF-9 修复
+			// 时实测）。进程由 Manager Close→Kill 回收，或 10 分钟后 go
+			// test 的超时兜底。
+			go func() { time.Sleep(10 * time.Minute) }()
+			select {}
+		}
 		if method == "tools/list" && !servedList {
 			servedList = true
 			changed = true
@@ -127,12 +166,7 @@ func serveMCPHelper(r io.Reader, w io.Writer) {
 			// 不占住 serve 主循环：io.Pipe 是同步的，主循环停读期间 client
 			// 的下一个请求会阻塞，startOne 就被拖到通知之后，spawn 路径
 			// 永远等不到。窗口内 client 对本连接无其他写，旁路写不撕帧。
-			delay := 0
-			if d := os.Getenv("YANSHI_TEST_MCP_PUSH_DELAY_MS"); d != "" {
-				if n, err := strconv.Atoi(d); err == nil && n > 0 {
-					delay = n
-				}
-			}
+			delay := knobEnv("YANSHI_TEST_MCP_PUSH_DELAY_MS")
 			go func() {
 				if delay > 0 {
 					time.Sleep(time.Duration(delay) * time.Millisecond)
@@ -332,5 +366,54 @@ func TestManagerStdioResourceUpdatesRefreshCatalog(t *testing.T) {
 			t.Fatalf("resource catalog never refreshed after subscribe+update; resources=%+v", resources)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// RF-9 守护：installReadyClient 的 drain spawn 点 —— pending 的 list_changed
+// 在 client 安装点放行时，刷新必须离开 install 调用方的 goroutine。
+//
+// 剧本（确定性，无竞速）：helper 在处理第 3 个请求（resources/list 首页）
+// 之前同步推 list_changed —— 此刻 startOne 还堵在等该页响应，ready 必然为
+// false，pending 必然置位；答完第 5 个请求（resources/subscribe）后 park，
+// 不再读不答。于是 install 点的 drain 必然为 true，而那次刷新的 tools/list
+// 请求写进一个没人读的管道。
+//
+// 断言：StartAll 必须返回。干净实现下 drain 是 goroutine，install 立即返回；
+// 变异（drain 去掉 go）下刷新内联跑在 StartAll 的 goroutine 上，写永久阻塞
+// —— StartAll 永不返回，按 8s 上限红。park 后写阻塞无超时（io.Pipe 同步写
+// 不走 doRequest 的 deadline），红是确定的不是概率的。
+//
+// 变异：把 installReadyClient 里 go m.refreshTools(name) 的 go 去掉 →
+// 本测试 8s 红（「StartAll did not return ...」）。
+func TestManagerStdioListChangedDrainDoesNotBlockInstall(t *testing.T) {
+	m := NewManager(map[string]*ServerConfig{
+		"drain": {
+			Name: "drain", Enabled: true, Transport: TransportStdio,
+			Command: os.Args[0],
+			Args:    []string{"-test.run=^TestMCPHelperServerProcess$", "--"},
+			Env: map[string]string{
+				"YANSHI_TEST_MCP_SERVER":        "1",
+				"YANSHI_TEST_MCP_NOTIFY_BEFORE": "3",
+				"YANSHI_TEST_MCP_ANSWER_LIMIT":  "5",
+			},
+		},
+	})
+	t.Cleanup(func() { m.Shutdown() }) // 关 pipe：解锁 park 服务器堵住的写，goroutine 得以退出
+
+	done := make(chan struct{})
+	go func() {
+		m.StartAll(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(8 * time.Second):
+		t.Fatal("StartAll did not return; a pending list_changed drained at install must spawn its refresh, not run it on the install path")
+	}
+	m.mu.Lock()
+	st := m.status["drain"]
+	m.mu.Unlock()
+	if st != StatusReady {
+		t.Fatalf("drain server status = %v; the choreographed handshake must complete", st)
 	}
 }
