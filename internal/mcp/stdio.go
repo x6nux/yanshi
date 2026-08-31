@@ -25,7 +25,7 @@ type ServerHandler func(method string, params map[string]any)
 //
 // readLoop goroutine 持续读入站消息并 demux：带 id 的响应投递到
 // pending[id] channel，通知按 method 路由到 ServerHandler，server
-// 发起的请求回复 method-not-found 以免对端挂死。
+// 发起的请求（带 id + method）由 handler 处理后回复。
 type StdioClient struct {
 	r       *bufio.Reader
 	rawR    io.Reader // 原始 reader，Close 时如实现 io.Closer 则关闭
@@ -149,7 +149,7 @@ func (c *StdioClient) notify(method string, params any) error {
 // 三类消息分发：
 //   - 响应（有 id，无 method）→ 投递给 pending[id] channel
 //   - notification（无 id，有 method）→ 交给 handleServerMessage
-//   - server 发起的 request（有 id 且有 method）→ 回复 "method not found"
+//   - server 发起的 request（有 id 且有 method）→ 交给 handleServerRequest
 //
 // 退出时 close(done)，唤醒所有阻塞在 select 上的 doRequest。
 func (c *StdioClient) readLoop() {
@@ -170,7 +170,7 @@ func (c *StdioClient) readLoop() {
 			// Server-initiated notification.
 			c.handleServerMessage(method, msg)
 		case hasID && hasMethod:
-			// Server-initiated request — reply so the server doesn't hang.
+			// Server-initiated request — respond and notify handler.
 			c.handleServerRequest(id, method, msg)
 		default:
 			// Malformed JSON-RPC (no id, no method) — drop.
@@ -204,13 +204,26 @@ func (c *StdioClient) handleServerMessage(method string, msg map[string]any) {
 	h(method, params)
 }
 
-// handleServerRequest 处理 server 发起的请求：回复 JSON-RPC error（"method
-// not found"）。当前 client 没有通用的 request dispatcher——具体协议的
-// request handler 是后续提交的工作，这里先保证 server 不会因无响应而挂死。
+// handleServerRequest 处理 server 发起的请求：回复 JSON-RPC error（"method not
+// found"）并将原始 params 投递给 handler。server 来的请求文本是外部输入
+// （untrusted external data），handler 必须按此标注处理。
+//
+// 回复 error 而非让 server 挂在超时上，因为当前 client 没有通用的
+// request dispatcher——具体协议的 request handler 由上层 handler 自行实现，
+// 这里只保证 server 不会因无响应而阻塞。
 //
 // 响应写放在 goroutine 中而非 readLoop 内联执行：write 阻塞（server 不消费
 // stdin）时 readLoop 仍能继续分发后续通知/请求。c.mu 序列化写操作，不影响顺序。
-func (c *StdioClient) handleServerRequest(id int64, _ string, _ map[string]any) {
+func (c *StdioClient) handleServerRequest(id int64, method string, msg map[string]any) {
+	// Notify handler about the server request (untrusted params).
+	c.handlerMu.RLock()
+	h := c.handler
+	c.handlerMu.RUnlock()
+	params, _ := msg["params"].(map[string]any)
+	if h != nil {
+		h(method, params)
+	}
+
 	// Reply with "method not found" so the server doesn't hang. The write
 	// runs in its own goroutine: a blocked write (server not consuming stdin)
 	// must not stall the readLoop's dispatch of subsequent messages.
