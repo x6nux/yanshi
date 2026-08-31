@@ -14,9 +14,13 @@ import (
 
 // ServerHandler 是 server 主动推送消息的回调。readLoop 将 notification
 // 和 server 发起的 request 统一投递给它。method 是 JSON-RPC method 字段值；
-// params 是原始 params map。params 的内容来自外部 MCP server，属于不可信输入
-// （untrusted external data）——调用方不得在未标注的情况下将其用于提示词或
-// 安全判定（参照 PR 正文标注外部输入防提示注入的做法）。
+// params 是原始 params map。
+//
+// params 的内容来自外部 MCP server，属于不可信输入（untrusted external
+// data）—— 消费方不得在未标注的情况下将其用于提示词或安全判定（参照把 PR
+// 正文标为数据防提示注入的做法）。这是给消费端的标注约定：本包当前没有
+// 机器判据钉住这个安全属性（测试只钉转发忠实性），消费接线落地时必须一并
+// 补上真正的标注测试。
 type ServerHandler func(method string, params map[string]any)
 
 // StdioClient 通过 stdin/stdout pipe 与 MCP server 子进程通信。
@@ -212,15 +216,16 @@ func (c *StdioClient) handleServerMessage(method string, msg map[string]any) {
 }
 
 // handleServerRequest 处理 server 发起的请求：回复 JSON-RPC error（"method not
-// found"）并将原始 params 投递给 handler。server 来的请求文本是外部输入
-// （untrusted external data），handler 必须按此标注处理。
+// found"）并将原始 params 投递给 handler。params 按不可信外部输入的标注约定
+// 交给消费方（见 ServerHandler；本包不提供机器判据，约定由消费端落实）。
 //
 // 回复 error 而非让 server 挂在超时上，因为当前 client 没有通用的
 // request dispatcher——具体协议的 request handler 由上层 handler 自行实现，
 // 这里只保证 server 不会因无响应而阻塞。
 //
 // 响应写放在 goroutine 中而非 readLoop 内联执行：write 阻塞（server 不消费
-// stdin）时 readLoop 仍能继续分发后续通知/请求。c.mu 序列化写操作，不影响顺序。
+// stdin）时 readLoop 仍能继续分发后续通知/请求。写串行化走 writeMu，与
+// pending 表的锁互不相干。
 func (c *StdioClient) handleServerRequest(id int64, method string, msg map[string]any) {
 	// Notify handler about the server request (untrusted params).
 	c.handlerMu.RLock()

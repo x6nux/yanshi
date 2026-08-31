@@ -315,10 +315,11 @@ func TestStdioClient_ListChangedNotification(t *testing.T) {
 	}
 }
 
-// AC5: server request params are passed as untrusted data — the handler
-// receives the raw params map. This test verifies the params content is
-// forwarded faithfully (the security annotation is in the ServerHandler doc).
-func TestStdioClient_ServerRequestParamsUntrustedData(t *testing.T) {
+// AC5（传输半）：server 请求的 params 原样逐字转给 handler —— 一个字节不改、
+// 不截断、不重排。这条钉住的是转发忠实性；「params 按不可信数据处理」是
+// ServerHandler doc 上的消费端标注约定，当前没有机器判据（消费接线归 F2，
+// 接线时须按 pr_context 把外部正文标为数据的做法补真正的标注测试）。
+func TestStdioClient_ServerRequestParamsForwardedVerbatim(t *testing.T) {
 	srv, cli := newBidirServer(t)
 
 	var mu sync.Mutex
@@ -349,7 +350,6 @@ func TestStdioClient_ServerRequestParamsUntrustedData(t *testing.T) {
 	if receivedParams == nil {
 		t.Fatal("expected handler to receive server request params")
 	}
-	// Verify the raw text is forwarded (the handler must treat it as untrusted).
 	messages, _ := receivedParams["messages"].([]any)
 	if len(messages) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(messages))
@@ -358,7 +358,7 @@ func TestStdioClient_ServerRequestParamsUntrustedData(t *testing.T) {
 	content, _ := msg0["content"].(map[string]any)
 	got, _ := content["text"].(string)
 	if got != attackText {
-		t.Fatalf("expected attack text %q, got %q", attackText, got)
+		t.Fatalf("expected verbatim text %q, got %q", attackText, got)
 	}
 }
 
