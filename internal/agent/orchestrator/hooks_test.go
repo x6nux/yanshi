@@ -17,6 +17,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -140,6 +141,26 @@ func hookHelperVerdict(mode string, req hookRequest) string {
 	case "big":
 		// 超过输出上限的 verdict：不可信 stdout 必须有界。
 		return `{"block":false,"reason":"` + strings.Repeat("x", 2<<20) + `"}`
+	case "longreason":
+		// 超长理由：TextLimit 必须把它截断进有限长度（保头部）。
+		return `{"block":true,"reason":"R-rrr` + strings.Repeat("r", 100_000) + `REASON-END-SENTINEL"}`
+	case "manycontext":
+		// 12 条附加上下文：ContextMax 必须封顶到前 8 条。
+		lines := make([]string, 12)
+		for i := range lines {
+			lines[i] = fmt.Sprintf("hook note %02d of 12", i)
+		}
+		out, _ := json.Marshal(map[string]any{"block": false, "additional_context": lines})
+		return string(out)
+	case "noisy":
+		// 向 stderr 灌 ~69KB 后吐垃圾 verdict：失败信息里的 stderr 尾随必须
+		// 只保留「最后 StderrLimit 字节」的窗口。WINDOWHEAD 被放在恰好是
+		// 那个窗口第一个词的位置 —— 窗口正确时它可见；窗口被放大后可见的
+		// 是流开头的 noise 哨兵。
+		head := "noise-0000-f3head|" + strings.Repeat("y", 65536)
+		window := "WINDOWHEAD-f3|" + strings.Repeat("x", 4096-len("WINDOWHEAD-f3|")-1) + "\n"
+		_, _ = os.Stderr.WriteString(head + window)
+		return "not json at all"
 	}
 	return ""
 }
@@ -716,5 +737,79 @@ func TestSubAgentTurnHooksReachSubAgentTools(t *testing.T) {
 		require.Equal(t, "hook sent me here", string(got))
 		_, statErr := os.Stat(original)
 		require.True(t, os.IsNotExist(statErr), "原始路径不应被写")
+	})
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RF-15：不可信输出的通道边界必须有守门（TextLimit / ContextMax / StderrLimit）。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestPreToolUseUntrustedOutputChannelsAreBounded 把三条此前无守门的通道逐一
+// 钉住。实现里的四个常量里只有 OutputLimit 原本有测试（big 子测试）；评审的
+// M6/M7/M8 变异表明另外三条删掉常量后全绿 —— 行为当时是对的，但没有测试把
+// 行为钉住，任何一次重构都能无声放水。三个子测试各自对应一个常量、各自有
+// 一个会变红的变异位（注释里写明）：
+//
+//   - reason：clipText(reason, hookTextLimit) 改成 reason → 长度断言红；
+//   - context：删 len(contextLines) >= hookContextMax 的 break → 计数断言红；
+//   - stderr：hookStderrLimit 放大后，保留窗口不再是「最后 4096 字节」，
+//     WINDOWHEAD 标记从尾随里消失 → Contains 断言红。
+func TestPreToolUseUntrustedOutputChannelsAreBounded(t *testing.T) {
+	t.Run("reason is clipped", func(t *testing.T) {
+		workRoot := t.TempDir()
+
+		cfg := HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "longreason")}}
+		ctx := newHookTurnContext(t, fsWriteProfile(), workRoot, cfg)
+		d := &hookToolDouble{workRoot: workRoot}
+
+		ep, err := wrapForTest(ctx, d)
+		require.NoError(t, err)
+
+		out, err := ep(ctx, `{"path":"notes.txt"}`)
+		require.NoError(t, err)
+		assert.Contains(t, out, "blocked by pre_tool_use hook")
+		// 截断保留头部：理由的开头在，结尾的哨兵不在。
+		assert.Contains(t, out, "R-rrr")
+		assert.NotContains(t, out, "REASON-END-SENTINEL")
+		assert.Less(t, len(out), 4096,
+			"hook 的理由必须截断进有限长度，不能整段进模型可见结果")
+		assert.Empty(t, d.ran())
+	})
+
+	t.Run("context lines are capped", func(t *testing.T) {
+		workRoot := t.TempDir()
+
+		cfg := HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "manycontext")}}
+		ctx := newHookTurnContext(t, fsWriteProfile(), workRoot, cfg)
+		d := &hookToolDouble{workRoot: workRoot}
+
+		ep, err := wrapForTest(ctx, d)
+		require.NoError(t, err)
+
+		out, err := ep(ctx, `{"path":"notes.txt"}`)
+		require.NoError(t, err)
+		require.Contains(t, out, "wrote ")
+		assert.Equal(t, hookContextMax, strings.Count(out, "[hook "),
+			"additional_context 必须按 hookContextMax 封顶")
+	})
+
+	t.Run("stderr tail is bounded", func(t *testing.T) {
+		workRoot := t.TempDir()
+
+		cfg := HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "noisy")}}
+		ctx := newHookTurnContext(t, fsWriteProfile(), workRoot, cfg)
+		d := &hookToolDouble{workRoot: workRoot}
+
+		ep, err := wrapForTest(ctx, d)
+		require.NoError(t, err)
+
+		out, err := ep(ctx, `{"path":"notes.txt"}`)
+		require.NoError(t, err)
+		require.Contains(t, out, "not valid JSON", "noisy 剧本靠垃圾 verdict 走失败路径")
+		// 保留的是「最后 StderrLimit 字节」：WINDOWHEAD 恰好是那个窗口的
+		// 第一个词，窗口正确时它在尾随里；窗口被放大后尾随显示的是流的
+		// 开头（noise 哨兵），WINDOWHEAD 被挤出 2KiB 的展示段。
+		assert.Contains(t, out, "WINDOWHEAD-f3")
+		assert.NotContains(t, out, "noise-0000-f3head")
 	})
 }
