@@ -15,11 +15,37 @@ import (
 // the cached glamour renderer) — see its doc comment — so tests that call it
 // must not leak the mutation into unrelated tests. No tui test currently
 // runs t.Parallel(), so sequential save/restore is sufficient.
+// ApplyColorProfile writes TWO pieces of state that do not start out equal,
+// so restoring only one of them is not a restore: lipgloss's shared profile
+// is detected from the (non-TTY) test stdout and is therefore Ascii, while
+// this package's activeProfile starts at its ANSI256 default. Snapshotting
+// only lipgloss's — as this helper originally did — made the cleanup call
+// ApplyColorProfile(Ascii), which pinned activeProfile to Ascii for every
+// later test in the binary. That was invisible until RE-27 gave
+// toolArgSummary a currentColorProfile() read: the first test to use this
+// helper silently disabled hyperlinks for TestToolArgSummary_Hyperlinks
+// EnabledWrapsPath, which runs later in the same process.
 func withColorProfile(t *testing.T, p termenv.Profile) {
 	t.Helper()
-	prev := lipgloss.ColorProfile()
+	saveColorProfile(t)
 	ApplyColorProfile(p)
-	t.Cleanup(func() { ApplyColorProfile(prev) })
+}
+
+// saveColorProfile is withColorProfile's restore half on its own, for tests
+// that do not choose a profile themselves but call something that does
+// (buildModelForCapability and NewProgram both call ApplyColorProfile with a
+// detected capability). Three such tests each hand-rolled
+// `prev := lipgloss.ColorProfile(); t.Cleanup(func(){ ApplyColorProfile(prev) })`
+// and all three carried the bug described above; this is the single
+// implementation they now share.
+func saveColorProfile(t *testing.T) {
+	t.Helper()
+	prevLipgloss := lipgloss.ColorProfile()
+	prevActive := currentColorProfile()
+	t.Cleanup(func() {
+		ApplyColorProfile(prevActive)
+		lipgloss.SetColorProfile(prevLipgloss)
+	})
 }
 
 // TestApplyColorProfile_AsciiSuppressesColor proves acceptance criterion 1

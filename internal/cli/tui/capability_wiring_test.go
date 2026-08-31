@@ -61,7 +61,6 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -155,9 +154,11 @@ func TestBuildModelForCapability_FieldsFollowCapability(t *testing.T) {
 			// leave Profile at its zero value, which is termenv.TrueColor, not
 			// Ascii — so without this restore every later test in the package
 			// that renders plain text and expects no ANSI escapes starts
-			// failing the moment this test runs first.
-			prev := lipgloss.ColorProfile()
-			t.Cleanup(func() { ApplyColorProfile(prev) })
+			// failing the moment this test runs first. saveColorProfile
+			// (capability_test.go) restores BOTH pieces of state
+			// ApplyColorProfile writes; the hand-rolled version this replaced
+			// restored only lipgloss's, pinning activeProfile to Ascii.
+			saveColorProfile(t)
 			// W-E-06: buildModelForCapability also calls
 			// SetHyperlinksEnabled(cap.AltScreen), another process-global side
 			// effect — same leak shape as the color profile above, since
@@ -191,8 +192,7 @@ func TestBuildModelForCapability_WiresHyperlinksEnabled(t *testing.T) {
 	// TestBuildModelForCapability_FieldsFollowCapability's identical restore
 	// for why leaving this unset here would fail every later plain-text test
 	// in the package.
-	prev := lipgloss.ColorProfile()
-	t.Cleanup(func() { ApplyColorProfile(prev) })
+	saveColorProfile(t)
 
 	buildModelForCapability(&cli.Session{}, "/proj", Preferences{}, cli.TermCapability{AltScreen: false})
 	if hyperlinksEnabled.Load() {

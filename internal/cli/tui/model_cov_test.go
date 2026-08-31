@@ -5,7 +5,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -73,8 +72,11 @@ func TestCov_NewProgram(t *testing.T) {
 	// capability_test.go's withColorProfile doc comment). Left unrestored,
 	// this leaks whatever this test machine's TERM/COLORTERM happen to be
 	// into every later test in the package that renders a lipgloss style.
-	prev := lipgloss.ColorProfile()
-	t.Cleanup(func() { ApplyColorProfile(prev) })
+	// saveColorProfile restores BOTH pieces of state ApplyColorProfile writes;
+	// the hand-rolled version this replaced restored only lipgloss's, which in
+	// a non-TTY test binary is Ascii — so it pinned activeProfile to Ascii for
+	// the rest of the run.
+	saveColorProfile(t)
 	// W-E-06: NewProgram also calls SetHyperlinksEnabled(cap.AltScreen) from
 	// the machine's real detected capability — another process-global side
 	// effect this test's real (non-injected) capability detection can leak

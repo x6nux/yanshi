@@ -299,6 +299,36 @@ func TestToolArgSummary_HyperlinksEnabledWrapsPath(t *testing.T) {
 	assert.Equal(t, want, got)
 }
 
+// TestToolArgSummary_AsciiSuppressesHyperlinks is the mandatory negative
+// control for W-E-06's escape sequence, the one decoration that used to skip
+// it (RE-27): under termenv.Ascii — the profile NO_COLOR=1 and TERM=dumb
+// both resolve to — a "path" arg must render as plain text with zero \x1b
+// bytes, even though hyperlinksEnabled is true (NO_COLOR keeps
+// cap.AltScreen true, so buildModelForCapability really does leave it on).
+//
+// The ANSI256 leg is not decoration: without it a broken toolArgSummary that
+// never links anything would satisfy the Ascii assertion, and the failure
+// would be indistinguishable from the fix working. Both legs use the same
+// input and the same hyperlinksEnabled value, so the only variable is the
+// profile.
+func TestToolArgSummary_AsciiSuppressesHyperlinks(t *testing.T) {
+	hyperlinksEnabled.Store(true)
+	t.Cleanup(func() { hyperlinksEnabled.Store(false) })
+
+	const args = `{"path":"src/main.go"}`
+
+	// withColorProfile's restore is a t.Cleanup, so these two calls nest
+	// rather than sequence; LIFO unwinding still lands back on the original.
+	withColorProfile(t, termenv.Ascii)
+	got := toolArgSummary("fs_read", args, "/proj")
+	assert.Equal(t, "(src/main.go)", got)
+	assert.NotContainsf(t, got, "\x1b", "Ascii profile must emit zero escape bytes, got %q", got)
+
+	withColorProfile(t, termenv.ANSI256)
+	linked := toolArgSummary("fs_read", args, "/proj")
+	assert.Equal(t, "("+termenv.Hyperlink("file:///proj/src/main.go", "src/main.go")+")", linked)
+}
+
 // TestToolArgSummary_HyperlinksEnabledGlobStaysPlain proves the "glob" key
 // is deliberately excluded from hyperlink-wrapping even when enabled: a glob
 // like "**/*.go" is a pattern, not a single file a click could open (see

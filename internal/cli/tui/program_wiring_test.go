@@ -47,9 +47,7 @@ func TestProgramOptions_AltScreenGatedByCapability(t *testing.T) {
 // (TrueColor), so a deleted call is distinguishable from a call that merely
 // happens to already agree with the baseline.
 func TestNewProgram_AppliesRealCapability(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	t.Cleanup(func() { ApplyColorProfile(prev) })
-	ApplyColorProfile(termenv.TrueColor)
+	withColorProfile(t, termenv.TrueColor)
 	// W-E-06: NewProgram also calls SetHyperlinksEnabled(cap.AltScreen) —
 	// another process-global side effect alongside the color profile above.
 	prevHyperlinks := hyperlinksEnabled.Load()

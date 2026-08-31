@@ -189,7 +189,16 @@ var hyperlinksEnabled atomic.Bool
 // OSC 8 hyperlink escape (W-E-06). Call once at startup from
 // buildModelForCapability, gated on cap.AltScreen — the same signal
 // titleEnabled/mouseEnabled use, because a terminal E1 doesn't trust with
-// escape sequences (TERM=dumb) shouldn't be handed OSC 8 either; see
+// escape sequences (TERM=dumb) shouldn't be handed OSC 8 either.
+//
+// This is only HALF the capability signal, and deliberately so: cap.Profile
+// is the other half, and toolArgSummary reads it separately via
+// currentColorProfile() rather than having it folded in here (RE-27 — see
+// the body comment at toolArgSummary's `key == "path"` check for why the
+// Ascii tier is enforced at render time, not at this call site). So a true
+// value here means "the terminal tolerates escape sequences", not "OSC 8
+// will be emitted"; NO_COLOR=1 leaves this true and still gets plain text.
+// See
 // ApplyColorProfile's doc comment for why a package-level toggle rather than
 // threading a flag through every entry.render() call is the right shape:
 // entries do not carry the model or its capability, only styles.go's package
@@ -684,7 +693,19 @@ func toolArgSummary(name, argsJSON, root string) string {
 	// first would let the 40-char budget cut into the escape sequence itself.
 	// "path" only, not "glob": a glob is a pattern ("*.go"), not a location a
 	// click could open.
-	if key == "path" && hyperlinksEnabled.Load() {
+	//
+	// RE-27: the Ascii profile suppresses this too, and the check lives HERE
+	// rather than at SetHyperlinksEnabled's call site because
+	// currentColorProfile() is how this package decides "am I in the Ascii
+	// tier" everywhere else (renderMarkdown's stripANSI, renderFooter's
+	// footerSGRParts) — the two knobs are independently exported, so a gate
+	// computed once at wiring time would go stale the moment
+	// ApplyColorProfile is called again. The rule being upheld is the one
+	// renderMarkdown's body comment states: zero \x1b bytes under Ascii, not
+	// just plain-looking ones. Before this, NO_COLOR=1 (which yields
+	// Profile=Ascii but AltScreen=true, so hyperlinksEnabled was true) still
+	// received the full OSC 8 escape.
+	if key == "path" && hyperlinksEnabled.Load() && currentColorProfile() != termenv.Ascii {
 		if uri := fileHyperlinkURI(raw, root); uri != "" {
 			s = termenv.Hyperlink(uri, s)
 		}
