@@ -12,21 +12,57 @@ import (
 	"time"
 )
 
+// ServerHandler 是 server 主动推送消息的回调。readLoop 将 notification
+// 和 server 发起的 request 统一投递给它。method 是 JSON-RPC method 字段值；
+// params 是原始 params map。params 的内容来自外部 MCP server，属于不可信输入
+// （untrusted external data）——调用方不得在未标注的情况下将其用于提示词或
+// 安全判定（参照 PR 正文标注外部输入防提示注入的做法）。
+type ServerHandler func(method string, params map[string]any)
+
 // StdioClient 通过 stdin/stdout pipe 与 MCP server 子进程通信。
 // cmd 持有子进程引用，Close 时 Kill+Wait 回收；未托管子进程（如测试用 io.Pipe）
 // 时 cmd 为 nil，Close 只关闭 writer。
+//
+// readLoop goroutine 持续读入站消息并 demux：带 id 的响应投递到
+// pending[id] channel，通知按 method 路由到 ServerHandler。
 type StdioClient struct {
 	r       *bufio.Reader
+	rawR    io.Reader // 原始 reader，Close 时如实现 io.Closer 则关闭
 	w       io.Writer
 	cmd     *exec.Cmd
-	mu      sync.Mutex
+	mu      sync.Mutex // 保护 w 的串行写入与 pending/closed
 	nextID  int64
 	timeout time.Duration
+
+	pending map[int64]chan map[string]any
+	done    chan struct{}
+	closed  bool
+	closeOnce sync.Once
+
+	handler  ServerHandler // nil = 忽略 server 主动推送
+	handlerMu sync.RWMutex
 }
 
 // NewStdioClient creates an MCP client communicating over stdin/stdout pipes.
 func NewStdioClient(r io.Reader, w io.Writer) *StdioClient {
-	return &StdioClient{r: bufio.NewReader(r), w: w, timeout: 30 * time.Second}
+	return &StdioClient{
+		r:       bufio.NewReader(r),
+		rawR:    r,
+		w:       w,
+		timeout: 30 * time.Second,
+		pending: make(map[int64]chan map[string]any),
+		done:    make(chan struct{}),
+	}
+}
+
+// SetHandler 注册 server 主动推送的回调（notification 与 server 发起的 request）。
+// 必须在 Initialize 之前调用——readLoop 在 Initialize 时启动。回调在 readLoop
+// goroutine 中同步执行，耗时操作（如工具表刷新）应自行 spawn goroutine 避免
+// 阻塞后续消息的投递。
+func (c *StdioClient) SetHandler(h ServerHandler) {
+	c.handlerMu.Lock()
+	c.handler = h
+	c.handlerMu.Unlock()
 }
 
 // SetCmd 绑定底层子进程，使 Close 能 Kill+Wait 回收它。链式返回 *StdioClient。
@@ -45,7 +81,10 @@ func (c *StdioClient) SetTimeout(d time.Duration) *StdioClient {
 }
 
 // Initialize performs the MCP initialize handshake over stdio.
+// It starts the readLoop goroutine so that the server's response and any
+// notifications during the handshake are properly dispatched.
 func (c *StdioClient) Initialize(ctx context.Context, rootURI string) error {
+	go c.readLoop()
 	id := atomic.AddInt64(&c.nextID, 1)
 	resp, err := c.doRequest(ctx, id, map[string]any{
 		"jsonrpc": "2.0", "id": id, "method": "initialize",
@@ -65,33 +104,104 @@ func (c *StdioClient) Initialize(ctx context.Context, rootURI string) error {
 }
 
 func (c *StdioClient) doRequest(ctx context.Context, id int64, req any) (map[string]any, error) {
+	ch := make(chan map[string]any, 1)
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if err := WriteLineMessage(c.w, req); err != nil {
+	if c.closed {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("mcp: client closed")
+	}
+	c.pending[id] = ch
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
+	}()
+
+	c.mu.Lock()
+	err := WriteLineMessage(c.w, req)
+	c.mu.Unlock()
+	if err != nil {
 		return nil, err
 	}
-	deadline := time.Now().Add(c.timeout)
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-		msg, err := ReadMessage(c.r)
-		if err != nil {
-			return nil, err
-		}
-		if rid, ok := toInt64(msg["id"]); ok && rid == id {
-			return msg, nil
-		}
+
+	deadline := time.After(c.timeout)
+	select {
+	case msg := <-ch:
+		return msg, nil
+	case <-deadline:
+		return nil, fmt.Errorf("mcp: timeout waiting for id=%d", id)
+	case <-c.done:
+		return nil, fmt.Errorf("mcp: client closed")
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	return nil, fmt.Errorf("mcp: timeout waiting for id=%d", id)
 }
 
 func (c *StdioClient) notify(method string, params any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return WriteLineMessage(c.w, map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
+}
+
+// readLoop 持续读入站消息并 demux，直到 ReadMessage 出错（EOF/pipe 关）。
+// 两类消息分发：
+//   - 响应（有 id，无 method）→ 投递给 pending[id] channel
+//   - notification（无 id，有 method）→ 交给 handleServerMessage
+//
+// server 发起的 request（带 id 且带 method）目前与畸形消息一样落入 default
+// 被丢弃 —— 与改造前的行为一致（严格 req→resp 模式会静默消费它们）。
+// 支持反向 request 是后续提交的工作。
+//
+// 退出时 close(done)，唤醒所有阻塞在 select 上的 doRequest。
+func (c *StdioClient) readLoop() {
+	defer c.closeOnce.Do(func() { close(c.done) })
+	for {
+		msg, err := ReadMessage(c.r)
+		if err != nil {
+			return
+		}
+		id, hasID := toInt64(msg["id"])
+		method, hasMethod := msg["method"].(string)
+
+		switch {
+		case hasID && !hasMethod:
+			// Response to a client request.
+			c.deliver(id, msg)
+		case hasMethod && !hasID:
+			// Server-initiated notification.
+			c.handleServerMessage(method, msg)
+		default:
+			// Server-initiated request (id + method, handled in a later
+			// commit) or malformed JSON-RPC — drop.
+		}
+	}
+}
+
+// deliver 投递响应到等待的 pending channel（非阻塞：channel 带 1 缓冲）。
+func (c *StdioClient) deliver(id int64, msg map[string]any) {
+	c.mu.Lock()
+	ch := c.pending[id]
+	c.mu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- msg:
+	default:
+	}
+}
+
+// handleServerMessage 将 notification 投递给注册的 ServerHandler。
+func (c *StdioClient) handleServerMessage(method string, msg map[string]any) {
+	c.handlerMu.RLock()
+	h := c.handler
+	c.handlerMu.RUnlock()
+	if h == nil {
+		return
+	}
+	params, _ := msg["params"].(map[string]any)
+	h(method, params)
 }
 
 // ListTools returns tools advertised by the MCP server over stdio.
@@ -142,16 +252,38 @@ func (c *StdioClient) Ping(ctx context.Context) error {
 }
 
 // Close kills the subprocess and closes the IO pipes.
+// It signals the readLoop goroutine to exit and wakes any blocked doRequest.
 func (c *StdioClient) Close() error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil
+	}
+	c.closed = true
+	c.mu.Unlock()
+
 	if c.cmd != nil && c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
 		_ = c.cmd.Wait()
 	}
+	// Closing the writer breaks any blocked write; closing the reader (if
+	// reachable) breaks readLoop's blocking ReadMessage.
 	if closer, ok := c.w.(io.Closer); ok {
 		_ = closer.Close()
 	}
+	if closer, ok := c.rawR.(io.Closer); ok {
+		_ = closer.Close()
+	}
+	// Signal readLoop to exit and wake blocked doRequest calls.
+	// closeOnce guards against double-close if readLoop already exited.
+	c.closeOnce.Do(func() { close(c.done) })
 	return nil
 }
+
+// Done returns a channel that is closed when the readLoop goroutine exits
+// (EOF/pipe closed) or Close is called. Callers can use it to wait for the
+// client's reader to stop.
+func (c *StdioClient) Done() <-chan struct{} { return c.done }
 
 // --- helpers shared by StdioClient and HTTPClient ---
 
