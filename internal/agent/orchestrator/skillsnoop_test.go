@@ -29,6 +29,7 @@ import (
 	"github.com/x6nux/yanshi/internal/guard"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
 	"github.com/x6nux/yanshi/internal/skills"
+	"github.com/x6nux/yanshi/internal/shell"
 	"github.com/x6nux/yanshi/internal/tools"
 )
 
@@ -70,7 +71,15 @@ func skillRegistryFixture(t *testing.T) (*skills.Registry, string, string) {
 
 func recognizerContext(t *testing.T, reg *skills.Registry, spy *spySkillObserver) context.Context {
 	t.Helper()
-	ctx := tools.WithProfile(tools.WithWorkRoot(context.Background(), t.TempDir()), fsWriteProfile())
+	profile := fsWriteProfile()
+	// PreToolUse hook 的子进程借被 hook 工具的名字过授权（F3 的 Ruling），
+	// 本文件有真的会拦截的 hook，profile 必须放行 shell_run 才能走到 hook
+	// 程序本身。
+	profile.Tools.Allow = append(profile.Tools.Allow, "shell_run")
+	ctx := tools.WithProfile(tools.WithWorkRoot(context.Background(), t.TempDir()), profile)
+	// 拦截用的 hook 是真的外部进程：factory 是 secproc 发射的 fail-closed
+	// 前提（W-B-02 之后的形状，与 newHookTurnContext 同一绑定）。
+	ctx = tools.WithSecureProcessFactory(ctx, shell.UnsandboxedSecureFactory())
 	ctx = withSkillRecognizer(ctx, reg, spy.note)
 	return ctx
 }
@@ -122,7 +131,10 @@ func TestRelativeScriptPathFromCommandIsRecognized(t *testing.T) {
 	uses := spy.got()
 	require.Len(t, uses, 1)
 	require.Equal(t, "my-skill", uses[0].Skill)
-	_ = root
+	// Detail 记录的是命令里出现的那一段原样（词法近似不做路径解析）——
+	// 相对形状不得被 workRoot 拼成绝对路径冒充模型说过的话。
+	require.Contains(t, uses[0].Detail, "./my-skill/scripts/run.sh")
+	require.NotContains(t, uses[0].Detail, root)
 }
 
 func TestUnregisteredSkillPathIsNotRecognized(t *testing.T) {
@@ -181,6 +193,38 @@ func TestPostToolUseRecognitionNeverEntersModelContext(t *testing.T) {
 	require.Equal(t, outWithout, outWith, "识别结果不得改变模型可见的工具结果")
 	require.Equal(t, "plain result", outWith)
 	require.Len(t, spy.got(), 1, "识别必须确实发生了，否则上面的逐字节相等是空转")
+}
+
+func TestRefusedCallNeverReachesPostToolUse(t *testing.T) {
+	// RF-23：「refusal 路径不进 PostToolUse」的专属钉子。拒绝发生在工具
+	// 执行之前，调用没有发生 —— 没有执行就没有「用了 skill」可言，识别
+	// 器必须在拒绝路径上保持沉默。
+	//
+	// 会变红的变异：把 middleware 里 refusal 的提前 return 挪到 rec.observe
+	// 之后 → 本测试红（拒绝的调用也进了识别）。
+	reg, _, scriptPath := skillRegistryFixture(t)
+	spy := &spySkillObserver{}
+	blocked := withTurnHooks(recognizerContext(t, reg, spy),
+		HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "block")}})
+	t.Setenv(hookHelperReasonEnv, "refusal must bypass the recognizer")
+
+	ep, err := newHookMiddleware().WrapInvokableToolCall(blocked, plainEndpoint("must not run"), &adk.ToolContext{Name: "shell_run"})
+	require.NoError(t, err)
+	out, err := ep(blocked, `{"command":"bash `+scriptPath+`"}`)
+	require.NoError(t, err)
+	require.Contains(t, out, "blocked by pre_tool_use hook")
+	require.Empty(t, spy.got(), "被拒绝的调用没有执行，不得进入 PostToolUse 识别")
+
+	// 对照组：同一识别器、同一 spy，一个真的执行的 skill 脚本调用照常
+	// 被识别 —— 上面的空不是 harness 坏了。
+	allowed := withTurnHooks(recognizerContext(t, reg, spy),
+		HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "allow")}})
+	epOK, err := newHookMiddleware().WrapInvokableToolCall(allowed, plainEndpoint("ok"), &adk.ToolContext{Name: "shell_run"})
+	require.NoError(t, err)
+	_, err = epOK(allowed, `{"command":"bash `+scriptPath+`"}`)
+	require.NoError(t, err)
+	require.Len(t, spy.got(), 1, "对照组必须被识别，否则拒绝路径的沉默是空转")
+	require.Equal(t, "my-skill", spy.got()[0].Skill)
 }
 
 func TestSubAgentTurnRecognizesImplicitSkillUse(t *testing.T) {
