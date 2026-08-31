@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,11 +42,52 @@ func NewHTTPClient(baseURL, bearer string) *HTTPClient {
 // NewHTTPClientWithTokenSource creates an HTTP MCP client with a custom token
 // source (useful for OAuth-based authentication).
 func NewHTTPClientWithTokenSource(baseURL string, source TokenSource) *HTTPClient {
-	return &HTTPClient{
+	c := &HTTPClient{
 		baseURL: baseURL,
 		tokens:  source,
 		httpCli: &http.Client{Timeout: 30 * time.Second},
 	}
+	c.httpCli.CheckRedirect = c.checkRedirect
+	return c
+}
+
+// maxRedirects caps the redirect chain of one logical request. Well under the
+// stdlib's 10: an MCP endpoint has no business bouncing seven times.
+const maxRedirects = 5
+
+// checkRedirect is the client's redirect policy (W-F-29): a cross-origin hop
+// must not carry credentials.
+//
+// The stdlib already strips Authorization/Cookie on cross-origin redirects,
+// but only those — everything else is copied verbatim, which includes
+// Mcp-Session-Id. That header is the session handle this client propagates on
+// every call; handing it to a different origin lets that origin hijack the
+// MCP session, and it is exactly the kind of header a future credential-
+// shaped addition would silently fall into. So the policy is stated here,
+// explicitly, over the headers this client actually sets — same-origin hops
+// keep everything, cross-origin hops lose Authorization, Cookie and
+// Mcp-Session-Id. Origin is scheme-aware: an http→https hop on the same host
+// counts as cross-origin and is stripped (the downgrade direction is the
+// classic leak).
+func (c *HTTPClient) checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("mcp: stopped after %d redirects", maxRedirects)
+	}
+	if len(via) == 0 {
+		return nil
+	}
+	if !sameOrigin(via[0].URL, req.URL) {
+		req.Header.Del("Authorization")
+		req.Header.Del("Cookie")
+		req.Header.Del("Mcp-Session-Id")
+	}
+	return nil
+}
+
+// sameOrigin compares scheme and host (host includes port). Everything else
+// about the URLs is irrelevant to whether a credential may cross.
+func sameOrigin(a, b *url.URL) bool {
+	return a.Scheme == b.Scheme && a.Host == b.Host
 }
 
 // SetTimeout overrides the default HTTP client timeout.
