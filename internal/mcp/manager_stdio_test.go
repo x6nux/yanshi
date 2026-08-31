@@ -36,6 +36,8 @@ func serveMCPHelper(r io.Reader, w io.Writer) {
 	buf := bufio.NewReader(r)
 	changed := false
 	servedList := false
+	resourcesGrew := false
+	subscribed := false
 	for {
 		msg, err := ReadMessage(buf)
 		if err != nil {
@@ -58,9 +60,60 @@ func serveMCPHelper(r io.Reader, w io.Writer) {
 			resp["result"] = map[string]any{"tools": tools}
 		case "ping":
 			resp["result"] = map[string]any{}
+		case "resources/list":
+			// 两页目录：首页 [res_a] + nextCursor "p2"，第二页 [res_b]
+			//（更新后 [res_b, res_c]）。cursor 语义由此被端到端钉住：只在
+			// 请求带 cursor=p2 时才给第二页。
+			cursor := ""
+			if p, ok := msg["params"].(map[string]any); ok {
+				cursor, _ = p["cursor"].(string)
+			}
+			if cursor != "p2" {
+				page := []map[string]any{{"uri": "file:///res_a", "name": "res_a"}}
+				// 首页恒带 nextCursor：目录翻页结构不随更新变化，增长只发生
+				// 在第二页（否则 walk 会在首页提前终止，测不到第二页刷新）。
+				resp["result"] = map[string]any{"resources": page, "nextCursor": "p2"}
+			} else {
+				page := []map[string]any{{"uri": "file:///res_b", "name": "res_b"}}
+				if resourcesGrew {
+					page = append(page, map[string]any{"uri": "file:///res_c", "name": "res_c"})
+				}
+				resp["result"] = map[string]any{"resources": page}
+			}
+		case "resources/subscribe":
+			uri := ""
+			if p, ok := msg["params"].(map[string]any); ok {
+				uri, _ = p["uri"].(string)
+			}
+			if uri == "file:///res_a" {
+				subscribed = true
+				resp["result"] = map[string]any{}
+				// 因果链：只有真的收到了订阅请求，server 才会（按订阅语义）
+				// 推送变更通知并切换目录。Manager 不自动订阅 → 这里永远不跑
+				// → resourceMap 停在两页旧目录 → 测试按 deadline 变红。
+				go func() {
+					time.Sleep(150 * time.Millisecond)
+					resourcesGrew = true
+					// 不可信 uri 载荷：自称变更的是 file:///attacker。守约的
+					// Manager 只把它当「该重列目录」的信号，绝不按这个 uri
+					// 去 ReadResource，也绝不把它当资源收进 resourceMap。
+					_ = WriteLineMessage(w, map[string]any{
+						"jsonrpc": "2.0",
+						"method":  "notifications/resources/updated",
+						"params":  map[string]any{"uri": "file:///attacker"},
+					})
+				}()
+			} else {
+				resp["error"] = map[string]any{"code": -32602, "message": "not subscribed"}
+			}
+		case "resources/read":
+			// Manager 永不该走到这里：updated 刷新一律整目录重列，不按通知
+			// 里的 uri 取读。真走到 = 消费端把不可信 uri 当成了取数地址。
+			resp["error"] = map[string]any{"code": -32601, "message": "read must not happen"}
 		default:
 			resp["error"] = map[string]any{"code": -32601, "message": "method not found"}
 		}
+		_ = subscribed // 订阅状态只经因果链表达（推送与目录翻转），无需上报
 		if err := WriteLineMessage(w, resp); err != nil {
 			return
 		}
@@ -212,5 +265,72 @@ func TestManagerStdioListChangedSurvivesReload(t *testing.T) {
 	tools, _ := m.ListAllTools(context.Background())
 	if len(tools) != 2 {
 		t.Fatalf("tools after reload = %+v; the post-change catalog must be served, not a resurrected stale entry", tools)
+	}
+}
+
+// W-F-04 全链路：自动订阅 → server 推 resources/updated → Manager 整目录
+// 重列 → resourceMap 反映最新目录（/mcp 状态面因此不再是启动快照）。
+//
+// 断言四个方向：
+//   - 收敛后 res_c 在 resourceMap 里 —— 订阅因果链完整（helper 只在收到
+//     subscribe 后才推通知并翻页）；分页 walk 也被钉住（res_b 只在第二页，
+//     只有带 cursor=p2 的请求才拿得到）；
+//   - resMap 恰好是 a/b/c —— 旧目录被替换，不累积；
+//   - attacker（通知载荷自称变更的 uri）永远不是资源 —— 不可信 uri 只当
+//     信号（与 listChanged 的标注同一约定，这是 resources 半的机器判据）；
+//   - helper 对 resources/read 一律回错 —— Manager 真按载荷 uri 取读的话
+//     不会有任何资源变化能掩盖它，且 walk 路径根本不产生 read。
+//
+// 变异：删掉 startOne 资源块里的 SubscribeResource 循环 → helper 永不推送，
+// res_c 永不出现，变红；删掉 handleServerPush 的 resources/updated 分支 →
+// 通知被丢弃，同样红；把 refreshResources 改成 ReadResource(载荷 uri) →
+// helper 回错 + res_c 不出现，红。
+func TestManagerStdioResourceUpdatesRefreshCatalog(t *testing.T) {
+	m := NewManager(map[string]*ServerConfig{
+		"rsrv": {
+			Name: "rsrv", Enabled: true, Transport: TransportStdio,
+			Command: os.Args[0],
+			Args:    []string{"-test.run=^TestMCPHelperServerProcess$", "--"},
+			Env:     map[string]string{"YANSHI_TEST_MCP_SERVER": "1"},
+		},
+	})
+	if st := m.StartAll(context.Background()); len(st) != 1 || st[0].Status != StatusReady {
+		t.Fatalf("status=%+v", st)
+	}
+	// 启动快照只有两页旧目录（a、b）。
+	m.mu.Lock()
+	startResources := m.resourceMap["rsrv"]
+	m.mu.Unlock()
+	if len(startResources) != 2 {
+		t.Fatalf("startup resource snapshot = %+v; want the two-page catalog [a b]", startResources)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		m.mu.Lock()
+		resources := m.resourceMap["rsrv"]
+		m.mu.Unlock()
+		uris := map[string]bool{}
+		for _, rd := range resources {
+			uris[rd.URI] = true
+		}
+		if uris["file:///res_c"] {
+			if len(resources) != 3 {
+				t.Fatalf("resources after update = %+v; the refreshed catalog must replace, not accumulate", resources)
+			}
+			for _, rd := range resources {
+				if rd.URI == "file:///attacker" {
+					t.Fatal("attacker URI from the notification payload became a resource; the payload is a signal, not a catalog")
+				}
+			}
+			return
+		}
+		if uris["file:///attacker"] {
+			t.Fatal("attacker URI from the notification payload became a resource; the payload is a signal, not a catalog")
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("resource catalog never refreshed after subscribe+update; resources=%+v", resources)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

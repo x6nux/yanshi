@@ -45,6 +45,11 @@ func (f *fakeClient) CallTool(context.Context, string, json.RawMessage) (json.Ra
 func (f *fakeClient) ListResources(context.Context) ([]ResourceDescriptor, error) {
 	return f.resources, f.listResErr
 }
+func (f *fakeClient) ListResourcesPage(context.Context, string) ([]ResourceDescriptor, string, error) {
+	return f.resources, "", f.listResErr
+}
+func (f *fakeClient) SubscribeResource(context.Context, string) error  { return nil }
+func (f *fakeClient) UnsubscribeResource(context.Context, string) error { return nil }
 func (f *fakeClient) ReadResource(context.Context, string) (json.RawMessage, error) {
 	return f.readResult, f.readErr
 }
@@ -530,8 +535,8 @@ func TestHTTPClientListToolsNoResult(t *testing.T) {
 	if _, err := parseToolList("s", map[string]any{}); err == nil {
 		t.Fatal("parseToolList empty resp must error")
 	}
-	if _, err := parseResourceList("s", map[string]any{}); err == nil {
-		t.Fatal("parseResourceList empty resp must error")
+	if _, _, err := parseResourcePage("s", map[string]any{}); err == nil {
+		t.Fatal("parseResourcePage empty resp must error")
 	}
 	// tools with empty name are skipped; valid ones returned.
 	td, _ := parseToolList("s", map[string]any{"result": map[string]any{"tools": []any{

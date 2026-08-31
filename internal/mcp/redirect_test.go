@@ -147,3 +147,25 @@ func TestHTTPClient_RedirectChainCapped(t *testing.T) {
 		t.Fatalf("error %v does not name our redirect cap", err)
 	}
 }
+
+// W-F-04：HTTP 传输的订阅/退订 wire 形状 —— uri 必须按 params.uri 原样到达。
+//
+// 变异：把 SubscribeResource 的 params 改成 map[string]any{"u": uri} →
+// 本测试变红（server 侧读到空 uri）。
+func TestHTTPClientSubscribeWireShape(t *testing.T) {
+	ts, fake := NewFakeHTTPServer(nil)
+	defer ts.Close()
+	cli := NewHTTPClient(ts.URL, "")
+	if err := cli.SubscribeResource(context.Background(), "file:///x"); err != nil {
+		t.Fatalf("SubscribeResource: %v", err)
+	}
+	if fake.LastSubscribeURI != "file:///x" {
+		t.Fatalf("subscribe uri = %q, want file:///x", fake.LastSubscribeURI)
+	}
+	if err := cli.UnsubscribeResource(context.Background(), "file:///x"); err != nil {
+		t.Fatalf("UnsubscribeResource: %v", err)
+	}
+	if fake.LastUnsubscribeURI != "file:///x" {
+		t.Fatalf("unsubscribe uri = %q, want file:///x", fake.LastUnsubscribeURI)
+	}
+}

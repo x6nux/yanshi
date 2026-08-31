@@ -320,15 +320,61 @@ func (m *Manager) startOne(ctx context.Context, cfg *ServerConfig) (Client, erro
 	// A failure here is NOT fatal. resources/list is optional in MCP and a
 	// server that only exposes tools answers with an error; refusing to start
 	// it would turn a missing optional capability into an unusable server.
-	if resources, rerr := cli.ListResources(startCtx); rerr == nil && len(resources) > 0 {
+	if resources, rerr := walkAllResources(startCtx, cli); rerr == nil && len(resources) > 0 {
 		m.mu.Lock()
 		if m.resourceMap == nil {
 			m.resourceMap = map[string][]ResourceDescriptor{}
 		}
 		m.resourceMap[cfg.Name] = resources
 		m.mu.Unlock()
+		// W-F-04: mirror-client subscriptions. Subscribe to every advertised
+		// resource so the server pushes resources/updated and the /mcp status
+		// surface stays current instead of showing the startup snapshot
+		// forever. Best-effort: subscribe is optional in MCP and servers MAY
+		// refuse each URI; a refusal degrades this server to the startup
+		// snapshot without touching anything else. stdio only — the HTTP
+		// transport has no inbound notification channel yet (RF-3), so a
+		// subscription there buys nothing.
+		if sc, ok := cli.(*StdioClient); ok {
+			for _, rd := range resources {
+				subCtx, cancel := context.WithTimeout(startCtx, 5*time.Second)
+				if err := sc.SubscribeResource(subCtx, rd.URI); err != nil {
+					slog.Warn("mcp: resources/subscribe refused", "server", cfg.Name, "uri", rd.URI, "error", err.Error())
+				}
+				cancel()
+			}
+		}
 	}
 	return cli, nil
+}
+
+// maxResourcePages bounds the pagination walk. A server answering an endless
+// nextCursor would otherwise pin startOne (or a refresh) forever; after this
+// many pages the walk stops with what it has and says so.
+const maxResourcePages = 100
+
+// walkAllResources lists a server's complete resource catalog, following
+// nextCursor pages. Bounded by maxResourcePages: a server looping cursors is
+// answered with a truncated (and logged) catalog, not a hung Manager.
+func walkAllResources(ctx context.Context, cli Client) ([]ResourceDescriptor, error) {
+	var out []ResourceDescriptor
+	cursor := ""
+	for page := 0; ; page++ {
+		resources, next, err := cli.ListResourcesPage(ctx, cursor)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, resources...)
+		if next == "" {
+			return out, nil
+		}
+		if page >= maxResourcePages {
+			slog.Warn("mcp: resources/list pagination exceeded the page bound; catalog truncated",
+				"pages", page+1, "collected", len(out))
+			return out, nil
+		}
+		cursor = next
+	}
 }
 
 // mergeToolsLocked filters the advertised tools through the per-server
@@ -394,28 +440,68 @@ func (m *Manager) mergeToolsLocked(cfg *ServerConfig, tools []ToolDescriptor, re
 func (m *Manager) handleServerPush(server string) ServerHandler {
 	return func(method string, params map[string]any) {
 		_ = params // untrusted notification payload; see the doc above
-		if method != "notifications/tools/list_changed" {
-			return
-		}
-		m.mu.Lock()
-		st := m.push[server]
-		spawn := false
-		if st != nil {
-			if st.ready {
-				spawn = true
-			} else {
-				// The initial catalog merge has not landed yet; refreshing
-				// now could interleave with it and let a stale snapshot
-				// win. Buffer the signal; startOne drains it after the
-				// first merge.
-				st.pending = true
-			}
-		}
-		m.mu.Unlock()
-		if spawn {
-			go m.refreshTools(server)
+		switch method {
+		case "notifications/tools/list_changed":
+			m.pushToolRefresh(server)
+		case "notifications/resources/updated":
+			// 不可信 uri 标注：params 里的 uri 同样只是载荷 —— 这里故意不读
+			// 它、也不去 ReadResource 那个 uri（那是在替 server 取它点名的
+			// 任意地址）。刷新一律整目录重列，载荷只提供「该刷了」这个信号。
+			go m.refreshResources(server)
+		default:
+			// progress 等：当前无消费者，忽略。
 		}
 	}
+}
+
+// pushToolRefresh routes a list_changed through the ready/pending gate
+// (shared doc with handleServerPush).
+func (m *Manager) pushToolRefresh(server string) {
+	m.mu.Lock()
+	st := m.push[server]
+	spawn := false
+	if st != nil {
+		if st.ready {
+			spawn = true
+		} else {
+			// The initial catalog merge has not landed yet; refreshing
+			// now could interleave with it and let a stale snapshot
+			// win. Buffer the signal; startOne drains it after the
+			// first merge.
+			st.pending = true
+		}
+	}
+	m.mu.Unlock()
+	if spawn {
+		go m.refreshTools(server)
+	}
+}
+
+// refreshResources re-lists a server's whole resource catalog after a
+// resources/updated notification and swaps it into resourceMap, so the /mcp
+// status surface reflects the server's current catalog instead of the
+// startup snapshot. The notified URI is deliberately ignored (see
+// handleServerPush); the catalog itself is the truth.
+func (m *Manager) refreshResources(server string) {
+	m.mu.Lock()
+	cli := m.clients[server]
+	m.mu.Unlock()
+	if cli == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resources, err := walkAllResources(ctx, cli)
+	if err != nil {
+		slog.Warn("mcp: resources refresh after resources/updated failed", "server", server, "error", err.Error())
+		return
+	}
+	m.mu.Lock()
+	if m.resourceMap == nil {
+		m.resourceMap = map[string][]ResourceDescriptor{}
+	}
+	m.resourceMap[server] = resources
+	m.mu.Unlock()
 }
 
 // refreshTools re-fetches one server's catalog after tools/list_changed and

@@ -31,6 +31,10 @@ type FakeServer struct {
 	// one (if any) the initialize request itself carried.
 	LastProtocolHeader string
 	InitProtocolHeader string
+	// LastSubscribeURI / LastUnsubscribeURI record the uri params of the most
+	// recent resources/subscribe / resources/unsubscribe.
+	LastSubscribeURI    string
+	LastUnsubscribeURI  string
 }
 
 func (f *FakeServer) handle(w http.ResponseWriter, r *http.Request) {
@@ -38,6 +42,10 @@ func (f *FakeServer) handle(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID     json.RawMessage `json:"id"`
 		Method string          `json:"method"`
+		Params struct {
+			URI    string `json:"uri"`
+			Cursor string `json:"cursor"`
+		} `json:"params"`
 	}
 	_ = json.Unmarshal(body, &req)
 
@@ -79,6 +87,12 @@ func (f *FakeServer) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	case "resources/list":
 		resp["result"] = map[string]any{"resources": []map[string]any{}}
+	case "resources/subscribe":
+		f.LastSubscribeURI = req.Params.URI
+		resp["result"] = map[string]any{}
+	case "resources/unsubscribe":
+		f.LastUnsubscribeURI = req.Params.URI
+		resp["result"] = map[string]any{}
 	case "ping":
 		resp["result"] = map[string]any{}
 	default:

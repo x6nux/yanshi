@@ -290,14 +290,53 @@ func (c *StdioClient) CallTool(ctx context.Context, name string, args json.RawMe
 	return extractToolResult(resp)
 }
 
-// ListResources returns resources advertised by the MCP server over stdio.
+// ListResources returns resources advertised by the MCP server over stdio
+// (first page only; use ListResourcesPage to walk the whole catalog).
 func (c *StdioClient) ListResources(ctx context.Context) ([]ResourceDescriptor, error) {
+	resources, _, err := c.ListResourcesPage(ctx, "")
+	return resources, err
+}
+
+// ListResourcesPage walks one page of the server's resource catalog. An empty
+// cursor fetches the first page; the returned nextCursor is empty when the
+// catalog is exhausted.
+func (c *StdioClient) ListResourcesPage(ctx context.Context, cursor string) ([]ResourceDescriptor, string, error) {
 	id := atomic.AddInt64(&c.nextID, 1)
-	resp, err := c.doRequest(ctx, id, map[string]any{"jsonrpc": "2.0", "id": id, "method": "resources/list"})
-	if err != nil {
-		return nil, err
+	params := any(nil)
+	if cursor != "" {
+		params = map[string]any{"cursor": cursor}
 	}
-	return parseResourceList("stdio", resp)
+	req := map[string]any{"jsonrpc": "2.0", "id": id, "method": "resources/list"}
+	if params != nil {
+		req["params"] = params
+	}
+	resp, err := c.doRequest(ctx, id, req)
+	if err != nil {
+		return nil, "", err
+	}
+	return parseResourcePage("stdio", resp)
+}
+
+// SubscribeResource asks the server to push notifications/resources/updated
+// for uri (W-F-04). Servers MAY refuse — subscribe is optional in MCP — so
+// callers treat the error as best-effort, not fatal.
+func (c *StdioClient) SubscribeResource(ctx context.Context, uri string) error {
+	id := atomic.AddInt64(&c.nextID, 1)
+	_, err := c.doRequest(ctx, id, map[string]any{
+		"jsonrpc": "2.0", "id": id, "method": "resources/subscribe",
+		"params": map[string]any{"uri": uri},
+	})
+	return err
+}
+
+// UnsubscribeResource cancels a previous subscription.
+func (c *StdioClient) UnsubscribeResource(ctx context.Context, uri string) error {
+	id := atomic.AddInt64(&c.nextID, 1)
+	_, err := c.doRequest(ctx, id, map[string]any{
+		"jsonrpc": "2.0", "id": id, "method": "resources/unsubscribe",
+		"params": map[string]any{"uri": uri},
+	})
+	return err
 }
 
 // ReadResource reads a resource by URI from the MCP server over stdio.
@@ -372,10 +411,12 @@ func parseToolList(server string, resp map[string]any) ([]ToolDescriptor, error)
 	return out, nil
 }
 
-func parseResourceList(server string, resp map[string]any) ([]ResourceDescriptor, error) {
+// parseResourcePage decodes one resources/list page: the descriptors plus the
+// server's nextCursor (empty = no more pages).
+func parseResourcePage(server string, resp map[string]any) ([]ResourceDescriptor, string, error) {
 	res, _ := resp["result"].(map[string]any)
 	if res == nil {
-		return nil, fmt.Errorf("mcp: resources/list: no result")
+		return nil, "", fmt.Errorf("mcp: resources/list: no result")
 	}
 	raw, _ := res["resources"].([]any)
 	out := make([]ResourceDescriptor, 0, len(raw))
@@ -387,7 +428,8 @@ func parseResourceList(server string, resp map[string]any) ([]ResourceDescriptor
 		}
 		out = append(out, ResourceDescriptor{ServerName: server, URI: uri, Name: strOr(m, "name"), Description: strOr(m, "description"), MimeType: strOr(m, "mimeType")})
 	}
-	return out, nil
+	next, _ := res["nextCursor"].(string)
+	return out, next, nil
 }
 
 func extractToolResult(resp map[string]any) (json.RawMessage, error) {

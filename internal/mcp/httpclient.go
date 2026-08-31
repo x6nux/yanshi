@@ -267,13 +267,43 @@ func (c *HTTPClient) CallTool(ctx context.Context, name string, args json.RawMes
 	return extractToolResult(resp)
 }
 
-// ListResources returns resources advertised by the MCP server.
+// ListResources returns resources advertised by the MCP server (first page
+// only; use ListResourcesPage to walk the whole catalog).
 func (c *HTTPClient) ListResources(ctx context.Context) ([]ResourceDescriptor, error) {
-	resp, err := c.request(ctx, "resources/list", nil)
-	if err != nil {
-		return nil, err
+	resources, _, err := c.ListResourcesPage(ctx, "")
+	return resources, err
+}
+
+// ListResourcesPage walks one page of the server's resource catalog. An empty
+// cursor fetches the first page; the returned nextCursor is empty when the
+// catalog is exhausted.
+func (c *HTTPClient) ListResourcesPage(ctx context.Context, cursor string) ([]ResourceDescriptor, string, error) {
+	var params any
+	if cursor != "" {
+		params = map[string]any{"cursor": cursor}
 	}
-	return parseResourceList("http", resp)
+	resp, err := c.request(ctx, "resources/list", params)
+	if err != nil {
+		return nil, "", err
+	}
+	return parseResourcePage("http", resp)
+}
+
+// SubscribeResource asks the server to push notifications/resources/updated
+// for uri. The subscription request is real, but this transport has no
+// inbound notification channel yet (RF-3): a streamable-HTTP server delivers
+// those on an SSE stream this client does not hold open. Subscribe is
+// therefore only half-useful over HTTP today; the Manager auto-subscribes
+// stdio servers only.
+func (c *HTTPClient) SubscribeResource(ctx context.Context, uri string) error {
+	_, err := c.request(ctx, "resources/subscribe", map[string]any{"uri": uri})
+	return err
+}
+
+// UnsubscribeResource cancels a previous subscription.
+func (c *HTTPClient) UnsubscribeResource(ctx context.Context, uri string) error {
+	_, err := c.request(ctx, "resources/unsubscribe", map[string]any{"uri": uri})
+	return err
 }
 
 // ReadResource reads a resource by URI from the MCP server.
