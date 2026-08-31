@@ -118,6 +118,11 @@ func hookHelperVerdict(mode string, req hookRequest) string {
 		return `{"block":false}`
 	case "crash":
 		os.Exit(3)
+	case "allow_then_crash":
+		// 先写合法 verdict 再崩溃：退出码必须仍然构成失败。没有这个剧本，
+		// 「吞掉退出错误」的变异只会在空输出路径上被 parse 失败意外救场。
+		_, _ = os.Stdout.WriteString(`{"block":false}`)
+		os.Exit(3)
 	case "garbage":
 		return "this is not json at all"
 	case "badinput":
@@ -465,4 +470,106 @@ func TestPreToolUseHookSpawnIsAuthorizedUnderTheToolName(t *testing.T) {
 	assert.Contains(t, out, "pre_tool_use hook ",
 		"发射被拒时必须显式报 hook 失败，而不是静默放行")
 	assert.Empty(t, d.ran(), "工具本身同样被 profile 拒绝，不能执行")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 验收 5：hook 超时 / 崩溃不中断 turn（fail-closed 但非致命）。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestPreToolUseHookTimeoutRefusesWithoutBreakingTurn 钉住超时路径：hook 挂住
+// 不答，到点被杀，该次调用以 fail-closed 拒绝（作为工具结果，Go error 为 nil），
+// 工具不执行；随后的调用在同一个包装上照常工作 —— 坏掉的是那一次 hook，不是
+// turn。拒绝必须在墙钟上及时到达（远小于 helper 的睡眠时长）。
+func TestPreToolUseHookTimeoutRefusesWithoutBreakingTurn(t *testing.T) {
+	workRoot := t.TempDir()
+	t.Setenv(hookHelperSleepEnv, "10s")
+
+	slow := hookTestProgram(t, "sleep")
+	slow.Timeout = 300 * time.Millisecond
+	cfg := HooksConfig{PreToolUse: []HookConfig{slow}}
+	ctx := newHookTurnContext(t, fsWriteProfile(), workRoot, cfg)
+	d := &hookToolDouble{workRoot: workRoot}
+
+	ep, err := wrapForTest(ctx, d)
+	require.NoError(t, err)
+
+	start := time.Now()
+	out, err := ep(ctx, `{"path":"notes.txt"}`)
+	elapsed := time.Since(start)
+	require.NoError(t, err, "超时拒绝必须是工具结果，Go error 会拆掉整个 turn")
+	assert.Contains(t, out, "timed out")
+	assert.Less(t, elapsed, 5*time.Second,
+		"超时必须在 hook 的预算处到达，而不是等 helper 睡醒")
+	assert.Empty(t, d.ran())
+
+	// turn 没有断：同一个包装上换一个健康的 hook，调用照常执行。
+	healthy := HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "allow")}}
+	ctx2 := newHookTurnContext(t, fsWriteProfile(), workRoot, healthy)
+	ep2, err := wrapForTest(ctx2, d)
+	require.NoError(t, err)
+	out2, err := ep2(ctx2, `{"path":"after.txt"}`)
+	require.NoError(t, err)
+	assert.Contains(t, out2, "wrote ")
+}
+
+// TestPreToolUseHookCrashRefusesWithoutBreakingTurn 钉住崩溃路径：hook 以非零
+// 退出，该次调用 fail-closed 拒绝、turn 存活。两个形状分开钉 —— 死前什么都没
+// 写（静默崩溃），以及死前写了**合法的放行 verdict**（退出码必须仍然构成失败，
+// 崩溃的 hook 不可信，verdict 不采用）。
+func TestPreToolUseHookCrashRefusesWithoutBreakingTurn(t *testing.T) {
+	for _, tc := range []struct {
+		mode    string
+		denySub string
+	}{
+		{"crash", "exited"},
+		{"allow_then_crash", "exited"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			workRoot := t.TempDir()
+
+			cfg := HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, tc.mode)}}
+			ctx := newHookTurnContext(t, fsWriteProfile(), workRoot, cfg)
+			d := &hookToolDouble{workRoot: workRoot}
+
+			ep, err := wrapForTest(ctx, d)
+			require.NoError(t, err)
+
+			out, err := ep(ctx, `{"path":"notes.txt"}`)
+			require.NoError(t, err)
+			assert.Contains(t, out, "pre_tool_use hook ", "拒绝文本要指认是哪个 hook")
+			assert.Contains(t, out, tc.denySub, "退出非零必须显形为失败")
+			assert.Empty(t, d.ran())
+		})
+	}
+}
+
+// TestPreToolUseUntrustedOutputIsRefusedNotTrusted 钉住不可信 stdout 的纪律：
+// verdict 不是 JSON、verdict 超限、updated_input 不是合法 JSON —— 三种都按
+// hook 失败 fail-closed 拒绝该次调用，且都不把坏字节喂给工具或模型。
+// 这张表是 hook 输出「不进提示词、不做安全判定、只做结构化解析」的机器化。
+func TestPreToolUseUntrustedOutputIsRefusedNotTrusted(t *testing.T) {
+	for _, tc := range []struct {
+		mode    string
+		wantSub string
+	}{
+		{"garbage", "not valid JSON"},
+		{"big", "exceeds"},
+		{"badinput", "not valid JSON"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			workRoot := t.TempDir()
+
+			cfg := HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, tc.mode)}}
+			ctx := newHookTurnContext(t, fsWriteProfile(), workRoot, cfg)
+			d := &hookToolDouble{workRoot: workRoot}
+
+			ep, err := wrapForTest(ctx, d)
+			require.NoError(t, err)
+
+			out, err := ep(ctx, `{"path":"notes.txt"}`)
+			require.NoError(t, err, "解析失败是拒绝，不是 turn 的死刑")
+			assert.Contains(t, out, tc.wantSub)
+			assert.Empty(t, d.ran(), "读不懂的 verdict 后面绝不能跟着执行")
+		})
+	}
 }
