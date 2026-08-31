@@ -814,8 +814,24 @@ func TestPreToolUseUntrustedOutputChannelsAreBounded(t *testing.T) {
 		out, err := ep(ctx, `{"path":"notes.txt"}`)
 		require.NoError(t, err)
 		require.Contains(t, out, "wrote ")
-		assert.Equal(t, hookContextMax, strings.Count(out, "[hook "),
+		// W-F-09 之后的契约：内联行仍按 hookContextMax 封顶（8 条），但被
+		// 封顶丢弃的 4 条不再静默消失 —— 恰好多出一条落盘引用行（本测试
+		// ctx 没绑 task manager，走 spillover 文件回退，引用指向 fs_read）。
+		inline, spillRefs := 0, 0
+		for _, l := range strings.Split(out, "\n") {
+			if !strings.Contains(l, "[hook ") {
+				continue
+			}
+			if strings.Contains(l, "full output") {
+				spillRefs++
+			} else {
+				inline++
+			}
+		}
+		assert.Equal(t, hookContextMax, inline,
 			"additional_context 必须按 hookContextMax 封顶")
+		assert.Equal(t, 1, spillRefs,
+			"被封顶丢弃的行必须留一条落盘引用，而不是静默消失")
 	})
 
 	t.Run("stderr tail is bounded", func(t *testing.T) {

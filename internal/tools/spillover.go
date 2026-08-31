@@ -12,6 +12,7 @@ import (
 	"time"
 
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
+	"github.com/x6nux/yanshi/internal/task/work"
 )
 
 // SpillThreshold is the single uniform cap on any GuardedTool's output (64 KiB,
@@ -228,4 +229,47 @@ func Sweep(root string) {
 		}
 		_ = os.Remove(filepath.Join(dir, e.Name()))
 	}
+}
+
+// HookSpillTaskTitle 是 W-F-09 里 hook 溢出输出落盘时创建的背书任务的标题
+// 前缀。task_work_artifacts 对 task_work 有外键（且连接开着 foreign_keys），
+// artifact 必须挂在真实任务下；hook 输出不从属于任何模型创建的任务，所以
+// 每次落盘建一个专属任务 —— 它出现在 task_list 里是诚实的行为：那份输出
+// 确实存在于磁盘上，操作员看得到、janitor 清得到。
+const HookSpillTaskTitle = "hook output: "
+
+// SpillHookOutput 把一段超阈值的 hook 附加输出落盘并返回模型可用的引用与
+// 是否成功（W-F-09）。优先 artifact 路径（durable、配额管理、janitor 清扫、
+// 引用经 artifact_read 按需取回）；没有 task manager（子代理、未接线的测试）
+// 时退回临时 spillover 文件（引用经 fs_read 取回）；两者都失败返回 ok=false，
+// 调用方保留截断文本 —— 磁盘问题绝不能把一次成功的调用变成失败，与
+// spillIfTooLong 的降级原则相同。
+//
+// 这里只负责「放一份可取回的副本」。何时调用（哪些内容算溢出）与引用如何
+// 进入模型可见文本，是 orchestrator hook 总线的决定 —— 两个包各管一半，
+// 阈值改动才不会散落两处。
+func SpillHookOutput(ctx context.Context, label, content string) (string, bool) {
+	if strings.TrimSpace(content) == "" {
+		return "", false
+	}
+	root := WorkRootFromContext(ctx)
+	if root == "" {
+		root = "."
+	}
+	if manager, ok := TaskManagerFromContext(ctx); ok {
+		task, err := manager.Create(ctx, work.CreateReq{
+			Title:  HookSpillTaskTitle + label,
+			Prompt: fmt.Sprintf("Spillover artifact for oversized %s output (%d bytes). No execution attached.", label, len(content)),
+		})
+		if err == nil {
+			artifact, werr := manager.WriteArtifact(ctx, task.ID, label, []byte(content), root)
+			if werr == nil {
+				return fmt.Sprintf("full output stored as artifact %s (%d bytes); retrieve with artifact_read", artifact.ID, artifact.Size), true
+			}
+		}
+	}
+	if rel, ok := spillFullText(ctx, label, content); ok {
+		return fmt.Sprintf("full output written to %s; retrieve with fs_read", rel), true
+	}
+	return "", false
 }

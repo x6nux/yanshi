@@ -277,13 +277,38 @@ func runPreToolUseHooks(
 		if v := bytes.TrimSpace(res.UpdatedInput); len(v) > 0 && !bytes.Equal(v, []byte("null")) {
 			finalArgs = string(v)
 		}
+		// W-F-09: additional_context 的两个内联上限（每行 hookTextLimit、
+		// 每次 hookContextMax 条）从「静默丢弃」改为「落盘留引用」。溢出发生
+		// 时把该 hook 的**全部** additional_context 原文交给 SpillHookOutput
+		// —— 内联的部分本来就是全文的前缀，取回整份比只取缺的部分更可对账。
+		// Ruling（与 F3 的 hookOutputLimit 的边界）：1 MiB 的 verdict 上限是
+		// 对不可信进程输出的内存/DoS 界，超出即失败、绝不截断照读 —— 那个
+		// 语义不动；本条处理的是**合法 verdict 内部**超出行级上限的部分，
+		// 那里有真实价值，丢弃才是事故。落盘只改「溢出部分在哪」，不改
+		// verdict 的任何判决语义；落盘失败降级为一条说明行，不把调用变失败
+		// （与 spillIfTooLong 的降级原则一致）。
+		hookName := filepath.Base(h.Program)
+		var overflowed bool
 		for _, line := range res.AdditionalContext {
 			if len(contextLines) >= hookContextMax {
-				break
+				overflowed = true
+				continue
 			}
-			line = strings.TrimSpace(clipText(line, hookTextLimit))
-			if line != "" {
-				contextLines = append(contextLines, "[hook "+filepath.Base(h.Program)+"] "+line)
+			if len(line) > hookTextLimit {
+				overflowed = true
+			}
+			clipped := strings.TrimSpace(clipText(line, hookTextLimit))
+			if clipped != "" {
+				contextLines = append(contextLines, "[hook "+hookName+"] "+clipped)
+			}
+		}
+		if overflowed {
+			content := strings.Join(res.AdditionalContext, "\n")
+			if ref, ok := tools.SpillHookOutput(ctx, "hook-"+hookName, content); ok {
+				contextLines = append(contextLines, "[hook "+hookName+"] "+ref)
+			} else {
+				contextLines = append(contextLines, "[hook "+hookName+
+					"] output beyond the inline limit could not be spilled to disk and was discarded")
 			}
 		}
 	}
