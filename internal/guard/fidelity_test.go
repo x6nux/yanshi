@@ -106,6 +106,12 @@ var relayShims = map[string]string{
 	"busybox": relayScript(0, false),
 	"unshare": relayScript(0, false),
 	"watch":   relayScript(0, false),
+	// bash 4 made `coproc` a reserved word; bash 3.2 (the macOS system bash)
+	// parses the very same line as the PROGRAM `coproc` with operands. A relay
+	// stand-in makes both spellings witness the same `rm` underneath, so the
+	// coproc corpus row's witness predicate stops depending on which bash the
+	// platform ships.
+	"coproc":  relayScript(0, false),
 	// polkit's elevation. It is `sudo` with a different distribution's spelling
 	// and it is NOT in prefixRunners — which is the point of the corpus rows it
 	// witnesses: the verdict has to come from reading the argv, not from
