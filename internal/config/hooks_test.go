@@ -88,3 +88,59 @@ func TestLoad_HooksTimeoutRejectsBareNumbers(t *testing.T) {
 	_, err := Load(p)
 	require.Error(t, err, "a unitless hook timeout must fail loudly, not become 1500ns")
 }
+
+// TestLoad_CompactionHooksFromYAML 是压缩段（W-F-08）的 plumbing 对账，与
+// TestLoad_HooksFromYAML 同一把尺子：yaml.v3 静默吞掉拼错的键，零值意味着
+// 「没有 hook 运行」——操作员配置的压缩观察者无声消失。两段各自逐字段断言，
+// 值两两不同，段间 copy-paste 互换过不了；timeout 只在 pre_compact 出现、
+// args 只在 post_compact 出现，错位的字段映射会当场现形。
+//
+// 会变红的变异：把 pre_compact 的 yaml tag 拼错 → 本测试红（该段零值）；
+// 把映射循环删掉 → 不影响本测试（这层只管 YAML），装配半边由 bootstrap 的
+// hookswiring 测试钉。
+func TestLoad_CompactionHooksFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "c.yaml")
+	require.NoError(t, os.WriteFile(p, []byte(
+		"hooks:\n"+
+			"  pre_compact:\n"+
+			"    - program: /opt/hooks/pre-compact\n"+
+			"      timeout: 3s\n"+
+			"  post_compact:\n"+
+			"    - program: /opt/hooks/post-compact\n"+
+			"      args: [\"--json\"]\n"+
+			"    - program: /opt/hooks/post-compact-2\n"), 0o644))
+
+	cfg, err := Load(p)
+	require.NoError(t, err)
+
+	require.Len(t, cfg.Hooks.PreCompact, 1)
+	pre := cfg.Hooks.PreCompact[0]
+	require.Equal(t, "/opt/hooks/pre-compact", pre.Program)
+	require.Equal(t, 3*time.Second, pre.Timeout)
+
+	require.Len(t, cfg.Hooks.PostCompact, 2)
+	require.Equal(t, "/opt/hooks/post-compact", cfg.Hooks.PostCompact[0].Program)
+	require.Equal(t, []string{"--json"}, cfg.Hooks.PostCompact[0].Args)
+	require.Equal(t, "/opt/hooks/post-compact-2", cfg.Hooks.PostCompact[1].Program)
+}
+
+// TestLoad_CompactionHooksRejectEmptyProgram 把压缩段的空 program 加载期拒绝
+// 钉住。与 pre_tool_use 的空 program 后果不同（那边 fail-closed 拒绝每次工具
+// 调用，这边每次压缩各记一条日志），但诊断时机是同一条：加载期是操作员保证
+// 在看的唯一时刻，缩错进的空值拖到运行期才显形就是一条无人看的日志。
+// 会变红的变异：删掉 validateHooks 里的压缩段循环 → 本测试红。
+func TestLoad_CompactionHooksRejectEmptyProgram(t *testing.T) {
+	for _, section := range []string{"pre_compact", "post_compact"} {
+		t.Run(section, func(t *testing.T) {
+			dir := t.TempDir()
+			p := filepath.Join(dir, "c.yaml")
+			require.NoError(t, os.WriteFile(p, []byte(
+				"hooks:\n  "+section+":\n    - program: \"\"\n"), 0o644))
+
+			_, err := Load(p)
+			require.ErrorContains(t, err, "hooks."+section+"[0]")
+			require.ErrorContains(t, err, "program is required")
+		})
+	}
+}
