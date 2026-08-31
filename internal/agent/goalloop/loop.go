@@ -38,6 +38,13 @@ type Config struct {
 	// the one above. See BudgetSet and resolveResumeBudget. The zero value —
 	// nothing explicit — hands the decision to the persisted budget.
 	BudgetExplicit BudgetSet
+	// Audit 是 judge 之外的完成审计（W-F-07）。judge 判 Complete 之后审计
+	// 独立检查这一轮的记录配不配得上「完成」；配不上就 veto（注入续跑
+	// 提示词，循环继续），连续三轮才认定并终态停止。nil = 不审计，行为与
+	// 引入前逐字节一致 —— 这也是测试与未接线的调用方的兼容姿态；生产装配
+	// （cmd/yanshi 的两条 goal 路径）都接线。审计器跨轮计数，每次 Run 一个
+	// 实例（与 Loop 同生命周期，见 CompletionAuditor）。
+	Audit *CompletionAuditor
 }
 
 // Loop is the Goal Loop controller. It repeatedly runs
@@ -51,6 +58,10 @@ type Loop struct {
 	// one currently in flight too. Resuming from the in-flight number would
 	// skip an iteration that was paid for but never finished.
 	persistedIter int
+	// directive 是待注入下一轮计划的续跑提示词（W-F-07：完成审计的 veto 或
+	// 无进展纠偏）。注入点在 Plan 之后 —— 它以第一条 step 的身份到达实现者
+	//（ACPImplementer 把每条 step 作为一次 agent prompt 下发），消费后清空。
+	directive string
 }
 
 // New creates a Loop with the given Config.
@@ -104,9 +115,11 @@ func (l *Loop) budgetExceededDecision(at string) Decision {
 }
 
 // Event represents a phase event emitted during the loop.
-// Phase is one of "State", "Plan", "Implement", "Evaluate", "Judge", "Done".
-// "State" carries resume and persistence notices (iteration 0 when emitted
-// before the first cycle) and never indicates a failed run.
+// Phase is one of "State", "Plan", "Implement", "Evaluate", "Judge", "Audit",
+// "Done". "State" carries resume and persistence notices (iteration 0 when
+// emitted before the first cycle) and never indicates a failed run. "Audit"
+// carries the completion audit's veto/adjudication notices (W-F-07) — a vetoed
+// round is NOT a failed run either: the loop continues by design.
 type Event struct {
 	Phase     string
 	Iteration int
@@ -209,6 +222,14 @@ func (l *Loop) Run(ctx context.Context, g Goal, onEvent func(Event)) (Decision, 
 			emit("Plan", fmt.Sprintf("error: %v", err), iter)
 			return Decision{}, fmt.Errorf("planner error (iteration %d): %w", iter, err)
 		}
+		// W-F-07: 上一轮审计的续跑提示词作为第一条 step 注入。放最前是因为
+		// 实现者按序执行 steps，证明性的指令必须在它再做别的之前到达；放
+		// step 里而不是旁路参数里，是因为 ACPImplementer 的下发单位就是 step，
+		// 旁路指令到不了外部 agent 的提示词。
+		if l.directive != "" {
+			plan.Steps = append([]string{l.directive}, plan.Steps...)
+			l.directive = ""
+		}
 		emit("Plan", fmt.Sprintf("%d steps, %d tests", len(plan.Steps), len(plan.Tests)), iter)
 
 		// Re-check budget after the planner's LLM call so an oversized plan
@@ -246,6 +267,60 @@ func (l *Loop) Run(ctx context.Context, g Goal, onEvent func(Event)) (Decision, 
 		if err != nil {
 			emit("Judge", fmt.Sprintf("error: %v", err), iter)
 			return Decision{}, fmt.Errorf("judge error (iteration %d): %w", iter, err)
+		}
+
+		// --- Completion audit (W-F-07): judge 之外的独立一道 ---
+		// 只在 judge 判 Complete 时发声。三条出路：接受（照常完成）、认定
+		// （终态停止）、veto（本轮按未完成继续，注入续跑提示词）。veto 改的
+		// 是循环停不停，不是 judge 的判决记录 —— Decision 不落库 veto 这件事，
+		// 落库的是「本轮未完成」，下一轮的注入指令才是 veto 的产物。
+		vetoed := false
+		if decision.Complete && l.cfg.Audit != nil {
+			av := l.cfg.Audit.AuditComplete(AuditRound{
+				Iteration:   iter,
+				Plan:        plan,
+				Implemented: implErr == nil,
+				Verdicts:    verdicts,
+			})
+			switch {
+			case av.Accept:
+				emit("Audit", "completion verified", iter)
+			case av.Final:
+				emit("Audit", fmt.Sprintf(
+					"unproven completion adjudicated after %d consecutive rounds (last reason: %s)",
+					fakeCompletionRounds, av.Reason), iter)
+				return Decision{
+					Complete: false,
+					Summary: fmt.Sprintf("completion claimed without verifiable evidence in %d consecutive rounds (last reason: %s)",
+						fakeCompletionRounds, av.Reason),
+					StopReason: StopReasonUnprovenCompletion,
+					Usage:      l.usageSnapshot(),
+				}, nil
+			default:
+				decision.Complete = false
+				vetoed = true
+				l.directive = joinDirectives(l.directive, av.Directive)
+				emit("Audit", fmt.Sprintf("completion vetoed (%s); continuation prompt injected", av.Reason), iter)
+			}
+		}
+		// 一轮「judge 自己判 incomplete、不是 veto 造成的」打断「连续」——
+		// 模型至少诚实报告过一次未完成。veto 轮不算：那轮的 incomplete 是
+		// 审计改的，不是模型说的。
+		if l.cfg.Audit != nil && !decision.Complete && !vetoed {
+			l.cfg.Audit.ResetClaims()
+		}
+		// 无进展判定每轮都跑（终态轮除外）：签名不变即注入纠偏提示词，
+		// 从第一轮无进展起就纠，不等梯度 —— 它是纠偏不是惩罚。
+		if l.cfg.Audit != nil {
+			if d, stale := l.cfg.Audit.ObserveProgress(AuditRound{
+				Iteration:   iter,
+				Plan:        plan,
+				Implemented: implErr == nil,
+				Verdicts:    verdicts,
+			}); d != "" {
+				l.directive = joinDirectives(l.directive, d)
+				emit("Audit", fmt.Sprintf("no progress for %d round(s); corrective prompt injected", stale), iter)
+			}
 		}
 
 		// The iteration is over, so commit it now rather than at return: a run

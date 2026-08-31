@@ -52,6 +52,11 @@ const (
 	StopReasonTokenBudget = "token_budget"
 	StopReasonMaxIters    = "max_iterations"
 	StopReasonEscalate    = "escalate"
+	// StopReasonUnprovenCompletion 是完成审计（W-F-07）认定的终态停止原因：
+	// 完成声明连续 fakeCompletionRounds 轮无凭据。它不是 Complete（目标没被
+	// 证实），也不是 max_iterations（预算没用完就停了）—— 操作员该去看的是
+	// 为什么每一轮的记录都撑不起那句「完成」。判定语义见 stopaudit.go。
+	StopReasonUnprovenCompletion = "unproven_completion"
 )
 
 // Budget limits the Goal Loop's resource consumption.

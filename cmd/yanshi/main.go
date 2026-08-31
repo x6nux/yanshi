@@ -981,6 +981,10 @@ func runGoal(args []string) int {
 			// to name the next tier up, so leaving it zero made `-tier t3` end by
 			// advising a DOWNGRADE to t1 (TierQuickFix+1) — measured, not feared.
 			Tier: resolvedTier,
+			// W-F-07: the demo's evaluator passes WITH evidence, so the audit
+			// accepts its completion — wiring it here keeps the demo honest about
+			// what production runs under.
+			Audit: goalloop.NewCompletionAuditor(),
 		})
 	} else {
 		// Real path: build the app to get the LLM model + orchestrator + store,
@@ -1057,6 +1061,9 @@ func runGoal(args []string) int {
 			Budget:      budget,
 			Sink:        loopSink,
 			Tier:        resolvedTier,
+			// W-F-07: judge 之外的完成审计 —— veto 从第一轮无凭据声明起，
+			// 认定在三轮。字段级说明见 goalloop.Config.Audit。
+			Audit: goalloop.NewCompletionAuditor(),
 			// W-D-16: the store doubles as the goal loop's resume point, so a
 			// crashed or Ctrl-C'd run restarts at the next iteration with the
 			// tokens it already spent still spent. Only the real path gets one
