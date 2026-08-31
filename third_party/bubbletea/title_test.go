@@ -202,6 +202,39 @@ func TestTitleRestoredOnPanic(t *testing.T) {
 	assertTitlePushSetPopInOrder(t, buf.String())
 }
 
+// TestTitleSetBeforeRunIsAlsoRestored covers the fork's one remaining
+// unpaired title branch (RE-33): Program.SetWindowTitle called BEFORE Run
+// takes the p.renderer == nil path and only records startupTitle, which Run
+// used to hand straight to the renderer — setting the title without pushing
+// the stack, so shutdown found titlePushed false and popped nothing and the
+// title outlived the program.
+//
+// yanshi itself cannot reach this (it only uses the tea.SetWindowTitle Cmd,
+// which by construction runs inside eventLoop with a live renderer), so this
+// is the fork's invariant being closed on its own terms rather than a yanshi
+// regression test.
+func TestTitleSetBeforeRunIsAlsoRestored(t *testing.T) {
+	var buf bytes.Buffer
+	var in bytes.Buffer
+
+	m := &titleModel{} // setTitle=false: the title comes from before Run
+	p := NewProgram(m, WithInput(&in), WithOutput(&buf))
+	p.SetWindowTitle(titleA) // renderer is still nil here → startupTitle
+
+	go func() {
+		for m.executed.Load() == nil {
+			time.Sleep(time.Millisecond)
+		}
+		p.Quit()
+	}()
+
+	if _, err := p.Run(); err != nil {
+		t.Fatal(err)
+	}
+
+	assertTitlePushSetPopInOrder(t, buf.String())
+}
+
 // TestTitleUntouchedLeavesNoStackNoise is the negative control: a model that
 // never calls SetWindowTitle (the TERM=dumb shape at the TUI layer, which
 // gates the Cmd at the call site rather than relying on this fork to no-op

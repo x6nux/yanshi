@@ -671,7 +671,16 @@ func (p *Program) Run() (returnModel Model, returnErr error) {
 
 	// Honor program startup options.
 	if p.startupTitle != "" {
-		p.renderer.setWindowTitle(p.startupTitle)
+		// Go through SetWindowTitle rather than straight to the renderer
+		// (RE-33): a title buffered before Run — SetWindowTitle's own
+		// p.renderer == nil branch is the only thing that fills startupTitle —
+		// otherwise reached the terminal without pushing the title stack, so
+		// titlePushed stayed false, shutdown popped nothing, and the program's
+		// title was left on the user's terminal after exit. That is precisely
+		// what W-E-05 exists to prevent, on the one path that skipped the
+		// push. The renderer is non-nil by this point (assigned just above),
+		// so this takes SetWindowTitle's push-then-set branch.
+		p.SetWindowTitle(p.startupTitle)
 	}
 	if p.startupOptions&withAltScreen != 0 {
 		p.renderer.enterAltScreen()
