@@ -411,3 +411,58 @@ func TestPreToolUseHookAllowDoesNotShortCircuitTool(t *testing.T) {
 	assert.NotContains(t, out, "i vouch for this call")
 	assert.Equal(t, []string{filepath.Join(workRoot, "notes.txt")}, d.ran())
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 验收 4：hook 子进程走 secproc。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestPreToolUseHookGetsNoCredentials 钉住「hook 走 secproc」的**行为**证据：
+// 父进程环境里放一把 provider key，hook 的剧本是「看得到这把 key 就拦截」。
+// secproc 的凭据清洗生效时，hook 看不到 key，调用正常放行；哪个实现把发射
+// 从 secproc.Launch 换成裸 exec，清洗就消失，hook 会拦截并给出带 "leaked"
+// 的理由，本测试立刻红。这是 internal/acp 里同类测试（ACP agent 拿不到凭据）
+// 的 hook 版。
+func TestPreToolUseHookGetsNoCredentials(t *testing.T) {
+	workRoot := t.TempDir()
+	t.Setenv("OPENAI_API_KEY", "sk-f3-hook-leak-probe")
+
+	cfg := HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "leak")}}
+	ctx := newHookTurnContext(t, fsWriteProfile(), workRoot, cfg)
+	d := &hookToolDouble{workRoot: workRoot}
+
+	ep, err := wrapForTest(ctx, d)
+	require.NoError(t, err)
+
+	out, err := ep(ctx, `{"path":"notes.txt"}`)
+	require.NoError(t, err)
+	assert.NotContains(t, out, "credential leaked",
+		"hook 子进程必须拿不到父进程的 provider key（secproc 清洗）")
+	assert.Contains(t, out, "wrote ")
+	assert.Equal(t, []string{filepath.Join(workRoot, "notes.txt")}, d.ran())
+}
+
+// TestPreToolUseHookSpawnIsAuthorizedUnderTheToolName 钉住发射授权的形状：
+// hook 子进程的 spec.Tool 是被 hook 工具的名字，所以 profile 不允许该工具时，
+// hook 子进程的发射本身就会被 guard 拒绝（fail-closed），而不是绕开授权面
+// 静默发射。拒绝文本必须说明是 hook 失败，turn 不中断。
+func TestPreToolUseHookSpawnIsAuthorizedUnderTheToolName(t *testing.T) {
+	workRoot := t.TempDir()
+
+	// 工具名维度就拒绝：连 hook 子进程的发射都拿不到授权。
+	denyProfile := guard.PermissionProfile{
+		Tools: guard.ToolsPerm{Allow: []string{"fs_read", "fs_search"}},
+		FS:    guard.FSPerm{Read: []string{"**"}, Write: []string{"**"}},
+	}
+	cfg := HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "allow")}}
+	ctx := newHookTurnContext(t, denyProfile, workRoot, cfg)
+	d := &hookToolDouble{workRoot: workRoot}
+
+	ep, err := wrapForTest(ctx, d)
+	require.NoError(t, err)
+
+	out, err := ep(ctx, `{"path":"notes.txt"}`)
+	require.NoError(t, err)
+	assert.Contains(t, out, "pre_tool_use hook ",
+		"发射被拒时必须显式报 hook 失败，而不是静默放行")
+	assert.Empty(t, d.ran(), "工具本身同样被 profile 拒绝，不能执行")
+}

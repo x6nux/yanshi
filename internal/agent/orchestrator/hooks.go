@@ -290,6 +290,12 @@ func runOneHook(
 	}
 	hctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	// factory 是中间件在**包装时**从 turn ctx 捕获的；这里显式绑回 launch
+	// ctx，让发射不依赖 callCtx 的派生链是否还带着这个绑定。nil 时不动 ——
+	// secproc.Launch 自己的「no Factory in context」就是 fail-closed。
+	if factory != nil {
+		hctx = secproc.WithFactory(hctx, factory)
+	}
 
 	req, err := json.Marshal(hookRequest{
 		Event: hookEventPreToolUse,
