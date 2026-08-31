@@ -29,6 +29,7 @@ import (
 	otelobs "github.com/x6nux/yanshi/internal/observe/otel"
 	"github.com/x6nux/yanshi/internal/proto"
 	"github.com/x6nux/yanshi/internal/sandbox"
+	"github.com/x6nux/yanshi/internal/skills"
 	"github.com/x6nux/yanshi/internal/secproc"
 	"github.com/x6nux/yanshi/internal/secrets"
 	"github.com/x6nux/yanshi/internal/shell"
@@ -47,7 +48,18 @@ type Config struct {
 	Tools           []BaseTool
 	Instruction     string
 	SkillMetaPrompt string
-	MaxIters        int
+	// SkillRegistry（W-F-10）是隐式 skill 调用识别的锚点：识别只认注册表
+	// 里的 skill（名字或目录基名对上候选路径），未注册的 SKILL.md 与随机
+	// 的 /scripts/ 路径不算「在用技能」。nil = 不识别（识别器不绑定）。
+	// 子代理经 runSubAgentTurn 的 Config 字面量继承 —— 与 Hooks 同一条
+	// RF-14 纪律，配置层不继承就是一个 agent_start 把操作员的观测拆了。
+	SkillRegistry *skills.Registry
+	// OnSkillUse 消费识别结果（默认 defaultSkillUseLogger 的结构化日志）。
+	// 它在结构上影响不了任何工具调用 —— PostToolUse 阶段的观察者拿不到
+	// 工具结果的写权限，这是「识别结果不进模型上下文」这条硬约束的实现
+	// 位置（skillsnoop.go 文件头写了为什么必须如此）。
+	OnSkillUse SkillUseObserver
+	MaxIters   int
 	Profile         guard.PermissionProfile
 	VCSScope        tools.VCSScope
 	WorkRoot        string
@@ -316,6 +328,12 @@ type Orchestrator struct {
 	// 纯查表。两段都为空时为 nil，withTurnContext 对 nil 直通。
 	compactionSink ctxcompact.LifecycleSink
 
+	// skillRegistry / onSkillUse 是隐式 skill 识别（W-F-10）的配置，与
+	// hooks 同一作用域：withTurnContext 按 turn 绑定识别器，子代理经
+	// runSubAgentTurn 的 Config 字面量继承。registry 为 nil 时识别不绑定。
+	skillRegistry *skills.Registry
+	onSkillUse    SkillUseObserver
+
 	// background owns tool calls moved to the background at their foreground
 	// deadline (T3). PROCESS-scoped, not per-turn: a run that is cancelled
 	// when its turn ends is not a background run, it is the same timeout with
@@ -452,6 +470,8 @@ func New(cfg Config) (*Orchestrator, error) {
 		loopGuard:                  cfg.LoopGuard,
 		hooks:                      cfg.Hooks,
 		compactionSink:             NewCompactionHookSink(cfg.Hooks),
+		skillRegistry:              cfg.SkillRegistry,
+		onSkillUse:                 cfg.OnSkillUse,
 		background:                 cfg.Background,
 		sessionRules:               make(map[string]*guard.RuleSet),
 	}, nil
@@ -753,6 +773,14 @@ func (o *Orchestrator) withTurnContext(ctx context.Context, opts TurnOpts) conte
 	// 绑了它，三条压缩路径里的这一条就接上了。nil（未配置压缩 hook）时
 	// WithLifecycleSink 是直通。
 	ctx = ctxcompact.WithLifecycleSink(ctx, o.compactionSink)
+	// W-F-10: 隐式 skill 识别器与两条 hook 总线同一次绑定。识别器只在
+	// PostToolUse 阶段读入参、只调 observer，输出被中间件结构性丢弃
+	//（「识别结果不进模型上下文」的实现位置，见 skillsnoop.go）。
+	notify := o.onSkillUse
+	if notify == nil {
+		notify = defaultSkillUseLogger
+	}
+	ctx = withSkillRecognizer(ctx, o.skillRegistry, notify)
 	// W-C-14: a fresh new-window signal per turn, same reasoning as the
 	// loop-guard bind immediately above — this is the pointer the
 	// context_new_window tool writes and the NEXT CompactingModel.Generate/
@@ -1541,6 +1569,10 @@ func (o *Orchestrator) runSubAgentTurn(ctx context.Context, prompt string, allow
 		// there is no double-hooking on the managed path either (the managed
 		// runner rebinds ctx, then recurses back into runSubAgentTurn).
 		Hooks: o.hooks,
+		// W-F-10: 隐式 skill 识别与 hook 总线同一条继承纪律 —— 子代理里跑
+		// 的 skill 脚本同样要被识别，一个 agent_start 不能拆掉观测。
+		SkillRegistry: o.skillRegistry,
+		OnSkillUse:    o.onSkillUse,
 	})
 	if serr != nil {
 		resp, gerr := o.model.Generate(ctx, []*schema.Message{schema.UserMessage(prompt)})

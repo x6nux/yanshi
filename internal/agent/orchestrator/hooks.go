@@ -216,8 +216,14 @@ func (m *hookMiddleware) WrapInvokableToolCall(
 	endpoint adk.InvokableToolCallEndpoint,
 	tCtx *adk.ToolContext,
 ) (adk.InvokableToolCallEndpoint, error) {
-	cfg, ok := turnHooksFromContext(ctx)
-	if !ok || tCtx == nil || tCtx.Name == "" {
+	cfg, hooksOK := turnHooksFromContext(ctx)
+	rec, recOK := skillRecognizerFromContext(ctx)
+	// 两条阶段（PreToolUse 外部 hook、PostToolUse skill 识别）都未绑定才是
+	// 直通 —— 只配置了隐式 skill 识别的部署同样有 PostToolUse 阶段。
+	if !hooksOK && !recOK {
+		return endpoint, nil
+	}
+	if tCtx == nil || tCtx.Name == "" {
 		return endpoint, nil
 	}
 	factory, _ := secproc.FromContext(ctx)
@@ -228,7 +234,14 @@ func (m *hookMiddleware) WrapInvokableToolCall(
 		if refusal != "" {
 			return refusal, nil
 		}
+		// W-F-10: PostToolUse 阶段 —— 工具执行之后、结果定形之后。观察者
+		// 拿到的是 final（真实执行的入参，含 PreToolUse 改写）；它的输出被
+		// 结构性丢弃（观察者拿不到工具结果的写权限），识别结果因此不可能
+		// 进入模型上下文。refusal 路径不进 PostToolUse：调用没有发生。
 		out, err := endpoint(callCtx, final, opts...)
+		if recOK {
+			rec.observe(name, final)
+		}
 		if err != nil {
 			return out, err
 		}

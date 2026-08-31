@@ -1486,6 +1486,10 @@ func Build(opts Options) (*App, error) {
 		Profile:                    profile,
 		Instruction:                instruction,
 		SkillMetaPrompt:            registry.MetaPrompt(),
+		// W-F-10: the same registry the meta prompt was rendered from anchors
+		// implicit-skill recognition; OnSkillUse stays nil so the default
+		// structured-log sink applies (visible via /logs).
+		SkillRegistry: registry,
 		MemorySuffix:               memorySuffix,
 		WorkRoot:                   workRoot,
 		TruncationPolicy:           truncationPolicy,
