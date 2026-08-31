@@ -126,6 +126,12 @@ type Config struct {
 	// nothing; see LoopGuardConfig for why nothing defaults on.
 	LoopGuard LoopGuardConfig
 
+	// Hooks configures the lifecycle hook bus (W-F-02). The zero value binds
+	// nothing: no hook process is ever spawned and every tool call behaves
+	// exactly as it did before the bus existed. See HooksConfig for the
+	// fail-closed semantics that apply once a hook IS configured.
+	Hooks HooksConfig
+
 	// Background owns tool calls moved to the background at their foreground
 	// deadline (T3). nil disables offloading: every tool then keeps the plain
 	// context.WithTimeout behaviour, and a long run still fails at its
@@ -297,6 +303,12 @@ type Orchestrator struct {
 	// state: withTurnContext builds a fresh turnGuard from it for every turn,
 	// because runnerFor memoises runners across turns and sessions.
 	loopGuard LoopGuardConfig
+	// hooks is the lifecycle hook bus configuration (W-F-02). CONFIG, not
+	// state, for the same reason as loopGuard: the hook middleware instance is
+	// shared by every memoised runner, so the per-turn context is where the
+	// turn finds its bus. Empty HooksConfig binds nothing and every turn runs
+	// exactly as it did before the bus existed.
+	hooks HooksConfig
 
 	// background owns tool calls moved to the background at their foreground
 	// deadline (T3). PROCESS-scoped, not per-turn: a run that is cancelled
@@ -432,6 +444,7 @@ func New(cfg Config) (*Orchestrator, error) {
 		visionAuxAvailable:         cfg.VisionAuxAvailable,
 		availableModels:            cfg.AvailableModels,
 		loopGuard:                  cfg.LoopGuard,
+		hooks:                      cfg.Hooks,
 		background:                 cfg.Background,
 		sessionRules:               make(map[string]*guard.RuleSet),
 	}, nil
@@ -716,6 +729,12 @@ func (o *Orchestrator) withTurnContext(ctx context.Context, opts TurnOpts) conte
 	// instance) serves every turn on that model, so any counter living there
 	// would be process-wide.
 	ctx = WithLoopGuard(ctx, o.loopGuard)
+	// W-F-02: the hook bus is CONFIG like the loop guard above, bound per turn
+	// for the same reason — the hook middleware is shared across memoised
+	// runners, so the turn finds its bus here. Sub-agent turns run through
+	// their own Orchestrator's withTurnContext and inherit that one's bus;
+	// nothing hooks twice. Empty config binds nothing.
+	ctx = withTurnHooks(ctx, o.hooks)
 	// W-C-14: a fresh new-window signal per turn, same reasoning as the
 	// loop-guard bind immediately above — this is the pointer the
 	// context_new_window tool writes and the NEXT CompactingModel.Generate/
@@ -901,10 +920,16 @@ func (o *Orchestrator) runnerFor(chatModel model.BaseChatModel, plan bool, model
 // the alternative to this seam is either an integration test with a fake
 // provider or no check at all — and "the middleware exists and is correct but
 // was never added to the slice" is this repository's dominant failure shape.
+//
+// newHookMiddleware sits directly after the loop guard: among the tool-call
+// wrappers that makes the budget consume first and the PreToolUse hooks judge
+// second, so a hook-blocked call still counts as a call the model made (a
+// repetition loop over a blocked tool is the repetition gate's problem, not
+// the budget's blind spot). It does not touch the model-call ordering above.
 func orchestratorMiddlewares() []adk.ChatModelAgentMiddleware {
 	return []adk.ChatModelAgentMiddleware{
 		newSystemPromptRefresher(),
-		newLoopGuardMiddleware(), newResultHygiene(), newMessageRecorder(), newImageAttacher(),
+		newLoopGuardMiddleware(), newHookMiddleware(), newResultHygiene(), newMessageRecorder(), newImageAttacher(),
 	}
 }
 
