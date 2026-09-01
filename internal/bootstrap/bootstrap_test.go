@@ -581,6 +581,11 @@ skills:
 // TestBuild_LoadsBuiltinSkills_DefaultDir verifies that when no skills dirs
 // are configured, Build still succeeds (falling back to the "skills" default
 // builtin dir, which simply doesn't exist in the test cwd and loads empty).
+//
+// The embedded builtin pack is deliberately NOT asserted empty: Build
+// materializes the pack into the default user skills dir (~/.yanshi/skills),
+// so a real-HOME run legitimately carries pack skills in the registry. The
+// registry contract under test here is non-nil + functional, not empty.
 func TestBuild_LoadsBuiltinSkills_DefaultDir(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
@@ -599,7 +604,13 @@ token: "test-token"
 	require.NotNil(t, app)
 	require.NotNil(t, app.Skills, "Skills registry must be non-nil even when no skills configured")
 	defer app.Shutdown(context.Background())
-	assert.Empty(t, app.Skills.List(), "no skills configured → empty registry")
+	// Every registered skill must come from a recognized source (builtin/user/
+	// plugin) — a name-less or dir-less entry would mean a loader bug, not an
+	// empty-vs-populated assertion.
+	for _, s := range app.Skills.List() {
+		require.NotEmpty(t, s.Name, "skill entries must carry a name")
+		require.NotEmpty(t, s.Dir, "skill entries must carry a materialized dir")
+	}
 }
 
 // TestBuild_VCSWired verifies that Build constructs the autoVCS tracker over

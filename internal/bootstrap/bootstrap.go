@@ -1033,6 +1033,21 @@ func Build(opts Options) (*App, error) {
 			userSkillsDir = filepath.Join(home, ".yanshi", "skills")
 		}
 	}
+	// Embed-pack materialization: the binary ships skill dirs (browser, GUI
+	// control, …) that must exist on disk before the loader scans — Body,
+	// ReadFile, the requires probe, and the S7 scan are all os-path based.
+	// Existing dirs win over the pack (first-seen-wins lifted to dir level);
+	// failures degrade to a warning, never a boot failure. Materializing here
+	// (before roots are built) means even a first-ever boot sees the pack in
+	// the very first registry, with no reload needed.
+	if userSkillsDir != "" {
+		if created, err := skills.MaterializeBuiltinPack(userSkillsDir); err != nil {
+			obslog.WarnErr(context.Background(), "builtin skill pack materialization failed; pack skills unavailable", err)
+		} else if len(created) > 0 {
+			slog.Info("builtin skill pack materialized",
+				"skills", skills.MaterializeSummary(created), "dir", userSkillsDir)
+		}
+	}
 	roots := []skills.Root{skills.Builtin(firstNonEmpty(cfg.Skills.BuiltinDir, "skills"))}
 	if userSkillsDir != "" {
 		roots = append(roots, skills.User(userSkillsDir))
