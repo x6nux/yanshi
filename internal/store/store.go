@@ -573,6 +573,13 @@ const (
 	// for "tried to delete a file that is no longer there". A concurrent opener
 	// removing the same journal or WAL sidecar produces it, and it is benign.
 	sqliteIOErrDeleteNoent = 5898
+	// sqliteReadOnly is SQLITE_READONLY. In the concurrent-heal storm a failed
+	// opener's handle can end up pointed at the just-renamed-away inode (or at
+	// a file the repairer is mid-rewrite on), and windows surfaces that as
+	// READONLY rather than BUSY — measured in the six-way healer test
+	// (run 33541845801). Like BUSY it says "somebody else is mid-move", which
+	// is no evidence about the file's own health.
+	sqliteReadOnly = 8
 )
 
 // isTransientOpenErr reports whether err is one of the contention codes above.
@@ -586,7 +593,8 @@ func isTransientOpenErr(err error) bool {
 	if !errors.As(err, &se) {
 		return false
 	}
-	return se.Code() == sqliteBusy || se.Code() == sqliteIOErrDeleteNoent
+	return se.Code() == sqliteBusy || se.Code() == sqliteIOErrDeleteNoent ||
+		se.Code() == sqliteReadOnly
 }
 
 // WriteTx serializes WAL writes inside one process. It locks writeMu, begins a
