@@ -3,6 +3,7 @@ package shell
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -103,6 +104,13 @@ func TestReadNewReportsBytesLostToTheCap(t *testing.T) {
 //
 // ledger: A1/T07/T08#5 session 关闭按策略回收
 func TestReapIdleReclaimsSessionsAndTheirProcesses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// 两个 POSIX 依赖在本平台同时缺席：载体 `sh -c sleep 300`（windows
+		// 没有 sh，Git Bash 在场时行为也不等价），以及 processAlive 的存活
+		// 探针——它靠 Signal(0)，而 windows 的 os.Process.Signal 只认 Kill
+		// （见 sigzero_other.go：用它的测试按约定在无 signal-0 的平台跳过）。
+		t.Skip("processAlive 的 Signal(0) 探针与 `sh -c sleep` 载体都是 POSIX 专用")
+	}
 	m := NewManager(Config{
 		Factory:     OSProcessFactory{},
 		IdleTimeout: time.Minute,
@@ -230,6 +238,11 @@ func TestActivityKeepsASessionAlive(t *testing.T) {
 //
 // ledger: A1/T07/T08#3 yield/timeout/输出上限/显式关闭
 func TestWaitForYieldsWithoutKillingTheSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// 「session 未被扰动」这半靠 processAlive 的 Signal(0) 探针，windows
+		// 没有等价物（sigzero_other.go）；载体同样是 POSIX 的 `sh -c sleep`。
+		t.Skip("processAlive 的 Signal(0) 探针与 `sh -c sleep` 载体都是 POSIX 专用")
+	}
 	m := NewManager(Config{Factory: OSProcessFactory{}})
 	sess, err := m.Start(context.Background(), LaunchSpec{
 		Program: "sh", Args: []string{"-c", "sleep 300"}, Dir: t.TempDir(),
