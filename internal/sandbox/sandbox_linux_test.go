@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -744,7 +745,20 @@ func TestLandlockHelperAllowsGrantedWrite(t *testing.T) {
 func TestLandlockBackendPrepareReallyConfines(t *testing.T) {
 	requireEnforcingLandlock(t)
 
-	base := t.TempDir()
+	// base MUST NOT live under os.TempDir(): the production policy keeps
+	// /tmp, /var/tmp and /dev/shm world-writable on purpose (programs need
+	// scratch space), and a workspace outside there tests nothing — the
+	// sibling-write "breach" of 2026-09-01 was the shared-scratch grant
+	// doing exactly its job. Park the tree in the package directory, which
+	// the token neither reads-grant-confines nor write-grants.
+	base, err := filepath.Abs(filepath.Join("landlock-test-"+t.Name(), strconv.Itoa(os.Getpid())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mkdirAllForTest(base); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(base) })
 	ws := filepath.Join(base, "ws")
 	if err := mkdirAllForTest(ws); err != nil {
 		t.Fatal(err)
