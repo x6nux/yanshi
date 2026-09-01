@@ -27,6 +27,19 @@ import (
 // the whole point of this file is that the set of things that can turn into an
 // absolute path is closed and reviewable.
 //
+// The "$HOME" family resolves through homeDir() (env: ""), the same lookup "~"
+// uses, because all three spellings name ONE directory and must not split into
+// two verdicts. A native Windows host usually has HOME unset and USERPROFILE
+// set, so a getenv("HOME")-only lookup made `rm -rf ~` catastrophic while
+// `rm -rf $HOME` — the same deletion, and one the interpreter that actually
+// runs it there expands (PowerShell resolves $HOME to the profile directory) —
+// fell through to Allow; `> $HOME/.ssh/authorized_keys` missed the credential
+// denylist the same way. Measured by the bypass corpus, which pins all three
+// spellings to one verdict per target. What this over-approximates is the
+// cmd.exe reading, where ${HOME} stays a literal relative directory; prompting
+// on a write to a directory literally named "$HOME" is the accepted cost, and
+// it is the safe direction for a gate whose tiers are Prompt and HardDeny.
+//
 // %VAR% spellings are kept on every platform, not just Windows. A profile or a
 // command authored on Windows can be evaluated by a Linux server (the goal loop
 // hands commands between machines), and an unexpanded "%USERPROFILE%" that
@@ -36,8 +49,8 @@ var homeReferences = []struct {
 	env    string // environment variable that resolves it ("" = home lookup)
 }{
 	{"~", ""},
-	{"${HOME}", "HOME"},
-	{"$HOME", "HOME"},
+	{"${HOME}", ""},
+	{"$HOME", ""},
 	{"${USERPROFILE}", "USERPROFILE"},
 	{"$USERPROFILE", "USERPROFILE"},
 	{"%USERPROFILE%", "USERPROFILE"},

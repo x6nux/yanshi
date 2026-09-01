@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -71,6 +72,25 @@ func fakeSudoDir(t *testing.T) string {
 		t.Fatalf("write fake sudo: %v", err)
 	}
 	return dir
+}
+
+// needsPOSIXExecuteBit skips the caller when the platform has no way to express
+// "a file a PATH scan may exec".
+//
+// resolveOutsideShimDir's candidate filter is the POSIX execute bit. Windows
+// files carry no such bits — os.Stat reports 0666 (or 0444 for read-only) for
+// every regular file and grants 0111 to directories only, which the filter
+// already rejects — so on Windows the scan rejects every candidate and
+// resolution fails outright no matter how the fixture is written. There is no
+// Windows spelling of the assertion to branch to, and the code under test is
+// unreachable there anyway: Listen returns ErrUnsupported before any shim
+// exists, and the RunShim path that reaches the resolver ends in syscall.Exec,
+// which is EWINDOWS on that platform.
+func needsPOSIXExecuteBit(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the candidate filter is the POSIX execute bit, which Windows files do not carry; the resolver is unreachable there (Listen refuses, syscall.Exec is EWINDOWS)")
+	}
 }
 
 // runScript executes a /bin/sh script under a PATH containing only the shim
@@ -410,7 +430,10 @@ func TestResolveRefusesAnEmptyShimDir(t *testing.T) {
 		t.Fatal("a blank shim directory was accepted")
 	}
 	// The normal case still resolves, so the guard is not simply refusing
-	// everything: the fake directory is not the shim directory here.
+	// everything: the fake directory is not the shim directory here. The two
+	// refusals above are plain string checks and ran on every platform; this
+	// one needs a candidate the execute-bit filter can accept.
+	needsPOSIXExecuteBit(t)
 	got, err := resolveOutsideShimDir("sudo", dir, "/nonexistent-shim-dir")
 	if err != nil {
 		t.Fatalf("a legitimate resolution failed: %v", err)

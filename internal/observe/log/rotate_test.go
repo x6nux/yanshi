@@ -154,6 +154,11 @@ func TestRotatingWriterTruncatesWhenNoBackups(t *testing.T) {
 	require.LessOrEqual(t, fi.Size(), int64(12))
 	_, statErr := os.Stat(path + ".1")
 	require.True(t, os.IsNotExist(statErr), "no generations are kept")
+	// The truncation must have WORKED, not merely been attempted: this writer's
+	// contract is fail-soft, so a truncation the platform refuses would show up
+	// here and nowhere else. On Windows it exactly did — an O_APPEND handle
+	// cannot SetEndOfFile — and the size assertion above was the only witness.
+	require.NoError(t, w.RotateError(), "truncation as rotation must not be silently refused")
 }
 
 // TestRotatingWriterOversizedRecord asserts a single record larger than the
