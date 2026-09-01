@@ -40,6 +40,18 @@ func TestRunnerHoldsTheCapAndStillFinishesEveryRow(t *testing.T) {
 	var mu sync.Mutex
 	live, peak := 0, 0
 
+	// Inside-spawn barrier: the first `cap` rows block here until all `cap`
+	// of them are simultaneously inside spawn, making genuine overlap a
+	// precondition instead of a timing hope. On a slow or coarsely scheduled
+	// CI runner (windows), a fixed time.Sleep lets row 1 finish before row 2
+	// even spawns, and the peak-observed control degenerates to 1 (seen
+	// 2026-09-01). Each waiting row has its own watchdog so a runner bug that
+	// serializes spawns surfaces as this barrier timing out — which fails the
+	// same assertion as before, with a clearer story — rather than hanging.
+	arrived := make(chan struct{}, cap)
+	release := make(chan struct{})
+	arrivals := 0
+	var once sync.Once
 	spawn := func(ctx context.Context, prompt string, allowed []string, instr string) (string, error) {
 		mu.Lock()
 		live++
@@ -48,10 +60,32 @@ func TestRunnerHoldsTheCapAndStillFinishesEveryRow(t *testing.T) {
 		}
 		mu.Unlock()
 
-		// Long enough that rows genuinely overlap; short enough to keep the
-		// test quick. Without a pause every row would finish before the next
-		// starts and the peak would be 1 regardless of the cap.
-		time.Sleep(30 * time.Millisecond)
+		// First wave: hold each row inside spawn until `cap` rows are here
+		// simultaneously — overlap by construction, not by timing. Retry
+		// entries after the wave must not block (they would park while
+		// holding registry slots and wedge the run), hence the non-blocking
+		// arrival and the release-gate that is already open for them.
+		select {
+		case arrived <- struct{}{}:
+			// one of the first `cap` entries
+			mu.Lock()
+			arrivals++
+			full := arrivals >= cap
+			mu.Unlock()
+			if full {
+				once.Do(func() { close(release) })
+			}
+			select {
+			case <-release:
+			case <-time.After(10 * time.Second):
+				// not enough rows arrived: runner is effectively serial;
+				// fall through, the peak assertion reports it.
+			}
+		default:
+			// wave already released (retry entry): walk through
+			once.Do(func() { close(release) })
+			<-release
+		}
 
 		mu.Lock()
 		live--

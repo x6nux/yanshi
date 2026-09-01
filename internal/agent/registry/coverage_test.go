@@ -320,7 +320,21 @@ func TestResume_NotFound(t *testing.T) {
 func TestResume_AlreadyRunning(t *testing.T) {
 	m := newTestManager(t, 2)
 	t.Cleanup(m.Close)
-	id, err := m.Spawn(context.Background(), SpawnRequest{Runner: simpleRunner(t, "ok")})
+	// The runner must still be RUNNING when Resume fires. A runner that
+	// returns immediately (simpleRunner) races the test on fast machines:
+	// it finishes, the reaper reaps the record, and Resume legitimately
+	// succeeds — the exact opposite of the busy-state this test pins.
+	// So the runner parks on a channel the test releases explicitly.
+	release := make(chan struct{})
+	blocking := RunnerFunc(func(ctx context.Context, agentID, assignment string) (string, error) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+		return "ok", nil
+	})
+	id, err := m.Spawn(context.Background(), SpawnRequest{Runner: blocking})
 	require.NoError(t, err)
 
 	_, err = m.Resume(context.Background(), id, ResumeRequest{Runner: simpleRunner(t, "ok")})
@@ -332,6 +346,10 @@ func TestResume_AlreadyRunning(t *testing.T) {
 	msg := err.Error()
 	assert.True(t, strings.Contains(msg, "already running") || strings.Contains(msg, "already active"),
 		"expected already-running/active error, got %q", msg)
+
+	// Release the runner and let it retire; a resumed-later contract is
+	// covered by TestResume_NotFound and the headless resume tests.
+	close(release)
 }
 
 // ---------------------------------------------------------------------------

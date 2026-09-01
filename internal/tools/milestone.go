@@ -22,14 +22,37 @@ package tools
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/x6nux/yanshi/internal/store"
 )
+
+// milestoneSeed randomizes the dedup-key namespace per process lifetime, and
+// milestoneNonce serializes calls within it. Together they guarantee key
+// uniqueness without relying on wall-clock granularity, which differs per
+// platform (see the nonce comment in runSet).
+var (
+	milestoneSeed  = randomSeed()
+	milestoneNonce atomic.Uint64
+)
+
+// randomSeed draws the per-process nonce namespace from crypto/rand, falling
+// back to a constant (still unique within the process thanks to the counter)
+// if the CSPRNG is unavailable — never panics on a path a tool call takes.
+func randomSeed() uint64 {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0
+	}
+	return binary.LittleEndian.Uint64(b[:])
+}
 
 // MilestoneTools exposes milestone_set as a GuardedTool.
 type MilestoneTools struct {
@@ -120,7 +143,15 @@ func (m *MilestoneTools) runSet(ctx context.Context, argsJSON string) (string, e
 	// pointing at somebody else's text and invite it to cite that. Measured:
 	// three identical appends produced one row and a watermark that never
 	// moved.
-	key := fmt.Sprintf("milestone:%d:%s", time.Now().UnixNano(), text)
+	// The nonce must be unique per call even when two calls land in the same
+	// clock tick: time.Now().UnixNano() has platform-dependent granularity
+	// (Windows is coarse, milliseconds), and a collided key makes AppendMessages
+	// swallow the second insert via ON CONFLICT — the caller then sees
+	// "duplicate of an existing entry" for two genuinely distinct events
+	// (2026-09-01 windows CI, TestMilestoneSet_RepeatedIdenticalTextGetsDistinctAddresses).
+	// A random 64-bit seed makes the counter unique per process lifetime; the
+	// counter makes it unique across same-tick calls.
+	key := fmt.Sprintf("milestone:%d:%d:%s", milestoneSeed, milestoneNonce.Add(1), text)
 	inserted, nextSeq, err := m.store.AppendMessages(sessionID, []store.Message{
 		{Role: RoleMilestone, Content: text, DedupKey: key},
 	})
