@@ -19,7 +19,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"testing"
 
@@ -207,7 +206,7 @@ func TestPostToolUseRecognitionNeverEntersModelContext(t *testing.T) {
 	epWithout, err := newHookMiddleware().WrapInvokableToolCall(bare, plainEndpoint("plain result"), &adk.ToolContext{Name: "shell_run"})
 	require.NoError(t, err)
 
-	cmd := `{"command":"bash ` + scriptPath + `"}`
+	cmd := shellRunArgs(t, scriptPath)
 	outWith, err := epWith(ctx, cmd)
 	require.NoError(t, err)
 	outWithout, err := epWithout(bare, cmd)
@@ -233,7 +232,7 @@ func TestRefusedCallNeverReachesPostToolUse(t *testing.T) {
 
 	ep, err := newHookMiddleware().WrapInvokableToolCall(blocked, plainEndpoint("must not run"), &adk.ToolContext{Name: "shell_run"})
 	require.NoError(t, err)
-	out, err := ep(blocked, `{"command":"bash `+scriptPath+`"}`)
+	out, err := ep(blocked, shellRunArgs(t, scriptPath))
 	require.NoError(t, err)
 	require.Contains(t, out, "blocked by pre_tool_use hook")
 	require.Empty(t, spy.got(), "被拒绝的调用没有执行，不得进入 PostToolUse 识别")
@@ -244,7 +243,7 @@ func TestRefusedCallNeverReachesPostToolUse(t *testing.T) {
 		HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "allow")}})
 	epOK, err := newHookMiddleware().WrapInvokableToolCall(allowed, plainEndpoint("ok"), &adk.ToolContext{Name: "shell_run"})
 	require.NoError(t, err)
-	_, err = epOK(allowed, `{"command":"bash `+scriptPath+`"}`)
+	_, err = epOK(allowed, shellRunArgs(t, scriptPath))
 	require.NoError(t, err)
 	require.Len(t, spy.got(), 1, "对照组必须被识别，否则拒绝路径的沉默是空转")
 	require.Equal(t, "my-skill", spy.got()[0].Skill)
@@ -260,7 +259,7 @@ func TestSubAgentTurnRecognizesImplicitSkillUse(t *testing.T) {
 	step1 := schema.AssistantMessage("", []schema.ToolCall{
 		{ID: "c1", Type: "function", Function: schema.FunctionCall{
 			Name:      "shell_run",
-			Arguments: `{"command":"bash ` + strings.ReplaceAll(scriptPath, `\`, `\\`) + `"}`,
+			Arguments: shellRunArgs(t, scriptPath),
 		}},
 	})
 	mdl := einollm.NewFakeModelWithMessages([]*schema.Message{step1}, nil)
@@ -289,4 +288,15 @@ func mustJSON(t *testing.T, v any) []byte {
 	b, err := json.Marshal(v)
 	require.NoError(t, err)
 	return b
+}
+
+// shellRunArgs 构建 `bash <path>` 形态的 shell_run 入参。本文件剩余的每一处
+// 入参都必须经它构造：手拼 JSON 时 windows 路径的反斜杠（\U、\A…）是非法
+// JSON 转义——轻则 hook 请求编码失败（TestRefusedCallNeverReachesPostToolUse
+// 2026-09-01 CI 实证），重则 Unmarshal 静默失败、识别器空转。
+func shellRunArgs(t *testing.T, path string) string {
+	t.Helper()
+	return string(mustJSON(t, struct {
+		Command string `json:"command"`
+	}{Command: "bash " + path}))
 }

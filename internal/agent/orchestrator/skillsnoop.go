@@ -156,7 +156,13 @@ func candidatePathFor(toolName, argsJSON string) string {
 		for _, field := range strings.FieldsFunc(args.Command, func(r rune) bool {
 			return strings.ContainsRune(" \t\n;'\"|&()", r)
 		}) {
-			if strings.Contains(field, "SKILL.md") || strings.Contains(field, "/scripts/") {
+			// 锚点是 /scripts/ 段与 SKILL.md 文件名，比较必须落在斜杠归一
+			// 之后：windows 的本地写法是 `\scripts\`，按原样匹配会让识别器
+			// 对 windows 模型发出的命令全盲（2026-09-01 CI 实证：识别 0 条）。
+			// match() 对候选做同一归一；返回的仍是原词，Detail 记录命令里
+			// 真正出现的那一段。
+			norm := filepath.ToSlash(field)
+			if strings.Contains(norm, "SKILL.md") || strings.Contains(norm, "/scripts/") {
 				return field
 			}
 		}

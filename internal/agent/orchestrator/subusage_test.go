@@ -28,6 +28,10 @@ func TestUsageIsReportedBeforeTheErrorCheck(t *testing.T) {
 		t.Fatalf("read orchestrator.go: %v", err)
 	}
 	body := string(src)
+	// CRLF 归一：windows checkout 可能带 \r\n，下面的 errCheck 字面量跨行、
+	// 只按 \n 匹配。上面的单行匹配对行尾免疫——这正是本守卫在 windows leg
+	// 单独变红的形状（2026-09-01 CI）。
+	body = strings.ReplaceAll(body, "\r\n", "\n")
 	report := strings.Index(body, "if u := subAgentUsageForSink(subUsage); u != nil {")
 	errCheck := strings.Index(body, `if errMsg != "" {
 		return "", fmt.Errorf("sub-agent: %s", errMsg)`)
