@@ -372,7 +372,14 @@ func relForDisplay(workRoot, p string) string {
 		return filepath.ToSlash(p)
 	}
 	absP := p
-	if !filepath.IsAbs(absP) {
+	// A rooted-but-not-absolute path ("\etc" on windows) is anchored at the
+	// volume root, and the OS resolves it against the CURRENT drive — not
+	// against workRoot. filepath.IsAbs answers false for it, so Join-ing it
+	// under absBase displayed an in-root path that never resolves where the
+	// real one does (2026-09-01 CI: "/etc" shown as "etc"). Treat it as its
+	// own absolute form; Rel then fails on the volume mismatch and the
+	// outside-root fallback below returns it unchanged.
+	if !filepath.IsAbs(absP) && !hasRootPrefix(absP) {
 		absP = filepath.Join(absBase, p)
 	}
 	rel, err := filepath.Rel(absBase, filepath.Clean(absP))
@@ -380,4 +387,13 @@ func relForDisplay(workRoot, p string) string {
 		return filepath.ToSlash(p)
 	}
 	return filepath.ToSlash(rel)
+}
+
+// hasRootPrefix reports whether p is anchored at a filesystem root: POSIX
+// "/x", or the volume-less rooted Windows form "\x". On POSIX a leading
+// backslash is just an ordinary (legal) filename character, but treating it
+// as rooted changes nothing there — Rel still fails or yields a ".." prefix,
+// and the fallback returns p unchanged.
+func hasRootPrefix(p string) bool {
+	return strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`)
 }
