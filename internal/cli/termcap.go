@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/muesli/termenv"
@@ -70,15 +71,27 @@ func (c TermCapability) String() string {
 //     at all (see termenv_windows.go — it uses ConEmuANSI and the Windows
 //     build number instead), so relying on it alone would make this
 //     criterion pass on POSIX and silently fail on Windows.
-//  4. Otherwise, termenv's own TERM-name/terminfo heuristic decides between
-//     TrueColor, ANSI256, ANSI (16-color), and Ascii. termenv.WithUnsafe
-//     bypasses its isatty/CI gate so this is a pure function of the env
-//     vars passed to getenv, independent of whether the calling process's
-//     stdout happens to be a real terminal (relevant for tests and for
-//     doctor, which runs headless).
+//  4. A TERM name that itself names a capability (xterm-256color, xterm,
+//     kitty, …) decides between TrueColor, ANSI256, ANSI (16-color), and
+//     Ascii. On POSIX this delegates to termenv, which also weighs signals
+//     this layer does not know about (GOOGLE_CLOUD_SHELL, TERM_PROGRAM).
+//     On Windows it must NOT: termenv there ignores TERM entirely and
+//     answers from ConEmuANSI and the console build number, so TERM=xterm
+//     reported TrueColor and an empty environment was never Ascii
+//     (2026-09-01 CI). windows therefore runs the same TERM-name mapping
+//     locally (termProfileFor) before deferring.
+//  5. Otherwise (TERM unset/unknown) the decision falls to termenv's
+//     platform console detection. This is deliberately the only step that
+//     may consult OS state rather than getenv: a real Windows console
+//     carries no TERM, and its build number is the only evidence around.
 func DetectCapability(getenv func(string) string) TermCapability {
 	if getenv == nil {
-		getenv = func(string) string { return "" }
+		// An explicitly empty environment carries no terminal evidence at
+		// all, so Ascii is the honest answer on every platform. Falling
+		// through would let the windows console probe below answer from the
+		// build number — OS state, which the empty-environment contract
+		// here excludes.
+		return TermCapability{Profile: termenv.Ascii, AltScreen: true}
 	}
 	if getenv("TERM") == "dumb" {
 		return TermCapability{Profile: termenv.Ascii, AltScreen: false}
@@ -90,11 +103,38 @@ func DetectCapability(getenv func(string) string) TermCapability {
 	case "truecolor", "24bit":
 		return TermCapability{Profile: termenv.TrueColor, AltScreen: true}
 	}
+	if runtime.GOOS == "windows" {
+		if p, ok := termProfileFor(getenv("TERM")); ok {
+			return TermCapability{Profile: p, AltScreen: true}
+		}
+	}
 	out := termenv.NewOutput(io.Discard,
 		termenv.WithEnvironment(&getenvEnviron{getenv}),
 		termenv.WithUnsafe(),
 	)
 	return TermCapability{Profile: out.ColorProfile(), AltScreen: true}
+}
+
+// termProfileFor maps a TERM name to a color profile: the portable form of
+// termenv's POSIX heuristic (termenv_unix.go ColorProfile's TERM switch).
+// ok is false when TERM carries no capability signal — unset, empty, or a
+// name this mapping does not know — leaving the decision to termenv's
+// platform detection. Kept in sync with the upstream switch by the tests
+// that pin TERM=xterm-256color / TERM=xterm / empty on every platform.
+func termProfileFor(term string) (termenv.Profile, bool) {
+	switch term {
+	case "alacritty", "contour", "rio", "wezterm", "xterm-ghostty", "xterm-kitty":
+		return termenv.TrueColor, true
+	case "linux", "xterm":
+		return termenv.ANSI, true
+	}
+	switch {
+	case strings.Contains(term, "256color"):
+		return termenv.ANSI256, true
+	case strings.Contains(term, "color"), strings.Contains(term, "ansi"):
+		return termenv.ANSI, true
+	}
+	return termenv.Ascii, false
 }
 
 // getenvEnviron adapts a getenv func to termenv.Environ so DetectCapability
