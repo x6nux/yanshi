@@ -387,6 +387,9 @@ func TestLiveRun_GCReclaimsSpaceWithoutBreakingASeamOnlyRollback(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 	v := New(st, filepath.Join(base, "wt"))
 	v.SetLockDir(filepath.Join(base, "locks"))
+	// InitRepo 打开的 init-key 锁文件描述符随 VCS 生命周期保留；不 Close 的
+	// 话 windows 上 t.TempDir 清理会撞上仍持有的 .lock 句柄（2026-09-01 CI）。
+	t.Cleanup(func() { _ = v.Close() })
 	repoID, err := v.InitRepo(root)
 	if err != nil {
 		t.Fatalf("init repo: %v", err)

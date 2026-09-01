@@ -499,9 +499,11 @@ func TestResolveLogWriter_WithFile(t *testing.T) {
 	if p != logPath {
 		t.Fatalf("expected path %q, got %q", logPath, p)
 	}
-	// Close the file so TempDir cleanup doesn't fail on Windows.
-	if f, ok := w.(*os.File); ok {
-		f.Close()
+	// Close the file so TempDir cleanup doesn't fail on Windows. resolveLogWriter
+	// 返回的是旋转 writer（*obslog.RotatingWriter），不是 *os.File —— 旧的类型
+	// 断言永远落空，句柄一直开着（2026-09-01 CI 实证）。
+	if f, ok := w.(io.Closer); ok {
+		_ = f.Close()
 	}
 }
 

@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -73,6 +74,9 @@ func TestLogWriterRotates(t *testing.T) {
 	path := filepath.Join(dir, "app.log")
 	w, err := openLogFile(path, config.LogConfig{MaxSizeMB: 1, MaxBackups: 2})
 	require.NoError(t, err)
+	// bootstrap 刻意不关日志文件（进程生命周期）；测试必须自己关，否则
+	// windows 上 t.TempDir 的 RemoveAll 会撞上仍打开的句柄（2026-09-01 CI）。
+	t.Cleanup(func() { _ = w.(io.Closer).Close() })
 
 	// Two 700 KiB records: the first fits under the 1 MiB cap, the second
 	// cannot, so the writer must rotate between them.
@@ -104,6 +108,7 @@ func TestLogWriterNegativeMaxSizeDisablesRotation(t *testing.T) {
 	path := filepath.Join(dir, "app.log")
 	w, err := openLogFile(path, config.LogConfig{MaxSizeMB: -1})
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = w.(io.Closer).Close() })
 
 	rec := make([]byte, 512*1024)
 	for i := 0; i < 40; i++ { // 20 MiB, twice the default cap

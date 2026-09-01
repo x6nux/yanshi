@@ -52,6 +52,11 @@ func twoWriterFixture(t *testing.T) (v1, v2 *VCS, repoID, root string) {
 	v1.SetLockDir(lockDir)
 	v2 = New(s2, filepath.Join(base, "wt2"))
 	v2.SetLockDir(lockDir)
+	// lockRepo 打开的锁文件描述符是按 VCS 生命周期保留的（见 crossproc.go
+	// lockFileFor），VCS.Close 正是为此设计的释放口；不关的话 windows 上
+	// t.TempDir 的 RemoveAll 会撞上仍持有的 .lock 句柄（2026-09-01 CI）。
+	t.Cleanup(func() { _ = v1.Close() })
+	t.Cleanup(func() { _ = v2.Close() })
 
 	repoID, err = v1.InitRepo(root)
 	require.NoError(t, err)
@@ -212,6 +217,7 @@ func TestV8_LockIsReleasedWhenHolderProcessDies(t *testing.T) {
 	// The holder is gone without ever unlocking. The lane must be free.
 	v := New(nil, filepath.Join(base, "wt"))
 	v.SetLockDir(lockDir)
+	t.Cleanup(func() { _ = v.Close() })
 	acquired := make(chan struct{})
 	go func() {
 		unlock := v.lockRepo(lockKey)
@@ -263,6 +269,7 @@ func TestV8_RealSubprocessesDoNotLoseCommits(t *testing.T) {
 	require.NoError(t, err)
 	v := New(parent, filepath.Join(base, "wt"))
 	v.SetLockDir(lockDir)
+	t.Cleanup(func() { _ = v.Close() })
 	repoID, err := v.InitRepo(root)
 	require.NoError(t, err)
 	// Close the parent handle so the children contend only with each other.
@@ -415,6 +422,7 @@ func TestV8_DefaultLockDirIsMachineWide(t *testing.T) {
 func TestV8_LaneIsReentrantAcrossSequentialAcquisitions(t *testing.T) {
 	v := New(nil, "")
 	v.SetLockDir(t.TempDir())
+	t.Cleanup(func() { _ = v.Close() })
 	for i := 0; i < 5; i++ {
 		unlock := v.lockRepo("repeat-key")
 		unlock()
