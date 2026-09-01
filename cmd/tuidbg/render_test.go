@@ -99,6 +99,40 @@ func cellRect(row, col int) image.Rectangle {
 	return image.Rect(x, y, x+charW, y+lineH)
 }
 
+// inkBleed 是位置类断言容许字形墨迹越出格矩形的像素数。
+//
+// 它不为任何错位开口 —— 错位按整列计（≥charW）。它量的是**字体墨迹盒**与
+// 格矩形的差，这是字体的性质不是渲染器的：Windows 主字体 Consolas 的 '█'
+// 在本档位（Size=14/DPI=144/HintingFull）下的 hinted 位图实测有 60/480 个
+// 像素落在 15x33 的格矩形之外、却仍然紧贴本格；CJK 回退 msyh 的字形墨迹
+// 则触得到格子的第一行像素。这两条在 Menlo/Songti 上都不成立，所以任何
+// 「墨迹必须完全在格子里 / 必须碰不到边缘行」的断言都只对一台机器为真。
+// 4px 盖住实测的出血量，离「错一格」还差着一个列宽。
+const inkBleed = 4
+
+// fgSpanX 返回图上恰好等于 fg 的像素的横向范围。没有时返回 (-1,-1)。
+//
+// 与 inkSpanX 的差别：只认纯前景色，不含抗锯齿的混色边，也**不含其它前景色**
+// 画出的墨迹 —— 当一行里同时有 testFG 与 defaultFG 的字形时，量某一者的
+// 跨度必须用它，否则另一者的墨会把范围拉到自己的格子里去。
+func fgSpanX(img *image.RGBA, fg color.RGBA) (minX, maxX int) {
+	minX, maxX = -1, -1
+	b := img.Bounds()
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			if img.RGBAAt(x, y) == fg {
+				if minX == -1 || x < minX {
+					minX = x
+				}
+				if x > maxX {
+					maxX = x
+				}
+			}
+		}
+	}
+	return minX, maxX
+}
+
 // --- 字体链 ---
 
 func TestFontChainLoads(t *testing.T) {
@@ -488,7 +522,13 @@ func TestGlyphIsActuallyDrawn(t *testing.T) {
 // TestGlyphPixelsLandInTheirOwnCell 钉住「按格定位」。
 //
 // 只断言「图上有前景色」是不够的 —— 画在哪儿都算过。本测试把同一个字符
-// 放在不同列上，要求它的像素落在**对应那一格**的矩形里。
+// 放在不同列上，要求它的墨迹**以自己那一列为界**。
+//
+// 判据不能写成「inCell == total」：那是主字体的性质不是渲染器的性质。
+// Menlo 的 '█' 位图恰好缩在自己 17x33 的格子里，而 Windows 主字体 Consolas
+// 同档位的 '█' hinted 位图会越出格矩形（实测 480 个前景像素里 60 个在外、
+// 却紧贴本格）—— 那是字体把字画多大，不是渲染器把字画在哪儿。真正的错位
+// （按步进累加、或少算一格）会把整块墨迹推过一个列宽，远超 inkBleed。
 func TestGlyphPixelsLandInTheirOwnCell(t *testing.T) {
 	fc := requireFonts(t)
 	const col = 5
@@ -499,24 +539,31 @@ func TestGlyphPixelsLandInTheirOwnCell(t *testing.T) {
 	row[col] = Cell{R: '█', FG: testFG, BG: defaultBG, Width: 1}
 	img := renderGrid([][]Cell{row}, fc)
 
-	inCell := countColourIn(img, cellRect(0, col), testFG)
+	r := cellRect(0, col)
+	inCell := countColourIn(img, r, testFG)
 	total := countColour(img, testFG)
 	if inCell == 0 {
 		t.Fatalf("第 %d 列的字形在它自己的格子里一个像素都没有", col)
 	}
-	if inCell != total {
-		t.Errorf("前景像素共 %d 个，落在第 %d 格内的只有 %d 个：字形溢出了自己的格子",
-			total, col, inCell)
+	minX, maxX := fgSpanX(img, testFG)
+	if minX < r.Min.X-inkBleed || maxX > r.Max.X-1+inkBleed {
+		t.Errorf("第 %d 列字形的墨迹 x=[%d,%d]，而格子是 x=[%d,%d]（容差 %dpx）："+
+			"字形没有落在自己的列里", col, minX, maxX, r.Min.X, r.Max.X-1, inkBleed)
 	}
+	t.Logf("前景像素共 %d 个，格内 %d 个，墨迹 x=[%d,%d]（格子 x=[%d,%d]，容差 %dpx）",
+		total, inCell, minX, maxX, r.Min.X, r.Max.X-1, inkBleed)
 }
 
 // TestPositioningIsByColumnNotAccumulatedAdvance 是「按格定位」那条约束的
 // 变异杀手。
 //
-// 构造一行「汉字 + 续格 + ASCII」：按列定位时那个 ASCII 落在第 2 列
-// （x = pad + 2*charW）；按步进累加时，前面那个汉字回退到 CJK 字体、步进是
-// 28.0 而不是 34，于是它会落在 pad+28 —— 差 6 个像素，肉眼在成图上就是错位。
-// 本测试要求它严格落在自己那一格内。
+// 构造一行「汉字 + 续格 + ASCII」：按列定位时那个 ASCII 从第 2 列的左边界
+// （x = pad + 2*charW）开始；按步进累加时，它被前面那个回退汉字的步进往左推
+// —— darwin 上 Songti 步进 28.0 对两列 34，差 6px；Windows 上 msyh 步进 28
+// 对两列 30，只差 2px，与字体的墨迹出血同量级，那条方向在这里测不出来，
+// 所以承重的是「墨迹不得越过自己那格的右边界」与上一个测试共用的列界判据。
+//
+// 承重断言是**左界**：inkBleed 容得下字体墨迹盒的出血，容不下整列的推移。
 func TestPositioningIsByColumnNotAccumulatedAdvance(t *testing.T) {
 	fc := requireFonts(t)
 	if len(fc.fonts) < 2 {
@@ -529,16 +576,24 @@ func TestPositioningIsByColumnNotAccumulatedAdvance(t *testing.T) {
 	}}
 	img := renderGrid(grid, fc)
 
-	inCell := countColourIn(img, cellRect(0, 2), testFG)
 	total := countColour(img, testFG)
 	if total == 0 {
 		t.Fatal("汉字后面那个字符根本没画出来")
 	}
-	if inCell != total {
-		t.Errorf("汉字之后的字符：共 %d 个前景像素，落在第 2 格（x=%d..%d）内的只有 %d 个。"+
-			"按步进累加会把它推到 x≈%d",
-			total, inCell, pad+2*charW, pad+3*charW, pad+28)
+	// 只扫 testFG 的纯色像素：'中' 用 defaultFG 画，混进来会把墨迹左界拉到
+	// 第 0 格，左界断言就失去意义。
+	minX, maxX := fgSpanX(img, testFG)
+	ownX, ownEnd := pad+2*charW, pad+3*charW-1
+	if minX < ownX-inkBleed {
+		t.Errorf("汉字之后的字符墨迹从 x=%d 开始，低于它自己那格的左边界 x=%d（容差 %dpx）："+
+			"定位在按步进累加，而不是按列", minX, ownX, inkBleed)
 	}
+	if maxX > ownEnd+inkBleed {
+		t.Errorf("汉字之后的字符墨迹到 x=%d，越过它自己那格的右边界 x=%d（容差 %dpx）："+
+			"它画进了右邻格", maxX, ownEnd, inkBleed)
+	}
+	t.Logf("汉字之后的字符共 %d 个前景像素，墨迹 x=[%d,%d]，自己那格 x=[%d,%d]",
+		total, minX, maxX, ownX, ownEnd)
 }
 
 // inkSpanX 返回图上「非 bg 色」像素的横向范围（墨迹跨度）。没有墨迹时返回 (-1,-1)。
@@ -713,12 +768,16 @@ func TestWideRuneContinuationCellGetsBackground(t *testing.T) {
 	if got < want/2 {
 		t.Errorf("续格背景像素只有 %d 个（整格 %d 个），疑似没有铺满整格", got, want)
 	}
-	// 上下边缘各取一行：字形不会碰到最顶和最底，那里必须是纯背景。
+	// 上下边缘各取一行。这里查的不是「必须是纯背景」—— 那是主字体的性质
+	// 不是渲染器的：Windows 的 CJK 回退 msyh 字形墨迹触得到格子的第一行像素
+	// （实测顶行 15 个像素里有 2 个是字形墨），Menlo/Songti 碰不到而已。
+	// 这两行真正要抓的失败模式是「整列没铺背景」——那露出来的是**页面底色**；
+	// 被字形及其抗锯齿边盖掉的像素不是 defaultBG。
 	for _, y := range []int{cont.Min.Y, cont.Max.Y - 1} {
 		strip := image.Rect(cont.Min.X, y, cont.Max.X, y+1)
-		if n := countColourIn(img, strip, testBG); n != charW {
-			t.Errorf("续格第 y=%d 行只有 %d/%d 个背景像素：背景没有横向铺满这一列",
-				y, n, charW)
+		if n := countColourIn(img, strip, defaultBG); n != 0 {
+			t.Errorf("续格第 y=%d 行有 %d 个页面底色像素：背景没有横向铺满这一列",
+				y, n)
 		}
 	}
 }
@@ -737,14 +796,16 @@ func TestStatusBarRunKeepsBackgroundContiguous(t *testing.T) {
 	}
 	img := renderGrid([][]Cell{row}, fc)
 
-	// 取整行最顶那一行像素：字形碰不到它，所以整条应当是纯背景色，
-	// 一个缺口都不该有。
+	// 取整行最顶那一行像素。这里要抓的失败模式是「续格没铺背景」——那会在
+	// 汉字后面露出一列**页面底色**。字形墨迹本身可以碰到这一行（Windows 的
+	// CJK 回退 msyh 实测就碰得到：90 个像素里 14 个是字形墨），所以判据不是
+	// 「纯背景色」，而是「不得出现页面底色」：每个像素要么是状态栏底色，
+	// 要么被字形及其抗锯齿边盖住。
 	y := pad
 	strip := image.Rect(pad, y, pad+len(row)*charW, y+1)
-	want := len(row) * charW
-	if got := countColourIn(img, strip, testBG); got != want {
-		t.Errorf("状态栏顶边有 %d/%d 个背景像素：背景在某处断开了（多半是宽字符的续格）",
-			got, want)
+	if got := countColourIn(img, strip, defaultBG); got != 0 {
+		t.Errorf("状态栏顶边有 %d 个页面底色像素：背景在某处断开了（多半是宽字符的续格）",
+			got)
 	}
 }
 
