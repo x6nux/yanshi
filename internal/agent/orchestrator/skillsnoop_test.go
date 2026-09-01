@@ -15,6 +15,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -116,7 +117,14 @@ func TestFsReadOfSkillMdIsRecognized(t *testing.T) {
 
 	ep, err := newHookMiddleware().WrapInvokableToolCall(ctx, plainEndpoint("skill body"), &adk.ToolContext{Name: "fs_read"})
 	require.NoError(t, err)
-	argsJSON := `{"path":"` + filepath.Join(root, "my-skill", "SKILL.md") + `"}`
+	// JSON MUST be built with Marshal, not string concatenation: a Windows
+	// path contains backslashes whose \U, \A etc. are INVALID JSON escapes —
+	// string-splicing produced an unparseable payload, Unmarshal failed
+	// silently inside candidatePathFor, and the recognizer saw nothing
+	// (2026-09-01 CI, RUNNER~1 short path made it obvious).
+	argsJSON := string(mustJSON(t, struct {
+		Path string `json:"path"`
+	}{Path: filepath.Join(root, "my-skill", "SKILL.md")}))
 	t.Logf("DEBUG fs_read args=%s candidate=%q registry-dir=%q", argsJSON, candidatePathFor("fs_read", argsJSON), func() string {
 		sks := reg.List()
 		if len(sks) == 0 {
@@ -272,4 +280,13 @@ func TestSubAgentTurnRecognizesImplicitSkillUse(t *testing.T) {
 	uses := spy.got()
 	require.NotEmpty(t, uses, "子代理里的 shell 调用必须同样被识别")
 	require.Equal(t, "my-skill", uses[0].Skill)
+}
+
+// mustJSON marshals v or fails the test — never hand-splice JSON containing
+// platform paths.
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return b
 }
