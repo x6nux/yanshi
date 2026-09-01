@@ -73,7 +73,12 @@ func readWorkflow(t *testing.T, name string) string {
 	if err != nil {
 		t.Fatalf("read %s: %v", name, err)
 	}
-	return string(b)
+	// The windows leg checks out with CRLF (git-for-windows autocrlf), and
+	// workflowJobBody matches job headers line-by-line — a trailing \r turns
+	// every "  jobname:" lookup into a miss and fails this whole family of
+	// gates on that one platform (2026-09-01 run). Normalise first: the
+	// assertions are about workflow STRUCTURE, not line endings.
+	return strings.ReplaceAll(string(b), "\r\n", "\n")
 }
 
 // TestBenchCIGateRunsEveryBenchmarkPackageAboveOneIteration pins the gate that

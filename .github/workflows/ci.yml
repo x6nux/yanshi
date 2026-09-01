@@ -150,6 +150,10 @@ jobs:
       # both this job's and the test job's deadlines under -race.
       - name: allow unprivileged user namespaces (bwrap needs them on 24.04)
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # 与 test job 同因：runner 预装的 sg 不认识 run 关系组，race 下跑的
+      # TestAstSearchReal_* 同样需要当前版 ast-grep。见 test job 注释。
+      - name: install current ast-grep (runner's prebuilt sg is too old)
+        run: sudo npm install -g @ast-grep/cli
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
