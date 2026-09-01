@@ -24,6 +24,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/cloudwego/eino/schema"
@@ -80,6 +81,10 @@ func (m *MilestoneTools) Tools() []*GuardedTool { return []*GuardedTool{m.Set} }
 // turns into "find the lines that look like milestones".
 const RoleMilestone = "milestone"
 
+// milestoneKeySeq is the uniqueness half of every milestone dedup key. See
+// runSet for why the wall clock could not be trusted to provide it.
+var milestoneKeySeq atomic.Int64
+
 type milestoneArgs struct {
 	Text string `json:"text"`
 }
@@ -120,7 +125,28 @@ func (m *MilestoneTools) runSet(ctx context.Context, argsJSON string) (string, e
 	// pointing at somebody else's text and invite it to cite that. Measured:
 	// three identical appends produced one row and a watermark that never
 	// moved.
-	key := fmt.Sprintf("milestone:%d:%s", time.Now().UnixNano(), text)
+	//
+	// THE NONCE IS AN ATOMIC COUNTER, NOT THE WALL CLOCK. The first version
+	// used time.Now().UnixNano() here, and its own comment dismissed a
+	// collision as "only reachable on a nanosecond-identical collision" —
+	// which reads as unreachable but is the COMMON case: UnixNano returns
+	// the wall clock, whose granularity is the platform's timer tick, not
+	// the nanosecond its unit suggests. Measured on darwin/arm64, two
+	// consecutive calls 100ns apart sample the same tick 88% of the time;
+	// on Windows the tick is coarser still (historic GetSystemTimeAsFileTime
+	// granularity ~0.5–15.6ms). Two milestone_set calls inside one tick
+	// derived the SAME key, the second insert was silently dropped, and the
+	// tool told the model "duplicate of an existing entry" for two events
+	// that were distinct — the exact bug the key exists to prevent, now
+	// caused by the key itself. Measured: run 33507129420's windows leg,
+	// TestMilestoneSet_RepeatedIdenticalTextGetsDistinctAddresses.
+	//
+	// A process-global counter is unique by construction within the process
+	// (the only caller of this tool), monotonic so the keys sort by write
+	// order, and the timestamp prefix is kept so the keys remain
+	// human-greppable in the log. Uniqueness no longer leans on the clock
+	// at all.
+	key := fmt.Sprintf("milestone:%d:%d:%s", time.Now().UnixNano(), milestoneKeySeq.Add(1), text)
 	inserted, nextSeq, err := m.store.AppendMessages(sessionID, []store.Message{
 		{Role: RoleMilestone, Content: text, DedupKey: key},
 	})
