@@ -17,6 +17,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -28,8 +29,8 @@ import (
 
 	"github.com/x6nux/yanshi/internal/guard"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
-	"github.com/x6nux/yanshi/internal/skills"
 	"github.com/x6nux/yanshi/internal/shell"
+	"github.com/x6nux/yanshi/internal/skills"
 	"github.com/x6nux/yanshi/internal/tools"
 )
 
@@ -85,6 +86,12 @@ func recognizerContext(t *testing.T, reg *skills.Registry, spy *spySkillObserver
 }
 
 func TestShellRunOfSkillScriptIsRecognized(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// 该行的脚本形态是 `bash <path>`：一个 POSIX 解释器调用。Windows
+		// 上没有 bash，shell_run 的失败发生在命令解析层——「识别已注册
+		// skill 的 scripts 调用」这个语义在该平台没有可测的载体。
+		t.Skip("`bash <script>` 形态是 POSIX 解释器调用，Windows 无此载体")
+	}
 	reg, _, scriptPath := skillRegistryFixture(t)
 	spy := &spySkillObserver{}
 	ctx := recognizerContext(t, reg, spy)
@@ -109,7 +116,15 @@ func TestFsReadOfSkillMdIsRecognized(t *testing.T) {
 
 	ep, err := newHookMiddleware().WrapInvokableToolCall(ctx, plainEndpoint("skill body"), &adk.ToolContext{Name: "fs_read"})
 	require.NoError(t, err)
-	_, err = ep(ctx, `{"path":"`+filepath.Join(root, "my-skill", "SKILL.md")+`"}`)
+	argsJSON := `{"path":"` + filepath.Join(root, "my-skill", "SKILL.md") + `"}`
+	t.Logf("DEBUG fs_read args=%s candidate=%q registry-dir=%q", argsJSON, candidatePathFor("fs_read", argsJSON), func() string {
+		sks := reg.List()
+		if len(sks) == 0 {
+			return "<empty registry>"
+		}
+		return sks[0].Dir
+	}())
+	_, err = ep(ctx, argsJSON)
 	require.NoError(t, err)
 
 	uses := spy.got()
