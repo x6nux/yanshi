@@ -29,6 +29,13 @@ jobs:
       # "no secrets backend is configured" 即该路径的正确输出）。
       # windows/macos 的 keyring 不经过 dbus，此变量对它们无效。
       DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent
+      # The hosted windows runner's service token cannot host a
+      # WRITE_RESTRICTED child (CreateRestrictedToken -> ERROR_INVALID_PARAMETER),
+      # so the confinement behavioural tests cannot run there. This is the
+      # project's own opt-out switch (see restrictedtoken_windows_test.go):
+      # the tests downgrade to skips with the probe's reason attached, and
+      # stay Fatal on any host where the probe merely fails unexpectedly.
+      YANSHI_RESTRICTEDTOKEN_TESTS_OPTIONAL: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -137,6 +144,13 @@ jobs:
       # 与 test job 同因：无 dbus session 时 go-keyring autolaunch 挂死，
       # -race 下更慢，包内 600s 超时必然打爆。见 test job 的注释。
       DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent
+      # The hosted windows runner's service token cannot host a
+      # WRITE_RESTRICTED child (CreateRestrictedToken -> ERROR_INVALID_PARAMETER),
+      # so the confinement behavioural tests cannot run there. This is the
+      # project's own opt-out switch (see restrictedtoken_windows_test.go):
+      # the tests downgrade to skips with the probe's reason attached, and
+      # stay Fatal on any host where the probe merely fails unexpectedly.
+      YANSHI_RESTRICTEDTOKEN_TESTS_OPTIONAL: "1"
     steps:
       - uses: actions/checkout@v4
       # cmd/tuidbg's render tests need a font that actually carries CJK
@@ -421,6 +435,13 @@ jobs:
       # 与 test job 同因：无 dbus session 时 go-keyring autolaunch 挂死，
       # coverage 插桩更慢，10m 包超时必然打爆。见 test job 的注释。
       DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent
+      # The hosted windows runner's service token cannot host a
+      # WRITE_RESTRICTED child (CreateRestrictedToken -> ERROR_INVALID_PARAMETER),
+      # so the confinement behavioural tests cannot run there. This is the
+      # project's own opt-out switch (see restrictedtoken_windows_test.go):
+      # the tests downgrade to skips with the probe's reason attached, and
+      # stay Fatal on any host where the probe merely fails unexpectedly.
+      YANSHI_RESTRICTEDTOKEN_TESTS_OPTIONAL: "1"
     steps:
       - uses: actions/checkout@v4
       # Same deps the test (ubuntu) leg installs: without bwrap every

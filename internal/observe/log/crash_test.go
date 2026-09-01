@@ -1,6 +1,7 @@
 package log
 
 import (
+	"runtime"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -380,6 +381,11 @@ func TestCrashDirEntriesIsNewestFirst(t *testing.T) {
 // to hold a redacted error chain precisely because it stays local, so it must
 // not be world-readable on a shared machine.
 func TestCrashReportFilesAreOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows chmod only models the read-only bit: group/other write " +
+			"bits cannot be represented, so Perm()&0o077 is 0o066 on every file " +
+			"the OS creates and the assertion cannot mean anything there")
+	}
 	if os.Getenv("GOOS") == "windows" {
 		t.Skip("POSIX file modes are not meaningful on Windows")
 	}
