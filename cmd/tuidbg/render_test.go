@@ -39,6 +39,22 @@ func requireFonts(t *testing.T) *fontChain {
 			"在 macOS 上是 Menlo/Songti，在 Linux 上是 DejaVu/Noto。", err)
 	}
 	t.Cleanup(fc.close)
+	// 2026-09-01 Windows: the pixel-geometry assertions were written against
+	// Menlo's measured numbers, and the Windows primary (Consolas) plus the
+	// CJK fallback (msyh) broke four of them at once. Dump the whole metric
+	// sheet once per test so the expectations can be re-derived from data
+	// instead of guessed at across an ocean.
+	p := fc.primary()
+	m := p.face.Metrics()
+	row := "字符\t步进ok\t步进px\t墨迹宽"
+	_ = row
+	for _, r := range []rune{'A', 'i', 'W', '0', ' ', '─', '│', '╭', '中', '国'} {
+		adv, advOK := p.face.GlyphAdvance(r)
+		t.Logf("METRIC %s primary=%s Height=%v Ascent=%v Descent=%v %q adv=%v(%t)",
+			string(r), p.desc, m.Height, m.Ascent, m.Descent, r, adv, advOK)
+	}
+	t.Logf("METRIC grid: charW=%d lineH=%d ascent=%d pad=%d fontSize=%g fontDPI=%g",
+		charW, lineH, ascent, pad, fontSize, fontDPI)
 	return fc
 }
 
