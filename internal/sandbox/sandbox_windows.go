@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -232,9 +233,11 @@ func runJobProbe() jobProbe {
 		// a GUI-launched yanshi flashes a window on every construction.
 		CreationFlags: windows.CREATE_NO_WINDOW,
 	}
-	// The probe's own environment is irrelevant to the result and inheriting the
-	// operator's would put credentials into a child for no reason.
-	cmd.Env = []string{}
+	// The probe's environment is itself part of the measurement: a child that
+	// cannot resolve ping dies on its own within milliseconds, and a death we
+	// did not cause would be read as containment. See probeEnv for both the
+	// no-operator-inheritance rule and the minimum the child does need.
+	cmd.Env = probeEnv()
 	if err := cmd.Start(); err != nil {
 		_ = windows.CloseHandle(job)
 		p.Detail = fmt.Sprintf("could not start a probe process to verify containment: %v", err)
@@ -308,6 +311,35 @@ func comspec() string {
 		return v
 	}
 	return `C:\Windows\System32\cmd.exe`
+}
+
+// probeEnv is the environment every probe child runs with.
+//
+// It deliberately does NOT inherit the operator's environment — that would put
+// credentials into a child for no reason — but it is equally deliberate that it
+// is not EMPTY. cmd resolves `ping` through PATH/PATHEXT, and both system
+// binaries want SystemRoot; a probe child with a fully empty environment block
+// cannot resolve ping and cmd exits within milliseconds of starting. That
+// silently destroys everything the probe and the tests claim to measure: "alive
+// after assignment, dead after close" becomes indistinguishable from "exited on
+// its own while we were looking elsewhere", which is exactly the false
+// containment report the probe exists to prevent. Measured on the first CI
+// windows leg, where every probe child died in under 300ms and three tests
+// failed because a control had nothing left to control.
+//
+// The three variables are system-owned and carry no secrets: SystemRoot and
+// PATH restricted to the system directory, plus PATHEXT so cmd's extensionless
+// resolution of `ping` does not depend on a host's user-level default.
+func probeEnv() []string {
+	root := os.Getenv("SystemRoot")
+	if root == "" {
+		root = `C:\Windows`
+	}
+	return []string{
+		"SystemRoot=" + root,
+		"PATH=" + filepath.Join(root, "System32"),
+		"PATHEXT=.COM;.EXE;.BAT;.CMD",
+	}
 }
 
 // createKillOnCloseJob creates a job object with kill-on-job-close set.

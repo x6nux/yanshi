@@ -265,10 +265,12 @@ func (v *VCS) Close() error {
 		// Reclaim only if free: a descriptor still held by a goroutine in this
 		// process, or by another process, must keep its file.
 		if got, err := tryLockFileExclusive(f); err == nil && got {
-			if err := removeIfSameInode(f, name); err != nil && firstErr == nil {
+			// unlinkHeldLockFile closes f on every path (Windows cannot
+			// unlink an open handle), so this leg must not Close again.
+			if err := unlinkHeldLockFile(f, name); err != nil && firstErr == nil {
 				firstErr = err
 			}
-			_ = unlockFile(f)
+			continue
 		}
 		if err := f.Close(); err != nil && firstErr == nil {
 			firstErr = err
@@ -341,10 +343,12 @@ func sweepStaleLockFiles(dir string, maxAge time.Duration) (removed int) {
 			continue
 		}
 		if got, lerr := tryLockFileExclusive(f); lerr == nil && got {
-			if removeIfSameInode(f, path) == nil {
+			// unlinkHeldLockFile closes f on every path (Windows cannot
+			// unlink an open handle), so this leg must not Close again.
+			if unlinkHeldLockFile(f, path) == nil {
 				removed++
 			}
-			_ = unlockFile(f)
+			continue
 		}
 		_ = f.Close()
 	}

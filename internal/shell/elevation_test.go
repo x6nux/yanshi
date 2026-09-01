@@ -166,6 +166,12 @@ func TestElevationDeciderQuotesTheInterceptedArgv(t *testing.T) {
 	if got != want {
 		t.Fatalf("CommandLine =\n  %s\nwant\n  %s", got, want)
 	}
+	if runtime.GOOS == "windows" {
+		// 引号形状断言（上面）是平台无关的，windows 照跑；重注解的证人
+		// 本身是 /bin/sh——POSIX 引号的裁定者在该平台不存在，这半段没有
+		// 可测的载体。
+		t.Skip("round-trip 证人是 /bin/sh，windows 无 POSIX shell 可复验")
+	}
 	// The round trip must survive a real shell: this is what proves the quoting
 	// is POSIX rather than merely self-consistent.
 	out, err := exec.Command("/bin/sh", "-c", "for a in "+got+"; do echo \"[$a]\"; done").Output()

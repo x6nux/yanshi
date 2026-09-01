@@ -58,7 +58,14 @@ func startProbeChild(t *testing.T) (*exec.Cmd, <-chan struct{}) {
 	prog, args := probeChildArgv()
 	cmd := exec.Command(prog, args...)
 	cmd.SysProcAttr = &windows.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
-	cmd.Env = []string{}
+	// probeEnv, not empty: every control in this file rests on the child being
+	// alive because we have not killed it, and an empty environment block strips
+	// PATH/SystemRoot, so cmd cannot resolve ping and exits within milliseconds.
+	// Measured on the first CI windows leg: with `[]string{}` here the control
+	// children were dead before their 200ms checks ran, and the degraded-backend
+	// test failed because a no-op PostStart "killed" a child that had in fact
+	// exited on its own.
+	cmd.Env = probeEnv()
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("could not start a probe child: %v", err)
 	}
@@ -209,7 +216,11 @@ func TestKillOnJobCloseTerminatesGrandchildren(t *testing.T) {
 	// through.
 	cmd := exec.Command(comspec(), "/c", "start /b ping -n 60 127.0.0.1 >NUL")
 	cmd.SysProcAttr = &windows.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
-	cmd.Env = []string{}
+	// probeEnv: `start /b` resolves ping through the child's PATH, and an empty
+	// environment block means the job is likely empty when queried — the
+	// `before == 0` branch below would then fire for a reason that has nothing
+	// to do with transitive containment.
+	cmd.Env = probeEnv()
 	if err := cmd.Start(); err != nil {
 		_ = windows.CloseHandle(job)
 		t.Fatalf("could not start the parent: %v", err)

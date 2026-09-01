@@ -20,21 +20,55 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu, windows, macos]
+    env:
+      # 无 dbus session 的 runner 上，go-keyring 的 SessionBus() 会走
+      # autolaunch：fork dbus-launch 等 X11，永不返回——bootstrap 的
+      # LiveRun 家族因此挂满 10m 包超时（panic: test timed out，2026-08-27
+      # 起 ubuntu/race/coverage 三处同源）。指一个不可达地址让 godbus 直接
+      # dial 失败，keyring 探测落进代码既有的降级路径（日志
+      # "no secrets backend is configured" 即该路径的正确输出）。
+      # windows/macos 的 keyring 不经过 dbus，此变量对它们无效。
+      DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent
+      # The hosted windows runner's service token cannot host a
+      # WRITE_RESTRICTED child (CreateRestrictedToken -> ERROR_INVALID_PARAMETER),
+      # so the confinement behavioural tests cannot run there. This is the
+      # project's own opt-out switch (see restrictedtoken_windows_test.go):
+      # the tests downgrade to skips with the probe's reason attached, and
+      # stay Fatal on any host where the probe merely fails unexpectedly.
+      YANSHI_RESTRICTEDTOKEN_TESTS_OPTIONAL: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-      # W-B fix-b57 finding 4: without bubblewrap on the ubuntu leg, every
-      # TestBwrapReally* enforcement test (internal/sandbox) skips instead of
+      # W-B fix-b57 finding 4: without bubblewrap on the ubuntu leg, every      # TestBwrapReally* enforcement test (internal/sandbox) skips instead of
       # verifying, and if the runner's kernel also lacks Landlock the whole
       # linux enforcement story for W-B-23 goes green without a single test
       # actually confining anything. Installing it here turns those from
       # "may skip forever" into "always gives a verdict".
-      - name: install bubblewrap (linux sandbox enforcement tests)
+      - name: install bubblewrap and Noto CJK fonts (linux sandbox + tuidbg render tests)
         if: matrix.os == 'ubuntu'
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap fonts-noto-cjk
+      # ubuntu-24.04 images ship AppArmor's unprivileged-userns restriction,
+      # which makes EVERY bwrap invocation fail with exit 1 even with the
+      # binary installed. Sandbox probes then walk the degraded fallback
+      # (landlock-helper retry + managed-proxy spin-up per subprocess), and
+      # under -race that overhead compounded past the 10m package deadline.
+      # Lifting the restriction is the documented GitHub-Actions workaround:
+      # the runner is a single-tenant VM, so userns buys back containment
+      # that only CI's own tests consume.
+      - name: allow unprivileged user namespaces (bwrap needs them on 24.04)
+        if: matrix.os == 'ubuntu'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # TestAstSearchReal_* drive the REAL ast-grep binary. The runner image's
+      # preinstalled sg is too old to know the `run` relational group
+      # ("sg: group 'run' does not exist"), which fails four tests that are
+      # about yanshi's parsing of ast-grep's output, not about which sg
+      # version a runner happened to ship. Pin a current binary.
+      - name: install current ast-grep (runner's prebuilt sg is too old)
+        if: matrix.os == 'ubuntu'
+        run: sudo npm install -g @ast-grep/cli
       # e2e_real build tag is off by default -> codex/claudecode CLIs are not
       # needed. eino/bootstrap t.Skip on missing providers is expected, not a fail.
       - run: go test ./...
@@ -106,8 +140,34 @@ jobs:
   race:
     name: race
     runs-on: ubuntu-latest
+    env:
+      # 与 test job 同因：无 dbus session 时 go-keyring autolaunch 挂死，
+      # -race 下更慢，包内 600s 超时必然打爆。见 test job 的注释。
+      DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent
+      # The hosted windows runner's service token cannot host a
+      # WRITE_RESTRICTED child (CreateRestrictedToken -> ERROR_INVALID_PARAMETER),
+      # so the confinement behavioural tests cannot run there. This is the
+      # project's own opt-out switch (see restrictedtoken_windows_test.go):
+      # the tests downgrade to skips with the probe's reason attached, and
+      # stay Fatal on any host where the probe merely fails unexpectedly.
+      YANSHI_RESTRICTEDTOKEN_TESTS_OPTIONAL: "1"
     steps:
       - uses: actions/checkout@v4
+      # cmd/tuidbg's render tests need a font that actually carries CJK
+      # glyphs: the runner only ships DejaVu, the chain falls through every
+      # candidate, and TestChainRendersCJK/TestWideGlyphSpansBothColumns
+      # failed on the missing ink rather than on any code defect.
+      - name: install bubblewrap and Noto CJK fonts (linux-only test deps)
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap fonts-noto-cjk
+      # See the same step in the test job: 24.04's AppArmor userns restriction
+      # defeats bwrap entirely, and the degraded sandbox fallback is what blew
+      # both this job's and the test job's deadlines under -race.
+      - name: allow unprivileged user namespaces (bwrap needs them on 24.04)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # 与 test job 同因：runner 预装的 sg 不认识 run 关系组，race 下跑的
+      # TestAstSearchReal_* 同样需要当前版 ast-grep。见 test job 注释。
+      - name: install current ast-grep (runner's prebuilt sg is too old)
+        run: sudo npm install -g @ast-grep/cli
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -291,7 +351,19 @@ jobs:
           # hatch lived in the shell, not on a YAML key, and no gate could see
           # it. E2's assets (FuzzMatchGlob plus internal/ctxcompact's
           # TestProperty_*) have landed, so the stated precondition is met.
-          if ! go test -list 'Fuzz.*|TestProperty.*' ./internal/guard/... ./internal/ctxcompact/... 2>/dev/null | grep -Eq 'Fuzz|TestProperty'; then
+          #
+          # The listing is captured before grep runs, not piped straight into
+          # `grep -q`: with pipefail, grep -q exits at the first match and
+          # closes the pipe while `go test -list` is still writing the
+          # remaining packages' output — the writer then dies of SIGPIPE, the
+          # pipeline reports failure, and the `if !` misreads that as "no
+          # targets". That false negative is exactly what this gate exists to
+          # prevent, and it is what flipped this job red on 2026-08-27.
+          # Collecting first keeps the gate exactly as strict: a listing with
+          # no fuzz/property target still fails here, and a compile error now
+          # surfaces instead of being silenced into the same message.
+          fuzz_targets="$(go test -list 'Fuzz.*|TestProperty.*' ./internal/guard/... ./internal/ctxcompact/...)"
+          if ! printf '%s\n' "$fuzz_targets" | grep -Eq 'Fuzz|TestProperty'; then
             echo "no fuzz/property target found in internal/guard or internal/ctxcompact — " \
                  "they were removed, or a package moved. This job exists to run them." >&2
             exit 1
@@ -359,8 +431,32 @@ jobs:
   coverage:
     name: coverage (per-package floors)
     runs-on: ubuntu-latest
+    env:
+      # 与 test job 同因：无 dbus session 时 go-keyring autolaunch 挂死，
+      # coverage 插桩更慢，10m 包超时必然打爆。见 test job 的注释。
+      DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent
+      # The hosted windows runner's service token cannot host a
+      # WRITE_RESTRICTED child (CreateRestrictedToken -> ERROR_INVALID_PARAMETER),
+      # so the confinement behavioural tests cannot run there. This is the
+      # project's own opt-out switch (see restrictedtoken_windows_test.go):
+      # the tests downgrade to skips with the probe's reason attached, and
+      # stay Fatal on any host where the probe merely fails unexpectedly.
+      YANSHI_RESTRICTEDTOKEN_TESTS_OPTIONAL: "1"
     steps:
       - uses: actions/checkout@v4
+      # Same deps the test (ubuntu) leg installs: without bwrap every
+      # bootstrap sandbox probe walks the degraded path (landlock helper
+      # retry + managed-proxy spin-up per subprocess), which under coverage
+      # instrumentation compounded past the package's 10m deadline and
+      # panicked the job (2026-08-31); fonts-noto-cjk lets cmd/tuidbg's
+      # render tests find real CJK ink under -cover too.
+      - name: install bubblewrap and Noto CJK fonts (coverage needs what test needs)
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap fonts-noto-cjk
+      # Same userns lift as the other ubuntu legs: bwrap installed but unable
+      # to create a sandbox still means degraded-fallback slowdowns, and that
+      # is what timed this job out even after bwrap landed here.
+      - name: allow unprivileged user namespaces (bwrap needs them on 24.04)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod

@@ -91,6 +91,38 @@ func TestNormalizePath_NoHome(t *testing.T) {
 	}
 }
 
+// TestNormalizePath_HomeUnsetProfileSet pins the native-Windows shape of the
+// home lookup: HOME unset, USERPROFILE set. The three home spellings name ONE
+// directory, so `$HOME`/`${HOME}` must resolve where `~` does. With a
+// getenv("HOME")-only lookup they came back unresolvable there, which graded
+// `rm -rf $HOME` Allow while `rm -rf ~` stayed Catastrophic and let
+// `> $HOME/.ssh/authorized_keys` past the credential denylist — measured on a
+// Windows CI runner; the decision itself is recorded on homeReferences.
+func TestNormalizePath_HomeUnsetProfileSet(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "/home/me")
+
+	for _, ref := range []string{"~", "$HOME", "${HOME}"} {
+		got, ok := normalizePath(ref+"/x", "/proj")
+		if !ok {
+			t.Fatalf("normalizePath(%q/…) unresolvable with HOME unset: the spelling now grades apart from ~", ref)
+		}
+		if got != "/home/me/x" {
+			t.Fatalf("normalizePath(%q/…) = %q, want /home/me/x", ref, got)
+		}
+	}
+	if got := ClassifyDestruction("rm -rf ${HOME}", "/proj"); got != DestructionCatastrophic {
+		t.Fatalf("ClassifyDestruction(\"rm -rf ${HOME}\") = %v, want Catastrophic: an unresolvable spelling must not grade below ~", got)
+	}
+	entry, ok := IsSensitivePath("$HOME/.ssh/authorized_keys", "/proj")
+	if !ok {
+		t.Fatal("a credential write spelled with $HOME missed the denylist entirely")
+	}
+	if entry != "~/.ssh" {
+		t.Fatalf("denylist matched %q, want ~/.ssh", entry)
+	}
+}
+
 // TestExpandHomeReferences_OnlyAtStartAndOnBoundary pins the two restrictions
 // that keep expansion from mangling ordinary paths: the reference must be at
 // the start of the token, and it must be followed by a separator or the end.

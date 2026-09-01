@@ -168,12 +168,22 @@ func (w *RotatingWriter) rotateLocked() {
 	// A rotation with no retained generations is a truncate: there is nowhere
 	// to move the bytes to, and keeping them would defeat the size cap.
 	if w.maxBackups <= 0 {
-		if err := w.file.Truncate(0); err != nil {
+		// The truncation goes through the PATH, not through the held handle.
+		// On Windows an O_APPEND handle is opened with FILE_APPEND_DATA and
+		// deliberately without FILE_WRITE_DATA (see syscall.Open's O_APPEND
+		// branch: it is the missing right that makes appending land at the end
+		// of the file), and Truncate on such a handle compiles to
+		// SetEndOfFile, which Windows refuses without FILE_WRITE_DATA. A
+		// handle-level truncate therefore failed with ACCESS_DENIED there —
+		// recorded and swallowed by the fail-soft contract below — and the
+		// "bounded by truncation" policy silently became an unbounded file
+		// (measured on the CI windows leg: 5 records, 0 bytes truncated).
+		// os.Truncate opens its own handle with the write access SetEndOfFile
+		// needs, and the append handle needs no repositioning afterwards:
+		// append-mode writes go to the current end of file on every platform
+		// this repo builds for, which is 0 once the truncation lands.
+		if err := os.Truncate(w.path, 0); err != nil {
 			w.rotateErr = fmt.Errorf("log: truncate %s: %w", w.path, err)
-			return
-		}
-		if _, err := w.file.Seek(0, 0); err != nil {
-			w.rotateErr = fmt.Errorf("log: rewind %s: %w", w.path, err)
 			return
 		}
 		w.size = 0

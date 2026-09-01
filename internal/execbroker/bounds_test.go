@@ -186,6 +186,10 @@ func TestBrokerRefusesRequestsBeyondTheConcurrencyLimit(t *testing.T) {
 // regression here costs a failed assertion rather than a fork bomb — the
 // mutation that first exposed this had to be killed by hand.
 func TestResolveSkipsACandidateThatIsThisExecutable(t *testing.T) {
+	// Every case below ends at "the resolver picked the real program", which
+	// needs a candidate the execute-bit filter can accept. See
+	// needsPOSIXExecuteBit for why that has no Windows spelling.
+	needsPOSIXExecuteBit(t)
 	self, err := os.Executable()
 	if err != nil {
 		t.Skipf("os.Executable is unavailable here: %v", err)

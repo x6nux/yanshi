@@ -10,6 +10,18 @@ import (
 // subtraction (W-B-13).
 //
 // The whole gate is one boolean's worth of arithmetic, and getting it backwards
+// contains reports whether xs holds want. Shared by the untagged tests and
+// by the !windows bwrap/landlock argv tests (the windows leg compiles this
+// file but not those: their assertions describe the linux implementations,
+// and windows builds only stubs).
+func contains(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
+}
 // produces a list that looks plausible and warns about the wrong half. So both
 // directions are asserted on the same config: a backend declaring nothing warns
 // about everything requested, and one declaring everything warns about nothing.

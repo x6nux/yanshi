@@ -15,9 +15,10 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -28,8 +29,8 @@ import (
 
 	"github.com/x6nux/yanshi/internal/guard"
 	einollm "github.com/x6nux/yanshi/internal/llm/eino"
-	"github.com/x6nux/yanshi/internal/skills"
 	"github.com/x6nux/yanshi/internal/shell"
+	"github.com/x6nux/yanshi/internal/skills"
 	"github.com/x6nux/yanshi/internal/tools"
 )
 
@@ -85,6 +86,12 @@ func recognizerContext(t *testing.T, reg *skills.Registry, spy *spySkillObserver
 }
 
 func TestShellRunOfSkillScriptIsRecognized(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// 该行的脚本形态是 `bash <path>`：一个 POSIX 解释器调用。Windows
+		// 上没有 bash，shell_run 的失败发生在命令解析层——「识别已注册
+		// skill 的 scripts 调用」这个语义在该平台没有可测的载体。
+		t.Skip("`bash <script>` 形态是 POSIX 解释器调用，Windows 无此载体")
+	}
 	reg, _, scriptPath := skillRegistryFixture(t)
 	spy := &spySkillObserver{}
 	ctx := recognizerContext(t, reg, spy)
@@ -109,7 +116,22 @@ func TestFsReadOfSkillMdIsRecognized(t *testing.T) {
 
 	ep, err := newHookMiddleware().WrapInvokableToolCall(ctx, plainEndpoint("skill body"), &adk.ToolContext{Name: "fs_read"})
 	require.NoError(t, err)
-	_, err = ep(ctx, `{"path":"`+filepath.Join(root, "my-skill", "SKILL.md")+`"}`)
+	// JSON MUST be built with Marshal, not string concatenation: a Windows
+	// path contains backslashes whose \U, \A etc. are INVALID JSON escapes —
+	// string-splicing produced an unparseable payload, Unmarshal failed
+	// silently inside candidatePathFor, and the recognizer saw nothing
+	// (2026-09-01 CI, RUNNER~1 short path made it obvious).
+	argsJSON := string(mustJSON(t, struct {
+		Path string `json:"path"`
+	}{Path: filepath.Join(root, "my-skill", "SKILL.md")}))
+	t.Logf("DEBUG fs_read args=%s candidate=%q registry-dir=%q", argsJSON, candidatePathFor("fs_read", argsJSON), func() string {
+		sks := reg.List()
+		if len(sks) == 0 {
+			return "<empty registry>"
+		}
+		return sks[0].Dir
+	}())
+	_, err = ep(ctx, argsJSON)
 	require.NoError(t, err)
 
 	uses := spy.got()
@@ -184,7 +206,7 @@ func TestPostToolUseRecognitionNeverEntersModelContext(t *testing.T) {
 	epWithout, err := newHookMiddleware().WrapInvokableToolCall(bare, plainEndpoint("plain result"), &adk.ToolContext{Name: "shell_run"})
 	require.NoError(t, err)
 
-	cmd := `{"command":"bash ` + scriptPath + `"}`
+	cmd := shellRunArgs(t, scriptPath)
 	outWith, err := epWith(ctx, cmd)
 	require.NoError(t, err)
 	outWithout, err := epWithout(bare, cmd)
@@ -210,7 +232,7 @@ func TestRefusedCallNeverReachesPostToolUse(t *testing.T) {
 
 	ep, err := newHookMiddleware().WrapInvokableToolCall(blocked, plainEndpoint("must not run"), &adk.ToolContext{Name: "shell_run"})
 	require.NoError(t, err)
-	out, err := ep(blocked, `{"command":"bash `+scriptPath+`"}`)
+	out, err := ep(blocked, shellRunArgs(t, scriptPath))
 	require.NoError(t, err)
 	require.Contains(t, out, "blocked by pre_tool_use hook")
 	require.Empty(t, spy.got(), "被拒绝的调用没有执行，不得进入 PostToolUse 识别")
@@ -221,7 +243,7 @@ func TestRefusedCallNeverReachesPostToolUse(t *testing.T) {
 		HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "allow")}})
 	epOK, err := newHookMiddleware().WrapInvokableToolCall(allowed, plainEndpoint("ok"), &adk.ToolContext{Name: "shell_run"})
 	require.NoError(t, err)
-	_, err = epOK(allowed, `{"command":"bash `+scriptPath+`"}`)
+	_, err = epOK(allowed, shellRunArgs(t, scriptPath))
 	require.NoError(t, err)
 	require.Len(t, spy.got(), 1, "对照组必须被识别，否则拒绝路径的沉默是空转")
 	require.Equal(t, "my-skill", spy.got()[0].Skill)
@@ -237,7 +259,7 @@ func TestSubAgentTurnRecognizesImplicitSkillUse(t *testing.T) {
 	step1 := schema.AssistantMessage("", []schema.ToolCall{
 		{ID: "c1", Type: "function", Function: schema.FunctionCall{
 			Name:      "shell_run",
-			Arguments: `{"command":"bash ` + strings.ReplaceAll(scriptPath, `\`, `\\`) + `"}`,
+			Arguments: shellRunArgs(t, scriptPath),
 		}},
 	})
 	mdl := einollm.NewFakeModelWithMessages([]*schema.Message{step1}, nil)
@@ -257,4 +279,24 @@ func TestSubAgentTurnRecognizesImplicitSkillUse(t *testing.T) {
 	uses := spy.got()
 	require.NotEmpty(t, uses, "子代理里的 shell 调用必须同样被识别")
 	require.Equal(t, "my-skill", uses[0].Skill)
+}
+
+// mustJSON marshals v or fails the test — never hand-splice JSON containing
+// platform paths.
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return b
+}
+
+// shellRunArgs 构建 `bash <path>` 形态的 shell_run 入参。本文件剩余的每一处
+// 入参都必须经它构造：手拼 JSON 时 windows 路径的反斜杠（\U、\A…）是非法
+// JSON 转义——轻则 hook 请求编码失败（TestRefusedCallNeverReachesPostToolUse
+// 2026-09-01 CI 实证），重则 Unmarshal 静默失败、识别器空转。
+func shellRunArgs(t *testing.T, path string) string {
+	t.Helper()
+	return string(mustJSON(t, struct {
+		Command string `json:"command"`
+	}{Command: "bash " + path}))
 }

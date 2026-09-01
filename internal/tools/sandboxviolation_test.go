@@ -316,16 +316,22 @@ func TestRealProcessDenialIsClassified(t *testing.T) {
 }
 
 // TestRealProcessDenialIsClassifiedWindows is the Windows half. cmd.exe's
-// `type` on a directory-as-file, and on a path under a protected system
-// location, produce the "Access is denied" family the AppContainer table
-// matches.
+// `type` on a directory-as-file produces the "Access is denied" family the
+// AppContainer table matches: opening a DIRECTORY for read without
+// FILE_FLAG_BACKUP_SEMANTICS fails with ERROR_ACCESS_DENIED on every Windows
+// box, independent of ACLs.
+//
+// The fixture deliberately does NOT point at a kernel-locked file like
+// %SystemRoot%\System32\config\SAM: measured on CI (2026-09-01), that refusal
+// arrives as ERROR_SHARING_VIOLATION ("The process cannot access the file
+// because it is being used by another process") — real contention, not a
+// permission denial, and the classifier is right not to claim it. A denial the
+// sandbox would actually produce is what this fixture must emit.
 func TestRealProcessDenialIsClassifiedWindows(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("windows-only")
 	}
-	// %SystemRoot%\System32\config\SAM is denied to every non-SYSTEM process,
-	// including an elevated one, because the kernel holds it open exclusively.
-	target := filepath.Join(os.Getenv("SystemRoot"), "System32", "config", "SAM")
+	target := filepath.Join(os.Getenv("SystemRoot"), "System32", "config")
 	cmd := exec.Command("cmd", "/c", "type", target)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout

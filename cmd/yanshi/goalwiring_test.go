@@ -204,6 +204,14 @@ func TestAbsWorkdirIsCleaned(t *testing.T) {
 		{"/repo/thing/./", "/repo/thing"},
 		{"/repo/other/../thing", "/repo/thing"},
 	}
+	for i := range cases {
+		// The slash-rooted inputs are normalised by filepath.Clean, whose
+		// Windows spelling is the current drive's root ("\repo\thing").
+		// Deriving `want` from the same Clean keeps the table asserting the
+		// CONTRACT (duplicates, dot segments and trailing separators collapse)
+		// instead of one platform's spelling of it.
+		cases[i].want = filepath.Clean(cases[i].want)
+	}
 	for _, tc := range cases {
 		got, err := absWorkdir(tc.in)
 		require.NoError(t, err)
@@ -227,7 +235,12 @@ func TestResetGoalRun(t *testing.T) {
 	require.NoError(t, os.WriteFile(configPath,
 		[]byte("storage:\n  sqlite_path: "+dbPath+"\n"), 0o600))
 
-	workdir := "/repo/resetme"
+	// absWorkdir normalises the workdir (on Windows a slash-rooted literal
+	// becomes a current-drive path), and every KV key and output line below
+	// uses that normalised spelling. Asserting the POSIX literal was a
+	// guaranteed mismatch on Windows — derive the expectation from the same
+	// normalisation the implementation applies.
+	workdir := absWorkdirSafe("/repo/resetme")
 	st, err := store.Open(dbPath)
 	require.NoError(t, err)
 	// A resume point the operator wants gone. The key format is goalloop's, so

@@ -84,3 +84,4 @@ deps_raw.txt
 
 # serena MCP 工具产物
 .serena/
+.git-commit-msg.txt

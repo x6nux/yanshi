@@ -34,7 +34,17 @@ jobs:
           # meant deleting every fuzz target left the job green — the escape
           # hatch was in the shell, not on the YAML key, so removing
           # continue-on-error alone would not have closed it.
-          if ! go test -list 'Fuzz.*' ./internal/guard/... 2>/dev/null | grep -q '^Fuzz'; then
+          #
+          # The listing is captured before grep runs, not piped straight into
+          # `grep -q`: with pipefail, grep -q exits at the first match and
+          # closes the pipe while `go test -list` is still writing the rest —
+          # the writer dies of SIGPIPE, the pipeline reports failure, and the
+          # `if !` misreads that as "no targets". That false negative is what
+          # flipped fuzz-long red on every nightly since 2026-08-29 (the same
+          # defect ci.yml's fuzz-seed had). Dropping 2>/dev/null also lets a
+          # compile error surface instead of masquerading as "no targets".
+          fuzz_targets="$(go test -list 'Fuzz.*' ./internal/guard/...)"
+          if ! printf '%s\n' "$fuzz_targets" | grep -q '^Fuzz'; then
             echo "no Fuzz target found under internal/guard — they were removed, " \
                  "or the package moved. This job exists to run them." >&2
             exit 1
@@ -78,7 +88,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! go test -list 'Benchmark.*' ./... 2>/dev/null | grep -q '^Benchmark'; then
+          # Same pipefail+grep -q SIGPIPE shape as fuzz-long above: capture the
+          # listing first, then grep it. Bench is trend-only, but a false "no
+          # benchmarks" here would silently skip the trend entirely.
+          bench_targets="$(go test -list 'Benchmark.*' ./...)"
+          if ! printf '%s\n' "$bench_targets" | grep -q '^Benchmark'; then
             echo "no Benchmark target found"
             exit 0
           fi

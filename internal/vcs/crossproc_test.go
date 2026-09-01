@@ -52,6 +52,27 @@ func twoWriterFixture(t *testing.T) (v1, v2 *VCS, repoID, root string) {
 	v1.SetLockDir(lockDir)
 	v2 = New(s2, filepath.Join(base, "wt2"))
 	v2.SetLockDir(lockDir)
+	// lockRepo 打开的锁文件描述符是按 VCS 生命周期保留的（见 crossproc.go
+	// lockFileFor），VCS.Close 正是为此设计的释放口；不关的话 windows 上
+	// t.TempDir 的 RemoveAll 会撞上仍持有的 .lock 句柄（2026-09-01 CI）。
+	//
+	// Close 必须等测试派生的 lock goroutine 全部退场：那些 goroutine 里的
+	// unlockFile 会读锁文件 FD，与 Close 的 unlinkHeldLockFile 关闭动作构成
+	// data race（2026-09-01 race leg，TestV8_LaneIsMutuallyExclusive 等）。
+	// 各测试通过 wgGo 注册自己的后台 goroutine，cleanup 先等再关。
+	var wg sync.WaitGroup
+	t.Cleanup(func() {
+		wg.Wait()
+		_ = v1.Close()
+		_ = v2.Close()
+	})
+	wgGo = func(fn func()) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fn()
+		}()
+	}
 
 	repoID, err = v1.InitRepo(root)
 	require.NoError(t, err)
@@ -126,6 +147,11 @@ func TestV8_ConcurrentWritersDoNotLoseCommits(t *testing.T) {
 		len(missing), 2*perWriter)
 }
 
+// wgGo is rebound by twoWriterFixture to run fn tracked on the fixture's
+// WaitGroup, so cleanup waits for spawned lock goroutines before closing VCS
+// handles (avoids the FD close-vs-unlock data race seen on the race leg).
+var wgGo func(fn func())
+
 // TestV8_LaneIsMutuallyExclusive proves the lane itself excludes, independently
 // of what commitScope does with it. Without this, a change that kept the tree
 // intact by some other means would let the lock rot undetected.
@@ -134,11 +160,11 @@ func TestV8_LaneIsMutuallyExclusive(t *testing.T) {
 
 	unlock1 := v1.lockRepo(repoID)
 	entered := make(chan struct{})
-	go func() {
+	wgGo(func() {
 		unlock2 := v2.lockRepo(repoID)
 		close(entered)
 		unlock2()
-	}()
+	})
 
 	select {
 	case <-entered:
@@ -165,11 +191,11 @@ func TestV8_DistinctReposDoNotSerialize(t *testing.T) {
 	defer unlock1()
 
 	acquired := make(chan struct{})
-	go func() {
+	wgGo(func() {
 		unlock := v2.lockRepo("some-other-repo-id")
 		close(acquired)
 		unlock()
-	}()
+	})
 
 	select {
 	case <-acquired:
@@ -212,18 +238,24 @@ func TestV8_LockIsReleasedWhenHolderProcessDies(t *testing.T) {
 	// The holder is gone without ever unlocking. The lane must be free.
 	v := New(nil, filepath.Join(base, "wt"))
 	v.SetLockDir(lockDir)
+	gone := make(chan struct{})
 	acquired := make(chan struct{})
-	go func() {
+	wgGo(func() {
 		unlock := v.lockRepo(lockKey)
 		close(acquired)
 		unlock()
-	}()
+		close(gone)
+	})
 	select {
 	case <-acquired:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the lock survived its holder's death: a crashed process would " +
 			"wedge the repo write lane permanently")
 	}
+	// Close 不能与 unlockFile 并发（FD close-vs-read race）：等 goroutine
+	// 完成 unlock 退出后再关。
+	<-gone
+	_ = v.Close()
 }
 
 // holdLockAndDie is the helper-process body for the crash test. It takes the
@@ -263,6 +295,7 @@ func TestV8_RealSubprocessesDoNotLoseCommits(t *testing.T) {
 	require.NoError(t, err)
 	v := New(parent, filepath.Join(base, "wt"))
 	v.SetLockDir(lockDir)
+	t.Cleanup(func() { _ = v.Close() })
 	repoID, err := v.InitRepo(root)
 	require.NoError(t, err)
 	// Close the parent handle so the children contend only with each other.
@@ -415,16 +448,17 @@ func TestV8_DefaultLockDirIsMachineWide(t *testing.T) {
 func TestV8_LaneIsReentrantAcrossSequentialAcquisitions(t *testing.T) {
 	v := New(nil, "")
 	v.SetLockDir(t.TempDir())
+	t.Cleanup(func() { _ = v.Close() })
 	for i := 0; i < 5; i++ {
 		unlock := v.lockRepo("repeat-key")
 		unlock()
 	}
 	done := make(chan struct{})
-	go func() {
+	wgGo(func() {
 		unlock := v.lockRepo("repeat-key")
 		unlock()
 		close(done)
-	}()
+	})
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):

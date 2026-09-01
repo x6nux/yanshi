@@ -53,9 +53,19 @@ func fakeHome(t *testing.T) (home, key string) {
 // exactly the headless/SSE posture.
 func runReadTurn(t *testing.T, root, path string, prof guard.PermissionProfile) string {
 	t.Helper()
+	// jsonObj, not string concatenation: on Windows the temp-dir path is full of
+	// backslashes, and `{"path":"C:\Users\…"}` is invalid JSON (`\U` is not an
+	// escape), so the tool's args parser refused the call before the guard ever
+	// saw a path — all four S2 assertions then failed on a parse error instead
+	// of a verdict. Measured on the CI windows leg; s3/s4/s10 already go through
+	// this helper for exactly that reason.
+	args, err := jsonObj(map[string]string{"path": path})
+	if err != nil {
+		t.Fatal(err)
+	}
 	step1 := schema.AssistantMessage("", []schema.ToolCall{
 		{ID: "c1", Type: "function", Function: schema.FunctionCall{
-			Name: "fs_read", Arguments: `{"path":"` + path + `"}`,
+			Name: "fs_read", Arguments: args,
 		}},
 	})
 	step2 := schema.AssistantMessage("done", nil)

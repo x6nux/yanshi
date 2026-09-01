@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -84,6 +85,24 @@ func runTests(ctx context.Context, argsJSON string) (string, error) {
 	res, err := secureCommandRunner(ctx, spec, timeout)
 	duration := time.Since(start).Milliseconds()
 	if err != nil {
+		// A timeout or caller cancellation is a STRUCTURED result, not a
+		// tool error: the model needs to see that the run was cut short and
+		// how far it got, as JSON it can reason over — B3/DT4#3 pins this
+		// ("timeout/cancel clean"). errorResult's "✗ …" text is for failures
+		// of the tool itself; a deadline the caller itself set is an outcome
+		// of the run. Drain timing differs per platform (a hung helper is
+		// killed and reaped on one OS, observed to wedge on another), so the
+		// conversion keys on ctx state, not on where the error surfaced.
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
+			ctx.Err() != nil {
+			return toJSON(testResult{
+				Framework:  framework,
+				Status:     "error",
+				DurationMS: duration,
+				Summary: fmt.Sprintf("run_tests did not finish: %v after %dms (timeout_s=%d)",
+					err, duration, args.TimeoutS),
+			}), nil
+		}
 		return errorResult("run_tests: " + err.Error()), nil
 	}
 	parsed := reconcileExitCode(parseTestResult(framework, res), res)

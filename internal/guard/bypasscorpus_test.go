@@ -329,7 +329,7 @@ var bypassCorpus = []bypassRow{
 	{cmd: `case x in x) rm -rf /;; esac`, want: wantFloor},
 	{cmd: `f() { rm -rf /; }; f`, want: wantFloor},
 	{cmd: `time rm -rf /`, want: wantFloor},
-	{cmd: `coproc rm -rf /`, want: wantFloor, tableOnly: noBuiltinShim},
+	{cmd: `coproc rm -rf /`, want: wantFloor},
 	{cmd: `{ rm -rf /; }`, want: wantFloor},
 	{cmd: `! rm -rf /`, want: wantFloor},
 	{cmd: `if true; then rm -rf /; fi`, want: wantFloor},
@@ -789,7 +789,7 @@ $X -rf /`, want: wantFloor},
 	{cmd: `tee -a ~/.ssh/authorized_keys`, want: wantPrompt},
 	{cmd: `cp /dev/null ~/.ssh/authorized_keys`, want: wantPrompt},
 	{cmd: `mv /tmp/k ~/.ssh/authorized_keys`, want: wantPrompt},
-	{cmd: `ln -sf /etc/passwd ~/.ssh/authorized_keys`, want: wantPrompt},
+	{cmd: `ln -sf /tmp/k ~/.ssh/authorized_keys`, want: wantPrompt},
 	{cmd: `install -m 600 /dev/stdin ~/.ssh/authorized_keys`, want: wantPrompt},
 	{cmd: `sed -i s/x/y/ ~/.ssh/authorized_keys`, want: wantPrompt},
 	// sed writes from inside its SCRIPT too, which the `-i` requirement above
@@ -1094,7 +1094,7 @@ func TestNoSpellingTheShellExecutesIsAllowed(t *testing.T) {
 // would be a second reader). The fourth is the accepted over-strictness row
 // `git commit -m "tee ~/.ssh/authorized_keys"`, where nothing is dispatched
 // because no variable is set, so there is no execution for the shell to show.
-const tableOnlyRowCount = 47
+const tableOnlyRowCount = 46
 
 // unwitnessedAllowRowCount is the same measurement for rows pinned to Allow,
 // counted SEPARATELY because the two admissions are not the same size.
@@ -1255,6 +1255,15 @@ func forEachPOSIXCorpusRow(t *testing.T, check func(*testing.T, bypassRow, shell
 	for _, row := range bypassCorpus {
 		if row.interp != "" {
 			continue
+		}
+		// The .ssh parent is rebuilt per row: a corpus row that trashes the
+		// HOME must not silently turn every later credential-write row's
+		// witness predicate (keyErr == nil) off — the writer shims' `: > path`
+		// cannot mkdir -p, and a row that lost its directory is a row that
+		// lost its witness, which reads back as a mislabelled row three
+		// entries later.
+		if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+			t.Fatal(err)
 		}
 		if err := os.Remove(keyPath); err != nil && !os.IsNotExist(err) {
 			t.Fatal(err)

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -744,7 +745,20 @@ func TestLandlockHelperAllowsGrantedWrite(t *testing.T) {
 func TestLandlockBackendPrepareReallyConfines(t *testing.T) {
 	requireEnforcingLandlock(t)
 
-	base := t.TempDir()
+	// base MUST NOT live under os.TempDir(): the production policy keeps
+	// /tmp, /var/tmp and /dev/shm world-writable on purpose (programs need
+	// scratch space), and a workspace outside there tests nothing — the
+	// sibling-write "breach" of 2026-09-01 was the shared-scratch grant
+	// doing exactly its job. Park the tree in the package directory, which
+	// the token neither reads-grant-confines nor write-grants.
+	base, err := filepath.Abs(filepath.Join("landlock-test-"+t.Name(), strconv.Itoa(os.Getpid())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mkdirAllForTest(base); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(base) })
 	ws := filepath.Join(base, "ws")
 	if err := mkdirAllForTest(ws); err != nil {
 		t.Fatal(err)
@@ -775,6 +789,10 @@ func TestLandlockBackendPrepareReallyConfines(t *testing.T) {
 			t.Fatal("Prepare left the command unwrapped; the child would run unconfined " +
 				"while Report claims os-isolated")
 		}
+		// 2026-09-01 CI: the write-below breach needs the actual wrapped shape
+		// to diagnose (helper binary? loader? argv[0]? extra env?). Log it for
+		// every probe — verbose in failure logs is cheap, blind fixes are not.
+		t.Logf("DEBUG prepared: path=%q args=%q env-len=%d dir=%q", cmd.Path, cmd.Args, len(cmd.Env), cmd.Dir)
 		cmd.Env = []string{}
 		return cmd.Run()
 	}
@@ -795,6 +813,14 @@ func TestLandlockBackendPrepareReallyConfines(t *testing.T) {
 		// pass the allow case above and confine nothing that matters.
 		target := filepath.Join(outside, "leaked")
 		if err := runPrepared(t, "echo leaked > "+target); err == nil {
+			// First seen on a 24.04 runner with user namespaces enabled
+			// (2026-09-01): the probe passed, Prepare wrapped, the write
+			// SUCCEEDED — the installed ruleset did not actually deny writes
+			// outside the workspace. Everything the fix needs, in the log.
+			if b, err := os.ReadFile("/proc/version"); err == nil {
+				t.Logf("DEBUG kernel: %s", strings.TrimSpace(string(b)))
+			}
+			t.Logf("DEBUG prepared command survives: it was NOT confined; see runPrepared's rewrite above")
 			t.Fatalf("the prepared command wrote outside its workspace: %s", target)
 		}
 		if _, err := os.Stat(target); err == nil {

@@ -172,6 +172,22 @@ func OpenWith(path string, opts OpenOptions) (*Store, error) {
 // finish healing before giving up and reporting the corruption.
 const healWaitTimeout = 5 * time.Second
 
+// healRecheckAttempts and healRecheckBackoff bound the recheck-under-lock
+// retry budget: how long a healer tolerates CONTENTION recheck failures before
+// reporting the last one instead of quarantining. The contention this waits
+// out is the sibling openers' migrate() storm on the freshly repaired
+// database, which drains in single-digit milliseconds; 25 attempts at 20ms is
+// ~500ms of slack against a CI runner under load, still well inside the
+// healWaitTimeout a queued peer is itself prepared to spend. Attempts stop
+// early the moment the recheck returns anything that is not a contention code
+// — corruption-classified and every other non-transient failure takes the
+// quarantine branch immediately, so the garbage-database case and the
+// rebuild-failed case pay for none of this budget.
+const (
+	healRecheckAttempts = 25
+	healRecheckBackoff  = 20 * time.Millisecond
+)
+
 // healLockTTL bounds how long a heal lock is honoured. Healing is one rename
 // plus one round of CREATE TABLE — milliseconds — so a lock older than this
 // belongs to a process that died holding it. Never healing again is a worse
@@ -242,8 +258,49 @@ func healUnderLock(path string, maxOpen, busyMs, autoCkpt int, openErr error) (*
 	// between our failed open and our acquiring the lock, in which case the
 	// file at path is now a healthy database and renaming it away would undo
 	// their repair.
-	if healthy, err := openPrepared(path, maxOpen, busyMs, autoCkpt); err == nil {
-		return healthy, nil
+	//
+	// The recheck's ERROR CLASS decides, not its mere existence, and the
+	// decision is three-way:
+	//
+	//   - nil → the holder we queued behind already repaired the file; adopt it.
+	//   - isTransientOpenErr (SQLITE_BUSY, SQLITE_IOERR_DELETE_NOENT — the two
+	//     codes measured coming out of concurrent first opens, and the same set
+	//     applyConnectionPragmas retries internally) → the sibling storm is
+	//     still draining; retry on the expectation that it drains in
+	//     milliseconds, and report the error as-is if the budget runs out.
+	//     These codes say "somebody else is using it", which is no evidence
+	//     about the file, and quarantining on that evidence renames a HEALTHY
+	//     database: measured on the six-way open this package's concurrent
+	//     healer test runs, that destroyed the repaired database, turned the
+	//     -wal/-shm pair over under live connections, and ended in SIGBUS
+	//     inside walIndexAppend — the data loss this whole apparatus exists to
+	//     prevent, committed by the repairer.
+	//   - anything else — corruption-classified (the file is still garbage, the
+	//     case the first holder runs into) and every non-contention failure
+	//     alike — takes the pre-existing branch below: the quarantine, and the
+	//     rebuild whose failure reports the ORIGINAL corruption error wrapped.
+	//     internal/store::TestOpenWith_ReturnsTheOriginalErrorWhenTheRebuildFails
+	//     pins that reporting contract; routing a non-transient recheck error
+	//     into the retry instead would strand the caller with an error that
+	//     says nothing about the corruption that started the heal.
+	var transientErr error
+	for attempt := 0; ; attempt++ {
+		healthy, err := openPrepared(path, maxOpen, busyMs, autoCkpt)
+		if err == nil {
+			return healthy, nil
+		}
+		if !isTransientOpenErr(err) {
+			break
+		}
+		transientErr = err
+		if attempt >= healRecheckAttempts-1 {
+			break
+		}
+		time.Sleep(healRecheckBackoff)
+	}
+	if transientErr != nil {
+		return nil, fmt.Errorf("store: %s was still contended (%v) after %d rechecks; not quarantining a database nothing has proven unreadable",
+			path, transientErr, healRecheckAttempts)
 	}
 
 	// A failed quarantine is NOT fatal on its own, and the early return that

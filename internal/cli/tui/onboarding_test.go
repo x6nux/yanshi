@@ -12,7 +12,9 @@ import (
 
 // newOnboardingModel builds a model whose prefs live at a temp path and whose
 // cascade has NOT recorded the onboarding tombstone — i.e. the state a real
-// first-run startup is in.
+// first-run startup is in. The stdout probe is forced interactive: the tests
+// here exercise the wizard itself, and go test's stdout is a pipe, which the
+// production gate treats as "no human to onboard".
 func newOnboardingModel(t *testing.T) model {
 	t.Helper()
 	dir := t.TempDir()
@@ -20,6 +22,9 @@ func newOnboardingModel(t *testing.T) model {
 	old := preferencesPathFn
 	preferencesPathFn = func() string { return path }
 	t.Cleanup(func() { preferencesPathFn = old })
+	oldProbe := stdoutInteractive
+	stdoutInteractive = true
+	t.Cleanup(func() { stdoutInteractive = oldProbe })
 	return newModel(&fakeSession{}, "/proj")
 }
 
@@ -85,6 +90,12 @@ func TestOnboardingSkippedNotShownAgain(t *testing.T) {
 	old := preferencesPathFn
 	preferencesPathFn = func() string { return path }
 	t.Cleanup(func() { preferencesPathFn = old })
+	// This test drives newModel directly (both startups go through it), and
+	// go test's stdout is a pipe — without arming the probe here, Startup 2
+	// can never re-arm the wizard and the acceptance below is unreachable.
+	oldProbe := stdoutInteractive
+	stdoutInteractive = true
+	t.Cleanup(func() { stdoutInteractive = oldProbe })
 
 	// Startup 1: tombstone present → no wizard.
 	m := newModel(&fakeSession{}, "/proj")

@@ -106,6 +106,12 @@ var relayShims = map[string]string{
 	"busybox": relayScript(0, false),
 	"unshare": relayScript(0, false),
 	"watch":   relayScript(0, false),
+	// bash 4 made `coproc` a reserved word; bash 3.2 (the macOS system bash)
+	// parses the very same line as the PROGRAM `coproc` with operands. A relay
+	// stand-in makes both spellings witness the same `rm` underneath, so the
+	// coproc corpus row's witness predicate stops depending on which bash the
+	// platform ships.
+	"coproc":  relayScript(0, false),
 	// polkit's elevation. It is `sudo` with a different distribution's spelling
 	// and it is NOT in prefixRunners — which is the point of the corpus rows it
 	// witnesses: the verdict has to come from reading the argv, not from
@@ -335,12 +341,20 @@ var credentialWriterShims = []string{
 // an operand that the real program would only READ (cp's source, sed's script)
 // costs nothing: the assertion asks whether the CREDENTIAL path appeared, and a
 // source operand that is one is a write to it under any reading.
+//
+// The creating command is `true >` and not the seductive `: >`: colon is a
+// SPECIAL builtin, and POSIX says a redirection failure on a special builtin
+// aborts a non-interactive shell — dash exits 2 right there, `|| true`
+// notwithstanding, so one uncreatable operand (sed's `s/x/y/`, curl's
+// `http://…/k`) killed the shim before it ever reached the credential path.
+// `true` is a regular builtin: its redirection failure is an ordinary command
+// failure, the loop moves on. (2026-08-31, ubuntu leg.)
 const credentialWriterScript = `#!/bin/sh
 for a in "$@"; do
   case "$a" in
     -*) continue ;;
   esac
-  : > "$a" 2>/dev/null || true
+  true > "$a" 2>/dev/null || true
 done
 exit 0
 `
@@ -416,7 +430,15 @@ func newShellHarness(t *testing.T) (workdir string, run func(string) shellReadin
 		// silently.
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		c := exec.CommandContext(ctx, "/bin/sh", "-c", cmd)
+		// The reference shell is bash, not /bin/sh: the corpus carries rows
+		// whose parsing differs per shell family (ANSI-C $'…' quoting, >&fd
+		// redirections), and what the differential assertion needs is ONE
+		// well-defined reader that both macOS and the ubuntu runner ship —
+		// /bin/sh is dash on Linux and parses neither, which left those rows
+		// unwitnessed on CI while green on a mac. Guard itself must read the
+		// way every major shell reads; bash is the superset that pins the
+		// corpus rows deterministically on both platforms.
+		c := exec.CommandContext(ctx, "/bin/bash", "-c", cmd)
 		c.Dir = work
 		// PATH carries the shim directory alone: an unshimmed program cannot be
 		// resolved at all, so a bug in this harness fails closed.

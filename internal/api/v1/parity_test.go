@@ -134,7 +134,12 @@ func readSDK(t *testing.T, parts ...string) string {
 	if err != nil {
 		t.Fatalf("read %s: %v", p, err)
 	}
-	return string(data)
+	// blockAfter's terminator is "\n\n\n"; a CRLF checkout (git-for-windows
+	// autocrlf on the windows leg) never contains that byte sequence, the
+	// class body then runs to end-of-file, and the NEXT class's fields get
+	// attributed to this one. The assertions compare field SETS, not line
+	// endings — normalise before parsing.
+	return strings.ReplaceAll(string(data), "\r\n", "\n")
 }
 
 var (
