@@ -267,14 +267,26 @@ func TestWSBackend_CancelDuringBurstyStream_NoPanic(t *testing.T) {
 		// The server's WS Close handshake may overtake the tail of the burst
 		// on the client side (kernel timing, not TCP-ordering): ReadMessage
 		// then surfaces a close error, readLoop calls closeCurWithError and
-		// cur freezes at whatever it held (<16). That is a legal setup state —
+		// cur closes at whatever it held (<16). That is a legal setup state —
 		// the invariant under test is "Cancel during a bursty stream never
-		// panics", not "the buffer always reaches exactly cap". Detect the
-		// closed-cur case and skip the fill assertion; a closed ch reads
-		// exhausted in range ch below with zero panic, which still exercises
-		// the cancel path.
-		if !isChanClosed(ch) {
-			require.Equalf(t, cap(ch), len(ch), "round %d: readLoop never filled the buffer", round)
+		// panics", not "the buffer always reaches exactly cap".
+		//
+		// Detecting "closed" by RECEIVING must not be done with a bare
+		// `_, ok := <-ch` (the old isChanClosed): that CONSUMES a buffered
+		// frame, so a closed cur holding 10 of 16 buffered frames reads as
+		// "not closed, 15 buffered" — both numbers lie, and the fill
+		// assertion below fires on a perfectly legal state (measured on
+		// ubuntu 2026-09-03 CI: expected 16, actual 10). A non-blocking
+		// len()>0 PEEK observes the buffered frames without consuming any:
+		// only when the buffer is DRAINED (len==0) and the channel is closed
+		// does the receive succeed, and by then nothing is left to miscount.
+		if len(ch) == 0 {
+			if _, ok := <-ch; ok {
+				// A live cur with an empty buffer means readLoop never
+				// filled it — the actual failure the old comment feared.
+				require.Equalf(t, cap(ch), len(ch),
+					"round %d: readLoop never filled the buffer", round)
+			}
 		}
 
 		// Cancel fires the watcher, which closes cur while readLoop is blocked
@@ -338,9 +350,4 @@ func TestJobsControlRepliesMapThroughCLI(t *testing.T) {
 	if !isControlReply("jobs") || !isControlReply("job_event") {
 		t.Fatal("jobs replies must close control channel")
 	}
-}
-
-func isChanClosed[T any](ch <-chan T) bool {
-	_, ok := <-ch
-	return !ok
 }
