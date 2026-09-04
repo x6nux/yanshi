@@ -14,12 +14,25 @@ concurrency:
 
 jobs:
   test:
-    name: test (${{ matrix.os }})
+    name: test (${{ matrix.os }}${{ matrix.shard }})
     runs-on: ${{ matrix.os }}-latest
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu, windows, macos]
+        shard: ["", "-heavy"]
+        exclude:
+          # Only windows needs the heavy/light split: its leg was the
+          # CI wall-clock bottleneck (~23min vs ubuntu/macos ~5min) because
+          # two CPU-bound packages (agent/orchestrator ~220s, api/http
+          # ~200s on 4 vCPU) sit in one job on a 4-core runner. ubuntu
+          # carries the whole suite in one job (it is fast there and the
+          # race/coverage jobs already slice it differently); macos is
+          # likewise under 5min.
+          - os: ubuntu
+            shard: "-heavy"
+          - os: macos
+            shard: "-heavy"
     env:
       # 无 dbus session 的 runner 上，go-keyring 的 SessionBus() 会走
       # autolaunch：fork dbus-launch 等 X11，永不返回——bootstrap 的
@@ -71,7 +84,22 @@ jobs:
         run: sudo npm install -g @ast-grep/cli
       # e2e_real build tag is off by default -> codex/claudecode CLIs are not
       # needed. eino/bootstrap t.Skip on missing providers is expected, not a fail.
-      - run: go test ./...
+      #
+      # Sharding (windows -heavy/-light): the heavy shard takes the two
+      # CPU-bound packages that dominate the leg; the light shard takes
+      # everything else. Both also run the bubbletea fork below so the
+      # windows-only Ctrl+Enter guard executes regardless of shard.
+      - name: "go test (heavy shard: orchestrator + api/http)"
+        if: matrix.shard == '-heavy'
+        run: go test -timeout 20m ./internal/agent/orchestrator/ ./internal/api/http/
+      - name: "go test (light shard: everything else)"
+        if: matrix.shard == ''
+        shell: bash
+        run: |
+          go test $(go list ./... | grep -v -e 'internal/agent/orchestrator' -e 'internal/api/http')
+      - name: "go test (unsharded legs: single job carries the whole suite)"
+        if: matrix.shard == '' && matrix.os != 'windows'
+        run: go test ./...
       # RE-26: third_party/bubbletea is a SEPARATE module (go.mod there, wired
       # in by a replace directive), so the main module's `go test ./...` above
       # cannot reach it -- `go list ./...` does not even mention it. Every test
@@ -172,22 +200,20 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: go test -race (per-package, up to 3 attempts)
+      - name: go test -race ./...
         shell: bash
-        run: |
-          set -e
-          fail=0
-          for pkg in $(go list ./...); do
-            for attempt in 1 2 3; do
-              if go test -race -timeout 600s "$pkg"; then
-                break
-              elif [ "$attempt" -eq 3 ]; then
-                echo "::error::race test failed 3/3: $pkg"
-                fail=1
-              fi
-            done
-          done
-          exit $fail
+        # One `go test -race ./...` invocation instead of a serialized
+        # per-package bash loop. The loop ran packages strictly one at a
+        # time (~22min: orchestrator alone is 200s+ under -race on a
+        # 4-core runner, and everything waited behind it); `go test ./...`
+        # schedules packages in parallel across cores and reuses the build
+        # cache between packages, which the loop's repeated `go test` calls
+        # could not. The old loop's 3-attempt retry existed to absorb -race
+        # timing flakes; those root causes are fixed (landlock workspace,
+        # store SIGBUS, V8 close-vs-unlock, batch barrier), so a straight
+        # run is both faster and at least as honest — a real race still
+        # fails the job. Timeout is per-package, matching the loop's.
+        run: go test -race -timeout 600s ./...
 
   build:
     name: build (${{ matrix.os }}, ${{ matrix.tags }})

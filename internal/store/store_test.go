@@ -582,11 +582,20 @@ func TestOpenWith_ConcurrentHealersDoNotDestroyEachOthersDatabase(t *testing.T) 
 	close(start)
 	wg.Wait()
 
+	// Close every successful store BEFORE asserting: require.FailNow from an
+	// early assert would skip the remaining Close calls, and on windows the
+	// t.TempDir RemoveAll then hits "being used by another process" on the
+	// still-open yanshi.db — turning one assertion failure into a leaked-
+	// handle failure that hides the first (2026-09-01 CI).
+	for i := range healers {
+		if stores[i] != nil {
+			_ = stores[i].Close()
+		}
+	}
 	healed := 0
 	for i := range healers {
 		if stores[i] != nil {
 			healed++
-			_ = stores[i].Close()
 		}
 		require.NoErrorf(t, errs[i], "healer %d", i)
 	}
