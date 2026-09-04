@@ -286,7 +286,13 @@ func TestReleaseSnapshotIsVerifiedNightly(t *testing.T) {
 	}
 	for _, want := range []string{
 		"release --snapshot",
-		"grep -qx LICENSE",
+		// 2026-09-03: the verify step asserts the three goreleaser files via
+		// an explicit loop (the old bare `grep -qx LICENSE` pipeline let the
+		// SIGPIPE'd tar error swallow which entry was missing). The pin
+		// follows the assertion, not the byte shape: name all three entries
+		// and the grep that must match each of them.
+		"for entry in LICENSE README.md config.example.yaml",
+		"grep -qx \"$entry\"",
 		"yanshi -h",
 	} {
 		if !strings.Contains(body, want) {

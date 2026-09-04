@@ -126,12 +126,39 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu, windows, macos]
+    env:
+      # 与 ci.yml 的 test job 同源的两条 runner 环境豁免，nightly 的
+      # race-full 走同一套测试矩阵，缺了就会在 CI 已经豁免过的地方变红：
+      # - 无 dbus session 的 runner 上，go-keyring 的 SessionBus() 会走
+      #   autolaunch：fork dbus-launch 等 X11，永不返回，LiveRun 家族挂满
+      #   10m 包超时。指一个不可达地址让 godbus 直接 dial 失败，keyring
+      #   探测落进代码既有的降级路径（windows/macos 不经过 dbus，此变量
+      #   对它们无效）。
+      # - hosted windows runner 的 service token 无法承载 WRITE_RESTRICTED
+      #   子进程（CreateRestrictedToken -> ERROR_INVALID_PARAMETER），confine
+      #   行为测试在那里只能降级为 skip。这是项目自己的 opt-out 开关
+      #   （见 restrictedtoken_windows_test.go），带 probe 原因降级，
+      #   在 probe 意外失败的机器上仍然 Fatal。
+      DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent
+      YANSHI_RESTRICTEDTOKEN_TESTS_OPTIONAL: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
+      # 与 ci.yml 同步的 linux-only 测试依赖：bubblewrap 供 internal/sandbox
+      # 的强制执行测试给出真实判定（kernel.apparmor_restrict_unprivileged_userns
+      # 同样要放开，见 ci.yml 的注释），fonts-noto-cjk 供 cmd/tuidbg 的
+      # 渲染测试找到真正带 CJK 墨迹的字体——2026-09-02 的 nightly 里
+      # TestChainRendersCJK/TestWideGlyphSpansBothColumns 因 runner 只有
+      # DejaVu 而红，cmd/yanshi 的 runServe 测试则因无 dbus 挂满 15s 超时。
+      - name: install bubblewrap and Noto CJK fonts (linux sandbox + tuidbg render tests)
+        if: matrix.os == 'ubuntu'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap fonts-noto-cjk
+      - name: allow unprivileged user namespaces (bwrap needs them on 24.04)
+        if: matrix.os == 'ubuntu'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: go test -race ./...
 
   release-snapshot:
@@ -162,10 +189,19 @@ jobs:
           archives=$(ls dist/*.tar.gz dist/*.zip | wc -l)
           [ "$archives" -eq 4 ] || { echo "expected 4 archives, got $archives" >&2; exit 1; }
           [ "$(wc -l < dist/checksums.txt)" -eq 4 ] || { echo "checksums.txt is short" >&2; exit 1; }
-          # The archive must carry the licence, or every downloaded copy ships
-          # without the notice MIT requires.
-          tar tf dist/yanshi_*_linux_amd64.tar.gz | grep -qx LICENSE
-          tar tf dist/yanshi_*_linux_amd64.tar.gz | grep -qx config.example.yaml
+          # goreleaser files 列表里声明的三件（LICENSE/README.md/
+          # config.example.yaml）必须真的在包里：LICENSE 不随包走，每份
+          # 下载出来的副本都缺 MIT 要求携带的声明。旧写法 `tar tf | grep -qx`
+          # 直接裸在 `set -e` 下，2026-09-02 nightly 里 grep 没命中时
+          # "tar: stdout: write error"（SIGPIPE 连带）把真正的缺口吞了——
+          # 显式断言 + 命中失败时把包内容打出来。
+          for entry in LICENSE README.md config.example.yaml; do
+            if ! tar tf dist/yanshi_*_linux_amd64.tar.gz | grep -qx "$entry"; then
+              echo "archive is missing $entry" >&2
+              tar tf dist/yanshi_*_linux_amd64.tar.gz >&2
+              exit 1
+            fi
+          done
           # The only real smoke test of the nokeyring build.
           rm -rf /tmp/relsmoke && mkdir -p /tmp/relsmoke
           tar xf dist/yanshi_*_linux_amd64.tar.gz -C /tmp/relsmoke
