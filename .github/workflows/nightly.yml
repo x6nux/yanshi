@@ -159,6 +159,14 @@ jobs:
       - name: allow unprivileged user namespaces (bwrap needs them on 24.04)
         if: matrix.os == 'ubuntu'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # 与 ci.yml 的 test/race job 同因：runner 预装的 sg 是 util-linux 或旧版
+      # ast-grep，不认识 `run` 关系组（"sg: group 'run' does not exist"），
+      # race 下跑的 TestAstSearchReal_* 四个测试同样需要当前版 ast-grep。
+      # 见 ci.yml test job 的注释。2026-09-04 nightly (#33851018312) 里
+      # ubuntu leg 因此变红（windows/macos 没有预装 sg，正确 skip）。
+      - name: install current ast-grep (runner's prebuilt sg is too old)
+        if: matrix.os == 'ubuntu'
+        run: sudo npm install -g @ast-grep/cli
       - run: go test -race ./...
 
   release-snapshot:
@@ -195,10 +203,19 @@ jobs:
           # 直接裸在 `set -e` 下，2026-09-02 nightly 里 grep 没命中时
           # "tar: stdout: write error"（SIGPIPE 连带）把真正的缺口吞了——
           # 显式断言 + 命中失败时把包内容打出来。
+          #
+          # 2026-09-04 nightly (#33851018312)：断言本身是对的，但
+          # `tar tf | grep -qx` 在 `set -o pipefail` 的 if 条件里仍然带
+          # SIGPIPE 竞态——grep -qx 命中即退出，tar 写后续行收到 SIGPIPE
+          # 以 141 退出，pipefail 把整条管道判负，`if !` 把"命中"误读成
+          # "缺失"（本次真实日志：tar: stdout: write error + "archive is
+          # missing LICENSE"，而随后打印的包内容里 LICENSE 明明在）。
+          # 先把清单落盘，再对文件 grep，管道不复存在，竞态随之消失。
+          tar tf dist/yanshi_*_linux_amd64.tar.gz > /tmp/archive-listing.txt
           for entry in LICENSE README.md config.example.yaml; do
-            if ! tar tf dist/yanshi_*_linux_amd64.tar.gz | grep -qx "$entry"; then
+            if ! grep -qx "$entry" /tmp/archive-listing.txt; then
               echo "archive is missing $entry" >&2
-              tar tf dist/yanshi_*_linux_amd64.tar.gz >&2
+              cat /tmp/archive-listing.txt >&2
               exit 1
             fi
           done
