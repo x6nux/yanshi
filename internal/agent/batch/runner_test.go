@@ -358,12 +358,24 @@ func TestRunnerAgentCancelledStatus(t *testing.T) {
 }
 
 func TestRunnerCtxCancelDuringSpawnBackoff(t *testing.T) {
-	// MaxConcurrent=1 + 2 rows: row 0 spawns, row 1 hits cap and retries.
-	// Cancel context during backoff to trigger ctx.Done() path in
-	// spawnWithRetry's select.
+	// MaxConcurrent=1 + 2 rows: row 0's agent HOLDS the only slot and never
+	// completes (blocked on gate), so row 1 is provably parked inside
+	// spawnWithRetry's backoff select for the whole test — CappedBackoff is
+	// 5s, far longer than anything this test waits. Cancelling the context
+	// must then break row 1 out of that select (ctx.Done branch) immediately
+	// instead of making the run wait out the 5s.
+	//
+	// This replaces the old flaky signal ("row 0 agent reached
+	// StatusCompleted") which was too late: the moment row 0's agent
+	// completes, the slot is released (d1635a6) and row 1's next retry can win
+	// it and succeed, turning the test into Success=2/Canceled=0 — a data
+	// point we saw fail on -race CI (run 34327217906). A completed row 0 is
+	// not a precondition here; the property under test is that a cancel
+	// landing during row 1's backoff cancels both rows.
 	ctx, cancel := context.WithCancel(context.Background())
 	mgr := newRegistryManager(t, 1)
-	rec := &recordingSpawn{failOn: -1}
+	gate := make(chan struct{})
+	rec := &blockingSpawn{gate: gate}
 	runner := batch.Runner{
 		Spawn:         rec.Spawn,
 		Manager:       mgr,
@@ -381,32 +393,37 @@ func TestRunnerCtxCancelDuringSpawnBackoff(t *testing.T) {
 		done <- r
 	}()
 
-	// Wait for Row 0's agent to actually REACH a terminal state before
-	// cancelling, instead of guessing with a fixed 200ms sleep. Row 0 must be
-	// finished first: if cancel lands while it is still running, its Wait()
-	// reports the cancellation and report.Success drops to 0.
-	//
-	// Row 1 needs no separate signal — the spawn loop in runner.go is
-	// sequential, so once Row 0 holds the only slot (MaxConcurrent=1) Row 1 is
-	// necessarily parked in spawnWithRetry's backoff select, and CappedBackoff
-	// is 5s here, far longer than this poll takes.
-	require.Eventually(t, func() bool {
-		for _, rec := range mgr.List(true).Agents {
-			if rec.Status == registry.StatusCompleted {
-				return true
-			}
-		}
-		return false
-	}, 30*time.Second, 5*time.Millisecond, "Row 0's agent must complete before cancel")
+	// Row 0's agent is blocked in spawn (sits in the only slot, never
+	// completes). give the spawn loop a beat to register row 0 and park row 1
+	// in backoff, then cancel well inside the 5s backoff window.
+	select {
+	case <-done:
+		t.Fatal("runner returned before cancel")
+	case <-time.After(500 * time.Millisecond):
+	}
 	cancel()
+	// NOTE: do NOT close(gate). Once cancel() fires, blockingSpawn.Spawn's
+	// select has only the ctx.Done branch ready, so both agents take the
+	// cancellation path deterministically. Closing the gate would race with
+	// that select and let row 0's spawn win the gate branch → row 0 completes
+	// and report.Success becomes 1 (a flake we saw replay locally). An
+	// unclosed gate leaks nothing: the agent goroutines all exit on context
+	// cancellation.
 
-	report := <-done
-	require.Len(t, report.Results, 2)
-	// Row 0 agent completed before cancel → Success; Row 1's spawn was
-	// cancelled mid-retry → Canceled.
-	assert.Equal(t, 1, report.Success)
-	assert.Equal(t, 1, report.Canceled)
-	assert.Contains(t, report.Results[1].Error, "context canceled")
+	select {
+	case report := <-done:
+		require.Len(t, report.Results, 2)
+		// Row 1's spawn was cancelled mid-backoff; row 0's agent was still
+		// blocked in spawn when cancel landed, so it is cancelled too. The
+		// run must NOT have waited out the 5s backoff.
+		assert.Equal(t, 0, report.Success)
+		assert.Equal(t, 2, report.Canceled)
+		assert.Contains(t, report.Results[1].Error, "context canceled")
+	case <-time.After(2 * time.Second):
+		// cancel should have broken the backoff asleep, not slept 5s to
+		// exhaustion.
+		t.Fatal("runner did not return promptly after cancel during backoff")
+	}
 }
 
 func TestRunnerCtxCancelBeforeSpawn(t *testing.T) {
