@@ -573,20 +573,40 @@ const (
 	// for "tried to delete a file that is no longer there". A concurrent opener
 	// removing the same journal or WAL sidecar produces it, and it is benign.
 	sqliteIOErrDeleteNoent = 5898
+	// sqliteReadOnly is SQLITE_READONLY. In the concurrent-heal storm a failed
+	// opener's handle can end up pointed at the just-renamed-away inode (or at
+	// a file the repairer is mid-rewrite on), and windows surfaces that as
+	// READONLY rather than BUSY — measured in the six-way healer test
+	// (run 33541845801). Like BUSY it says "somebody else is mid-move", which
+	// is no evidence about the file's own health.
+	//
+	// The match is on the PRIMARY code (8), not the extended code: the storm
+	// also yields READONLY_CANTINIT (1288) and READONLY_DBMOVED (1032) — both
+	// measured on darwin with GOMAXPROCS=2 against this very test — and
+	// sqlite.Error.Code() returns the full extended code. Masking to the primary
+	// code covers the whole READONLY family with one comparison, which is the
+	// honest predicate: every one of them says "this attempt lost a race", not
+	// "this file is broken".
+	sqliteReadOnly = 8
 )
 
 // isTransientOpenErr reports whether err is one of the contention codes above.
 //
 // This list is narrow on purpose and is NOT a general "retry storage errors"
-// policy: it covers exactly the two codes measured coming out of concurrent
-// first opens. Widening it would start retrying real I/O failures, which is how
-// a broken disk turns into a hang instead of an error.
+// policy: it covers exactly the codes measured coming out of concurrent first
+// opens. Widening it would start retrying real I/O failures, which is how a
+// broken disk turns into a hang instead of an error.
 func isTransientOpenErr(err error) bool {
 	var se *sqlite.Error
 	if !errors.As(err, &se) {
 		return false
 	}
-	return se.Code() == sqliteBusy || se.Code() == sqliteIOErrDeleteNoent
+	// The READONLY comparison masks to the primary code: se.Code() carries the
+	// full extended code (READONLY_DBMOVED=1032, READONLY_CANTINIT=1288, …), and
+	// the heal storm produces several members of that family — all with the
+	// same meaning, "somebody else is mid-move; try again".
+	return se.Code() == sqliteBusy || se.Code() == sqliteIOErrDeleteNoent ||
+		se.Code()&0xff == sqliteReadOnly
 }
 
 // WriteTx serializes WAL writes inside one process. It locks writeMu, begins a
