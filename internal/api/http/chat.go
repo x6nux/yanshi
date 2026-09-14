@@ -338,6 +338,16 @@ func (s *Server) handleSSEInternal(w http.ResponseWriter, r *http.Request,
 		// relay: the merge select above can race past progress events when
 		// classDone fires, so flush them before the status/done terminator.
 		drainLifecycleFrames(w, fl, lifecycleRelay, s.redactor)
+		// Drain leftover TURN CONTENT frames still buffered in mainFrames. The
+		// producer (ClassifyEventsWithUsage) queues every frame into the
+		// 64-cap buffer and only THEN closes classDone, so on the last turn —
+		// where content and classDone become ready together — the merge select
+		// above picks uniformly at random between the ready content case and
+		// the ready classDone case. Breaking on classDone without draining
+		// mainFrames can silently drop the final content frame, which under
+		// -race on a loaded runner flakes TestChat_SSE_UnknownModelFallsBack as
+		// status+done with no content. This flush closes that hole.
+		drainMainFrames(w, fl, mainFrames, s.redactor)
 		// Hard failures break regardless of mode: a model error or a user
 		// cancel must not trigger a schema retry. The error frame has
 		// already been emitted above; the post-loop path still emits status

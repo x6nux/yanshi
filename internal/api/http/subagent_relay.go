@@ -105,3 +105,18 @@ func drainLifecycleFrames(w http.ResponseWriter, fl http.Flusher, relay *sseLife
 		}
 	}
 }
+
+// drainMainFrames writes out every leftover TURN CONTENT frame still buffered
+// in mainFrames after the merge loop breaks. Must be called from the single
+// writer goroutine after classDone fires, before the status/done terminator.
+// r is the process-wide secrets redactor; nil disables redaction (tests only).
+func drainMainFrames(w http.ResponseWriter, fl http.Flusher, mainFrames chan proto.ServerFrame, r *secrets.Redactor) {
+	for {
+		select {
+		case f := <-mainFrames:
+			writeSSEFrame(w, fl, f, r)
+		default:
+			return
+		}
+	}
+}
