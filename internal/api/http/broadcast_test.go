@@ -27,6 +27,7 @@ import (
 // because it costs nothing and would catch a Broadcast that somehow retained a
 // reference, but it is not what makes this test work.
 func TestRegisterClientUnregisters(t *testing.T) {
+	t.Parallel()
 	s := New(Config{Token: "t"})
 	conn := &wsConn{}
 

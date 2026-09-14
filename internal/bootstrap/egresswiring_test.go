@@ -28,6 +28,7 @@ import (
 // No unit test in internal/shell could see it: they all substitute their own
 // factory, which is the object that was wrong.
 func TestBothLaunchFactoriesPublishTheManagedProxy(t *testing.T) {
+	t.Parallel()
 	app, err := Build(Options{ConfigPath: w3ConfigFile(t), FakeModel: true})
 	require.NoError(t, err)
 	defer app.Shutdown(context.Background())
@@ -67,6 +68,7 @@ func TestBothLaunchFactoriesPublishTheManagedProxy(t *testing.T) {
 // test green, and the result would be a yanshi that refuses to start because
 // the operator named a shell they do not have installed.
 func TestAFailedProfileCaptureDoesNotRefuseTheBoot(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	skillsDir := filepath.Join(dir, "skills")
 	require.NoError(t, os.MkdirAll(skillsDir, 0o755))
@@ -108,6 +110,7 @@ func productionFactories(t *testing.T, app *App) (shell.DefaultSecureFactory, sh
 // because a SetApprover call that was never made and one made with a value
 // that always refuses are the same wire-up bug from the proxy's side.
 func TestManagedProxyIsAskableFromTheAssembledServer(t *testing.T) {
+	t.Parallel()
 	app, err := Build(Options{ConfigPath: w3ConfigFile(t), FakeModel: true})
 	require.NoError(t, err)
 	defer app.Shutdown(context.Background())
@@ -209,6 +212,7 @@ func childTrustEnvs(t *testing.T, app *App) map[string]string {
 // certificate variable reaches a child and CONNECT stays the blind tunnel
 // ADR-0014 specified.
 func TestInspectionIsOffByDefault(t *testing.T) {
+	t.Parallel()
 	app, err := Build(Options{ConfigPath: w3ConfigFile(t), FakeModel: true})
 	require.NoError(t, err)
 	defer app.Shutdown(context.Background())

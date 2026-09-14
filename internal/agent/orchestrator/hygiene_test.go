@@ -39,6 +39,7 @@ func hygieneCtx(t *testing.T, mgr *tools.BackgroundManager) context.Context {
 // TestDegradeHistoryKeepsTheRecentOnes is the whole shape of T4: old results
 // shrink, the ones the model is working with right now do not.
 func TestDegradeHistoryKeepsTheRecentOnes(t *testing.T) {
+	t.Parallel()
 	ctx := hygieneCtx(t, nil)
 	const n = 6
 	msgs := make([]*schema.Message, 0, n)
@@ -78,6 +79,7 @@ func TestDegradeHistoryKeepsTheRecentOnes(t *testing.T) {
 // reasoning are recoverable from nowhere — there is no spill file and no
 // re-runnable call — so shrinking them would be pure loss.
 func TestDegradeHistoryLeavesNonToolMessagesAlone(t *testing.T) {
+	t.Parallel()
 	ctx := hygieneCtx(t, nil)
 	long := strings.Repeat("requirements the user actually typed and must not lose. ", 200)
 	msgs := []*schema.Message{
@@ -101,6 +103,7 @@ func TestDegradeHistoryLeavesNonToolMessagesAlone(t *testing.T) {
 // allocated and nothing rewritten — including the empty case, which is the one
 // that would panic on an off-by-one.
 func TestDegradeHistoryIsANoOpOnSmallHistories(t *testing.T) {
+	t.Parallel()
 	ctx := hygieneCtx(t, nil)
 	for _, tc := range []struct {
 		name string
@@ -130,6 +133,7 @@ func TestDegradeHistoryIsANoOpOnSmallHistories(t *testing.T) {
 // would spill a new file each time and hand back a pointer that resolves to
 // strictly less than the previous one.
 func TestDegradeHistoryIsIdempotentAcrossIterations(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	ctx := tools.WithWorkRoot(context.Background(), root)
 	msgs := []*schema.Message{
@@ -156,6 +160,7 @@ func TestDegradeHistoryIsIdempotentAcrossIterations(t *testing.T) {
 // providers reject outright. QwenPaw makes the same choice for the same
 // reason (tool_calls/_hint.py emits no ToolResultBlock).
 func TestBackgroundNoticesAreUserMessages(t *testing.T) {
+	t.Parallel()
 	mgr := tools.NewBackgroundManager()
 	t.Cleanup(func() { mgr.Close() })
 	h := mgr.Adopt("run_tests", `{"framework":"go"}`, func() {})
@@ -180,6 +185,7 @@ func TestBackgroundNoticesAreUserMessages(t *testing.T) {
 // which is what actually runs in production — the two helpers above could both
 // be correct while the hook wired them up backwards or not at all.
 func TestResultHygieneAppendsNoticesAndDegrades(t *testing.T) {
+	t.Parallel()
 	mgr := tools.NewBackgroundManager()
 	t.Cleanup(func() { mgr.Close() })
 	h := mgr.Adopt("shell_run", `{"command":"make"}`, func() {})
@@ -211,6 +217,7 @@ func TestResultHygieneAppendsNoticesAndDegrades(t *testing.T) {
 // whatever the runner has; a nil state must be a no-op rather than a panic
 // that kills the turn.
 func TestResultHygieneToleratesAnEmptyState(t *testing.T) {
+	t.Parallel()
 	m := newResultHygiene()
 	ctx, state, err := m.BeforeModelRewriteState(context.Background(), nil, nil)
 	require.NoError(t, err)
@@ -229,6 +236,7 @@ func TestResultHygieneToleratesAnEmptyState(t *testing.T) {
 // slice back off a real runner build is the only way to check it without a
 // live model.
 func TestResultHygieneIsInstalledOnEveryRunner(t *testing.T) {
+	t.Parallel()
 	found := false
 	for _, h := range orchestratorMiddlewares() {
 		if _, ok := h.(*resultHygiene); ok {
@@ -243,6 +251,7 @@ func TestResultHygieneIsInstalledOnEveryRunner(t *testing.T) {
 // TestBackgroundManagerReachesToolsFromTheTurnContext closes the other half of
 // the wiring: the manager must actually arrive in the context a tool reads.
 func TestBackgroundManagerReachesToolsFromTheTurnContext(t *testing.T) {
+	t.Parallel()
 	mgr := tools.NewBackgroundManager()
 	t.Cleanup(func() { mgr.Close() })
 	o := &Orchestrator{background: mgr, sessionRules: map[string]*guard.RuleSet{}}
@@ -260,6 +269,7 @@ func TestBackgroundManagerReachesToolsFromTheTurnContext(t *testing.T) {
 // offload that expires sooner than the tool's own budget would be a slightly
 // later failure rather than a reprieve.
 func TestBackgroundHardLimitIsGenerous(t *testing.T) {
+	t.Parallel()
 	assert.Greater(t, tools.BackgroundHardLimit, 10*time.Minute,
 		"the background limit must exceed the longest foreground tool budget")
 	assert.Less(t, tools.BackgroundCloseGrace, tools.BackgroundHardLimit,

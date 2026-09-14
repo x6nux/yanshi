@@ -18,6 +18,7 @@ import (
 
 // TestChatWS_GetStatus proves get_status returns a status frame.
 func TestChatWS_GetStatus(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -35,6 +36,7 @@ func TestChatWS_GetStatus(t *testing.T) {
 // TestChatWS_FeaturesList proves features_list returns a features_reply even
 // when no registry is configured.
 func TestChatWS_FeaturesList(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -52,6 +54,7 @@ func TestChatWS_FeaturesList(t *testing.T) {
 // TestChatWS_PermissionsList proves permissions_list returns permissions even
 // with a nil approval manager (empty list).
 func TestChatWS_PermissionsList(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -70,6 +73,7 @@ func TestChatWS_PermissionsList(t *testing.T) {
 // TestChatWS_ListSkillsNoRegistry proves list_skills returns an empty list
 // when the skills registry is nil.
 func TestChatWS_ListSkillsNoRegistry(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -88,6 +92,7 @@ func TestChatWS_ListSkillsNoRegistry(t *testing.T) {
 // TestChatWS_InstallSkillDisabled proves install_skill returns a skill_ack
 // with an error text when skills loader/dstRoot are not configured.
 func TestChatWS_InstallSkillDisabled(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -106,6 +111,7 @@ func TestChatWS_InstallSkillDisabled(t *testing.T) {
 // TestChatWS_PermissionRevokeNoManager proves permission_revoke returns an
 // error when the approval manager is nil.
 func TestChatWS_PermissionRevokeNoManager(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -127,6 +133,7 @@ func TestChatWS_PermissionRevokeNoManager(t *testing.T) {
 // instead of that the feature isn't available at all. Matches
 // TestChatWS_RestoreTurnNoVCS below, which already expected an error here.
 func TestChatWS_ListSeamsNoVCS(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -145,6 +152,7 @@ func TestChatWS_ListSeamsNoVCS(t *testing.T) {
 // TestChatWS_RestoreTurnNoVCS proves restore_turn returns an error when VCS
 // is not configured.
 func TestChatWS_RestoreTurnNoVCS(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -162,6 +170,7 @@ func TestChatWS_RestoreTurnNoVCS(t *testing.T) {
 // TestChatWS_InvalidFrame proves a malformed client frame (empty type) produces
 // an error response via the default case.
 func TestChatWS_InvalidFrame(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -178,6 +187,7 @@ func TestChatWS_InvalidFrame(t *testing.T) {
 
 // TestShortHash tests the shortHash helper function.
 func TestShortHash(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "abc", shortHash("abc"))
 	assert.Equal(t, "12345678", shortHash("12345678"))
 	assert.Equal(t, "12345678", shortHash("123456789abcdef0"))
@@ -186,11 +196,13 @@ func TestShortHash(t *testing.T) {
 
 // TestSkillInfoNil proves skillInfo returns nil for a nil skill pointer.
 func TestSkillInfoNil(t *testing.T) {
+	t.Parallel()
 	assert.Nil(t, skillInfo(nil))
 }
 
 // TestSkillInfoValid proves skillInfo converts a valid skill to SkillInfo.
 func TestSkillInfoValid(t *testing.T) {
+	t.Parallel()
 	sk := &skills.Skill{
 		Name:        "test-skill",
 		Description: "A test skill",
@@ -210,6 +222,7 @@ func TestSkillInfoValid(t *testing.T) {
 // TestAuthorizeControlAction tests the authorizeControlAction helper function.
 // It verifies that the function correctly rejects unauthorized control actions.
 func TestAuthorizeControlAction(t *testing.T) {
+	t.Parallel()
 	// Create an orchestrator with an empty profile (no tools allowed).
 	o, err := orchestrator.New(orchestrator.Config{
 		Model:   einollm.NewFakeModel([]string{"x"}, nil),
@@ -227,6 +240,7 @@ func TestAuthorizeControlAction(t *testing.T) {
 // TestResolvePermissionMode_PlansDenies tests that Plan mode unconditionally
 // denies write operations without prompting.
 func TestResolvePermissionMode_PlanDenies(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{perm: &permModeState{}}
 	cs.perm.set(guard.ModePlan)
 	d, ok := resolvePermissionMode(context.Background(), cs, nil, &tools.PermissionRequest{
@@ -240,6 +254,7 @@ func TestResolvePermissionMode_PlanDenies(t *testing.T) {
 // TestResolvePermissionMode_YoloAlwaysAllows tests that YOLO mode always
 // allows any non-force/non-approval tool call.
 func TestResolvePermissionMode_YoloAlwaysAllows(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{perm: &permModeState{}}
 	cs.perm.set(guard.ModeYOLO)
 	d, ok := resolvePermissionMode(context.Background(), cs, nil, &tools.PermissionRequest{

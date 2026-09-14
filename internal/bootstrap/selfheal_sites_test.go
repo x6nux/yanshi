@@ -40,6 +40,7 @@ var selfHealAllowedSites = map[string]string{
 // that no longer sets it is a stale authorization that would silently
 // pre-approve the next function to take that name.
 func TestSelfHealIsEnabledOnlyAtOwningEntryPoints(t *testing.T) {
+	t.Parallel()
 	root := repoRoot(t)
 	found := map[string]bool{}
 

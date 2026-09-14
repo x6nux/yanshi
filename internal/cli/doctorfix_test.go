@@ -69,6 +69,7 @@ func outcomeFor(t *testing.T, r FixReport, action FixAction) FixOutcome {
 // not intend, and a deleted database takes the session history, the VCS commits
 // and the task ledger with it.
 func TestFixAllowlistExcludesCredentialsAndDatabase(t *testing.T) {
+	t.Parallel()
 	forbidden := []string{"key", "credential", "secret", "token", "password",
 		"database", "db", "sqlite", "delete", "reset", "wipe"}
 	for _, action := range FixActions() {
@@ -90,6 +91,7 @@ func TestFixAllowlistExcludesCredentialsAndDatabase(t *testing.T) {
 // ignoring an unrecognised name would let `-fix=creat-dirs` report success
 // while doing nothing at all.
 func TestRunDoctorFixRejectsUnknownAction(t *testing.T) {
+	t.Parallel()
 	_, err := RunDoctorFix(context.Background(), FixOptions{
 		Only: []FixAction{"rewrite-provider-key"},
 	})
@@ -103,6 +105,7 @@ func TestRunDoctorFixRejectsUnknownAction(t *testing.T) {
 // a container image diverges from the repository copy unseen, whereas a
 // created directory cannot surprise anyone.
 func TestNonInteractiveRefusesFileEditingFixes(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := writeFile(t, filepath.Join(dir, "config.yaml"), minimalConfig)
 	writeFile(t, filepath.Join(dir, "config.example.yaml"), minimalExample)
@@ -131,6 +134,7 @@ func TestNonInteractiveRefusesFileEditingFixes(t *testing.T) {
 // TestFixConfigDefaultsBacksUpBeforeEditing is the second gate: the original
 // file must exist, byte-for-byte, after the repair.
 func TestFixConfigDefaultsBacksUpBeforeEditing(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	partial := "schema_version: 1\nserver:\n  http_addr: \"127.0.0.1:9999\"\n"
 	cfgPath := writeFile(t, filepath.Join(dir, "config.yaml"), partial)
@@ -166,6 +170,7 @@ func TestFixConfigDefaultsBacksUpBeforeEditing(t *testing.T) {
 // materialise a provider block. A config that boots and fails at every request
 // is worse than one that is visibly incomplete.
 func TestFixConfigDefaultsNeverWritesCredentials(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := writeFile(t, filepath.Join(dir, "config.yaml"),
 		"schema_version: 1\nserver:\n  http_addr: \"127.0.0.1:8080\"\n")
@@ -188,6 +193,7 @@ func TestFixConfigDefaultsNeverWritesCredentials(t *testing.T) {
 // TestFixConfigDefaultsSkipsWhenComplete proves the repair is a no-op on a
 // healthy config: no backup litter, no rewrite, no false "fixed".
 func TestFixConfigDefaultsSkipsWhenComplete(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := writeFile(t, filepath.Join(dir, "config.yaml"), minimalConfig)
 	examplePath := writeFile(t, filepath.Join(dir, "config.example.yaml"), minimalExample)
@@ -218,6 +224,7 @@ func TestFixConfigDefaultsSkipsWhenComplete(t *testing.T) {
 // as present would leave the operator with the same missing block plus a
 // doctor that claims it is there.
 func TestMissingTopLevelKeysIgnoresCommentedBlocks(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		yaml string
@@ -260,6 +267,7 @@ func TestMissingTopLevelKeysIgnoresCommentedBlocks(t *testing.T) {
 // block looks like. The comments ARE the documentation in this repo, so a
 // config assembled without them is materially worse than a hand-copied one.
 func TestExtractTopLevelBlockKeepsCommentsAndIndentedLines(t *testing.T) {
+	t.Parallel()
 	block := extractTopLevelBlock(minimalExample, "server")
 	require.Contains(t, block, "# The HTTP listener.")
 	require.Contains(t, block, "server:")
@@ -279,6 +287,7 @@ func TestExtractTopLevelBlockKeepsCommentsAndIndentedLines(t *testing.T) {
 // owner from a live one. Removing a live lockfile would not stop the backend;
 // it would only make every window unable to find it.
 func TestFixStaleLockfileRemovesDeadOnly(t *testing.T) {
+	t.Parallel()
 	t.Run("dead pid is removed", func(t *testing.T) {
 		root := filepath.Join(t.TempDir(), "stale-proj")
 		require.NoError(t, lockfile.Write(root, lockfile.Lockfile{
@@ -329,6 +338,7 @@ func TestFixStaleLockfileRemovesDeadOnly(t *testing.T) {
 // never replaces what is there. Deleting a file to make room for a directory is
 // exactly the "helpful" step that loses data.
 func TestFixCreateDirsIsAdditiveOnly(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	userDir := filepath.Join(dir, "skills-user")
 	worktrees := filepath.Join(dir, "worktrees")
@@ -364,6 +374,7 @@ func TestFixCreateDirsIsAdditiveOnly(t *testing.T) {
 // take: a configured directory path that already exists as a file is reported,
 // never unlinked.
 func TestFixCreateDirsRefusesToReplaceAFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	collision := filepath.Join(dir, "not-a-dir")
 	writeFile(t, collision, "important data")
@@ -391,6 +402,7 @@ func TestFixCreateDirsRefusesToReplaceAFile(t *testing.T) {
 // never adds them. A repair that could widen a mode would be privilege
 // escalation with a friendly name.
 func TestFixFilePermissionsOnlyNarrows(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX mode bits are not meaningful on Windows")
 	}
@@ -427,6 +439,7 @@ func TestFixFilePermissionsOnlyNarrows(t *testing.T) {
 // TestDryRunTouchesNothing proves the plan mode is a plan: it reports what it
 // would do and leaves every byte on disk alone.
 func TestDryRunTouchesNothing(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	partial := "schema_version: 1\nserver:\n  http_addr: \"127.0.0.1:8080\"\n"
 	cfgPath := writeFile(t, filepath.Join(dir, "config.yaml"), partial)
@@ -459,6 +472,7 @@ func TestDryRunTouchesNothing(t *testing.T) {
 // TestFixReportRendering covers the operator-facing surface: the exit code
 // contract and the text shape.
 func TestFixReportRendering(t *testing.T) {
+	t.Parallel()
 	r := FixReport{DryRun: true, Outcomes: []FixOutcome{
 		{Action: FixCreateDirs, Status: FixStatusFixed, Detail: "made a dir"},
 		{Action: FixConfigDefaults, Status: FixStatusRefused, Detail: "no terminal"},
@@ -497,6 +511,7 @@ func TestFixReportRendering(t *testing.T) {
 // classified as interactive. The gate passed in every environment it exists to
 // refuse.
 func TestStdinIsTerminal(t *testing.T) {
+	t.Parallel()
 	require.False(t, StdinIsTerminal(nil))
 
 	f := writeFile(t, filepath.Join(t.TempDir(), "plain"), "x")
@@ -524,6 +539,7 @@ func TestStdinIsTerminal(t *testing.T) {
 // TestDefaultExamplePath covers the template lookup: next to the config when
 // one is there, otherwise the working-directory default.
 func TestDefaultExamplePath(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	require.Equal(t, "config.example.yaml", DefaultExamplePath(cfgPath),
@@ -539,6 +555,7 @@ func TestDefaultExamplePath(t *testing.T) {
 // skip, not a failure: there is nothing wrong with the system, the repair just
 // has no source of defaults.
 func TestFixConfigDefaultsSkipsWithoutTemplate(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := writeFile(t, filepath.Join(dir, "config.yaml"),
 		"schema_version: 1\nserver:\n  http_addr: \"127.0.0.1:8080\"\n")
@@ -575,6 +592,7 @@ func TestFixConfigDefaultsSkipsWithoutTemplate(t *testing.T) {
 // second repair must not overwrite the one copy the operator wants back, and
 // the copy must not be widened by the process umask.
 func TestBackupFilePreservesModeAndNeverOverwrites(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := writeFile(t, filepath.Join(dir, "config.yaml"), "one")
 	require.NoError(t, os.Chmod(path, 0o600))

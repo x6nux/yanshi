@@ -52,6 +52,7 @@ func verdictFor(p guard.PermissionProfile, cmd string) guard.Verdict {
 // approval recorded on the orchestrator, merged into the profile that
 // bindExecutionContext binds, and observed by the real guard.
 func TestSessionApprovalWidensTheNextCommandInTheFamily(t *testing.T) {
+	t.Parallel()
 	o := &Orchestrator{profile: rulesProfile(), sessionRules: map[string]*guard.RuleSet{}}
 	const sid = "ws-1"
 
@@ -86,6 +87,7 @@ func TestSessionApprovalWidensTheNextCommandInTheFamily(t *testing.T) {
 // profileForSession could be perfect while bindExecutionContext still bound
 // o.profile, and every assertion above would pass.
 func TestSessionApprovalReachesTheBoundContext(t *testing.T) {
+	t.Parallel()
 	o := &Orchestrator{profile: rulesProfile(), sessionRules: map[string]*guard.RuleSet{}}
 	const sid = "ws-2"
 	require.True(t, o.ApproveShellForSession(sid, "go test ./internal/a"))
@@ -109,6 +111,7 @@ func TestSessionApprovalReachesTheBoundContext(t *testing.T) {
 // This is the test the "zero readers" regression would fail loudest on: with
 // the consumer removed, the counter reads 2.
 func TestSessionApprovalStopsTheCallbackFiringAgain(t *testing.T) {
+	t.Parallel()
 	o := &Orchestrator{profile: rulesProfile(), sessionRules: map[string]*guard.RuleSet{}}
 	const sid = "ws-3"
 
@@ -143,6 +146,7 @@ func TestSessionApprovalStopsTheCallbackFiringAgain(t *testing.T) {
 // session — because the only heuristic available to re-widen is the one that
 // just produced a rule the user rejected.
 func TestSessionDemotionIsIrreversible(t *testing.T) {
+	t.Parallel()
 	o := &Orchestrator{profile: rulesProfile(), sessionRules: map[string]*guard.RuleSet{}}
 	const sid = "ws-4"
 
@@ -164,6 +168,7 @@ func TestSessionDemotionIsIrreversible(t *testing.T) {
 // execpolicy prefixes admit supersets, so there is no "exact match" rule to
 // fall back to — the only defensible answer is no rule, i.e. ask every time.
 func TestHighRiskVerbsNeverWiden(t *testing.T) {
+	t.Parallel()
 	o := &Orchestrator{profile: rulesProfile(), sessionRules: map[string]*guard.RuleSet{}}
 	const sid = "ws-5"
 	for _, cmd := range []string{
@@ -188,6 +193,7 @@ func TestHighRiskVerbsNeverWiden(t *testing.T) {
 // factory-default coding profile, and any documentation claiming otherwise is
 // overclaiming. This pins the inertness so the claim cannot quietly grow.
 func TestSessionRulesAreANoOpOnGlobProfiles(t *testing.T) {
+	t.Parallel()
 	o := &Orchestrator{profile: globProfile(), sessionRules: map[string]*guard.RuleSet{}}
 	const sid = "ws-6"
 	require.True(t, o.ApproveShellForSession(sid, "go test ./internal/a"),
@@ -213,6 +219,7 @@ func TestSessionRulesAreANoOpOnGlobProfiles(t *testing.T) {
 // on the call is deliberate: a spy passes whether or not the entry actually
 // left the map.
 func TestReleaseSessionDropsTheRuleSet(t *testing.T) {
+	t.Parallel()
 	o := &Orchestrator{profile: rulesProfile(), sessionRules: map[string]*guard.RuleSet{}}
 	require.Equal(t, 0, o.SessionRuleCount())
 
@@ -238,6 +245,7 @@ func TestReleaseSessionDropsTheRuleSet(t *testing.T) {
 // test pass "" — none of them has a place to release from, so handing them a
 // rule set would be precisely the leak ReleaseSession exists to prevent.
 func TestEmptySessionIDGetsNoRuleSet(t *testing.T) {
+	t.Parallel()
 	o := &Orchestrator{profile: rulesProfile(), sessionRules: map[string]*guard.RuleSet{}}
 	assert.Nil(t, o.SessionRules(""))
 	assert.False(t, o.ApproveShellForSession("", "go test ./x"))
@@ -253,6 +261,7 @@ func TestEmptySessionIDGetsNoRuleSet(t *testing.T) {
 // would be a rule for nothing; reaching Demote it would be a demotion of
 // nothing that still looked like it had happened.
 func TestApproveAndDemoteRejectEmptyCommands(t *testing.T) {
+	t.Parallel()
 	o := &Orchestrator{profile: rulesProfile(), sessionRules: map[string]*guard.RuleSet{}}
 	assert.False(t, o.ApproveShellForSession("ws-7", ""))
 	assert.False(t, o.DemoteShellForSession("ws-7", ""))
@@ -263,6 +272,7 @@ func TestApproveAndDemoteRejectEmptyCommands(t *testing.T) {
 // ordinary form and NOT the irreversible one — the companion deny rule
 // guard.RuleSet.buildRules emits is what stops `--force` riding in for free.
 func TestSessionApprovalDoesNotAdmitDangerousFlags(t *testing.T) {
+	t.Parallel()
 	o := &Orchestrator{profile: rulesProfile(), sessionRules: map[string]*guard.RuleSet{}}
 	const sid = "ws-8"
 	require.True(t, o.ApproveShellForSession(sid, "go test ./internal/a"))

@@ -22,6 +22,7 @@ func readAll(r io.ReadCloser) string {
 // every JSON key is camelCase (never snake_case). This is the load-bearing
 // forward-compatibility guarantee for external clients.
 func TestAgentV1StartAcceptsUnknownFieldsAndReturnsCamelCase(t *testing.T) {
+	t.Parallel()
 	model := einollm.NewFakeModel([]string{"answer"}, nil)
 	svc, err := v1.NewService(v1.Config{DefaultModel: model})
 	if err != nil {
@@ -59,6 +60,7 @@ func TestAgentV1StartAcceptsUnknownFieldsAndReturnsCamelCase(t *testing.T) {
 //
 // ledger: D2/V15#1 start/resume/run/stream/cancel 可用
 func TestAgentV1TurnStreamUsesItemEvents(t *testing.T) {
+	t.Parallel()
 	model := einollm.NewFakeModel([]string{"answer"}, nil)
 	svc, err := v1.NewService(v1.Config{DefaultModel: model})
 	if err != nil {
@@ -102,6 +104,7 @@ func TestAgentV1TurnStreamUsesItemEvents(t *testing.T) {
 //
 // ledger: D1/V14#3 兼容测试完善
 func TestV1CompatibilityMatrix(t *testing.T) {
+	t.Parallel()
 	model := einollm.NewFakeModel([]string{"answer"}, nil)
 	svc, err := v1.NewService(v1.Config{DefaultModel: model})
 	if err != nil {
@@ -155,6 +158,7 @@ func TestV1CompatibilityMatrix(t *testing.T) {
 //
 // ledger: D2/V15#1 start/resume/run/stream/cancel 可用
 func TestV1TurnStreamItemsAreVersionedAndOrdered(t *testing.T) {
+	t.Parallel()
 	model := einollm.NewFakeModel([]string{"answer"}, nil)
 	svc, err := v1.NewService(v1.Config{DefaultModel: model})
 	if err != nil {
@@ -212,6 +216,7 @@ func TestV1TurnStreamItemsAreVersionedAndOrdered(t *testing.T) {
 //
 // ledger: D1/V14#1 start/resume/interrupt + 流式 item 可用
 func TestAgentV1ResumeEndpoint(t *testing.T) {
+	t.Parallel()
 	model := einollm.NewFakeModel([]string{"answer"}, nil)
 	svc, err := v1.NewService(v1.Config{DefaultModel: model})
 	if err != nil {
@@ -267,6 +272,7 @@ func TestAgentV1ResumeEndpoint(t *testing.T) {
 //
 // ledger: D1/V14#1 start/resume/interrupt + 流式 item 可用
 func TestAgentV1InterruptEndpoint(t *testing.T) {
+	t.Parallel()
 	model := einollm.NewFakeModel([]string{"answer"}, nil)
 	svc, err := v1.NewService(v1.Config{DefaultModel: model})
 	if err != nil {
@@ -319,6 +325,7 @@ func TestAgentV1InterruptEndpoint(t *testing.T) {
 // TestAgentV1SchemaEndpoint proves GET /api/v1/schema/agent-v1.json returns
 // the JSON Schema document with the correct Content-Type and version header.
 func TestAgentV1SchemaEndpoint(t *testing.T) {
+	t.Parallel()
 	s := New(Config{})
 	s.AgentV1(nil)
 	ts := httptest.NewServer(s.Handler())
@@ -344,6 +351,7 @@ func TestAgentV1SchemaEndpoint(t *testing.T) {
 // TestAgentV1TurnStartRejectsMalformedJSON proves turn/start returns 400 when
 // the request body is not valid JSON.
 func TestAgentV1TurnStartRejectsMalformedJSON(t *testing.T) {
+	t.Parallel()
 	model := einollm.NewFakeModel([]string{"answer"}, nil)
 	svc, err := v1.NewService(v1.Config{DefaultModel: model})
 	if err != nil {
@@ -368,6 +376,7 @@ func TestAgentV1TurnStartRejectsMalformedJSON(t *testing.T) {
 // TestAgentV1TurnStartReturns404ForUnknownThread proves turn/start returns 404
 // when the given thread id does not exist.
 func TestAgentV1TurnStartReturns404ForUnknownThread(t *testing.T) {
+	t.Parallel()
 	model := einollm.NewFakeModel([]string{"answer"}, nil)
 	svc, err := v1.NewService(v1.Config{DefaultModel: model})
 	if err != nil {

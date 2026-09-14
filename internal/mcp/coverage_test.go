@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/x6nux/yanshi/internal/testutil"
 )
 
 // fakeClient is an in-memory Client for exercising Manager paths without HTTP
@@ -201,7 +203,7 @@ func TestManagerShutdown(t *testing.T) {
 // branch for an HTTP server whose endpoint is unreachable.
 func TestManagerStartOneHTTPInitializeError(t *testing.T) {
 	m := NewManager(map[string]*ServerConfig{
-		"dead": {Enabled: true, Transport: TransportHTTP, URL: "http://127.0.0.1:1/nope"},
+		"dead": {Enabled: true, Transport: TransportHTTP, URL: "http://" + testutil.ClosedLoopbackAddr(t) + "/nope"},
 	})
 	m.SetHealthConfig(HealthConfig{Enabled: true, StartupTimeout: 500 * time.Millisecond})
 	st := m.StartAll(context.Background())
@@ -215,7 +217,7 @@ func TestManagerStartOneHTTPInitializeError(t *testing.T) {
 // the startup deadline uses cfg.Timeout instead of the 30s default.
 func TestManagerStartOneHTTPCfgTimeout(t *testing.T) {
 	m := NewManager(map[string]*ServerConfig{
-		"dead": {Enabled: true, Transport: TransportHTTP, URL: "http://127.0.0.1:1/nope", Timeout: 200 * time.Millisecond},
+		"dead": {Enabled: true, Transport: TransportHTTP, URL: "http://" + testutil.ClosedLoopbackAddr(t) + "/nope", Timeout: 200 * time.Millisecond},
 	})
 	// StartupTimeout stays 0 so the cfg.Timeout branch fires.
 	st := m.StartAll(context.Background())
@@ -253,7 +255,7 @@ func TestManagerNewHTTPClientFor(t *testing.T) {
 // httpclient.go:87-88 by passing a channel (which json.Marshal cannot encode)
 // as the request params.
 func TestHTTPClientRequestMarshalError(t *testing.T) {
-	c := NewHTTPClient("http://127.0.0.1:1", "")
+	c := NewHTTPClient("http://"+testutil.ClosedLoopbackAddr(t), "")
 	_, err := c.request(context.Background(), "test", make(chan int))
 	if err == nil || !strings.Contains(err.Error(), "encode request") {
 		t.Fatalf("expected encode error, got %v", err)
@@ -641,8 +643,9 @@ func TestClientCredentialsSourceErrors(t *testing.T) {
 	}
 	ts.Close()
 
-	// unreachable host → http error
-	s = NewClientCredentialsSource("http://127.0.0.1:1/tok", "c", "s", nil, nil)
+	// unreachable host → http error. A genuinely closed port: see
+	// TestHTTPClientRequestErrors for what the hardcoded 127.0.0.1:1 cost.
+	s = NewClientCredentialsSource("http://"+testutil.ClosedLoopbackAddr(t)+"/tok", "c", "s", nil, nil)
 	if _, err := s.Token(ctx); err == nil {
 		t.Fatal("Token on unreachable host must error")
 	}

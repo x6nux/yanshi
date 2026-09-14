@@ -65,6 +65,7 @@ token: "test-token"
 //
 // ledger: E1/COV3#2 最小 App 可构建并跑一轮 turn
 func TestBuild_MinimalApp(t *testing.T) {
+	t.Parallel()
 	app := buildMinimalApp(t)
 	for _, c := range []struct {
 		name string
@@ -90,6 +91,7 @@ func TestBuild_MinimalApp(t *testing.T) {
 // Orch needs Model+Store, AgentAPI needs Store. If any upstream silently
 // nil'd, these would be nil/empty.
 func TestBuild_AssemblyOrder(t *testing.T) {
+	t.Parallel()
 	app := buildMinimalApp(t)
 	require.NotNil(t, app.Store)
 	require.NotNil(t, app.Orch)
@@ -114,6 +116,7 @@ func TestBuild_AssemblyOrder(t *testing.T) {
 //
 // ledger: E1/COV3#3 软降级被验证
 func TestBuild_VCSSoftDegrade(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
@@ -150,6 +153,7 @@ token: "test-token"
 // not abort Build; Skills stays non-nil (possibly empty). Mirrors CLAUDE.md's
 // "non-fatal startup failures log to stderr and continue".
 func TestBuild_PluginDiscoverySoftDegrade(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
@@ -175,6 +179,7 @@ skills:
 // (Enabled() may be false if no servers succeeded). Mirrors CLAUDE.md's
 // "non-fatal startup failures log to stderr and continue".
 func TestBuild_MCPStartupSoftDegrade(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
@@ -203,6 +208,7 @@ mcp:
 // *config.Config without any YAML file on disk. Secrets/Auth must be set so
 // the strict pipeline (D3) does not reject the build.
 func TestBuild_OptionsCfgInjection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfg := &config.Config{
 		Server:  config.ServerConfig{HTTPAddr: "127.0.0.1:0"},
@@ -224,6 +230,7 @@ func TestBuild_OptionsCfgInjection(t *testing.T) {
 // SafeOutput is the one in use. We assert Redactor is non-nil AND that the
 // custom output didn't cause a crash.
 func TestBuild_OptionsOutputInjection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	out := secrets.NewSafeOutput(io.Discard, secrets.NewRedactor())
 	cfg := &config.Config{
@@ -248,6 +255,7 @@ func TestBuild_OptionsOutputInjection(t *testing.T) {
 //
 // ledger: E1/COV3#2 最小 App 可构建并跑一轮 turn
 func TestBuild_EndToEndTurn(t *testing.T) {
+	t.Parallel()
 	app := buildMinimalApp(t)
 	require.NotNil(t, app.Store)
 
@@ -319,6 +327,7 @@ func TestBuild_EndToEndTurn(t *testing.T) {
 // double-Shutdown guards against a future regression that closes an already-
 // closed server/manager.
 func TestApp_Shutdown_Idempotent(t *testing.T) {
+	t.Parallel()
 	app := buildMinimalApp(t)
 	require.NotPanics(t, func() {
 		_ = app.Shutdown(context.Background())
@@ -332,6 +341,7 @@ func TestApp_Shutdown_Idempotent(t *testing.T) {
 // branches in Build: workspace-write and full-access. Both must build without
 // error even when external isolation is not available (Phase 0).
 func TestBuild_WithSandboxTier(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	for _, tier := range []string{"workspace-write", "full-access"} {
 		cfgPath := filepath.Join(dir, "config-"+tier+".yaml")
@@ -360,6 +370,7 @@ security:
 // ≥2 providers the map keys are the model ids, and the resilient default
 // (App.Model) is still non-nil.
 func TestBuild_ModelRegistry(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
@@ -405,6 +416,7 @@ llm:
 }
 
 func TestBuild_FakeModel(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
@@ -458,6 +470,7 @@ token: "test-token"
 // defines a "profiles.orchestrator" entry, it is wired into the orchestrator
 // instead of the hardcoded permissive default.
 func TestBuild_OrchestratorProfileFromConfig(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
@@ -490,6 +503,7 @@ profiles:
 // TestBuild_OrchestratorProfileDefault verifies that when no profiles are
 // configured, the orchestrator falls back to the permissive default.
 func TestBuild_OrchestratorProfileDefault(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
@@ -521,6 +535,7 @@ token: "test-token"
 // TestBuild_WithM7Tools verifies that the new fs/shell/time tool groups wire
 // into the orchestrator without error and that Build returns a live App.
 func TestBuild_WithM7Tools(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
@@ -550,6 +565,7 @@ token: "test-token"
 // from the configured builtin dir and wires it onto the App. The builtin dir
 // points at testdata/skills, a committed fixture containing a single "hi" skill.
 func TestBuild_LoadsBuiltinSkills(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
@@ -582,6 +598,7 @@ skills:
 // are configured, Build still succeeds (falling back to the "skills" default
 // builtin dir, which simply doesn't exist in the test cwd and loads empty).
 func TestBuild_LoadsBuiltinSkills_DefaultDir(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
@@ -607,6 +624,7 @@ token: "test-token"
 // the App. InitRepo scans os.Getwd() (the package directory during `go test`),
 // which contains non-ignored files, so it must succeed and produce a repo id.
 func TestBuild_VCSWired(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
@@ -650,6 +668,7 @@ token: "test-token"
 // event for vcs_log carrying real commit data is the proof; an "unknown tool"
 // rejection would fail the iteration with an error event.
 func TestBuild_VCSToolsRunThroughOrchestrator(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
@@ -763,6 +782,7 @@ token: "test-token"
 // back the chosen address from the listener before Serve blocks. Used by the
 // in-process CLI path to obtain a free loopback port it can hand to the TUI.
 func TestServe_EphemeralPort_ReachableViaHealthz(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
@@ -800,6 +820,7 @@ token: "test-token"
 // TestBuild_RegistersAllSecuritySubsystems verifies that Build wires every
 // A1 security subsystem into the App struct so they are available at runtime.
 func TestBuild_RegistersAllSecuritySubsystems(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
@@ -834,6 +855,7 @@ token: "test-token"
 }
 
 func TestBuild_LSPWired(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
@@ -856,6 +878,7 @@ token: "test-token"
 }
 
 func TestBuild_LSPDisabledByConfig(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
@@ -883,6 +906,7 @@ lsp:
 //
 // ledger: C4/COST1#3 价格可配
 func TestBuildWiresFeaturesAndPricing(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	body := fmt.Sprintf(`
@@ -924,6 +948,7 @@ pricing:
 // the error message (not just "unknown flag") is load-bearing — operators
 // copy-paste from YAML and need to know WHICH key was wrong.
 func TestBuildStrictFeaturesNamesUnknownFlag(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	body := fmt.Sprintf(`
@@ -983,6 +1008,7 @@ features:
 // consume it. The FakeModel path still wires the service so tests and ephemeral
 // servers can drive thread/start end-to-end without external dependencies.
 func TestBuildExposesAgentV1Service(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
@@ -1074,6 +1100,7 @@ func TestBuild_APIKeysAreUsedVerbatimAndRedacted(t *testing.T) {
 // assertion so this test cannot pass by asserting something that was never
 // actually at risk.
 func TestWC02_HeaderValuesAreRedacted(t *testing.T) {
+	t.Parallel()
 	const headerName = "X-Gateway-Token"
 	const canary = "wc02-bootstrap-canary-4d2b8f"
 
@@ -1135,6 +1162,7 @@ func TestWC02_HeaderValuesAreRedacted(t *testing.T) {
 //	    validated through NewGenericRFC8628Provider;
 //	(c) duplicate / empty IDs are rejected whether from cfg or injection.
 func TestBuild_DeviceProviderInjection(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	base := &config.Config{
 		Secrets: config.SecretsConfig{Backend: "none"},
@@ -1234,6 +1262,7 @@ func (r *recordingDeviceProvider) Authorize(
 // must leave the base instruction unchanged; non-empty must layer on top of
 // orchestrator.DefaultInstruction rather than replace it.
 func TestOutputLanguageInstructionIndependentOfUILocale(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{
 		I18N: config.I18NConfig{UILocale: "zh-Hans", OutputLanguage: "English"},
 	}
@@ -1301,6 +1330,7 @@ func fakeProviderBuilder(cfg *config.Config, _ ...einollm.SecretRegistrar) (map[
 // call-for-call transparent, which is a second thing to prove and not what
 // M-2 is about.
 func TestBuild_PerProviderMaxRetriesSentinelIsWiredCorrectly(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	cfgContent := `
@@ -1351,6 +1381,7 @@ llm:
 }
 
 func TestBuildSelectsFirstMultimodalProviderAsAux(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	yamlBytes := []byte(fmt.Sprintf(`
@@ -1378,6 +1409,7 @@ storage:
 }
 
 func TestBuildNoAuxWhenNoMultimodalProvider(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	yamlBytes := []byte(fmt.Sprintf(`
@@ -1420,6 +1452,7 @@ storage:
 //
 // ledger: C4/OBS2#3 可关闭
 func TestOTelExportIsOffUnlessBothSwitchesAgree(t *testing.T) {
+	t.Parallel()
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/x-protobuf")
 		w.WriteHeader(http.StatusOK)
@@ -1489,6 +1522,7 @@ features:
 // The corrupt file is written where the config points, so the assertion runs
 // against the real assembled App rather than a store opened by the test.
 func TestBuild_SelfHealsACorruptDatabase(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := filepath.Join(dir, "test.db")
@@ -1547,6 +1581,7 @@ token: "test-token"
 // actively using. Hardcode SelfHeal back to true in bootstrap.go and this test
 // goes red.
 func TestBuild_DoesNotHealByDefault(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := filepath.Join(dir, "test.db")

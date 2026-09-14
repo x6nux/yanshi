@@ -17,6 +17,7 @@ import (
 )
 
 func TestWSConnWrite_ConcurrentNoRace(t *testing.T) {
+	t.Parallel()
 	var serverConn *wsConn
 	ready := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -61,6 +62,7 @@ func TestWSConnWrite_ConcurrentNoRace(t *testing.T) {
 }
 
 func TestPermTracker_RegisterTakeDeliverConcurrent(t *testing.T) {
+	t.Parallel()
 	pt := newPermTracker()
 	ch := make(chan tools.PermissionDecision, 1)
 
@@ -110,6 +112,7 @@ func TestPermTracker_RegisterTakeDeliverConcurrent(t *testing.T) {
 }
 
 func TestConnSession_ConcurrentFrameInterleaving(t *testing.T) {
+	t.Parallel()
 	_, s := newSessionTestServer(t)
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()

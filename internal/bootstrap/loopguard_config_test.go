@@ -131,6 +131,7 @@ func filesIn(t *testing.T, dir string) []string {
 // reported result -- refusing in the transcript while the write still landed
 // -- would pass a call-count check and fail this one.
 func TestLoopGuardConfigReachesARealTurn_TotalToolBudget(t *testing.T) {
+	t.Parallel()
 	workRoot := t.TempDir()
 	msgs := []*schema.Message{
 		writeCallMsg("c1", "a.txt"),
@@ -161,6 +162,7 @@ loop_guard:
 // operator who writes no loop_guard block keeps the previous behaviour: all
 // five writes land.
 func TestLoopGuardConfigReachesARealTurn_ZeroConfigIsOff(t *testing.T) {
+	t.Parallel()
 	workRoot := t.TempDir()
 	msgs := []*schema.Message{
 		writeCallMsg("c1", "a.txt"),
@@ -185,6 +187,7 @@ func TestLoopGuardConfigReachesARealTurn_ZeroConfigIsOff(t *testing.T) {
 // check: `repetition_enabled: true` in a config FILE must end a real
 // doom-looping turn with a reason naming the gate and the tool.
 func TestLoopGuardConfigReachesARealTurn_RepetitionStops(t *testing.T) {
+	t.Parallel()
 	workRoot := t.TempDir()
 	// The SAME write, forever: identical name and identical arguments, which
 	// is what the repetition gate keys on.
@@ -211,6 +214,7 @@ loop_guard:
 // tool name alone would stop this turn, turning "write the files I asked for"
 // into a truncated turn with some of them missing.
 func TestLoopGuardConfigReachesARealTurn_DistinctArgsAreNotRepetition(t *testing.T) {
+	t.Parallel()
 	workRoot := t.TempDir()
 	msgs := []*schema.Message{
 		writeCallMsg("c1", "a.txt"),

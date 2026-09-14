@@ -36,6 +36,7 @@ func writeTestConfig(t *testing.T, dir string) string {
 // TestResolve_ConnectsToLiveRemote proves: when a live backend is recorded in
 // the lockfile, Resolve connects to it (Mode ws) and does NOT bootstrap.
 func TestResolve_ConnectsToLiveRemote(t *testing.T) {
+	t.Parallel()
 	o, _ := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"r"}, nil)})
 	s := apihttp.New(apihttp.Config{Token: "t"})
 	s.ChatWS(o, nil, nil)
@@ -62,6 +63,7 @@ func TestResolve_ConnectsToLiveRemote(t *testing.T) {
 // owner. A subsequent Reconnect is idempotent because the session already owns
 // a live backend.
 func TestReconnect_OwnerDied_NewClientBecomesOwner(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	// Stale lockfile: dead PID, no server actually listening on :9.
 	require.NoError(t, lockfile.Write(root, lockfile.Lockfile{
@@ -92,6 +94,7 @@ func TestReconnect_OwnerDied_NewClientBecomesOwner(t *testing.T) {
 // Both directions are asserted, because the default carries the safety property
 // (exec and headless share this code path and must not quarantine anything).
 func TestBootstrapOwner_ForwardsSelfHealToBootstrap(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		selfHeal bool

@@ -67,6 +67,7 @@ func (b *bulkOutputTool) InvokableRun(_ context.Context, argsJSON string, _ ...t
 // TestT4Real_HundredMediumResultsAreDegradedInARealTurn is the C5/T4 shape
 // check: many medium results, not one huge one.
 func TestT4Real_HundredMediumResultsAreDegradedInARealTurn(t *testing.T) {
+	t.Parallel()
 	const calls = 100
 	const each = 10 * 1024
 

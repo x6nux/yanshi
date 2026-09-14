@@ -119,6 +119,7 @@ var streamEventNotCarried = map[string]string{}
 // asserts the same-named StreamEvent field (when one exists) stays zero, so a
 // wrong "not carried" claim also fails. Dead entries in either table fail too.
 func TestToStreamEventCarriesEveryServerFrameField(t *testing.T) {
+	t.Parallel()
 	frameType := reflect.TypeOf(proto.ServerFrame{})
 	eventType := reflect.TypeOf(StreamEvent{})
 
@@ -232,6 +233,7 @@ func isPopulated(v reflect.Value) bool {
 // json tag is covered too: a mistyped `force_prompt` tag drops the field just as
 // silently as a missing assignment.
 func TestWSBackend_ForcePromptReachesStreamEvent(t *testing.T) {
+	t.Parallel()
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *nethttp.Request) bool { return true }}
 	ts := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		sc, err := upgrader.Upgrade(w, r, nil)

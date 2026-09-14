@@ -78,6 +78,7 @@ func tgzSkill(t *testing.T, frontmatter string) []byte {
 // what is installable, and the disagreement would be found by a user typing a
 // URL into a verb that cannot take one.
 func TestChatWS_InstallSkillFromHTTPURL(t *testing.T) {
+	t.Parallel()
 	userRoot := t.TempDir()
 	f := &memFetcher{body: tgzSkill(t, "name: mirrored\ndescription: from an internal mirror")}
 	ts, _ := skillsTestServer(t, userRoot, f)
@@ -107,6 +108,7 @@ func TestChatWS_InstallSkillFromHTTPURL(t *testing.T) {
 // requirement survives the WS layer: the payload is code the model will be
 // told to run, so a plaintext channel is refused rather than upgraded.
 func TestChatWS_InstallSkillFromPlaintextURLIsRefused(t *testing.T) {
+	t.Parallel()
 	userRoot := t.TempDir()
 	ts, _ := skillsTestServer(t, userRoot, &memFetcher{body: tgzSkill(t, "name: x\ndescription: d")})
 
@@ -130,6 +132,7 @@ func TestChatWS_InstallSkillFromPlaintextURLIsRefused(t *testing.T) {
 // question nobody asked — and /skills is the only place a user can learn why
 // an installed skill is never used.
 func TestChatWS_SkillsListCarriesMissingRequirements(t *testing.T) {
+	t.Parallel()
 	orig := skills.LookPath
 	skills.LookPath = func(name string) (string, error) {
 		if name == "gh" {

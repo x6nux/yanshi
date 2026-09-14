@@ -17,6 +17,7 @@ import (
 // the connection's dynamic set), an invalid spec is rejected with an error
 // frame naming the reason and lands nowhere.
 func TestWFS23InjectHandlerAcceptsAndRejects(t *testing.T) {
+	t.Parallel()
 	wc, client, cleanup := newWSPair(t)
 	defer cleanup()
 	cs := &connSession{}
@@ -51,6 +52,7 @@ func TestWFS23InjectHandlerAcceptsAndRejects(t *testing.T) {
 // matching id resolves the waiting tool, and a late reply after the wait is
 // dropped (no panic, no leak).
 func TestWFS23InvokeRoundTrip(t *testing.T) {
+	t.Parallel()
 	wc, client, cleanup := newWSPair(t)
 	defer cleanup()
 	cs := &connSession{}

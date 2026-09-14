@@ -116,10 +116,12 @@ func (s *fakeKV) KVSet(key, value string) error {
 }
 
 func TestA2AdapterImplementsQueuePort(t *testing.T) {
+	t.Parallel()
 	var _ automation.QueuePort = (*bootstrap.A2Adapter)(nil)
 }
 
 func TestA2AdapterSubmitRunIdempotentAndAcceptsParent(t *testing.T) {
+	t.Parallel()
 	kv := newFakeKV()
 	adapter := bootstrap.NewA2Adapter(newFakeWorkManager(), newFakeBrokerSubmitter(), kv)
 
@@ -143,6 +145,7 @@ func TestA2AdapterSubmitRunIdempotentAndAcceptsParent(t *testing.T) {
 }
 
 func TestA2AdapterLookupMapsWorkStatusToRunStatus(t *testing.T) {
+	t.Parallel()
 	wm := newFakeWorkManager()
 	kv := newFakeKV()
 	adapter := bootstrap.NewA2Adapter(wm, newFakeBrokerSubmitter(), kv)
@@ -169,6 +172,7 @@ func TestA2AdapterLookupMapsWorkStatusToRunStatus(t *testing.T) {
 }
 
 func TestA2Adapter_SubmitRunNilGuard(t *testing.T) {
+	t.Parallel()
 	// Passing nil to all NewA2Adapter args creates an adapter with nil fields
 	// that triggers the nil-guard.
 	_, err := bootstrap.NewA2Adapter(nil, nil, nil).SubmitRun(
@@ -184,6 +188,7 @@ func TestA2Adapter_SubmitRunNilGuard(t *testing.T) {
 }
 
 func TestA2Adapter_SubmitRunIdempotentHit(t *testing.T) {
+	t.Parallel()
 	kv := newFakeKV()
 	// Pre-populate the idempotency key.
 	kv.m["automation:idem:auto-1/slot-1"] = "existing-wt-id"
@@ -202,12 +207,14 @@ func TestA2Adapter_SubmitRunIdempotentHit(t *testing.T) {
 }
 
 func TestA2Adapter_LookupNotFound(t *testing.T) {
+	t.Parallel()
 	adapter := bootstrap.NewA2Adapter(newFakeWorkManager(), newFakeBrokerSubmitter(), newFakeKV())
 	_, err := adapter.Lookup(context.Background(), "nonexistent")
 	require.Error(t, err)
 }
 
 func TestA2Adapter_SubmitRunWorkCreateError(t *testing.T) {
+	t.Parallel()
 	wm := newFakeWorkManager()
 	kv := newFakeKV()
 	adapter := bootstrap.NewA2Adapter(wm, newFakeBrokerSubmitter(), kv)
@@ -233,6 +240,7 @@ func (errBroker) Submit(_, _, _ string) (string, error) {
 }
 
 func TestA2Adapter_SubmitRunBrokerError(t *testing.T) {
+	t.Parallel()
 	adapter := bootstrap.NewA2Adapter(newFakeWorkManager(), errBroker{}, newFakeKV())
 	_, err := adapter.SubmitRun(context.Background(), automation.RunPayload{
 		AutomationID:   "a1",
@@ -260,6 +268,7 @@ func (kv *errKVSet) KVSet(key, _ string) error {
 }
 
 func TestA2Adapter_SubmitRunKVSetError(t *testing.T) {
+	t.Parallel()
 	adapter := bootstrap.NewA2Adapter(newFakeWorkManager(), newFakeBrokerSubmitter(), &errKVSet{m: map[string]string{}})
 	receipt, err := adapter.SubmitRun(context.Background(), automation.RunPayload{
 		AutomationID:   "a1",
@@ -276,6 +285,7 @@ func TestA2Adapter_SubmitRunKVSetError(t *testing.T) {
 // TestA2Adapter_LookupUnknownStatus verifies that an unmapped task status
 // results in RunFailed (fail-closed).
 func TestA2Adapter_LookupUnknownStatus(t *testing.T) {
+	t.Parallel()
 	wm := newFakeWorkManager()
 	kv := newFakeKV()
 	adapter := bootstrap.NewA2Adapter(wm, newFakeBrokerSubmitter(), kv)

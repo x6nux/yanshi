@@ -11,6 +11,7 @@ import (
 )
 
 func TestFakeBackend_StreamsScriptedEvents(t *testing.T) {
+	t.Parallel()
 	b := newFakeBackend([]string{"chunk1", "chunk2"})
 	ch, err := b.Send(context.Background(), "hi")
 	require.NoError(t, err)
@@ -34,6 +35,7 @@ func TestFakeBackend_StreamsScriptedEvents(t *testing.T) {
 // tests can assert on which frame a command produced (and returns nil — no
 // synthetic reply; tests drive applyEvent of replies directly).
 func TestFakeBackend_SendFrame_Records(t *testing.T) {
+	t.Parallel()
 	b := newFakeBackend(nil)
 
 	ch, err := b.SendFrame(context.Background(), proto.NewClear())
@@ -56,6 +58,7 @@ func TestFakeBackend_SendFrame_Records(t *testing.T) {
 // /features silently always-zero in the TUI even when the server is sending
 // real numbers.
 func TestToStreamEventMapsCostAndFeatures(t *testing.T) {
+	t.Parallel()
 	frame := proto.ServerFrame{
 		Type:      "status",
 		CostUSD:   0.42,
@@ -73,6 +76,7 @@ func TestToStreamEventMapsCostAndFeatures(t *testing.T) {
 // control-reply channel so SendFrame callers waiting on /features unblock when
 // the table arrives (instead of hanging until the WS read deadline).
 func TestIsControlReplyIncludesFeatures(t *testing.T) {
+	t.Parallel()
 	if !isControlReply("features") {
 		t.Fatal(`"features" must close the control reply channel`)
 	}

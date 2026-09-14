@@ -16,6 +16,7 @@ import (
 // never matched the registry's model-id keys and silently disabled the
 // per-model window feature (always fell back to ContextWindow).
 func TestContextWindowFor_UsesRegistryKey(t *testing.T) {
+	t.Parallel()
 	cc := CompactionConfig{
 		ContextWindow:   999,                              // fallback — must NOT be returned for keyed models
 		ProviderWindows: map[string]int{"gpt-4o": 128000}, // keyed by Model id
@@ -32,6 +33,7 @@ func TestContextWindowFor_UsesRegistryKey(t *testing.T) {
 // FakeModel / no-providers path (providerWindows == nil) keeps compaction
 // working with the global ContextWindow.
 func TestContextWindowFor_EmptyMapFallback(t *testing.T) {
+	t.Parallel()
 	cc := CompactionConfig{
 		ContextWindow:   256000,
 		ProviderWindows: nil,
@@ -43,6 +45,7 @@ func TestContextWindowFor_EmptyMapFallback(t *testing.T) {
 // TestContextWindowFor_ZeroEntryIgnored ensures a zero (mis-configured) entry
 // does not shadow the fallback — contextWindowFor must skip it and fall through.
 func TestContextWindowFor_ZeroEntryIgnored(t *testing.T) {
+	t.Parallel()
 	cc := CompactionConfig{
 		ContextWindow:   1000,
 		ProviderWindows: map[string]int{"bad": 0},
@@ -56,6 +59,7 @@ func TestContextWindowFor_ZeroEntryIgnored(t *testing.T) {
 // keyed by the registry key (cs.model / req.Model), exactly like ProviderWindows,
 // so the two ladders cannot silently diverge on which key they read.
 func TestThresholdFor_UsesRegistryKey(t *testing.T) {
+	t.Parallel()
 	cc := CompactionConfig{
 		Threshold:          0.8,                                // fallback — must NOT be returned for keyed models
 		ProviderThresholds: map[string]float64{"gpt-4o": 0.55}, // keyed by Model id
@@ -72,6 +76,7 @@ func TestThresholdFor_UsesRegistryKey(t *testing.T) {
 // FakeModel / no-providers path (ProviderThresholds == nil) keeps compaction
 // working with the global Threshold.
 func TestThresholdFor_EmptyMapFallback(t *testing.T) {
+	t.Parallel()
 	cc := CompactionConfig{
 		Threshold:          0.9,
 		ProviderThresholds: nil,
@@ -84,6 +89,7 @@ func TestThresholdFor_EmptyMapFallback(t *testing.T) {
 // catalog row that never populated auto_compact_threshold) entry does not
 // shadow the fallback — thresholdFor must skip it and fall through.
 func TestThresholdFor_ZeroEntryIgnored(t *testing.T) {
+	t.Parallel()
 	cc := CompactionConfig{
 		Threshold:          0.7,
 		ProviderThresholds: map[string]float64{"bad": 0},
@@ -102,6 +108,7 @@ func TestThresholdFor_ZeroEntryIgnored(t *testing.T) {
 // applyDefaults only coerces 0 on a Load()ed config) are covered, mirroring
 // orchestrator's TestWrapCompaction_GlobalThresholdZeroStaysOffEvenWithACatalogHit.
 func TestThresholdFor_GlobalOffStaysOffEvenWithACatalogHit(t *testing.T) {
+	t.Parallel()
 	negative := CompactionConfig{
 		Threshold:          -1,
 		ProviderThresholds: map[string]float64{"gpt-4o": 0.05},
@@ -126,6 +133,7 @@ func TestThresholdFor_GlobalOffStaysOffEvenWithACatalogHit(t *testing.T) {
 // above, one layer down, and must not be confused with the global Threshold
 // itself: the fallback stays untouched for every OTHER model.
 func TestThresholdFor_NegativePerModelValueDisablesJustThatProvider(t *testing.T) {
+	t.Parallel()
 	cc := CompactionConfig{
 		Threshold:          0.8, // globally ON
 		ProviderThresholds: map[string]float64{"quiet-model": -1},

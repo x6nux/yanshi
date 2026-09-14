@@ -59,6 +59,7 @@ func sizeOf(path string) int64 {
 // and asserts that the generations appear, that the footprint stays bounded,
 // and that no line is lost across the rotations.
 func TestLiveRun_O1LogRotationHappensByWritingPastTheThreshold(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "yanshi.log")
 	const maxBytes = 1 << 20
@@ -143,6 +144,7 @@ func TestLiveRun_O1LogRotationHappensByWritingPastTheThreshold(t *testing.T) {
 // generation. A rotation that races its own writers shows up as lost lines, or
 // as a torn line, neither of which a single-writer test can produce.
 func TestLiveRun_O1ConcurrentWritersSurviveRotation(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "busy.log")
 	const maxBytes = 256 << 10
@@ -209,6 +211,7 @@ func TestLiveRun_O1ConcurrentWritersSurviveRotation(t *testing.T) {
 // nothing is deleted until the log happens to fill again, which on a quiet
 // daemon can be never, so the operator's edit appears to do nothing.
 func TestLiveRun_O1LoweringMaxBackupsDiscardsTheExtraGenerations(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "yanshi.log")
 	const maxBytes = 128 << 10

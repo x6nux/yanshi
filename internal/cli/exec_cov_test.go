@@ -26,6 +26,7 @@ func (e *errSendBackend) Send(_ context.Context, _ string) (<-chan StreamEvent, 
 
 // TestExecWithBackend_SendError covers the b.Send error branch at exec.go:110-112.
 func TestExecWithBackend_SendError(t *testing.T) {
+	t.Parallel()
 	b := &errSendBackend{fakeExecBackend: fakeExecBackend{mode: "ws"}}
 	_, err := execWithBackend(context.Background(), b, ExecOptions{
 		Prompt: "hi",
@@ -38,6 +39,7 @@ func TestExecWithBackend_SendError(t *testing.T) {
 // TestExec_SessionResolveError covers the sess.Resolve error branch at
 // exec.go:51-53 by passing options with a non-existent config path.
 func TestExec_SessionResolveError(t *testing.T) {
+	t.Parallel()
 	_, err := Exec(context.Background(), ExecOptions{
 		Options: Options{
 			Root:       t.TempDir(),
@@ -54,6 +56,7 @@ func TestExec_SessionResolveError(t *testing.T) {
 // TestExecWithBackend_ResumeCtxError covers the ctx.Err() after resume at
 // exec.go:103-105 by using a pre-cancelled context.
 func TestExecWithBackend_ResumeCtxError(t *testing.T) {
+	t.Parallel()
 	b := &fakeExecBackend{mode: "ws", sendText: "reply", statusID: "sess-r"}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

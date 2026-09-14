@@ -36,6 +36,7 @@ import (
 // WebSocket client, and a real broker Claim on a worker's behalf. The mirror is
 // the one under test, so nothing here constructs it.
 func TestDurableTaskTransitionsReachAConnectedClient(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 	cfgPath := filepath.Join(dir, "config.yaml")

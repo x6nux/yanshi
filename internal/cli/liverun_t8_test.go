@@ -301,6 +301,7 @@ func TestLiveRun_T8MaliciousArchivesAreRefusedAndWriteNothingOutside(t *testing.
 // The archive served here is perfectly valid, so a success would mean the
 // transport rule — not the archive validation — is what failed.
 func TestLiveRun_T8PlaintextTransportIsRefused(t *testing.T) {
+	t.Parallel()
 	archive := makeTarGz(t, []tarEntry{
 		{name: "probe-skill/SKILL.md", body: validSkillMD},
 	})

@@ -34,6 +34,7 @@ import (
 // is reachable independently of config, which is what lets GOV5 compare the
 // shipped allow list against the shipped tool registry.
 func TestDefaultOrchestratorProfileIsStable(t *testing.T) {
+	t.Parallel()
 	p := bootstrap.DefaultOrchestratorProfile()
 	require.NotEmpty(t, p.Tools.Allow, "default profile must name concrete tools, not fail open")
 	require.True(t, p.Net.Allow, "default profile allows net (see bootstrap.go comment)")
@@ -42,6 +43,7 @@ func TestDefaultOrchestratorProfileIsStable(t *testing.T) {
 // TestAppExposesToolNames proves a built App reports the tool names actually
 // registered with the orchestrator.
 func TestAppExposesToolNames(t *testing.T) {
+	t.Parallel()
 	app := buildMinimalApp(t) // helper from bootstrap_test.go:40
 	require.NotEmpty(t, app.ToolNames, "App.ToolNames must list the registered tools")
 	require.Contains(t, app.ToolNames, "fs_read", "fs_read is always registered")
@@ -66,6 +68,7 @@ func TestAppExposesToolNames(t *testing.T) {
 // lives in bootstrap.ConditionalProfileTools rather than in the static default
 // allow list, and why TestGOV5ProductionProfileHasNoPhantomNames exists.
 func TestC1ToolsAreRegistered(t *testing.T) {
+	t.Parallel()
 	app := buildMinimalApp(t)
 
 	registered := make(map[string]bool, len(app.ToolNames))
@@ -159,6 +162,7 @@ func phantomNames(allowed []string, registered map[string]bool) []string {
 // production is invisible to it. TestGOV5ProductionProfileHasNoPhantomNames
 // covers the other half.
 func TestGOV5ProfileAllowMatchesToolRegistry(t *testing.T) {
+	t.Parallel()
 	app := buildMinimalApp(t)
 
 	registered := registeredSet(t, app)
@@ -303,6 +307,7 @@ llm:
 // (what the orchestrator was actually handed) against the EFFECTIVE registry,
 // so it cannot be satisfied by filing a name under a different list.
 func TestGOV5ProductionProfileHasNoPhantomNames(t *testing.T) {
+	t.Parallel()
 	app := buildAppWithProviders(t, productionNoRLMYAML)
 	registered := registeredSet(t, app)
 
@@ -346,6 +351,7 @@ func TestGOV5ProductionProfileHasNoPhantomNames(t *testing.T) {
 // arrival: guard denies it and the model gets a permission error for a
 // capability the operator explicitly paid to enable.
 func TestGOV5ConditionalToolAuthorizedWhenRegistered(t *testing.T) {
+	t.Parallel()
 	// name == model on purpose: einollm.BuildProviders keys the registry by
 	// model id while SelectRLMModel's cost_class check matches provider.Name,
 	// so equal values exercise BOTH halves of the selection.
@@ -378,6 +384,7 @@ batch:
 // deliberate restriction into a silent grant — the same fail-open posture the
 // concrete default profile replaced.
 func TestGOV5OperatorProfileIsNotWidened(t *testing.T) {
+	t.Parallel()
 	app := buildAppWithProviders(t, `
 llm:
   providers:
@@ -427,6 +434,7 @@ profiles:
 // authorization change that belongs in a deliberate work package, not behind a
 // governance escape hatch.
 func TestGOV7EditToolsAreRegistered(t *testing.T) {
+	t.Parallel()
 	app := buildMinimalApp(t)
 
 	registered := make(map[string]bool, len(app.ToolNames))
@@ -470,6 +478,7 @@ func TestGOV7EditToolsAreRegistered(t *testing.T) {
 // Each nil field disables one tools.With* injection in bindExecutionContext,
 // which means the corresponding subsystem never reaches a real tool call.
 func TestOrchestratorReceivesSecuritySubsystems(t *testing.T) {
+	t.Parallel()
 	app := buildMinimalApp(t)
 	require.NotNil(t, app.Orch, "orchestrator must be built")
 
@@ -582,6 +591,7 @@ func materializeMessage(mv *adk.MessageVariant) (*schema.Message, error) {
 //
 // ledger: A1/T07/T08#1 长进程返回 session id
 func TestShellV2EndToEndSpawnsRealProcess(t *testing.T) {
+	t.Parallel()
 	app := buildMinimalApp(t)
 
 	// echo is a builtin of both sh and cmd.exe, and shell.ShellArgv wraps the
@@ -667,6 +677,7 @@ func TestShellV2EndToEndSpawnsRealProcess(t *testing.T) {
 // toolchain that built it is by construction installed; LookPath still gates
 // the case where it is not on PATH (e.g. an oddly packaged CI image).
 func TestShellRunEndToEndSeesHostPATHAndReportsExitCode(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skipf("go not on PATH: %v", err)
 	}
@@ -703,6 +714,7 @@ func TestShellRunEndToEndSeesHostPATHAndReportsExitCode(t *testing.T) {
 // It has to be a real process: a fake that exits immediately would let a
 // cancel that does nothing look identical to a cancel that works.
 func TestShellV2TaskJobIsControllableWithTheIDItReturns(t *testing.T) {
+	t.Parallel()
 	app := buildMinimalApp(t)
 
 	// A command that stays alive long enough to be canceled, on both families
@@ -863,6 +875,7 @@ storage:
 // (added alongside this fix) against a really-built App, the same landing
 // pattern internal/bootstrap/w3wiring_test.go uses for GOV5/GOV7.
 func TestProviderWindowsReachTheOrchestrator(t *testing.T) {
+	t.Parallel()
 	app := buildAppWithProviderLadder(t)
 	cc := app.Orch.CompactionForTest()
 	require.Equal(t, 42000, cc.ProviderWindows["small-model"],
@@ -899,6 +912,7 @@ func TestProviderWindowsReachTheOrchestrator(t *testing.T) {
 // literal is reformatted across lines. It now builds a real App and reads the
 // value that actually reached each consumer.
 func TestProviderThresholdsReachBothCompactionConfigs(t *testing.T) {
+	t.Parallel()
 	app := buildAppWithProviderLadder(t)
 
 	occ := app.Orch.CompactionForTest()
@@ -937,6 +951,7 @@ func TestProviderThresholdsReachBothCompactionConfigs(t *testing.T) {
 // above only proves the single-provider/no-ModelID case, which stayed green
 // throughout the M-4 bug's lifetime.
 func TestProviderTruncationPolicyReachesTheActiveTurn(t *testing.T) {
+	t.Parallel()
 	app := buildAppWithProviderLadder(t)
 
 	smallCtx := app.Orch.WithTurnContextForTest(context.Background(), orchestrator.TurnOpts{ModelID: "small-model"})
@@ -982,6 +997,7 @@ func TestProviderTruncationPolicyReachesTheActiveTurn(t *testing.T) {
 // apihttp.Config one (or vice versa) and this test would still fail on
 // whichever side broke, instead of passing as long as one survives.
 func TestProviderFallbackModelsReachTheCompactionConfig(t *testing.T) {
+	t.Parallel()
 	app := buildAppWithProviderLadder(t)
 
 	occ := app.Orch.CompactionForTest()
@@ -1039,6 +1055,7 @@ llm:
 // rather than a text match on bootstrap.go, so a wrong-variable or
 // forgotten-field regression that still compiles is caught.
 func TestTruncationPolicyOverrideReachesOrchestratorContext(t *testing.T) {
+	t.Parallel()
 	app := buildAppWithTruncationPolicy(t, `"head=22,tail=13"`)
 	ctx := app.Orch.BindExecutionContextForTest(context.Background(), "")
 	spec, ok := tools.TruncationPolicyFromContext(ctx)
@@ -1052,6 +1069,7 @@ func TestTruncationPolicyOverrideReachesOrchestratorContext(t *testing.T) {
 // deployment must resolve to einollm.DefaultTruncationSpec end to end, not a
 // zero-value TruncationSpec (which would mean spillPreview keeps NOTHING).
 func TestTruncationPolicyFallsBackToDefaultWhenUnset(t *testing.T) {
+	t.Parallel()
 	app := buildAppWithTruncationPolicy(t, "")
 	ctx := app.Orch.BindExecutionContextForTest(context.Background(), "")
 	spec, ok := tools.TruncationPolicyFromContext(ctx)
@@ -1067,6 +1085,7 @@ func TestTruncationPolicyFallsBackToDefaultWhenUnset(t *testing.T) {
 // a typo must degrade to the default at resolution time rather than refusing
 // to boot.
 func TestTruncationPolicyMalformedOverrideFallsBackToDefaultWithoutFailingBoot(t *testing.T) {
+	t.Parallel()
 	app := buildAppWithTruncationPolicy(t, `"not-a-valid-policy"`)
 	ctx := app.Orch.BindExecutionContextForTest(context.Background(), "")
 	spec, ok := tools.TruncationPolicyFromContext(ctx)
@@ -1089,6 +1108,7 @@ func TestTruncationPolicyMalformedOverrideFallsBackToDefaultWithoutFailingBoot(t
 // Source-level: reaching the check needs a full Build with providers wired,
 // and what matters is that the miss is reported at all.
 func TestUnregisteredCompactionModelIsReported(t *testing.T) {
+	t.Parallel()
 	src, err := os.ReadFile("bootstrap.go")
 	if err != nil {
 		t.Fatalf("read bootstrap.go: %v", err)
@@ -1121,6 +1141,7 @@ func TestUnregisteredCompactionModelIsReported(t *testing.T) {
 // crash, no log, no failing test -- just a turn burning tokens. Eight agent_*
 // tools shipped in exactly that state.
 func TestNoRegisteredToolHasAZeroTimeout(t *testing.T) {
+	t.Parallel()
 	app := buildAppWithProviders(t, "")
 	if len(app.ToolTimeouts) == 0 {
 		t.Fatal("no tool timeouts captured: the snapshot is not being populated")
@@ -1156,6 +1177,7 @@ func TestNoRegisteredToolHasAZeroTimeout(t *testing.T) {
 //
 // ledger: M1/SPEC-TOOLIF#1 所有工具统一到 Tool 接口（DisplayName+DefaultTimeout+Stream）
 func TestEveryRegisteredToolImplementsTheToolContract(t *testing.T) {
+	t.Parallel()
 	app := buildAppWithProviders(t, "")
 	if len(app.ToolNames) == 0 {
 		t.Fatal("no tools registered: this test cannot fail")
@@ -1186,6 +1208,7 @@ func TestEveryRegisteredToolImplementsTheToolContract(t *testing.T) {
 // component the composition root already holds -- one level below where the
 // gate looks. This test watches that level for the MCP manager specifically.
 func TestMCPHealthLoopIsStarted(t *testing.T) {
+	t.Parallel()
 	app := buildAppWithProviders(t, "")
 	if app.MCP == nil {
 		t.Skip("no MCP manager in this build")
@@ -1212,6 +1235,7 @@ func TestMCPHealthLoopIsStarted(t *testing.T) {
 // machine without the fake binary installed -- and a permanently skipped test
 // asserts nothing at all.
 func TestLSPOverrideKeepsWorkspaceMarkers(t *testing.T) {
+	t.Parallel()
 	langs := bootstrap.LSPLanguagesForTest(map[string]config.LanguageServerSpec{
 		"go": {Command: "my-gopls"},
 	})
@@ -1259,6 +1283,7 @@ func TestLSPOverrideKeepsWorkspaceMarkers(t *testing.T) {
 //
 // ledger: C4/OBS1#1 关键路径结构化日志
 func TestStderrIsReservedForPreLoggerAndTTYMessages(t *testing.T) {
+	t.Parallel()
 	src, err := os.ReadFile(filepath.Join("..", "..", "internal", "bootstrap", "bootstrap.go"))
 	if err != nil {
 		t.Fatal(err)
@@ -1291,6 +1316,7 @@ func TestStderrIsReservedForPreLoggerAndTTYMessages(t *testing.T) {
 // internal/agent/spawn — a package whose every file begins with //go:build
 // ignore, so it never compiled into the binary at all.
 func TestOrchestrationToolNamesAreRegistered(t *testing.T) {
+	t.Parallel()
 	app := buildAppWithProviders(t, productionNoRLMYAML)
 	registered := registeredSet(t, app)
 
@@ -1321,6 +1347,7 @@ func TestOrchestrationToolNamesAreRegistered(t *testing.T) {
 //
 // ledger: A2/DT1#1 可创建/列出/读取/取消
 func TestDurableTaskToolsAreAllowedOutOfTheBox(t *testing.T) {
+	t.Parallel()
 	p := bootstrap.DefaultOrchestratorProfile()
 	g := guard.New()
 	for _, name := range []string{
@@ -1349,6 +1376,7 @@ func TestDurableTaskToolsAreAllowedOutOfTheBox(t *testing.T) {
 //
 // ledger: B1/M04#1 全部生命周期操作可用
 func TestManagedAgentToolsAreAllowedOutOfTheBox(t *testing.T) {
+	t.Parallel()
 	p := bootstrap.DefaultOrchestratorProfile()
 	g := guard.New()
 	for _, name := range []string{
@@ -1372,6 +1400,7 @@ func TestManagedAgentToolsAreAllowedOutOfTheBox(t *testing.T) {
 //
 // ledger: A2/DT1#2 状态机正确
 func TestBuildWiresTheDurableLifecycleMirror(t *testing.T) {
+	t.Parallel()
 	app := buildMinimalApp(t)
 	require.NotNil(t, app.Broker, "Build produced no broker")
 	require.NotNil(t, app.Broker.Work,
@@ -1396,6 +1425,7 @@ func TestBuildWiresTheDurableLifecycleMirror(t *testing.T) {
 //
 // ledger: A2/DT1#4 重启后持久恢复
 func TestBuildRecoversInterruptedDurableTasks(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "test.db")
 
@@ -1456,6 +1486,7 @@ token: "test-token"
 // would have made the clause-level handshake read as if streaming were proven
 // by a profile assertion.
 func TestSelfManagementToolsAreAllowedAndSensitiveOnesAreNot(t *testing.T) {
+	t.Parallel()
 	p := bootstrap.DefaultOrchestratorProfile()
 	g := guard.New()
 
@@ -1494,6 +1525,7 @@ func TestSelfManagementToolsAreAllowedAndSensitiveOnesAreNot(t *testing.T) {
 // would set the flag just the same. So the table's actual contents are
 // compared against the snapshot.
 func TestToolBatchIsRegisteredAndBound(t *testing.T) {
+	t.Parallel()
 	app := buildMinimalApp(t)
 
 	require.Contains(t, app.ToolNames, "tool_batch",
@@ -1532,6 +1564,7 @@ func TestToolBatchIsRegisteredAndBound(t *testing.T) {
 // gave it. That the NAME reached the snapshot is asserted separately in
 // TestToolBatchIsRegisteredAndBound; this test is about the table's contents.
 func TestToolBatchDispatchesOverTheRealRegistry(t *testing.T) {
+	t.Parallel()
 	app := buildAppWithProviders(t, `
 profiles:
   orchestrator:
@@ -1634,6 +1667,7 @@ profiles:
 // batch must be refused exactly as a direct fs_write would be. If batching ever
 // widened anything, this is where it would show up first.
 func TestToolBatchDeniedStepStopsTheBatchInTheAssembledApp(t *testing.T) {
+	t.Parallel()
 	app := buildMinimalApp(t)
 	require.NotNil(t, app.ToolBatch)
 

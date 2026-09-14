@@ -34,6 +34,7 @@ import (
 // is narrow on purpose -- that each field's value comes from cfg.LoopGuard, not
 // what the orchestrator later does with it.
 func TestLoopGuardConfigReachesTheOrchestrator(t *testing.T) {
+	t.Parallel()
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "bootstrap.go", nil, 0)
 	if err != nil {

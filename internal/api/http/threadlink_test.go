@@ -19,6 +19,7 @@ import (
 // whose only observable effect is log content, and asserting on log text would
 // pin the formatting rather than the wiring.
 func TestWSTurnCarriesThreadID(t *testing.T) {
+	t.Parallel()
 	src, err := os.ReadFile("ws.go")
 	if err != nil {
 		t.Fatalf("read ws.go: %v", err)
@@ -42,6 +43,7 @@ func TestWSTurnCarriesThreadID(t *testing.T) {
 // none because it looks like a thread. If someone later "fixes" the gap, this
 // says why it is not one.
 func TestSSETurnDeliberatelyHasNoThreadID(t *testing.T) {
+	t.Parallel()
 	src, err := os.ReadFile("chat.go")
 	if err != nil {
 		t.Fatalf("read chat.go: %v", err)
@@ -93,6 +95,7 @@ func TestSSETurnDeliberatelyHasNoThreadID(t *testing.T) {
 // history and two registered models, and the assertion is about which of two
 // names is looked up -- a harness that heavy would pin the harness.
 func TestCompactNowSizesChunksAgainstTheSummaryModel(t *testing.T) {
+	t.Parallel()
 	src, err := os.ReadFile("ws_compaction.go")
 	if err != nil {
 		t.Fatalf("read ws_compaction.go: %v", err)

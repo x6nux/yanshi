@@ -39,6 +39,7 @@ func (f *fakeRuleRecorder) DemoteShellForSession(sid, cmd string) bool {
 // invoked, or stops distinguishing allow from deny, generalization silently
 // reverts to the state it spent its whole life in.
 func TestRecordSessionApproval_Table(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name         string
 		req          tools.PermissionRequest
@@ -131,6 +132,7 @@ func TestRecordSessionApproval_Table(t *testing.T) {
 // the same reason: without a place to release the rules from, recording them
 // is a leak rather than a feature.
 func TestRecordSessionApprovalNeedsARecorderAndASession(t *testing.T) {
+	t.Parallel()
 	req := tools.PermissionRequest{Tool: "shell_run", Shell: "go test ./x"}
 
 	// A nil recorder must not panic — the WS handler passes the orchestrator,
@@ -147,6 +149,7 @@ func TestRecordSessionApprovalNeedsARecorderAndASession(t *testing.T) {
 // rule set; recording under the wrong id would let one conversation's approval
 // authorize another's commands.
 func TestRecordSessionApprovalCarriesTheSessionID(t *testing.T) {
+	t.Parallel()
 	rec := &fakeRuleRecorder{}
 	req := tools.PermissionRequest{Tool: "shell_run", Shell: "go test ./x"}
 	recordSessionApproval(rec, "ws-alpha", req, tools.PermissionAllow)

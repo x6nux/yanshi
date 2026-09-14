@@ -17,6 +17,7 @@ import (
 )
 
 func TestChatSSE_ForwardsTypedSubagentEventWithSingleWriter(t *testing.T) {
+	t.Parallel()
 	emitCall := schema.AssistantMessage("", []schema.ToolCall{{
 		ID: "emit-1", Type: "function",
 		Function: schema.FunctionCall{Name: "emit_subagent_test", Arguments: `{}`},

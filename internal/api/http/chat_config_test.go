@@ -67,6 +67,7 @@ func postChat(t *testing.T, ts *httptest.Server, body string) string {
 // precedes done. The default model would answer "from-default"; selecting
 // "alt" must answer "from-alt".
 func TestChat_SSE_ModelAndThinking(t *testing.T) {
+	t.Parallel()
 	defaultM := einollm.NewFakeModel([]string{"from-default"}, nil)
 	altM := einollm.NewFakeModel([]string{"from-alt"}, nil)
 	models := map[string]model.BaseChatModel{"alt": altM}
@@ -107,6 +108,7 @@ func TestChat_SSE_ModelAndThinking(t *testing.T) {
 // TestChat_SSE_UnknownModelFallsBack proves an unknown model name is ignored
 // (nil lookup) and the default model runs — no crash, no error frame.
 func TestChat_SSE_UnknownModelFallsBack(t *testing.T) {
+	t.Parallel()
 	defaultM := einollm.NewFakeModel([]string{"from-default"}, nil)
 	models := map[string]model.BaseChatModel{"alt": einollm.NewFakeModel([]string{"from-alt"}, nil)}
 	o, err := orchestrator.New(orchestrator.Config{Model: defaultM})
@@ -137,6 +139,7 @@ func TestChat_SSE_UnknownModelFallsBack(t *testing.T) {
 // TestChat_SSE_NilModelsIsSafe proves the handler works with a nil model map
 // (the FakeModel path) and still emits status + done.
 func TestChat_SSE_NilModelsIsSafe(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"ok"}, nil)})
 	require.NoError(t, err)
 	s := New(Config{Token: "t"})
@@ -164,6 +167,7 @@ func TestChat_SSE_NilModelsIsSafe(t *testing.T) {
 // TestChat_SSE_StatusCarriesUsage proves the status event reports the turn's
 // token usage when the model provides it (usage survives the ADK runner).
 func TestChat_SSE_StatusCarriesUsage(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModelWithMessages([]*schema.Message{assistantWithUsage("reply", 11, 4)}, nil)
 	o, err := orchestrator.New(orchestrator.Config{Model: fm})
 	require.NoError(t, err)

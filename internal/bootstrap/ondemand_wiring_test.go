@@ -41,6 +41,7 @@ storage:
 // factory default profile allows them) ONLY when tools.on_demand.enabled is
 // set — off by default, both directions of the conditional.
 func TestWFS11EscapeHatchRegistrationFollowsTheSwitch(t *testing.T) {
+	t.Parallel()
 	t.Run("off by default: not registered", func(t *testing.T) {
 		app := buildAppWithOnDemand(t, "")
 		require.NotContains(t, app.ToolNames, "tools_list")

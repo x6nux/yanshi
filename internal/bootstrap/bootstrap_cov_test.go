@@ -16,6 +16,7 @@ import (
 // TestCov_OpenLogFile_MkdirAllError covers the MkdirAll-error branch (a file
 // blocks the log parent directory).
 func TestCov_OpenLogFile_MkdirAllError(t *testing.T) {
+	t.Parallel()
 	tmp := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(tmp, "blocked"), []byte("x"), 0o644))
 	_, err := openLogFile(filepath.Join(tmp, "blocked", "app.log"), config.LogConfig{})
@@ -25,12 +26,14 @@ func TestCov_OpenLogFile_MkdirAllError(t *testing.T) {
 // TestCov_OpenLogFile_OpenFileError covers the OpenFile-error branch (the path
 // is a directory, which cannot be opened for append).
 func TestCov_OpenLogFile_OpenFileError(t *testing.T) {
+	t.Parallel()
 	_, err := openLogFile(t.TempDir(), config.LogConfig{})
 	assert.Error(t, err)
 }
 
 // TestCov_BuildAutomation_NilStore covers the db==nil validation branch.
 func TestCov_BuildAutomation_NilStore(t *testing.T) {
+	t.Parallel()
 	_, err := BuildAutomation(context.Background(), config.Config{}, nil, nil)
 	assert.Error(t, err)
 }
@@ -38,6 +41,7 @@ func TestCov_BuildAutomation_NilStore(t *testing.T) {
 // TestCov_BuildAutomation_NilAdapter covers the adapter==nil validation branch
 // (db is a real in-memory store, so the db-nil check passes).
 func TestCov_BuildAutomation_NilAdapter(t *testing.T) {
+	t.Parallel()
 	db, err := store.Open(":memory:")
 	require.NoError(t, err)
 	defer db.Close()

@@ -18,6 +18,7 @@ import (
 // --- formatTokenCount ---
 
 func TestFormatTokenCount(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		n    int
 		want string
@@ -41,6 +42,7 @@ func TestFormatTokenCount(t *testing.T) {
 // --- formatElapsed ---
 
 func TestFormatElapsed(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		d    time.Duration
 		want string
@@ -64,6 +66,7 @@ func TestFormatElapsed(t *testing.T) {
 // --- scopeJSON ---
 
 func TestScopeJSON(t *testing.T) {
+	t.Parallel()
 	scope := approval.Scope{
 		Tool:    "fs_write",
 		FSOp:    "write",
@@ -88,6 +91,7 @@ func TestScopeJSON(t *testing.T) {
 // --- setFeature ---
 
 func TestSetFeature(t *testing.T) {
+	t.Parallel()
 	t.Run("nil registry returns error", func(t *testing.T) {
 		err := setFeature(nil, proto.FeaturesSetPayload{Key: "test", Enabled: boolPtr(true)})
 		require.Error(t, err)
@@ -126,6 +130,7 @@ func TestSetFeature(t *testing.T) {
 // --- featureRows ---
 
 func TestFeatureRows(t *testing.T) {
+	t.Parallel()
 	t.Run("nil registry returns nil", func(t *testing.T) {
 		rows := featureRows(nil)
 		assert.Nil(t, rows)
@@ -160,6 +165,7 @@ func TestFeatureRows(t *testing.T) {
 // --- sseLifecycleRelay ---
 
 func TestSSELifecycleRelayClose(t *testing.T) {
+	t.Parallel()
 	r := newSSELifecycleRelay()
 	assert.NotNil(t, r)
 	r.Close()
@@ -169,6 +175,7 @@ func TestSSELifecycleRelayClose(t *testing.T) {
 }
 
 func TestSSELifecycleRelayEmitTerminal(t *testing.T) {
+	t.Parallel()
 	r := newSSELifecycleRelay()
 	// Terminal events go to the terminal channel.
 	terminal := proto.ServerFrame{Type: "done", Event: "completed"}
@@ -184,6 +191,7 @@ func TestSSELifecycleRelayEmitTerminal(t *testing.T) {
 }
 
 func TestSSELifecycleRelayEmitProgress(t *testing.T) {
+	t.Parallel()
 	r := newSSELifecycleRelay()
 	// Progress events go to the progress channel (cap 64).
 	for i := 0; i < 70; i++ {
@@ -206,6 +214,7 @@ done:
 // --- drainLifecycleFrames ---
 
 func TestDrainLifecycleFrames(t *testing.T) {
+	t.Parallel()
 	r := newSSELifecycleRelay()
 	r.Emit(proto.ServerFrame{Type: "agent_chunk", Text: "hello", Event: "progress"})
 	r.Emit(proto.ServerFrame{Type: "done", Event: "completed"})
@@ -218,6 +227,7 @@ func TestDrainLifecycleFrames(t *testing.T) {
 }
 
 func TestDrainLifecycleFramesRedacts(t *testing.T) {
+	t.Parallel()
 	redactor := secrets.NewRedactor()
 	redactor.Register("secret-key")
 	r := newSSELifecycleRelay()

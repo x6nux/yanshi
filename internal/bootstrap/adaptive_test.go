@@ -40,6 +40,7 @@ func minimalConfigFile(t *testing.T) string {
 // liveness, which is the exact behaviour O7 exists to replace. Only an
 // assertion against the REAL assembled handler can tell the two apart.
 func TestBuildRegistersReadiness(t *testing.T) {
+	t.Parallel()
 	app, err := Build(Options{ConfigPath: minimalConfigFile(t), FakeModel: true})
 	require.NoError(t, err)
 	defer app.Shutdown(context.Background())
@@ -70,6 +71,7 @@ func TestBuildRegistersReadiness(t *testing.T) {
 // while ignoring max_size_mb entirely, and an operator's 1 MiB cap would
 // silently become 10 MiB.
 func TestLogWriterRotates(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "app.log")
 	w, err := openLogFile(path, config.LogConfig{MaxSizeMB: 1, MaxBackups: 2})
@@ -104,6 +106,7 @@ func TestLogWriterRotates(t *testing.T) {
 // NOT be clamped to zero — zero is the "use the default" sentinel, so clamping
 // would answer a request to disable rotation by enabling it at 10 MiB.
 func TestLogWriterNegativeMaxSizeDisablesRotation(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "app.log")
 	w, err := openLogFile(path, config.LogConfig{MaxSizeMB: -1})
@@ -135,6 +138,7 @@ func (p *probeModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.O
 // TestBuildAdaptiveModelsWrapsEveryProvider proves each registry entry comes
 // back wrapped, and that the wrapper carries the per-model identity.
 func TestBuildAdaptiveModelsWrapsEveryProvider(t *testing.T) {
+	t.Parallel()
 	a, b := &probeModel{id: "a"}, &probeModel{id: "b"}
 	named := map[string]model.BaseChatModel{"gpt-4o": a, "claude": b}
 	chain := []model.BaseChatModel{a, b}
@@ -170,6 +174,7 @@ func TestBuildAdaptiveModelsWrapsEveryProvider(t *testing.T) {
 // wrong provider on every boot — and no other assertion in this file would
 // notice, because the SET of wrapped models is identical either way.
 func TestBuildAdaptiveModelsPreservesChainOrder(t *testing.T) {
+	t.Parallel()
 	first, second, third := &probeModel{id: "1"}, &probeModel{id: "2"}, &probeModel{id: "3"}
 	named := map[string]model.BaseChatModel{"m1": first, "m2": second, "m3": third}
 	// Deliberately NOT the sorted-key order, so a map-derived chain differs.
@@ -200,6 +205,7 @@ func TestBuildAdaptiveModelsPreservesChainOrder(t *testing.T) {
 // global default the operator did set — turning "inherit the global limit"
 // into "exempt from it", which is the opposite request and is silent.
 func TestPerModelRateLimitsOnlyCarriesConfiguredProviders(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{}
 	cfg.LLM.RateLimit = config.RateLimitConfig{QPM: 60}
 	cfg.LLM.Providers = []config.ProviderConfig{
@@ -223,6 +229,7 @@ func TestPerModelRateLimitsOnlyCarriesConfiguredProviders(t *testing.T) {
 // looks up, so every per-provider rate limit is ignored and the provider label
 // on every usage row is empty, with no error anywhere.
 func TestProviderConfigsByKeyMatchesRegistryKeying(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{}
 	cfg.LLM.Providers = []config.ProviderConfig{
 		{Name: "primary", Kind: "openai", Model: "gpt-4o"},
@@ -248,6 +255,7 @@ func TestProviderConfigsByKeyMatchesRegistryKeying(t *testing.T) {
 // AppendUsage signature change would be caught, but a field dropped from the
 // translation would not.
 func TestStoreUsageSinkPersists(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	defer st.Close()
@@ -282,6 +290,7 @@ func TestStoreUsageSinkPersists(t *testing.T) {
 // that genuinely silences it rather than one that merely hides the log line
 // while still paying the timeout on every start.
 func TestRunPreflightHonoursTheOffSwitch(t *testing.T) {
+	t.Parallel()
 	var hits int
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits++
@@ -304,6 +313,7 @@ func TestRunPreflightHonoursTheOffSwitch(t *testing.T) {
 // --fake-model boot takes. Preflight has no error return by design, so the
 // only way it can break a startup is by panicking.
 func TestRunPreflightNeverPanicsWithoutProviders(t *testing.T) {
+	t.Parallel()
 	assert.NotPanics(t, func() {
 		RunPreflight(context.Background(), &config.Config{})
 	})

@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/x6nux/yanshi/internal/testutil"
 )
 
 // readyFixture builds a test backend whose /readyz and /healthz statuses are
@@ -56,6 +58,7 @@ func (f readyFixture) server(t *testing.T) (*httptest.Server, *atomic.Int32, *at
 // "can this backend serve", and must keep working against a backend too old to
 // have a readiness route.
 func TestReadyProbeSemantics(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		readyFixture
@@ -119,6 +122,7 @@ func TestReadyProbeSemantics(t *testing.T) {
 // already know is the wrong question, and would re-introduce exactly the bug
 // O7 removes.
 func TestReadyDoesNotFallBackOnNon404(t *testing.T) {
+	t.Parallel()
 	ts, _, healthzHits := readyFixture{readyzStatus: 503, healthzStatus: 200}.server(t)
 	require.False(t, ready(context.Background(), ts.URL))
 	require.Zero(t, healthzHits.Load(),
@@ -129,6 +133,7 @@ func TestReadyDoesNotFallBackOnNon404(t *testing.T) {
 // first, so a backend that answers both does not depend on the liveness route
 // at all.
 func TestReadyPrefersReadyzOverHealthz(t *testing.T) {
+	t.Parallel()
 	ts, readyzHits, healthzHits := readyFixture{readyzStatus: 200, healthzStatus: 500}.server(t)
 	require.True(t, ready(context.Background(), ts.URL))
 	require.Equal(t, int32(1), readyzHits.Load())
@@ -141,11 +146,12 @@ func TestReadyPrefersReadyzOverHealthz(t *testing.T) {
 // from every real code so "no backend there" never reads as "backend said 404"
 // and triggers the compatibility fallback against a host that does not exist.
 func TestProbeReportsZeroWhenUnreachable(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		url  string
 	}{
-		{name: "connection refused", url: "http://127.0.0.1:1" + ReadyPath},
+		{name: "connection refused", url: "http://" + testutil.ClosedLoopbackAddr(t) + ReadyPath},
 		{name: "malformed url", url: "http://[::1" + ReadyPath},
 		{name: "empty url", url: ""},
 	}
@@ -160,6 +166,7 @@ func TestProbeReportsZeroWhenUnreachable(t *testing.T) {
 // caller: a cancelled context yields "not ready" rather than blocking the TUI
 // launch on a hung backend.
 func TestReadyRespectsCancelledContext(t *testing.T) {
+	t.Parallel()
 	ts, _, _ := readyFixture{readyzStatus: 200}.server(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -170,6 +177,7 @@ func TestReadyRespectsCancelledContext(t *testing.T) {
 // point both probes at the same route, which would silently restore the
 // liveness-only behaviour while every test above kept passing.
 func TestProbePathConstantsAreDistinct(t *testing.T) {
+	t.Parallel()
 	require.NotEqual(t, ReadyPath, HealthPath)
 	require.Equal(t, "/readyz", ReadyPath)
 	require.Equal(t, "/healthz", HealthPath)

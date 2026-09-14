@@ -96,6 +96,7 @@ func lspTurnFixture(t *testing.T) (string, *einollm.FakeModel, *tools.FSTools, g
 //
 // ledger: B2/LSP1#1 编辑后模型收到诊断
 func TestE2E_LSPDiagnosticsReachTheModel(t *testing.T) {
+	t.Parallel()
 	workdir, mdl, fs, profile := lspTurnFixture(t)
 	_ = workdir
 
@@ -141,6 +142,7 @@ func TestE2E_LSPDiagnosticsReachTheModel(t *testing.T) {
 //
 // ledger: B2/LSP1#3 超时不阻塞 turn
 func TestE2E_LSPTimeoutDoesNotBlockTheTurn(t *testing.T) {
+	t.Parallel()
 	workdir, mdl, fs, profile := lspTurnFixture(t)
 
 	mgr := &scriptedLSP{block: time.Minute}
@@ -182,6 +184,7 @@ func TestE2E_LSPTimeoutDoesNotBlockTheTurn(t *testing.T) {
 //
 // ledger: B2/LSP1#2 server 缺失安全降级
 func TestE2E_NoLSPStillCompletesTheEdit(t *testing.T) {
+	t.Parallel()
 	workdir, mdl, fs, profile := lspTurnFixture(t)
 
 	o, err := New(Config{Model: mdl, Tools: []BaseTool{fs.Edit}, Profile: profile}) // no LSP

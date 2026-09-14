@@ -20,6 +20,7 @@ import (
 // StreamEvent field. This covers the WS client path: wsBackend.readLoop calls
 // toStreamEvent directly for every incoming frame.
 func TestToStreamEvent_StructuredResult(t *testing.T) {
+	t.Parallel()
 	payload := json.RawMessage(`{"x":1}`)
 	ev := toStreamEvent(proto.NewStructuredResult(payload))
 	assert.Equal(t, "structured_result", ev.Kind)
@@ -30,6 +31,7 @@ func TestToStreamEvent_StructuredResult(t *testing.T) {
 // server that emits one structured_result frame then closes the turn. Proves the
 // WS client path surfaces the payload intact end-to-end.
 func TestWSBackend_StructuredResultEndToEnd(t *testing.T) {
+	t.Parallel()
 	payload := json.RawMessage(`{"x":1}`)
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *nethttp.Request) bool { return true }}
 	ts := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
@@ -80,6 +82,7 @@ func TestWSBackend_StructuredResultEndToEnd(t *testing.T) {
 // a structured_result event. Proves the SSE client path surfaces the payload
 // intact end-to-end.
 func TestSSEBackend_StructuredResultEndToEnd(t *testing.T) {
+	t.Parallel()
 	payload := json.RawMessage(`{"x":1}`)
 	structEvent, structData := proto.NewStructuredResult(payload).SSEEvent()
 	doneEvent, doneData := proto.NewDone().SSEEvent()

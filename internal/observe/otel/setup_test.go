@@ -11,6 +11,8 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
+	"github.com/x6nux/yanshi/internal/testutil"
 )
 
 // otlpStub returns a server that acknowledges OTLP/HTTP export requests with
@@ -54,7 +56,7 @@ func TestCollectorAvailable(t *testing.T) {
 		t.Fatal("empty endpoint must be optimistic-true")
 	}
 	// A closed port on loopback is unreachable.
-	if collectorAvailable(context.Background(), "127.0.0.1:1") {
+	if collectorAvailable(context.Background(), testutil.ClosedLoopbackAddr(t)) {
 		t.Fatal("closed port must report unreachable")
 	}
 	// A live server is reachable.
@@ -169,7 +171,7 @@ func TestSetupCollectorUnreachableDegradesToNoop(t *testing.T) {
 	resetOTelNoop()
 	rt := Setup(context.Background(), Config{
 		Enabled:     true,
-		Endpoint:    "127.0.0.1:1",
+		Endpoint:    testutil.ClosedLoopbackAddr(t),
 		ServiceName: "yanshi-test",
 	})
 	if rt.Enabled() {

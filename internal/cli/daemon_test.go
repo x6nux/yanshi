@@ -24,6 +24,7 @@ import (
 // A boundary without reasons is a boundary nobody can review, and the whole
 // point of O3's reload is not pretending everything is hot-swappable.
 func TestReloadSectionsAreDisjointAndJustified(t *testing.T) {
+	t.Parallel()
 	for _, name := range ReloadableSections() {
 		reason, reloadable, known := ReloadReason(name)
 		require.True(t, known)
@@ -61,6 +62,7 @@ func TestReloadSectionsAreDisjointAndJustified(t *testing.T) {
 // checked, so it is refused. "Restart to be sure" costs one restart; "reload
 // and hope" costs a silently stale process.
 func TestClassifyReloadDefaultsToRefusing(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name         string
 		changed      []string
@@ -109,6 +111,7 @@ func TestClassifyReloadDefaultsToRefusing(t *testing.T) {
 // TestChangedSectionsDetectsPerSectionEdits proves the diff is per-section, so
 // an operator who changed one thing is not told to restart for everything.
 func TestChangedSectionsDetectsPerSectionEdits(t *testing.T) {
+	t.Parallel()
 	base := &config.Config{}
 	base.Server.HTTPAddr = "127.0.0.1:8080"
 	base.Storage.SQLitePath = "yanshi.db"
@@ -144,6 +147,7 @@ func TestChangedSectionsDetectsPerSectionEdits(t *testing.T) {
 // reachable by GET is one a browser tab or a curl typo can trigger, and
 // "stop the daemon" must have no accidental invocation path.
 func TestControlHandlerRejectsNonPost(t *testing.T) {
+	t.Parallel()
 	var stopped atomic.Bool
 	h := NewControlHandler(ControlHooks{Stop: func() { stopped.Store(true) }})
 
@@ -160,6 +164,7 @@ func TestControlHandlerRejectsNonPost(t *testing.T) {
 // so it must be written before the hook runs or every successful stop looks
 // like a connection error.
 func TestControlHandlerStopRepliesBeforeShuttingDown(t *testing.T) {
+	t.Parallel()
 	stopCalled := make(chan struct{})
 	h := NewControlHandler(ControlHooks{Stop: func() { close(stopCalled) }})
 
@@ -183,6 +188,7 @@ func TestControlHandlerStopRepliesBeforeShuttingDown(t *testing.T) {
 // asks for: reloadable sections take effect, restart-required ones are
 // explicitly refused with a reason, and the refusal is visible in the reply.
 func TestControlHandlerReloadAppliesOnlyTheSafeHalf(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := writeFile(t, filepath.Join(dir, "config.yaml"),
 		"schema_version: 1\nserver:\n  http_addr: \"0.0.0.0:9999\"\n"+
@@ -233,6 +239,7 @@ func TestControlHandlerReloadAppliesOnlyTheSafeHalf(t *testing.T) {
 // "written but nobody reads it" shape, and from the operator's side it is
 // indistinguishable from a reload that worked.
 func TestControlHandlerCanOnlyUnderClaimWhatWasApplied(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := writeFile(t, filepath.Join(dir, "config.yaml"),
 		"schema_version: 1\nserver:\n  http_addr: \"127.0.0.1:8080\"\n"+
@@ -297,6 +304,7 @@ func TestControlHandlerCanOnlyUnderClaimWhatWasApplied(t *testing.T) {
 // promoting it would let a wiring mistake in the composition root silently
 // widen the reload boundary this package exists to state.
 func TestReconcileAppliedNeverPromotes(t *testing.T) {
+	t.Parallel()
 	applied, rejected := reconcileApplied(
 		[]string{"profiles"},
 		[]string{"profiles", "server.http_addr", "invented.section"},
@@ -316,6 +324,7 @@ func TestReconcileAppliedNeverPromotes(t *testing.T) {
 // echoed (a rejected config often names a raw api_key value, and this reply
 // crosses a network boundary).
 func TestControlHandlerReloadKeepsRunningConfigOnBadFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := writeFile(t, filepath.Join(dir, "config.yaml"),
 		"schema_version: 99999\napi_key: \"sk-live-LEAK\"\n")
@@ -338,6 +347,7 @@ func TestControlHandlerReloadKeepsRunningConfigOnBadFile(t *testing.T) {
 // TestControlHandlerReloadReportsApplyFailure asserts a failing apply is
 // surfaced rather than reported as success.
 func TestControlHandlerReloadReportsApplyFailure(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := writeFile(t, filepath.Join(dir, "config.yaml"),
 		"schema_version: 1\nserver:\n  http_addr: \"127.0.0.1:8080\"\n"+
@@ -363,6 +373,7 @@ func (e errTestOnly) Error() string { return string(e) }
 
 // TestControlHandlerRejectsMalformedAndUnknownOps covers the protocol errors.
 func TestControlHandlerRejectsMalformedAndUnknownOps(t *testing.T) {
+	t.Parallel()
 	h := NewControlHandler(ControlHooks{Stop: func() {}})
 
 	rec := httptest.NewRecorder()
@@ -393,6 +404,7 @@ func TestControlHandlerRejectsMalformedAndUnknownOps(t *testing.T) {
 // second window will not connect" has to be able to see that rather than infer
 // it from a hung window.
 func TestRunDaemonStatusDistinguishesAliveFromReady(t *testing.T) {
+	t.Parallel()
 	t.Run("no lockfile", func(t *testing.T) {
 		s := RunDaemonStatus(context.Background(), filepath.Join(t.TempDir(), "unused"))
 		require.False(t, s.Found)
@@ -445,6 +457,7 @@ func TestRunDaemonStatusDistinguishesAliveFromReady(t *testing.T) {
 
 // TestRenderDaemonStatus covers the three states an operator reads.
 func TestRenderDaemonStatus(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		status DaemonStatus
@@ -491,6 +504,7 @@ func TestRenderDaemonStatus(t *testing.T) {
 // with a recognisable sentinel rather than a raw dial error, and that stop
 // clears the litter a dead owner left behind.
 func TestRunDaemonStopAndReloadWithoutDaemon(t *testing.T) {
+	t.Parallel()
 	t.Run("no lockfile at all", func(t *testing.T) {
 		root := filepath.Join(t.TempDir(), "nothing")
 		require.ErrorIs(t, RunDaemonStop(context.Background(), root, time.Second), ErrNoDaemon)
@@ -524,6 +538,7 @@ func TestRunDaemonStopAndReloadWithoutDaemon(t *testing.T) {
 // round trip against a real HTTP server, so the wire format is exercised rather
 // than assumed.
 func TestRunDaemonReloadAgainstALiveServer(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := writeFile(t, filepath.Join(dir, "config.yaml"),
 		"schema_version: 1\nserver:\n  http_addr: \"0.0.0.0:7777\"\n"+
@@ -563,6 +578,7 @@ func TestRunDaemonReloadAgainstALiveServer(t *testing.T) {
 // daemon built before `yanshi daemon` existed has no control route, and a raw
 // "404" tells the operator nothing about what to do.
 func TestRunDaemonReloadAgainstAnOldBackend(t *testing.T) {
+	t.Parallel()
 	ts := httptest.NewServer(http.NewServeMux())
 	t.Cleanup(ts.Close)
 
@@ -581,6 +597,7 @@ func TestRunDaemonReloadAgainstAnOldBackend(t *testing.T) {
 // stop && yanshi serve` is only safe if the first command returns after the
 // port is free, so stop must not return while the PID still exists.
 func TestRunDaemonStopWaitsForExit(t *testing.T) {
+	t.Parallel()
 	mux := http.NewServeMux()
 	mux.HandleFunc(ControlPath, NewControlHandler(ControlHooks{Stop: func() {}}))
 	ts := httptest.NewServer(mux)
@@ -605,6 +622,7 @@ func TestRunDaemonStopWaitsForExit(t *testing.T) {
 // TestWaitForExitReturnsWhenPidIsGone covers the success side of the poll loop
 // and its context cancellation path.
 func TestWaitForExitReturnsWhenPidIsGone(t *testing.T) {
+	t.Parallel()
 	require.NoError(t, waitForExit(context.Background(),
 		lockfile.Lockfile{PID: 999999}, time.Second))
 
@@ -619,6 +637,7 @@ func TestWaitForExitReturnsWhenPidIsGone(t *testing.T) {
 // spent an afternoon wondering why the port did not move is exactly the failure
 // this output prevents.
 func TestRenderControlResponseNamesRefusals(t *testing.T) {
+	t.Parallel()
 	var sb strings.Builder
 	RenderControlResponse(&sb, ControlResponse{
 		OK: true, Message: "re-read config.yaml",
@@ -640,6 +659,7 @@ func TestRenderControlResponseNamesRefusals(t *testing.T) {
 // never invents a change: two configs must always agree about a section the
 // differ does not know how to read.
 func TestSectionFingerprintIsStableForUnknownNames(t *testing.T) {
+	t.Parallel()
 	a := &config.Config{}
 	a.Server.HTTPAddr = "a"
 	b := &config.Config{}

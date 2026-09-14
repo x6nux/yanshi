@@ -16,6 +16,7 @@ import (
 // filesystem — while `network_deny: true` does nothing at all. Every signal the
 // row had BEFORE this field says the configuration is fine.
 func TestSandboxRowShowsEveryUnenforcedField(t *testing.T) {
+	t.Parallel()
 	t.Run("enforced but not entirely", func(t *testing.T) {
 		row := sandboxCheckResult(sandbox.CapabilityReport{
 			Platform: "linux", Requested: sandbox.WorkspaceWrite,
@@ -87,6 +88,7 @@ func TestSandboxRowShowsEveryUnenforcedField(t *testing.T) {
 // darwin host in the first place — sandbox.New here would have to run on
 // linux or windows to ever go red.
 func TestDoctorAndRuntimeReportTheSameSandboxPosture(t *testing.T) {
+	t.Parallel()
 	doctorCfg := sandbox.Config{ // mirrors checkSandbox's sandbox.Config literal
 		Enabled: true, WorkspaceRoot: "/w", Tier: sandbox.WorkspaceWrite, NetworkDeny: true,
 	}

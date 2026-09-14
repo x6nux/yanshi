@@ -150,6 +150,7 @@ func (p *pipeWriter) String() string {
 // TestMCPLoginCompletesTheFlow drives the whole authorization_code leg: print
 // the URL, receive the redirect, exchange the code with the verifier, persist.
 func TestMCPLoginCompletesTheFlow(t *testing.T) {
+	t.Parallel()
 	var forms []url.Values
 	var mu sync.Mutex
 	m, store, _ := loginFixture(t, tokenOK(&forms, &mu))
@@ -209,6 +210,7 @@ func TestMCPLoginCompletesTheFlow(t *testing.T) {
 // page the user visits during the flow can drive their browser to the loopback
 // callback with an attacker-obtained code.
 func TestMCPLoginRejectsATamperedState(t *testing.T) {
+	t.Parallel()
 	var forms []url.Values
 	var mu sync.Mutex
 	m, store, _ := loginFixture(t, tokenOK(&forms, &mu))
@@ -243,6 +245,7 @@ func TestMCPLoginRejectsATamperedState(t *testing.T) {
 // TestMCPLoginRefusals covers the inputs that cannot work, each naming what to
 // do instead rather than failing generically.
 func TestMCPLoginRefusals(t *testing.T) {
+	t.Parallel()
 	var forms []url.Values
 	var mu sync.Mutex
 	m, _, _ := loginFixture(t, tokenOK(&forms, &mu))
@@ -274,6 +277,7 @@ func TestMCPLoginRefusals(t *testing.T) {
 // TestMCPLoginNamesTheCandidates: a bare invocation should say which server
 // names are valid, not only that one is required.
 func TestMCPLoginNamesTheCandidates(t *testing.T) {
+	t.Parallel()
 	var forms []url.Values
 	var mu sync.Mutex
 	m, _, _ := loginFixture(t, tokenOK(&forms, &mu))
@@ -289,6 +293,7 @@ func TestMCPLoginNamesTheCandidates(t *testing.T) {
 // TestMCPLoginTimesOut: a user who closed the tab must not leave a process the
 // operator has to hunt down and kill.
 func TestMCPLoginTimesOut(t *testing.T) {
+	t.Parallel()
 	var forms []url.Values
 	var mu sync.Mutex
 	m, _, _ := loginFixture(t, tokenOK(&forms, &mu))
@@ -306,6 +311,7 @@ func TestMCPLoginTimesOut(t *testing.T) {
 
 // TestMCPLogout deletes the stored login and refuses the shapes it cannot.
 func TestMCPLogout(t *testing.T) {
+	t.Parallel()
 	store := newMemMCPTokens()
 	_ = store.SaveTokens("corp", mcp.StoredTokens{AccessToken: "a", RefreshToken: "r"})
 

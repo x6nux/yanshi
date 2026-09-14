@@ -37,6 +37,7 @@ import (
 // failure) surfaces as a label belonging to a different turn rather than as a
 // missing one.
 func TestLiveRun_TimelineLabelsRealTurnsWithTheirQuestions(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	// The repo autoVCS tracks is the process working directory, so the app must
 	// be built from inside a scratch project or the timeline would describe

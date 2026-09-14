@@ -78,6 +78,7 @@ func newTimeoutWSServer(t *testing.T, n int, policy PermissionTimeoutPolicy) (ur
 // receives the prompt, answers nothing, and the turn must still finish — with
 // the side effect NOT applied.
 func TestS5_UnansweredPromptExpiresAndDenies(t *testing.T) {
+	t.Parallel()
 	url, workdir := newTimeoutWSServer(t, 1, PermissionTimeoutPolicy{
 		Timeout: 1500 * time.Millisecond, UnattendedAfter: 3,
 	})
@@ -110,6 +111,7 @@ func TestS5_UnansweredPromptExpiresAndDenies(t *testing.T) {
 // deadline is useless to a human who cannot see it, and the TUI renders these
 // two fields.
 func TestS5_CountdownIsOnTheWire(t *testing.T) {
+	t.Parallel()
 	url, _ := newTimeoutWSServer(t, 1, PermissionTimeoutPolicy{
 		Timeout: 2 * time.Second, UnattendedAfter: 3,
 	})
@@ -134,6 +136,7 @@ func TestS5_CountdownIsOnTheWire(t *testing.T) {
 // latch happened at all, so it measures the behaviour without being a
 // stopwatch-precision test that flakes on a loaded CI box.
 func TestS5_ConsecutiveExpiriesLatchUnattended(t *testing.T) {
+	t.Parallel()
 	const perPrompt = 1200 * time.Millisecond
 	const prompts = 5
 	url, workdir := newTimeoutWSServer(t, prompts, PermissionTimeoutPolicy{
@@ -180,6 +183,7 @@ func TestS5_ConsecutiveExpiriesLatchUnattended(t *testing.T) {
 // immediately with no tool call at all — which looks exactly like "the prompt
 // was refused unheard", i.e. the bug this test is supposed to detect.
 func TestS5_InteractionUnlatches(t *testing.T) {
+	t.Parallel()
 	const perPrompt = 800 * time.Millisecond
 	workdir := t.TempDir()
 

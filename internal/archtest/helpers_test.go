@@ -13,6 +13,7 @@ package archtest
 
 import (
 	"encoding/json"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -149,26 +150,55 @@ type pkgJSON struct {
 	Imports    []string `json:"Imports"`
 }
 
-// buildImportGraph runs "go list -json -deps ./..." and streams the output
-// through a json.Decoder. It returns a map from every module-internal
+// importGraphOnce memoises the whole buildImportGraph pipeline for the lifetime
+// of the test binary.
+//
+// `go list -json -deps ./...` costs 2-3s, and eight gates in this package ask
+// for the import graph of the same unchanged tree: R1..R6, ADR0015 and
+// TestBuildImportGraphRuns. Re-running the subprocess — and re-decoding its
+// output, which -deps makes as large as the full transitive closure — once per
+// gate was the single largest reducible cost in this package, measured at
+// roughly a third of its wall time.
+//
+// One execution is enough because nothing here mutates the tree and then asks
+// for a fresh graph. The one gate that reasons about a graph other than the one
+// on disk (TestR2_DetectsNewViolationInSyntheticGraph) builds it in memory and
+// never comes through this path.
+var importGraphOnce = sync.OnceValues(buildImportGraphUncached)
+
+// buildImportGraphUncached runs `go list -json -deps ./...` and streams the
+// output through a json.Decoder. It returns a map from every module-internal
 // package path to its sorted list of direct internal dependencies.
 //
 // External dependencies are discarded; only packages whose ImportPath starts
 // with the module path (or equals the module path) are retained.
-func buildImportGraph(t *testing.T) map[string][]string {
-	t.Helper()
-	mp := modulePath(t)
-	root := moduleRoot(t)
+func buildImportGraphUncached() (map[string][]string, error) {
+	root := mustModuleRoot()
+	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		return nil, err
+	}
+	mp := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "module ") {
+			mp = strings.TrimSpace(line[len("module "):])
+			break
+		}
+	}
+	if mp == "" {
+		return nil, errors.New("module directive not found in go.mod")
+	}
 
 	cmd := exec.Command("go", "list", "-json", "-deps", "./...")
 	cmd.Dir = root
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 
 	graph := make(map[string][]string)
@@ -179,7 +209,8 @@ func buildImportGraph(t *testing.T) map[string][]string {
 			if err == io.EOF {
 				break
 			}
-			t.Fatal(err)
+			_ = cmd.Wait()
+			return nil, err
 		}
 		if !isModulePkg(pkg.ImportPath, mp) {
 			continue
@@ -195,6 +226,17 @@ func buildImportGraph(t *testing.T) map[string][]string {
 	}
 
 	if err := cmd.Wait(); err != nil {
+		return nil, err
+	}
+	return graph, nil
+}
+
+// buildImportGraph returns the module-internal import graph. The result is
+// memoised across every caller in the test binary; treat it as read-only.
+func buildImportGraph(t *testing.T) map[string][]string {
+	t.Helper()
+	graph, err := importGraphOnce()
+	if err != nil {
 		t.Fatal(err)
 	}
 	return graph

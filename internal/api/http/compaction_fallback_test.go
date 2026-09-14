@@ -21,6 +21,7 @@ import (
 // contract is "unwrapped") see no difference from before W-C-10. This is the
 // pre-turn twin of orchestrator's TestWrapCompaction_NoFallbacksLeavesSummarizerNil.
 func TestCompactionModel_NoFallbackChain_ReturnsUnwrapped(t *testing.T) {
+	t.Parallel()
 	primary := einollm.NewFakeModel([]string{"ok"}, nil)
 	models := map[string]model.BaseChatModel{"gpt-4o": primary}
 	cc := CompactionConfig{Model: "gpt-4o"}
@@ -39,6 +40,7 @@ func TestCompactionModel_NoFallbackChain_ReturnsUnwrapped(t *testing.T) {
 // trigger — keeping this test fast, matching
 // orchestrator's TestWrapCompaction_WithFallbacksSetsResilientSummarizer.
 func TestCompactionModel_CcModelBranchFailsOverToFallback(t *testing.T) {
+	t.Parallel()
 	primary := einollm.NewFakeModel(nil, errors.New("invalid_api_key"))
 	fallback := einollm.NewFakeModel([]string{"fallback answered"}, nil)
 	models := map[string]model.BaseChatModel{"gpt-4o": primary}
@@ -61,6 +63,7 @@ func TestCompactionModel_CcModelBranchFailsOverToFallback(t *testing.T) {
 // distinct from the first because a mutation could wire fallback-wrapping
 // into only one of the three branches and still pass the first test.
 func TestCompactionModel_SessionModelBranchFailsOverToFallback(t *testing.T) {
+	t.Parallel()
 	primary := einollm.NewFakeModel(nil, errors.New("invalid_api_key"))
 	fallback := einollm.NewFakeModel([]string{"fallback answered"}, nil)
 	models := map[string]model.BaseChatModel{"claude-x": primary}
@@ -84,6 +87,7 @@ func TestCompactionModel_SessionModelBranchFailsOverToFallback(t *testing.T) {
 // patches the two explicit-key branches, since it is reached through a loop
 // and a sort rather than a direct map lookup.
 func TestCompactionModel_SortedFirstBranchFailsOverToFallback(t *testing.T) {
+	t.Parallel()
 	primary := einollm.NewFakeModel(nil, errors.New("invalid_api_key"))
 	fallback := einollm.NewFakeModel([]string{"fallback answered"}, nil)
 	models := map[string]model.BaseChatModel{

@@ -94,6 +94,7 @@ func newExpiringPermWSServer(t *testing.T, policy PermissionTimeoutPolicy, n int
 // NOT run (a timeout is not consent), and the frame carried a countdown (a UI
 // can show the user what is about to happen).
 func TestChatWS_PermissionExpiryDeniesAndUnblocksTheTurn(t *testing.T) {
+	t.Parallel()
 	url, workdir := newExpiringPermWSServer(t,
 		PermissionTimeoutPolicy{Timeout: 300 * time.Millisecond, UnattendedAfter: 99}, 1)
 	c := dial(t, url)
@@ -144,6 +145,7 @@ func TestChatWS_PermissionExpiryDeniesAndUnblocksTheTurn(t *testing.T) {
 // timing race. It is a one-sided bound on purpose — asserting a lower bound too
 // would make it fail on a fast machine for no defect.
 func TestChatWS_UnattendedLatchStopsWaitingAfterConsecutiveExpiries(t *testing.T) {
+	t.Parallel()
 	const budget = 400 * time.Millisecond
 	const prompts = 4
 	url, workdir := newExpiringPermWSServer(t,
@@ -175,6 +177,7 @@ func TestChatWS_UnattendedLatchStopsWaitingAfterConsecutiveExpiries(t *testing.T
 // frame, so this exercises it with a plain get_status — not a permission answer
 // — because that is the case a reset scoped to permission traffic would miss.
 func TestChatWS_UnattendedLatchResetsOnUserInteraction(t *testing.T) {
+	t.Parallel()
 	const budget = 250 * time.Millisecond
 	// Two prompts in the first turn: with a threshold of 1 the first expiry
 	// latches and the second is refused outright, so the connection is

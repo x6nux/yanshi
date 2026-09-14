@@ -108,6 +108,7 @@ func drainToolResults(t *testing.T, iter *adk.AsyncIterator[*adk.AgentEvent]) []
 // 变异：给 runnerFor 里 ToolsNodeConfig 设 ExecuteSequentially: true（串行分
 // 发），本测试在 5s 超出处变红。
 func TestWFS22ToolCallsRunInParallel(t *testing.T) {
+	t.Parallel()
 	arrived := make(chan string, 2)
 	h := newWFS22Harness(func(name string) { arrived <- name })
 	mdl := wfs22Script("done")
@@ -147,6 +148,7 @@ func TestWFS22ToolCallsRunInParallel(t *testing.T) {
 // （或只短路并行批次里的第二个调用），本测试变红 —— par_b 的 body 会执行、
 // ran 里出现 par_b、结果不再带 permission denied。
 func TestWFS22EachParallelCallIsAuthorized(t *testing.T) {
+	t.Parallel()
 	h := newWFS22Harness(nil)
 	close(h.release) // bodies (if they run) return immediately
 
@@ -168,6 +170,7 @@ func TestWFS22EachParallelCallIsAuthorized(t *testing.T) {
 // both in-flight calls observe the turn context being cancelled and the turn
 // ends instead of hanging.
 func TestWFS22CancellationReachesParallelCalls(t *testing.T) {
+	t.Parallel()
 	started := make(chan string, 2)
 	h := newWFS22Harness(func(name string) { started <- name })
 	mdl := wfs22Script("unreachable — must be cut off by the cancel")
@@ -213,6 +216,7 @@ func TestWFS22CancellationReachesParallelCalls(t *testing.T) {
 // shared per turn, so two overlapping InvokableRun calls mutating a plain
 // *int was a data race (add/store are atomic now).
 func TestWFS22ParallelFailuresKeepBreakerConsistent(t *testing.T) {
+	t.Parallel()
 	started := make(chan string, 2)
 	release := make(chan struct{})
 	body := func(name string) tools.StreamFunc {

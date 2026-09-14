@@ -75,6 +75,7 @@ func (f *fakeExecBackend) recorded() []string {
 // TestExec_TextMode_RendersAgentChunkToStdout proves text mode routes the model
 // stream to stdout and tool activity to stderr (stdout stays parseable).
 func TestExec_TextMode_RendersAgentChunkToStdout(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	b := &fakeExecBackend{mode: "ws", sendText: "hello world", statusID: "sess-1"}
 	res, err := execWithBackend(context.Background(), b, ExecOptions{
@@ -94,6 +95,7 @@ func TestExec_TextMode_RendersAgentChunkToStdout(t *testing.T) {
 // lowercase "type" field (not the Go field name "Kind") — the headless JSONL
 // contract external consumers depend on.
 func TestExec_JSONLMode_OneJSONLinePerEvent(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	b := &fakeExecBackend{mode: "ws", sendText: "chunk", statusID: "sess-2"}
 	_, err := execWithBackend(context.Background(), b, ExecOptions{
@@ -126,6 +128,7 @@ func TestExec_JSONLMode_OneJSONLinePerEvent(t *testing.T) {
 //
 // ledger: D1/V12#3 可 resume
 func TestExec_ResumeSendsRestoreBeforeUserMessage(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	b := &fakeExecBackend{mode: "ws", sendText: "ok", statusID: "sess-r"}
 	res, err := execWithBackend(context.Background(), b, ExecOptions{
@@ -142,6 +145,7 @@ func TestExec_ResumeSendsRestoreBeforeUserMessage(t *testing.T) {
 // TestExec_ServerErrorFrameReturnsError proves a server error frame is surfaced
 // as a non-nil error (main maps it to exit 1) and rendered to stderr.
 func TestExec_ServerErrorFrameReturnsError(t *testing.T) {
+	t.Parallel()
 	b := &errExecBackend{fakeExecBackend: fakeExecBackend{mode: "ws"}}
 	var stdout, stderr bytes.Buffer
 	_, err := execWithBackend(context.Background(), b, ExecOptions{
@@ -197,6 +201,7 @@ func (b *blockExecBackend) Send(ctx context.Context, text string) (<-chan Stream
 }
 
 func TestExec_CancelledContextReturnsCanceled(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // pre-cancel: the drain sees an empty, closed channel
 	b := &blockExecBackend{fakeExecBackend: fakeExecBackend{mode: "ws"}}
@@ -212,6 +217,7 @@ func TestExec_CancelledContextReturnsCanceled(t *testing.T) {
 // (bootstrap.Build via Resolve, in-process store, bootstrap fake model) runs one
 // turn and surfaces a non-empty session id. Depends on Task 1's statusFrame change.
 func TestExec_InProcessFakeModelTurn(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	res, err := Exec(context.Background(), ExecOptions{
@@ -277,6 +283,7 @@ func (r *recordingBackend) Mode() string  { return "fake" }
 // stable lowercase camelCase keys (type/text) and never leaks Go field names
 // (Kind) — the contract external pipe consumers depend on.
 func TestRenderHeadlessJSONLEventUsesStableKeys(t *testing.T) {
+	t.Parallel()
 	var out, errOut bytes.Buffer
 	renderHeadlessEvent(&out, &errOut, ExecOutputJSONL, StreamEvent{
 		Kind: "agent_chunk",
@@ -299,6 +306,7 @@ func TestRenderHeadlessJSONLEventUsesStableKeys(t *testing.T) {
 // before turn 1, and subsequent records continue the same session without
 // re-restoring. The recordingBackend's restores counter asserts "once total".
 func TestRunHeadlessWithBackendResumesOnlyOnce(t *testing.T) {
+	t.Parallel()
 	backend := &recordingBackend{}
 	var stdout, stderr bytes.Buffer
 	result, err := runHeadlessWithBackend(context.Background(), backend, HeadlessRunOptions{

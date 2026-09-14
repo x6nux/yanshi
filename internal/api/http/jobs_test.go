@@ -11,6 +11,7 @@ import (
 // "human-friendly" output. Stale jobs (Task 17 RestoreJobs) legitimately
 // have zero times; faking them would be a lie.
 func TestJobInfoSnakeCaseAndNoFakeTimes(t *testing.T) {
+	t.Parallel()
 	job := shell.Job{ID: "j-1", SessionID: "s-1", Command: "go test", State: shell.StateRunning, PID: 5}
 	info := jobInfo(job)
 	if info.EndedAt != 0 {

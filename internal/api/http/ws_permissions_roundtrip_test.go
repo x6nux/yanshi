@@ -31,6 +31,7 @@ import (
 //
 // ledger: A1/S07#3 用户可查看撤销
 func TestChatWS_PermissionsListAndRevokeRoundTrip(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 

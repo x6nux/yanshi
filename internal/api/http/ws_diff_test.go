@@ -26,6 +26,7 @@ import (
 // indistinguishable from "VCS enabled, nothing pending"), never a panic on
 // the nil *vcs.VCS receiver.
 func TestCov_HandleWorkspaceDiff_VcsNil(t *testing.T) {
+	t.Parallel()
 	wc, client, cleanup := newWSPair(t)
 	defer cleanup()
 
@@ -54,6 +55,7 @@ func TestCov_HandleWorkspaceDiff_VcsNil(t *testing.T) {
 // reply. Proven by mutation: swapping the error-branch write for
 // conn.write(proto.NewWorkspaceDiff(nil)) still passed the old assertion.
 func TestCov_HandleWorkspaceDiff_StoreError(t *testing.T) {
+	t.Parallel()
 	db, err := store.Open(":memory:")
 	require.NoError(t, err)
 	db.Close()
@@ -95,6 +97,7 @@ func TestCov_HandleWorkspaceDiff_StoreError(t *testing.T) {
 // implementation makes this test fail (sf.WorkspaceDiff empty instead of
 // containing hello.go) — see fix-e2-report.md for the pasted red run.
 func TestWS_WorkspaceDiff_RealTurnBoundary(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	root := filepath.Join(base, "repo")
 	require.NoError(t, os.MkdirAll(root, 0o755))
@@ -169,6 +172,7 @@ func TestWS_WorkspaceDiff_RealTurnBoundary(t *testing.T) {
 // those two responses distinct: the former is workspace_diff with an empty
 // list, the latter an error frame).
 func TestWS_WorkspaceDiff_EmptyWhenNothingPending(t *testing.T) {
+	t.Parallel()
 	url, _, _ := setupSeamServer(t)
 	c := dial(t, url)
 	defer c.Close()

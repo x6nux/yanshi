@@ -29,6 +29,7 @@ func dial(t *testing.T, url string) *websocket.Conn {
 }
 
 func TestChatWS_AgentChunkThenDone(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"hello"}, nil)})
 	require.NoError(t, err)
 	s := New(Config{Token: "t"})
@@ -53,6 +54,7 @@ func TestChatWS_AgentChunkThenDone(t *testing.T) {
 }
 
 func TestChatWS_MultiTurnMemory(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel(nil, nil)
 	fm.Echo = true // echoes the last input message -> proves history is passed
 	o, err := orchestrator.New(orchestrator.Config{Model: fm})
@@ -96,6 +98,7 @@ func TestChatWS_MultiTurnMemory(t *testing.T) {
 // context cancel triggered by the cancel frame. It also verifies the connection
 // survives the cancel and a follow-up turn completes normally.
 func TestChatWS_CancelMidTurn(t *testing.T) {
+	t.Parallel()
 	m := einollm.NewBlockingModel("hello")
 	o, err := orchestrator.New(orchestrator.Config{Model: m})
 	require.NoError(t, err)
@@ -160,6 +163,7 @@ func TestChatWS_CancelMidTurn(t *testing.T) {
 // with an mcp_list reply. No MCP servers are registered for the session, so the
 // list is empty — the handler replies rather than dropping the frame.
 func TestChatWS_ListMCP(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	s := New(Config{Token: "t"})
@@ -187,6 +191,7 @@ func TestChatWS_ListMCP(t *testing.T) {
 // status{compacted=true} with before/after tokens, BEFORE the turn's own
 // agent_chunk frames. Under-threshold turns do not compact.
 func TestChatWS_AutoCompaction_StreamsChunksAndStatus(t *testing.T) {
+	t.Parallel()
 	// Four scripted responses: two under-threshold LONG turn replies (long so
 	// the new Plan — which pins user messages verbatim — still leaves the
 	// assistant turns large enough for compaction to actually shrink tokens),
@@ -284,6 +289,7 @@ var personSchema = json.RawMessage(`{
 // turn emits a structured_result frame carrying the validated JSON before done.
 // No retry happens (the model is called exactly once).
 func TestWSStructuredOutputSuccess(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{`{"name":"Ada","age":36}`}, nil)
 	o, err := orchestrator.New(orchestrator.Config{Model: fm})
 	require.NoError(t, err)
@@ -327,6 +333,7 @@ func TestWSStructuredOutputSuccess(t *testing.T) {
 // (RecordMessages captures it). A structured_result with the second attempt's
 // JSON is emitted.
 func TestWSStructuredOutputRetryThenSuccess(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{
 		"not json",       // attempt 0: invalid → retry
 		`{"name":"Ada"}`, // attempt 1: valid → break
@@ -394,6 +401,7 @@ func TestWSStructuredOutputRetryThenSuccess(t *testing.T) {
 // emits an error frame mentioning the schema; no structured_result is emitted.
 // The turn still ends with done (the loop breaks after the error marker).
 func TestWSStructuredOutputRetryCapError(t *testing.T) {
+	t.Parallel()
 	// 4 invalid responses: maxSchemaRetries=3 → attempts 0,1,2,3.
 	fm := einollm.NewFakeModel([]string{"bad1", "bad2", "bad3", "bad4"}, nil)
 	o, err := orchestrator.New(orchestrator.Config{Model: fm})
@@ -436,6 +444,7 @@ func TestWSStructuredOutputRetryCapError(t *testing.T) {
 // complete normally with a single model call. This proves the hasSchema gate
 // keeps the text path byte-identical to pre-A12 behavior.
 func TestWSNoSchemaIsTextMode(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"hello"}, nil)
 	o, err := orchestrator.New(orchestrator.Config{Model: fm})
 	require.NoError(t, err)
@@ -478,6 +487,7 @@ func TestWSNoSchemaIsTextMode(t *testing.T) {
 // attempt; the assertion is purely about option forwarding (RecordOpts +
 // ReceivedOutputSchema), not retry behavior.
 func TestWS_OutputSchemaReachesModel(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{`{"name":"Ada","age":36}`}, nil)
 	fm.RecordOpts = true
 	o, err := orchestrator.New(orchestrator.Config{Model: fm})
@@ -507,6 +517,7 @@ func TestWS_OutputSchemaReachesModel(t *testing.T) {
 // option, so ReceivedOutputSchema stays empty (byte-identical to pre-A12 on the
 // option path).
 func TestWS_NoSchemaLeavesModelEmpty(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"hello"}, nil)
 	fm.RecordOpts = true
 	o, err := orchestrator.New(orchestrator.Config{Model: fm})
@@ -537,6 +548,7 @@ func TestWS_NoSchemaLeavesModelEmpty(t *testing.T) {
 // provider usage is billed exactly once; the billed ledger is independent of
 // the overwrite-semantics tokensIn (constraint 10).
 func TestConnSessionBillsEveryProviderUsageAndJudge(t *testing.T) {
+	t.Parallel()
 	s := &Server{priceTab: map[string]einollm.ModelPricing{
 		"test-model": {InputPerM: 2, CacheHitPerM: 0.5, OutputPerM: 8},
 	}}
@@ -558,6 +570,7 @@ func TestConnSessionBillsEveryProviderUsageAndJudge(t *testing.T) {
 // costKnown=false so renderers show "N/A" (constraint 11 in the C4 plan: N/A is
 // distinct from $0.0000).
 func TestConnSessionUnknownModelIsNotZeroCost(t *testing.T) {
+	t.Parallel()
 	s := &Server{priceTab: einollm.DefaultPricing()}
 	cs := connSession{model: "unknown-model"}
 	cs.resetBilling(s)
@@ -571,6 +584,7 @@ func TestConnSessionUnknownModelIsNotZeroCost(t *testing.T) {
 // toggling a known flag, rejecting an unknown flag (named error), and
 // rejecting a missing Enabled payload.
 func TestFeatureRowsAndUnknownSet(t *testing.T) {
+	t.Parallel()
 	reg := features.NewRegistry(true)
 	reg.Register(features.Spec{Key: "observe.cost_in_status", Stage: features.Beta, Default: false, Owner: "runtime"})
 	if err := setFeature(reg, proto.FeaturesSetPayload{Key: "observe.cost_in_status", Enabled: boolPtr(true)}); err != nil {

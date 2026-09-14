@@ -24,6 +24,7 @@ import (
 // accumulator. Failure here means the extraction in TurnUsage.set is missing a
 // field that /cost (Spec B8) needs.
 func TestUsageExtractsCacheAndReasoning(t *testing.T) {
+	t.Parallel()
 	msg := &schema.Message{
 		Role:    schema.Assistant,
 		Content: "hi",

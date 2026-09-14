@@ -15,6 +15,7 @@ import (
 // fakeBackend that were previously never called (0% coverage): Cancel, Close,
 // and Mode all return their fixed values.
 func TestFakeBackend_CancelCloseMode(t *testing.T) {
+	t.Parallel()
 	b := newFakeBackend(nil)
 	require.NoError(t, b.Cancel())
 	require.NoError(t, b.Close())
@@ -25,6 +26,7 @@ func TestFakeBackend_CancelCloseMode(t *testing.T) {
 // TestFakeBackend_SendFrameRecordsAndDrains proves SendFrame records the frame
 // (test-inspectable via Frames) and returns a nil channel (no synthetic reply).
 func TestFakeBackend_SendFrameRecordsAndDrains(t *testing.T) {
+	t.Parallel()
 	b := newFakeBackend(nil)
 	ch, err := b.SendFrame(context.Background(), proto.NewGetStatus())
 	require.NoError(t, err)
@@ -36,6 +38,7 @@ func TestFakeBackend_SendFrameRecordsAndDrains(t *testing.T) {
 // TestFakeBackend_SendStreamsChunksDone proves Send streams the scripted chunks
 // followed by done.
 func TestFakeBackend_SendStreamsChunksDone(t *testing.T) {
+	t.Parallel()
 	b := newFakeBackend([]string{"a", "b"})
 	ch, err := b.Send(context.Background(), "hi")
 	require.NoError(t, err)
@@ -57,6 +60,7 @@ func TestFakeBackend_SendStreamsChunksDone(t *testing.T) {
 // features_set frames get the distinct "/features requires a WebSocket backend"
 // error (constraint 7 in the C4 plan), not the generic control-unsupported text.
 func TestSSEBackend_SendFrame_FeaturesDistinctError(t *testing.T) {
+	t.Parallel()
 	b := newSSEBackend("http://unused")
 	defer b.Close()
 	for _, fr := range []proto.ClientFrame{
@@ -75,6 +79,7 @@ func TestSSEBackend_SendFrame_FeaturesDistinctError(t *testing.T) {
 // TestSSEBackend_CancelNoopBeforeSend proves Cancel before any Send (no active
 // cancelCurrent) is a harmless no-op.
 func TestSSEBackend_CancelNoopBeforeSend(t *testing.T) {
+	t.Parallel()
 	b := newSSEBackend("http://unused")
 	defer b.Close()
 	require.NoError(t, b.Cancel(), "Cancel with no in-flight turn is a no-op")
@@ -83,6 +88,7 @@ func TestSSEBackend_CancelNoopBeforeSend(t *testing.T) {
 // TestNewClientThreadID_HasPrefix proves the happy path returns an "sse-" prefixed
 // hex id (the crypto/rand fallback path is not reachable in normal operation).
 func TestNewClientThreadID_HasPrefix(t *testing.T) {
+	t.Parallel()
 	id := newClientThreadID()
 	assert.True(t, strings.HasPrefix(id, "sse-"), "id = %q", id)
 	// 6 bytes hex = 12 chars + "sse-" prefix = 16 total.
@@ -95,6 +101,7 @@ func TestNewClientThreadID_HasPrefix(t *testing.T) {
 // frame: it is written without replacing the active turn channel and returns nil
 // (no reply channel), mirroring permission_response.
 func TestWSBackend_SendFrame_SetModeReturnsNil(t *testing.T) {
+	t.Parallel()
 	b, err := newWSBackend(context.Background(), newWSServer(t))
 	require.NoError(t, err)
 	defer b.Close()

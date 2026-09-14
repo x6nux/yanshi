@@ -24,6 +24,7 @@ import (
 // non-nil store so ensureSession creates a real session row; with store == nil
 // the id stays empty and resume is unavailable (matching today's behavior).
 func TestChatWS_StatusFrameCarriesSessionID(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 

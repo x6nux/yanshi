@@ -21,6 +21,7 @@ import (
 )
 
 func TestChat_SSE(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"hello world"}, nil)})
 	require.NoError(t, err)
 	s := New(Config{Token: "t"})
@@ -46,6 +47,7 @@ func TestChat_SSE(t *testing.T) {
 // SSE handler can be reconstructed by the client by concatenating data: payloads.
 // Each line of content must be its own data: line per the SSE spec.
 func TestChat_SSE_MultiLine(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"line1\nline2\nline3"}, nil)})
 	require.NoError(t, err)
 	s := New(Config{Token: "t"})
@@ -85,6 +87,7 @@ func TestChat_SSE_MultiLine(t *testing.T) {
 // SSE response includes an "event: error" line before the data lines, so the
 // CLI can route errors to the error branch instead of stdout.
 func TestChat_SSE_ErrorEvent(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel(nil, errors.New("model exploded"))})
 	require.NoError(t, err)
 	s := New(Config{Token: "t"})
@@ -127,6 +130,7 @@ func writeSkillFile(t *testing.T, root, name, content string) *skills.Registry {
 // error event that lists the available skills, so the CLI routes it to its
 // error branch instead of silently running the model.
 func TestChat_SkillPrefix_Unknown(t *testing.T) {
+	t.Parallel()
 	reg := writeSkillFile(t, t.TempDir(), "hi",
 		"---\nname: hi\ndescription: greeting skill\n---\n# Hi\nSay hi.")
 
@@ -161,6 +165,7 @@ func TestChat_SkillPrefix_Unknown(t *testing.T) {
 // Echo FakeModel that returns the last input message (the user query) as its
 // response, so the injected skill body and task must appear in the SSE body.
 func TestChat_SkillPrefix_Known(t *testing.T) {
+	t.Parallel()
 	reg := writeSkillFile(t, t.TempDir(), "hi",
 		"---\nname: hi\ndescription: greeting skill\n---\n# Hi\nSay hi.")
 
@@ -195,6 +200,7 @@ func TestChat_SkillPrefix_Known(t *testing.T) {
 // with no registry (the legacy/nil path used by non-skill tests) produces an
 // SSE error rather than panicking.
 func TestChat_SkillPrefix_NilRegistry(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"should-not-run"}, nil)})
 	require.NoError(t, err)
 	s := New(Config{Token: "t"})
@@ -221,6 +227,7 @@ func TestChat_SkillPrefix_NilRegistry(t *testing.T) {
 // messages[] history: an Echo model returns the concatenation of every input
 // message, so the second turn's text must surface in the response (multi-turn).
 func TestChat_SSE_MultiTurnHistory(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel(nil, nil)
 	fm.Echo = true // echoes last input -> proves history was passed
 	o, err := orchestrator.New(orchestrator.Config{Model: fm})
@@ -246,6 +253,7 @@ func TestChat_SSE_MultiTurnHistory(t *testing.T) {
 // compact_chunk events, then a history_replaced event (carrying the compacted
 // slice) and a status{compacted} event, all before the turn's agent_chunk.
 func TestChat_SSE_AutoCompaction(t *testing.T) {
+	t.Parallel()
 	// First scripted response is the summary; second is the turn reply.
 	fm := einollm.NewFakeModel([]string{"SSE-SUMMARY", "turn-reply"}, nil)
 	o, err := orchestrator.New(orchestrator.Config{Model: fm})
@@ -316,6 +324,7 @@ func TestChat_SSE_AutoCompaction(t *testing.T) {
 // set and positive — so this per-model entry silently reopened a gate the
 // operator had closed. It must stay closed.
 func TestChat_SSE_GlobalOffStaysOffWithPerModelThreshold(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"SSE-SUMMARY", "turn-reply"}, nil)
 	o, err := orchestrator.New(orchestrator.Config{Model: fm})
 	require.NoError(t, err)
@@ -352,6 +361,7 @@ func TestChat_SSE_GlobalOffStaysOffWithPerModelThreshold(t *testing.T) {
 // (threshold 0), an over-long history passes through untouched: no
 // compact_chunk / history_replaced events, just the normal turn stream.
 func TestChat_SSE_NoCompactionWhenDisabled(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"reply"}, nil)
 	o, err := orchestrator.New(orchestrator.Config{Model: fm})
 	require.NoError(t, err)
@@ -433,6 +443,7 @@ func parseSSEEvents(body string) []struct {
 // handler emits a structured_result event carrying the validated JSON BEFORE
 // done. No retry happens (the model is streamed exactly once).
 func TestChatStructuredOutputSuccess(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{`{"name":"Ada","age":36}`}, nil)
 	o, err := orchestrator.New(orchestrator.Config{Model: fm})
 	require.NoError(t, err)
@@ -485,6 +496,7 @@ func TestChatStructuredOutputSuccess(t *testing.T) {
 // maxSchemaRetries and emits an error event mentioning the schema; no
 // structured_result is emitted. The stream still ends with done.
 func TestChatStructuredOutputRetryCapError(t *testing.T) {
+	t.Parallel()
 	// 4 invalid responses: maxSchemaRetries=3 → attempts 0,1,2,3.
 	fm := einollm.NewFakeModel([]string{"bad1", "bad2", "bad3", "bad4"}, nil)
 	o, err := orchestrator.New(orchestrator.Config{Model: fm})
@@ -539,6 +551,7 @@ func TestChatStructuredOutputRetryCapError(t *testing.T) {
 // text path byte-identical to pre-A12 behavior (the entire schema retry loop
 // is skipped when len(req.OutputSchema) == 0).
 func TestChatNoSchemaIsTextMode(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"hello"}, nil)
 	o, err := orchestrator.New(orchestrator.Config{Model: fm})
 	require.NoError(t, err)
@@ -590,6 +603,7 @@ func TestChatNoSchemaIsTextMode(t *testing.T) {
 // attempt; the assertion is about option forwarding (RecordOpts +
 // ReceivedOutputSchema), not retry behavior.
 func TestChat_OutputSchemaReachesModel(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{`{"name":"Ada","age":36}`}, nil)
 	fm.RecordOpts = true
 	o, err := orchestrator.New(orchestrator.Config{Model: fm})

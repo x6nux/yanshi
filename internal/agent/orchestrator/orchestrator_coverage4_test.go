@@ -18,6 +18,7 @@ import (
 // is configured, bindManagedRunner binds the Manager, ManagedRunnerFactory,
 // and AvailableModels into the context.
 func TestBindManagedRunner_WithRealManager(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"ok"}, nil)
 	mgr := registry.NewManager(registry.NewManagerOpts{
 		RootContext: context.Background(),
@@ -44,6 +45,7 @@ func TestBindManagedRunner_WithRealManager(t *testing.T) {
 // TestBindManagedRunner_WithAvailableModelsNoMgr proves that when only
 // AvailableModels is set but subagentMgr is nil, the Manager is not bound.
 func TestBindManagedRunner_WithAvailableModelsNoMgr(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"ok"}, nil)
 	o, err := New(Config{
 		Model:           fm,
@@ -59,6 +61,7 @@ func TestBindManagedRunner_WithAvailableModelsNoMgr(t *testing.T) {
 
 // TestRunSubAgentTurn_DepthExceeded proves the depth limit error.
 func TestRunSubAgentTurn_DepthExceeded(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"ok"}, nil)
 	o, err := New(Config{Model: fm})
 	require.NoError(t, err)
@@ -71,6 +74,7 @@ func TestRunSubAgentTurn_DepthExceeded(t *testing.T) {
 
 // TestRoleForSubagent_Found proves roleForSubagent finds a known agent role.
 func TestRoleForSubagent_Found(t *testing.T) {
+	t.Parallel()
 	for _, r := range tools.AgentRoles() {
 		def := roleForSubagent(r.Name)
 		require.NotNil(t, def)
@@ -81,6 +85,7 @@ func TestRoleForSubagent_Found(t *testing.T) {
 
 // TestClassifyEventsWithNilIterator proves nil-safe behavior.
 func TestClassifyEventsWithNilIterator(t *testing.T) {
+	t.Parallel()
 	// Not testing nil iterator directly, but instead empty iterator
 	iter, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
 	gen.Close()

@@ -8,6 +8,7 @@ import (
 )
 
 func TestResolveQuery_SkillInjection(t *testing.T) {
+	t.Parallel()
 	reg := writeSkillFile(t, t.TempDir(), "hi",
 		"---\nname: hi\ndescription: greeting skill\n---\n# Hi\nSay hi.")
 
@@ -18,6 +19,7 @@ func TestResolveQuery_SkillInjection(t *testing.T) {
 }
 
 func TestResolveQuery_UnknownSkill(t *testing.T) {
+	t.Parallel()
 	reg := writeSkillFile(t, t.TempDir(), "hi",
 		"---\nname: hi\ndescription: greeting skill\n---\n# Hi\nSay hi.")
 	_, errMsg := resolveQuery(reg, "/skill nope")
@@ -25,6 +27,7 @@ func TestResolveQuery_UnknownSkill(t *testing.T) {
 }
 
 func TestResolveQuery_PlainMessage(t *testing.T) {
+	t.Parallel()
 	q, errMsg := resolveQuery(nil, "just a normal message")
 	require.Empty(t, errMsg)
 	assert.Equal(t, "just a normal message", q)

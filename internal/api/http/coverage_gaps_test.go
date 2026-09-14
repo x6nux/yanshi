@@ -38,6 +38,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestResolvePermissionMode_AllowEditsDeniesNonEditTool(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{perm: &permModeState{}}
 	cs.perm.set(guard.ModeAllowEdits)
 	d, ok := resolvePermissionMode(context.Background(), cs, nil, &tools.PermissionRequest{
@@ -75,6 +76,7 @@ func TestResolvePermissionMode_AllowEditsDeniesNonEditTool(t *testing.T) {
 // other test — and the check on this one is whether every remaining row is
 // still a genuine policy call.
 func TestResolvePermissionMode_AutoHasNoStaticOverride(t *testing.T) {
+	t.Parallel()
 	for _, shell := range []string{
 		"systemctl stop nginx", "git push --force",
 		"ssh host uptime",
@@ -125,6 +127,7 @@ func TestResolvePermissionMode_AutoHasNoStaticOverride(t *testing.T) {
 // here is a shape a prior round of this same test asserted was the model's to
 // judge.
 func TestResolvePermissionMode_AutoStillCannotCrossTheStructuralGate(t *testing.T) {
+	t.Parallel()
 	for _, shell := range []string{
 		"rm -rf /",
 		"mkfs.ext4 /dev/sda1",
@@ -151,6 +154,7 @@ func TestResolvePermissionMode_AutoStillCannotCrossTheStructuralGate(t *testing.
 // TestResolvePermissionMode_AutoAsksTheModel covers stage 2: for calls the
 // denylist clears, the model's answer is the verdict.
 func TestResolvePermissionMode_AutoAsksTheModel(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		reply     string
@@ -184,6 +188,7 @@ func TestResolvePermissionMode_AutoAsksTheModel(t *testing.T) {
 // degrades to manual, never to permissive. No model and a model error are the
 // two ways stage 2 can fail to produce a verdict.
 func TestResolvePermissionMode_AutoFailsToPrompting(t *testing.T) {
+	t.Parallel()
 	t.Run("no model registered", func(t *testing.T) {
 		cs := &connSession{perm: &permModeState{}}
 		cs.perm.set(guard.ModeAuto)
@@ -213,6 +218,7 @@ func TestResolvePermissionMode_AutoFailsToPrompting(t *testing.T) {
 // two were connected. Context the model never receives is context that does
 // not exist.
 func TestAutoApprovalPromptCarriesSessionContext(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{history: []*schema.Message{
 		schema.UserMessage("please refactor the parser package"),
 		schema.AssistantMessage("on it", nil),
@@ -238,6 +244,7 @@ func TestAutoApprovalPromptCarriesSessionContext(t *testing.T) {
 // user turn, not the first and not an assistant turn. Getting this wrong would
 // judge every call in a long session against the opening request.
 func TestLatestUserMessage(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{history: []*schema.Message{
 		schema.UserMessage("first request"),
 		schema.AssistantMessage("working on it", nil),
@@ -253,6 +260,7 @@ func TestLatestUserMessage(t *testing.T) {
 }
 
 func TestResolvePermissionMode_DefaultReturnsNotResolved(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{perm: &permModeState{}}
 	d, ok := resolvePermissionMode(context.Background(), cs, nil, &tools.PermissionRequest{
 		Tool: "fs_write", Args: `{}`,
@@ -262,6 +270,7 @@ func TestResolvePermissionMode_DefaultReturnsNotResolved(t *testing.T) {
 }
 
 func TestResolvePermissionMode_ForcePromptNotAutoResolved(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []guard.PermissionMode{guard.ModeYOLO, guard.ModeAuto} {
 		t.Run(string(mode), func(t *testing.T) {
 			cs := &connSession{perm: &permModeState{}}
@@ -276,6 +285,7 @@ func TestResolvePermissionMode_ForcePromptNotAutoResolved(t *testing.T) {
 }
 
 func TestResolvePermissionMode_ApprovalRequiredNotAutoResolved(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{perm: &permModeState{}}
 	cs.perm.set(guard.ModeYOLO)
 	d, ok := resolvePermissionMode(context.Background(), cs, nil, &tools.PermissionRequest{
@@ -286,6 +296,7 @@ func TestResolvePermissionMode_ApprovalRequiredNotAutoResolved(t *testing.T) {
 }
 
 func TestResolvePermissionMode_AutoNoModelFallsThrough(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{perm: &permModeState{}}
 	cs.perm.set(guard.ModeAuto)
 	d, ok := resolvePermissionMode(context.Background(), cs, nil, &tools.PermissionRequest{
@@ -300,6 +311,7 @@ func TestResolvePermissionMode_AutoNoModelFallsThrough(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestConnSession_RecordingSuppressedTrue(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{perm: &permModeState{}}
 	assert.False(t, cs.recordingSuppressed())
 	cs.sideStack = append(cs.sideStack, sideSnapshot{})
@@ -307,6 +319,7 @@ func TestConnSession_RecordingSuppressedTrue(t *testing.T) {
 }
 
 func TestConnSession_DisplayModel(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{perm: &permModeState{}, defaultModel: "default", model: ""}
 	assert.Equal(t, "default", cs.displayModel())
 	cs.model = "selected"
@@ -314,6 +327,7 @@ func TestConnSession_DisplayModel(t *testing.T) {
 }
 
 func TestConnSession_SelectModel(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{perm: &permModeState{}}
 	assert.Nil(t, cs.selectModel(nil))
 	assert.Nil(t, cs.selectModel(map[string]model.BaseChatModel{}))
@@ -325,6 +339,7 @@ func TestConnSession_SelectModel(t *testing.T) {
 }
 
 func TestConnSession_StatusFrame_Defaults(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{perm: &permModeState{}, startedAt: time.Now()}
 	srv := New(Config{})
 	st := cs.statusFrame(srv)
@@ -334,6 +349,7 @@ func TestConnSession_StatusFrame_Defaults(t *testing.T) {
 }
 
 func TestConnSession_EnterSideMaxDepth(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{perm: &permModeState{}}
 	for i := 0; i < maxSideDepth; i++ {
 		assert.NoError(t, cs.enterSide(), "enterSide at depth %d must succeed", i)
@@ -344,6 +360,7 @@ func TestConnSession_EnterSideMaxDepth(t *testing.T) {
 }
 
 func TestConnSession_ExitSideEmpty(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{perm: &permModeState{}, startedAt: time.Now()}
 	cs.exitSide() // must not panic
 }
@@ -353,6 +370,7 @@ func TestConnSession_ExitSideEmpty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestChatWS_FeaturesSetError(t *testing.T) {
+	t.Parallel()
 	reg := features.NewRegistry(true)
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
@@ -369,6 +387,7 @@ func TestChatWS_FeaturesSetError(t *testing.T) {
 }
 
 func TestChatWS_FeaturesSetNilPayload(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -384,6 +403,7 @@ func TestChatWS_FeaturesSetNilPayload(t *testing.T) {
 }
 
 func TestChatWS_JobsListNoManager(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -400,6 +420,7 @@ func TestChatWS_JobsListNoManager(t *testing.T) {
 }
 
 func TestChatWS_JobsListWithManager(t *testing.T) {
+	t.Parallel()
 	sm := shell.NewManager(shell.Config{})
 	o, err := orchestrator.New(orchestrator.Config{
 		Model:   einollm.NewFakeModel([]string{"x"}, nil),
@@ -420,6 +441,7 @@ func TestChatWS_JobsListWithManager(t *testing.T) {
 }
 
 func TestChatWS_JobReadNoManager(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -435,6 +457,7 @@ func TestChatWS_JobReadNoManager(t *testing.T) {
 }
 
 func TestChatWS_JobWriteNoManager(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -450,6 +473,7 @@ func TestChatWS_JobWriteNoManager(t *testing.T) {
 }
 
 func TestChatWS_JobCancelNoManager(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -465,6 +489,7 @@ func TestChatWS_JobCancelNoManager(t *testing.T) {
 }
 
 func TestChatWS_EnterSideMaxDepth(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -487,6 +512,7 @@ func TestChatWS_EnterSideMaxDepth(t *testing.T) {
 }
 
 func TestChatWS_ExitSideEmptyStack(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -503,6 +529,7 @@ func TestChatWS_ExitSideEmptyStack(t *testing.T) {
 }
 
 func TestChatWS_MCPActionEnableDisable(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -518,6 +545,7 @@ func TestChatWS_MCPActionEnableDisable(t *testing.T) {
 }
 
 func TestChatWS_SessionListWithStore(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	defer st.Close()
@@ -541,6 +569,7 @@ func TestChatWS_SessionListWithStore(t *testing.T) {
 }
 
 func TestChatWS_SessionListStoreError(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -561,12 +590,14 @@ func TestChatWS_SessionListStoreError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEnsureSession_NilStore(t *testing.T) {
+	t.Parallel()
 	srv := &Server{}
 	cs := &connSession{perm: &permModeState{}}
 	cs.ensureSession(srv, "test")
 }
 
 func TestEnsureSession_AlreadyExists(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	defer st.Close()
@@ -577,18 +608,21 @@ func TestEnsureSession_AlreadyExists(t *testing.T) {
 }
 
 func TestEnsureSession_CreateSessionError(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{perm: &permModeState{}}
 	cs.ensureSession(&Server{}, "test-title")
 	assert.Empty(t, cs.sessionID)
 }
 
 func TestPersistMessages_NilStore(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{perm: &permModeState{}}
 	cs.history = []*schema.Message{schema.UserMessage("user msg")}
 	cs.persistMessages(&Server{})
 }
 
 func TestPersistMessages_RecordingSuppressed(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{perm: &permModeState{}, sessionID: "s1"}
 	cs.sideStack = []sideSnapshot{{}}
 	cs.history = []*schema.Message{schema.UserMessage("user")}
@@ -596,6 +630,7 @@ func TestPersistMessages_RecordingSuppressed(t *testing.T) {
 }
 
 func TestPersistMessages_AppendError(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{perm: &permModeState{}, sessionID: "nonexistent"}
 	cs.history = []*schema.Message{schema.UserMessage("user")}
 	cs.persistMessages(&Server{})
@@ -606,12 +641,14 @@ func TestPersistMessages_AppendError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLoadSession_NilStore(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{perm: &permModeState{}}
 	err := cs.loadSession(&Server{}, "some-id")
 	assert.NoError(t, err)
 }
 
 func TestLoadSession_GetSessionError(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{perm: &permModeState{}}
 	err := cs.loadSession(&Server{}, "some-id")
 	assert.NoError(t, err) // nil store is no-op
@@ -622,6 +659,7 @@ func TestLoadSession_GetSessionError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIsLoopback_BadAddr(t *testing.T) {
+	t.Parallel()
 	assert.False(t, isLoopback("not-a-valid-addr"))
 	assert.False(t, isLoopback(""))
 }
@@ -631,6 +669,7 @@ func TestIsLoopback_BadAddr(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAuthorizeControlAction_WithApprovals(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{
 		Model:   einollm.NewFakeModel([]string{"x"}, nil),
 		Profile: guard.PermissionProfile{Tools: guard.ToolsPerm{Allow: []string{"*"}}},
@@ -650,6 +689,7 @@ func TestAuthorizeControlAction_WithApprovals(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestScopeJSON_Normal(t *testing.T) {
+	t.Parallel()
 	s := scopeJSON(approval.Scope{Tool: "fs_write"})
 	assert.Contains(t, s, "fs_write")
 }
@@ -659,11 +699,13 @@ func TestScopeJSON_Normal(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCompileSchema_InvalidDocument(t *testing.T) {
+	t.Parallel()
 	_, err := compileSchema(json.RawMessage(`not valid json`))
 	assert.Error(t, err)
 }
 
 func TestCompileSchema_ValidDocument(t *testing.T) {
+	t.Parallel()
 	doc := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}}}`)
 	sch1, err := compileSchema(doc)
 	require.NoError(t, err)
@@ -679,6 +721,7 @@ func TestCompileSchema_ValidDocument(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSessions_GetNotFound(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	defer st.Close()
@@ -699,6 +742,7 @@ func TestSessions_GetNotFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestJobRead_NotFound(t *testing.T) {
+	t.Parallel()
 	sm := shell.NewManager(shell.Config{})
 	o, err := orchestrator.New(orchestrator.Config{
 		Model:   einollm.NewFakeModel([]string{"x"}, nil),
@@ -722,6 +766,7 @@ func TestJobRead_NotFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleRestoreSession_MissingSession(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	defer st.Close()
@@ -745,6 +790,7 @@ func TestHandleRestoreSession_MissingSession(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleSkillMutation_NilRegistryWS(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -765,6 +811,7 @@ func TestHandleSkillMutation_NilRegistryWS(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestUninstallNonUserSkillWS(t *testing.T) {
+	t.Parallel()
 	builtinRoot := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(builtinRoot, "built"), 0o755)
 	_ = os.WriteFile(filepath.Join(builtinRoot, "built", "SKILL.md"),
@@ -801,6 +848,7 @@ func TestUninstallNonUserSkillWS(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEnableNonexistentSkillWS(t *testing.T) {
+	t.Parallel()
 	builtinRoot := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(builtinRoot, "known"), 0o755)
 	_ = os.WriteFile(filepath.Join(builtinRoot, "known", "SKILL.md"),
@@ -831,6 +879,7 @@ func TestEnableNonexistentSkillWS(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestListSeamsEmptySessionWS(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	root := filepath.Join(base, "repo")
 	require.NoError(t, os.MkdirAll(root, 0o755))
@@ -859,6 +908,7 @@ func TestListSeamsEmptySessionWS(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCompactNow_WithCompaction(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"COMPACT_SUMMARY"}, nil)
 	models := map[string]model.BaseChatModel{"fm": fm}
 	o, err := orchestrator.New(orchestrator.Config{Model: fm})

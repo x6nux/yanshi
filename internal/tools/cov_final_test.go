@@ -19,6 +19,7 @@ import (
 	"github.com/x6nux/yanshi/internal/netpolicy"
 	"github.com/x6nux/yanshi/internal/store"
 	"github.com/x6nux/yanshi/internal/task/work"
+	"github.com/x6nux/yanshi/internal/testutil"
 )
 
 // =============================================================================
@@ -53,7 +54,7 @@ func TestCov_WebRunSearchHTMLParse(t *testing.T) {
 
 func TestCov_WebRunSearchNetworkDegradation(t *testing.T) {
 	w := NewWebTools(1024*32, time.Second)
-	setSearchEndpoint(w, "http://127.0.0.1:1")
+	setSearchEndpoint(w, "http://"+testutil.ClosedLoopbackAddr(t))
 	ctx := WithProfile(context.Background(), guard.PermissionProfile{Tools: guard.ToolsPerm{Allow: []string{"web_*"}}})
 	ctx = WithNetworkPolicy(ctx, &netpolicy.Policy{Default: "allow", AllowPrivate: true})
 

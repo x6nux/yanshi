@@ -24,6 +24,7 @@ import (
 // 字段的 copy-paste 互换都过不了；两个 entry 挂不同的 program，漏掉一层循环
 // 之类的写法会被条数与顺序抓出来。
 func TestToOrchestratorHooksFieldMapping(t *testing.T) {
+	t.Parallel()
 	in := config.HooksConfig{PreToolUse: []config.HookConfig{
 		{
 			Program: "/opt/hooks/check-policy",
@@ -57,6 +58,7 @@ func TestToOrchestratorHooksFieldMapping(t *testing.T) {
 // 零值（不是带 nil entry 的非零结构），orchestrator 侧「零值不绑总线」的语义
 // 因此保持单一生边缘。
 func TestToOrchestratorHooksEmptyIsZero(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, orchestrator.HooksConfig{}, toOrchestratorHooks(config.HooksConfig{}))
 }
 
@@ -65,6 +67,7 @@ func TestToOrchestratorHooksEmptyIsZero(t *testing.T) {
 // orchestrator.Config 字面量里的 Hooks 行删掉，映射测试照旧全绿，只有这条
 // 对着真 App 的断言红。
 func TestBuild_WiresHooksBlockIntoOrchestrator(t *testing.T) {
+	t.Parallel()
 	extra := "\nhooks:\n" +
 		"  pre_tool_use:\n" +
 		"    - program: /opt/hooks/check-policy\n" +
@@ -86,6 +89,7 @@ func TestBuild_WiresHooksBlockIntoOrchestrator(t *testing.T) {
 // 的安装，编排器拿到的必须是零值——不发任何 hook 进程，行为与总线存在前
 // 逐字节一致。
 func TestBuild_WithoutHooksBlockBindsNothing(t *testing.T) {
+	t.Parallel()
 	app, cleanup := buildFakeApp(t, "")
 	defer cleanup()
 
@@ -101,6 +105,7 @@ func TestBuild_WithoutHooksBlockBindsNothing(t *testing.T) {
 // 会变红的变异：toOrchestratorHooks 里把 PreCompact append 进 out.PostCompact
 //（方向交叉）→ 本测试红。
 func TestToOrchestratorHooksCompactionSegmentsMapping(t *testing.T) {
+	t.Parallel()
 	in := config.HooksConfig{
 		PreCompact: []config.HookConfig{{
 			Program: "/opt/hooks/pre-compact",
@@ -140,6 +145,7 @@ func TestToOrchestratorHooksCompactionSegmentsMapping(t *testing.T) {
 // 会变红的变异：删掉 httpCfg 字面量的 Hooks 行 → 本测试红；
 // toOrchestratorHooks 方向交叉 → 上一条映射测试与本测试同时红。
 func TestBuild_WiresCompactionHooksIntoServerConfig(t *testing.T) {
+	t.Parallel()
 	extra := "\nhooks:\n" +
 		"  pre_compact:\n" +
 		"    - program: /opt/hooks/pre-compact\n" +

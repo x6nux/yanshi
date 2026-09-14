@@ -45,6 +45,7 @@ func newCheckpointServerWithModel(t *testing.T, st *store.Store, m *einollm.Fake
 // handler that answered "restored" without calling the store would satisfy any
 // assertion made on its own message.
 func TestCheckpointFrame_CreatePlanRestoreRoundTrip(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { st.Close() })
@@ -99,6 +100,7 @@ func TestCheckpointFrame_CreatePlanRestoreRoundTrip(t *testing.T) {
 // snapshots or destroys, so an unrecognised word must be refused rather than
 // resolved to a default.
 func TestCheckpointFrame_UnknownActionAndDimensionAreErrors(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { st.Close() })
@@ -131,6 +133,7 @@ func TestCheckpointFrame_UnknownActionAndDimensionAreErrors(t *testing.T) {
 // the file dimension must say so. Reporting success would tell the user their
 // working copy was rolled back when nothing touched it.
 func TestCheckpointFrame_FilesDimensionNeedsARepo(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { st.Close() })
@@ -160,6 +163,7 @@ func TestCheckpointFrame_FilesDimensionNeedsARepo(t *testing.T) {
 // understands, or sends one it does not, and neither side reports anything
 // wrong.
 func TestCheckpointDimensionVocabulariesAgree(t *testing.T) {
+	t.Parallel()
 	wire := proto.CheckpointDimensions()
 	stored := store.CheckpointDimensions()
 	require.Len(t, wire, len(stored), "the two dimension lists differ in length")
@@ -190,6 +194,7 @@ func TestCheckpointDimensionVocabulariesAgree(t *testing.T) {
 //
 // Deleting the cs.history assignment in restoreCheckpoint makes this red.
 func TestCheckpointFrame_SessionRestoreReachesTheLiveWindow(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { st.Close() })

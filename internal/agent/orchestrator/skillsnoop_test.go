@@ -86,6 +86,7 @@ func recognizerContext(t *testing.T, reg *skills.Registry, spy *spySkillObserver
 }
 
 func TestShellRunOfSkillScriptIsRecognized(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		// 该行的脚本形态是 `bash <path>`：一个 POSIX 解释器调用。Windows
 		// 上没有 bash，shell_run 的失败发生在命令解析层——「识别已注册
@@ -110,6 +111,7 @@ func TestShellRunOfSkillScriptIsRecognized(t *testing.T) {
 }
 
 func TestFsReadOfSkillMdIsRecognized(t *testing.T) {
+	t.Parallel()
 	reg, root, _ := skillRegistryFixture(t)
 	spy := &spySkillObserver{}
 	ctx := recognizerContext(t, reg, spy)
@@ -141,6 +143,7 @@ func TestFsReadOfSkillMdIsRecognized(t *testing.T) {
 }
 
 func TestRelativeScriptPathFromCommandIsRecognized(t *testing.T) {
+	t.Parallel()
 	reg, root, _ := skillRegistryFixture(t)
 	spy := &spySkillObserver{}
 	ctx := recognizerContext(t, reg, spy)
@@ -160,6 +163,7 @@ func TestRelativeScriptPathFromCommandIsRecognized(t *testing.T) {
 }
 
 func TestUnregisteredSkillPathIsNotRecognized(t *testing.T) {
+	t.Parallel()
 	reg, _, _ := skillRegistryFixture(t)
 	spy := &spySkillObserver{}
 	ctx := recognizerContext(t, reg, spy)
@@ -173,6 +177,7 @@ func TestUnregisteredSkillPathIsNotRecognized(t *testing.T) {
 }
 
 func TestNonSkillShellCallIsNotRecognized(t *testing.T) {
+	t.Parallel()
 	reg, _, _ := skillRegistryFixture(t)
 	spy := &spySkillObserver{}
 	ctx := recognizerContext(t, reg, spy)
@@ -194,6 +199,7 @@ func plainEndpoint(result string) adk.InvokableToolCallEndpoint {
 }
 
 func TestPostToolUseRecognitionNeverEntersModelContext(t *testing.T) {
+	t.Parallel()
 	// 硬约束的非空转钉法：同一调用，绑识别器与不绑，工具结果逐字节相等
 	//（识别发生了但结果没变），且 spy 确实触发 —— 两个断言缺一即空转。
 	reg, _, scriptPath := skillRegistryFixture(t)
@@ -250,6 +256,7 @@ func TestRefusedCallNeverReachesPostToolUse(t *testing.T) {
 }
 
 func TestSubAgentTurnRecognizesImplicitSkillUse(t *testing.T) {
+	t.Parallel()
 	// 子代理逃逸门：runSubAgentTurn 的 Config 字面量必须把 SkillRegistry 与
 	// OnSkillUse 带给子编排器 —— 一个 agent_start 不能拆掉观测（与 RF-14
 	// 的 Hooks 继承同一形状）。

@@ -16,6 +16,7 @@ import (
 // TestCheckConfig_DefaultAddrWhenEmpty proves an empty http_addr falls back to
 // the documented default "127.0.0.1:8080" in the OK message.
 func TestCheckConfig_DefaultAddrWhenEmpty(t *testing.T) {
+	t.Parallel()
 	c := checkConfig("p", &config.Config{Server: config.ServerConfig{HTTPAddr: ""}}, nil)
 	require.Equal(t, StatusOK, c.Status)
 	assert.Contains(t, c.Message, "127.0.0.1:8080", "empty addr defaults to 127.0.0.1:8080")
@@ -24,6 +25,7 @@ func TestCheckConfig_DefaultAddrWhenEmpty(t *testing.T) {
 // TestFileSize_AbsentAndPresent proves fileSize reports "absent" for a missing
 // file and a size label for a present one.
 func TestFileSize_AbsentAndPresent(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "absent", fileSize(filepath.Join(t.TempDir(), "nope")))
 
 	dir := t.TempDir()
@@ -36,6 +38,7 @@ func TestFileSize_AbsentAndPresent(t *testing.T) {
 // branches: an empty kind (with an empty name so the index form is used) and a
 // valid kind with a missing model.
 func TestCheckProviders_MissingKindAndModel(t *testing.T) {
+	t.Parallel()
 	// Empty name + empty kind -> "providers[0]: missing kind".
 	c := checkProviders(&config.Config{LLM: config.LLMConfig{Providers: []config.ProviderConfig{
 		{Name: "", Kind: "", Model: "m", APIKey: "k"},
@@ -53,6 +56,7 @@ func TestCheckProviders_MissingKindAndModel(t *testing.T) {
 
 // TestCheckProviders_SkippedOnConfigError proves the cfgErr early-return path.
 func TestCheckProviders_SkippedOnConfigError(t *testing.T) {
+	t.Parallel()
 	c := checkProviders(nil, errCfg())
 	assert.Equal(t, StatusWarn, c.Status)
 	assert.Contains(t, c.Message, "skipped")
@@ -61,6 +65,7 @@ func TestCheckProviders_SkippedOnConfigError(t *testing.T) {
 // TestExpandHomeDir_TildeAndPlain proves "~" expands to the home dir and a
 // plain path is returned unchanged (including the empty-string fast path).
 func TestExpandHomeDir_TildeAndPlain(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "", expandHomeDir(""))
 	assert.Equal(t, "/abs/path", expandHomeDir("/abs/path"))
 	expanded := expandHomeDir("~/foo")
@@ -73,12 +78,14 @@ func TestExpandHomeDir_TildeAndPlain(t *testing.T) {
 
 // TestCheckLocaleConfig_InvalidLocaleFails proves an unsupported locale is a fail.
 func TestCheckLocaleConfig_InvalidLocaleFails(t *testing.T) {
+	t.Parallel()
 	c := checkLocaleConfig(&config.Config{I18N: config.I18NConfig{UILocale: "klingon-piqad"}}, nil)
 	require.Equal(t, StatusFail, c.Status)
 }
 
 // TestCheckLocaleConfig_ValidAndSkipped proves the OK path and the cfgErr path.
 func TestCheckLocaleConfig_ValidAndSkipped(t *testing.T) {
+	t.Parallel()
 	// "auto" resolves through detection and is always supported (falls back to en).
 	c := checkLocaleConfig(&config.Config{}, nil)
 	require.Equal(t, StatusOK, c.Status)
@@ -91,6 +98,7 @@ func TestCheckLocaleConfig_ValidAndSkipped(t *testing.T) {
 // TestCheckKeymapConfig_UnsupportedNameFails proves a non-default keymap name
 // is a fail (only "default" ships).
 func TestCheckKeymapConfig_UnsupportedNameFails(t *testing.T) {
+	t.Parallel()
 	c := checkKeymapConfig(&config.Config{TUI: config.TUIConfig{KeymapName: "vim"}}, nil)
 	require.Equal(t, StatusFail, c.Status)
 	assert.Contains(t, c.Message, "unsupported keymap name")
@@ -109,6 +117,7 @@ func TestCheckKeymapConfig_UnsupportedNameFails(t *testing.T) {
 //
 // ledger: C4/O07#3 失败明确指引
 func TestCheckKeymapConfig_InvalidBindingsFail(t *testing.T) {
+	t.Parallel()
 	const rawAction = "this-is-not-a-real-key!!!"
 	c := checkKeymapConfig(&config.Config{TUI: config.TUIConfig{
 		Bindings: map[string]string{"send": rawAction},
@@ -130,6 +139,7 @@ func TestCheckKeymapConfig_InvalidBindingsFail(t *testing.T) {
 // invalid_key above. Without this the summary could be a constant and both
 // tests would still pass.
 func TestCheckKeymapConfig_UnknownActionIsTallied(t *testing.T) {
+	t.Parallel()
 	c := checkKeymapConfig(&config.Config{TUI: config.TUIConfig{
 		Bindings: map[string]string{"ctrl+g": "teleport"},
 	}}, nil)
@@ -142,6 +152,7 @@ func TestCheckKeymapConfig_UnknownActionIsTallied(t *testing.T) {
 // TestCheckKeymapConfig_OKAndSkipped proves the happy path (default keymap, no
 // conflicts) and the cfgErr skip path.
 func TestCheckKeymapConfig_OKAndSkipped(t *testing.T) {
+	t.Parallel()
 	c := checkKeymapConfig(&config.Config{}, nil)
 	require.Equal(t, StatusOK, c.Status)
 	c = checkKeymapConfig(nil, errCfg())
@@ -151,6 +162,7 @@ func TestCheckKeymapConfig_OKAndSkipped(t *testing.T) {
 // TestCheckHighContrastConfig covers the three states: unset, explicitly true,
 // explicitly false — plus the cfgErr skip path.
 func TestCheckHighContrastConfig(t *testing.T) {
+	t.Parallel()
 	require.Equal(t, StatusOK,
 		checkHighContrastConfig(&config.Config{}, nil).Status)
 	ttrue, tfalse := true, false
@@ -165,6 +177,7 @@ func TestCheckHighContrastConfig(t *testing.T) {
 // TestCheckDatabase_OpenError proves a database path that cannot be opened is a
 // fail (not a panic). Pointing at a directory makes Open fail.
 func TestCheckDatabase_OpenError(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := checkDatabase(&config.Config{Storage: config.StorageConfig{SQLitePath: dir}}, nil)
 	// Accepting every possible status ("may succeed or fail by SQLite version")
@@ -181,6 +194,7 @@ func TestCheckDatabase_OpenError(t *testing.T) {
 // TestCheckDatabase_SkippedAndDefaultDisplay proves the cfgErr skip path and the
 // "<unset>" display when no path is configured.
 func TestCheckDatabase_SkippedAndDefaultDisplay(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, StatusWarn, checkDatabase(nil, errCfg()).Status)
 	// An unset storage.sqlite_path must FAIL, not open something. It used to
 	// leave a SQLite file literally named "?_pragma=busy_timeout(5000)&..." in
@@ -194,6 +208,7 @@ func TestCheckDatabase_SkippedAndDefaultDisplay(t *testing.T) {
 // TestCheckDirectories_MissingSkillDirWarns proves a missing builtin skill dir
 // produces a warn listing the problem (not a panic).
 func TestCheckDirectories_MissingSkillDirWarns(t *testing.T) {
+	t.Parallel()
 	c := checkDirectories(&config.Config{
 		Skills: config.SkillsConfig{BuiltinDir: filepath.Join(t.TempDir(), "nope")},
 	}, nil)
@@ -204,6 +219,7 @@ func TestCheckDirectories_MissingSkillDirWarns(t *testing.T) {
 
 // TestCheckDirectories_Skipped proves the cfgErr early-return.
 func TestCheckDirectories_Skipped(t *testing.T) {
+	t.Parallel()
 	c := checkDirectories(nil, errCfg())
 	assert.Equal(t, StatusWarn, c.Status)
 	assert.Contains(t, c.Message, "skipped")
@@ -212,6 +228,7 @@ func TestCheckDirectories_Skipped(t *testing.T) {
 // TestCheckPort_SkippedAndDefaultAddr proves the cfgErr skip and the empty-addr
 // default (127.0.0.1:8080).
 func TestCheckPort_SkippedAndDefaultAddr(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, StatusWarn, checkPort(nil, errCfg(), false).Status)
 	// Empty addr -> default :8080, which may or may not be free on the test box.
 	c := checkPort(&config.Config{}, nil, false)
@@ -224,6 +241,7 @@ func TestCheckPort_SkippedAndDefaultAddr(t *testing.T) {
 
 // TestCheckMCP_Skipped proves the cfgErr skip path.
 func TestCheckMCP_Skipped(t *testing.T) {
+	t.Parallel()
 	c := checkMCP(nil, errCfg())
 	assert.Equal(t, StatusWarn, c.Status)
 	assert.Contains(t, c.Message, "skipped")
@@ -232,6 +250,7 @@ func TestCheckMCP_Skipped(t *testing.T) {
 // TestCheckPermissions_NoProfilesAndOK prove the no-profiles warn and the
 // multi-profile OK rendering.
 func TestCheckPermissions_NoProfilesAndOK(t *testing.T) {
+	t.Parallel()
 	c := checkPermissions(&config.Config{}, nil)
 	require.Equal(t, StatusWarn, c.Status)
 	assert.Contains(t, c.Message, "no profiles configured")

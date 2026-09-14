@@ -16,6 +16,7 @@ import (
 // (empty / non-JSON). The false-with-reason case is the load-bearing one — it
 // is what makes a retry carry a useful "what remains" nudge.
 func TestParseJudgeVerdict(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		content  string
@@ -47,6 +48,7 @@ func TestParseJudgeVerdict(t *testing.T) {
 // TestJudgeCompletion_NoRecorder: a ctx with no recorder bound must fall back
 // to complete=true so a caller that forgot to bind one never gets wedged.
 func TestJudgeCompletion_NoRecorder(t *testing.T) {
+	t.Parallel()
 	o, err := New(Config{Model: einollm.NewFakeModel(nil, nil)})
 	require.NoError(t, err)
 	complete, reason, _ := o.JudgeCompletion(context.Background())
@@ -57,6 +59,7 @@ func TestJudgeCompletion_NoRecorder(t *testing.T) {
 // TestJudgeCompletion_EmptyRecorder: a bound recorder with no captured messages
 // (e.g. the model never ran) must also fall back to complete=true.
 func TestJudgeCompletion_EmptyRecorder(t *testing.T) {
+	t.Parallel()
 	o, err := New(Config{Model: einollm.NewFakeModel(nil, nil)})
 	require.NoError(t, err)
 	ctx := WithNewTurnRecorder(context.Background())
@@ -70,6 +73,7 @@ func TestJudgeCompletion_EmptyRecorder(t *testing.T) {
 // The fake's isJudgeProbe short-circuit answers with {"complete":true} WITHOUT
 // consuming a scripted response, so this also proves the judge path is taken.
 func TestJudgeCompletion_FakeJudgeSaysComplete(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"the answer"}, nil)
 	o, err := New(Config{Model: fm})
 	require.NoError(t, err)
@@ -89,6 +93,7 @@ func TestJudgeCompletion_FakeJudgeSaysComplete(t *testing.T) {
 // TestJudgeRetryNudge: an empty/whitespace reason falls back to the generic
 // nudge; a real reason is surfaced verbatim and attributed to the judge.
 func TestJudgeRetryNudge(t *testing.T) {
+	t.Parallel()
 	assert.Contains(t, JudgeRetryNudge(""), "Continue and finish",
 		"empty reason → generic nudge")
 	assert.Contains(t, JudgeRetryNudge("   "), "Continue and finish",
@@ -103,6 +108,7 @@ func TestJudgeRetryNudge(t *testing.T) {
 // two must stay a single binding implementation (DRY), and the delegation is
 // what gives WithTurnRecorder a production call site (GOV6).
 func TestWithNewTurnRecorderDelegates(t *testing.T) {
+	t.Parallel()
 	ctx := WithNewTurnRecorder(context.Background())
 	if rec, _ := ctx.Value(recorderKey{}).(*turnRecorder); rec == nil {
 		t.Fatal("WithNewTurnRecorder must bind a non-nil recorder")

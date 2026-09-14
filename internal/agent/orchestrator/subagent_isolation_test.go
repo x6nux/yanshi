@@ -52,6 +52,7 @@ func newTestOrchestratorWithVCS(t *testing.T) *Orchestrator {
 
 // ledger: A2/W-A-08#1 并发子代理各自在独立 worktree 中编辑且互不覆盖
 func TestConcurrentIsolatedSubAgentsDoNotShareAWorkRoot(t *testing.T) {
+	t.Parallel()
 	o := newTestOrchestratorWithVCS(t)
 
 	const n = 4
@@ -77,6 +78,7 @@ func TestConcurrentIsolatedSubAgentsDoNotShareAWorkRoot(t *testing.T) {
 
 // ledger: A2/W-A-08#2 未请求隔离的子代理行为与本改动前一致
 func TestNonIsolatedSubAgentKeepsTheSharedWorkRoot(t *testing.T) {
+	t.Parallel()
 	o := newTestOrchestratorWithVCS(t)
 
 	got := o.workRootForSubAgentTurn(context.Background(), "plain")
@@ -97,6 +99,7 @@ func TestNonIsolatedSubAgentKeepsTheSharedWorkRoot(t *testing.T) {
 //
 // ledger: A2/W-A-08#3 子代理结束后其 worktree 被合并回主干或显式丢弃
 func TestIsolatedSubAgentWorktreeIsSettledOnExit(t *testing.T) {
+	t.Parallel()
 	o := newTestOrchestratorWithVCS(t)
 	fsTools := tools.NewFSTools(o.workRoot)
 	ctx := tools.WithSubAgentIsolation(context.Background())
@@ -143,6 +146,7 @@ func TestIsolatedSubAgentWorktreeIsSettledOnExit(t *testing.T) {
 
 // ledger: A2/W-A-08#4 子代理失败时其 worktree 被标记为放弃而不是合并
 func TestFailedIsolatedSubAgentWorktreeIsAbandoned(t *testing.T) {
+	t.Parallel()
 	o := newTestOrchestratorWithVCS(t)
 	ctx := tools.WithSubAgentIsolation(context.Background())
 
@@ -173,6 +177,7 @@ func TestFailedIsolatedSubAgentWorktreeIsAbandoned(t *testing.T) {
 // reuse) and asserts the write lands under the worktree, not the shared
 // root, and is tracked into the worktree's own VCS changeset.
 func TestIsolatedSubAgentFSWriteLandsInItsOwnWorktree(t *testing.T) {
+	t.Parallel()
 	o := newTestOrchestratorWithVCS(t)
 
 	// One shared FSTools instance, exactly like bootstrap.go builds once and
@@ -230,6 +235,7 @@ func TestIsolatedSubAgentFSWriteLandsInItsOwnWorktree(t *testing.T) {
 // it gets a test that runs WITHOUT a VCS scope — the non-isolated shape — or
 // a later "narrow this to isolation" edit would stay green.
 func TestManagedSubAgentFailureIsAnError(t *testing.T) {
+	t.Parallel()
 	mdl := einollm.NewFakeModel([]string{"ok"}, nil)
 	o, err := New(Config{Model: mdl, WorkRoot: t.TempDir()})
 	require.NoError(t, err)

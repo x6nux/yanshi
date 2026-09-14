@@ -41,6 +41,7 @@ func visionTurnImages() []proto.ImageAttach {
 //
 // ledger: G/VISION#3 无辅助：error 而非静默
 func TestNoVisionPathIsAnErrorNotAPlaceholder(t *testing.T) {
+	t.Parallel()
 	store := imagestore.New(imagestore.Config{MaxItems: 20, MaxBytes: 100 << 20})
 	mdl := einollm.NewFakeModel([]string{"answered"}, nil)
 
@@ -99,6 +100,7 @@ func TestNoVisionPathIsAnErrorNotAPlaceholder(t *testing.T) {
 //
 // ledger: G/VISION-TOOL#2 image_describe/id-ref+path-ref 走通
 func TestPlaceholderResolvesThroughImageDescribe(t *testing.T) {
+	t.Parallel()
 	store := imagestore.New(imagestore.Config{MaxItems: 20, MaxBytes: 100 << 20})
 
 	o, err := New(Config{

@@ -15,6 +15,7 @@ import (
 // TestSSE_PreAndPostTurnSeamsCreated verifies that a single SSE chat turn
 // creates both pre-turn and post-turn seams (transport parity with WS, 必修项 D).
 func TestSSE_PreAndPostTurnSeamsCreated(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	root := filepath.Join(base, "repo")
 	if err := os.MkdirAll(root, 0o755); err != nil {

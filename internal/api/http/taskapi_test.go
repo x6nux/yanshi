@@ -62,6 +62,7 @@ func authReq(t *testing.T, method, url, token string, body any) *http.Request {
 }
 
 func TestTaskAPI_ClaimAndGet(t *testing.T) {
+	t.Parallel()
 	ts, b := newTaskTestServer(t)
 
 	// Submit a task directly via the broker.
@@ -97,6 +98,7 @@ func TestTaskAPI_ClaimAndGet(t *testing.T) {
 }
 
 func TestTaskAPI_ClaimNoTasks(t *testing.T) {
+	t.Parallel()
 	ts, _ := newTaskTestServer(t)
 
 	// No tasks submitted — should return 204.
@@ -108,6 +110,7 @@ func TestTaskAPI_ClaimNoTasks(t *testing.T) {
 }
 
 func TestTaskAPI_GetMissing(t *testing.T) {
+	t.Parallel()
 	ts, _ := newTaskTestServer(t)
 
 	resp, err := ts.Client().Do(authReq(t, "GET", ts.URL+"/api/v1/tasks/nonexistent", "tok", nil))
@@ -117,6 +120,7 @@ func TestTaskAPI_GetMissing(t *testing.T) {
 }
 
 func TestTaskAPI_Profile(t *testing.T) {
+	t.Parallel()
 	ts, _ := newTaskTestServer(t)
 
 	// GET /api/v1/agent/profile?worker=foo — should return the configured profile.
@@ -134,6 +138,7 @@ func TestTaskAPI_Profile(t *testing.T) {
 }
 
 func TestTaskAPI_ProfileDefault(t *testing.T) {
+	t.Parallel()
 	ts, _ := newTaskTestServer(t)
 
 	// GET /api/v1/agent/profile?worker=unknown — should return a deny-all
@@ -152,6 +157,7 @@ func TestTaskAPI_ProfileDefault(t *testing.T) {
 }
 
 func TestTaskAPI_Unauthorized(t *testing.T) {
+	t.Parallel()
 	ts, _ := newTaskTestServer(t)
 
 	// Use a non-loopback RemoteAddr so the request does not bypass auth.
@@ -163,6 +169,7 @@ func TestTaskAPI_Unauthorized(t *testing.T) {
 }
 
 func TestTaskAPI_Result(t *testing.T) {
+	t.Parallel()
 	ts, b := newTaskTestServer(t)
 
 	id, err := b.Submit("echo", `{"msg":"hi"}`, "")
@@ -193,6 +200,7 @@ func TestTaskAPI_Result(t *testing.T) {
 }
 
 func TestTaskAPI_ResultNotFound(t *testing.T) {
+	t.Parallel()
 	ts, _ := newTaskTestServer(t)
 
 	resp, err := ts.Client().Do(authReq(t, "POST", ts.URL+"/api/v1/tasks/nonexistent/result", "tok",
@@ -203,6 +211,7 @@ func TestTaskAPI_ResultNotFound(t *testing.T) {
 }
 
 func TestTaskAPI_Heartbeat(t *testing.T) {
+	t.Parallel()
 	ts, b := newTaskTestServer(t)
 
 	id, err := b.Submit("echo", `{"msg":"hi"}`, "")
@@ -219,6 +228,7 @@ func TestTaskAPI_Heartbeat(t *testing.T) {
 }
 
 func TestTaskAPI_Progress(t *testing.T) {
+	t.Parallel()
 	ts, b := newTaskTestServer(t)
 
 	id, err := b.Submit("echo", `{"msg":"hi"}`, "")
@@ -233,6 +243,7 @@ func TestTaskAPI_Progress(t *testing.T) {
 }
 
 func TestTaskAPI_SSEEvents(t *testing.T) {
+	t.Parallel()
 	ts, b := newTaskTestServer(t)
 
 	// Submit a task — this fires the notify channel.
@@ -268,6 +279,7 @@ func TestTaskAPI_SSEEvents(t *testing.T) {
 }
 
 func TestTaskAPI_ResultWrongWorker(t *testing.T) {
+	t.Parallel()
 	ts, b := newTaskTestServer(t)
 
 	id, err := b.Submit("echo", `{"msg":"hi"}`, "")
@@ -291,6 +303,7 @@ func TestTaskAPI_ResultWrongWorker(t *testing.T) {
 }
 
 func TestTaskAPI_ResultInvalidStatus(t *testing.T) {
+	t.Parallel()
 	ts, b := newTaskTestServer(t)
 
 	id, err := b.Submit("echo", `{"msg":"hi"}`, "")
@@ -313,6 +326,7 @@ func TestTaskAPI_ResultInvalidStatus(t *testing.T) {
 }
 
 func TestTaskAPI_StaleWorkerRejected(t *testing.T) {
+	t.Parallel()
 	ts, b := newTaskTestServer(t)
 
 	id, err := b.Submit("echo", "in", "")
@@ -336,6 +350,7 @@ func TestTaskAPI_StaleWorkerRejected(t *testing.T) {
 }
 
 func TestHTTP_BodyLimit(t *testing.T) {
+	t.Parallel()
 	ts, b := newTaskTestServer(t)
 
 	// Build a JSON body larger than 1 MiB.

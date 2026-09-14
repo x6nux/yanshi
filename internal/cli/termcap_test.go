@@ -15,6 +15,7 @@ func getenvFrom(vars map[string]string) func(string) string {
 }
 
 func TestDetectCapability_NoColor(t *testing.T) {
+	t.Parallel()
 	cap := DetectCapability(getenvFrom(map[string]string{"NO_COLOR": "1"}))
 	if cap.Profile != termenv.Ascii {
 		t.Errorf("NO_COLOR=1: got profile %s, want Ascii", cap.Profile.Name())
@@ -25,6 +26,7 @@ func TestDetectCapability_NoColor(t *testing.T) {
 }
 
 func TestDetectCapability_TermDumb(t *testing.T) {
+	t.Parallel()
 	cap := DetectCapability(getenvFrom(map[string]string{"TERM": "dumb"}))
 	if cap.Profile != termenv.Ascii {
 		t.Errorf("TERM=dumb: got profile %s, want Ascii", cap.Profile.Name())
@@ -35,6 +37,7 @@ func TestDetectCapability_TermDumb(t *testing.T) {
 }
 
 func TestDetectCapability_TermDumbWinsOverColorterm(t *testing.T) {
+	t.Parallel()
 	// A stale/inherited COLORTERM=truecolor alongside TERM=dumb (some CI
 	// images export both) must not re-enable color — see DetectCapability's
 	// doc comment, priority rule 1.
@@ -48,6 +51,7 @@ func TestDetectCapability_TermDumbWinsOverColorterm(t *testing.T) {
 }
 
 func TestDetectCapability_ColortermTruecolor(t *testing.T) {
+	t.Parallel()
 	for _, v := range []string{"truecolor", "24bit", "TrueColor", "24BIT"} {
 		cap := DetectCapability(getenvFrom(map[string]string{"COLORTERM": v}))
 		if cap.Profile != termenv.TrueColor {
@@ -60,6 +64,7 @@ func TestDetectCapability_ColortermTruecolor(t *testing.T) {
 }
 
 func TestDetectCapability_Fallback256(t *testing.T) {
+	t.Parallel()
 	cap := DetectCapability(getenvFrom(map[string]string{"TERM": "xterm-256color"}))
 	if cap.Profile != termenv.ANSI256 {
 		t.Errorf("TERM=xterm-256color: got profile %s, want ANSI256", cap.Profile.Name())
@@ -67,6 +72,7 @@ func TestDetectCapability_Fallback256(t *testing.T) {
 }
 
 func TestDetectCapability_Fallback16(t *testing.T) {
+	t.Parallel()
 	cap := DetectCapability(getenvFrom(map[string]string{"TERM": "xterm"}))
 	if cap.Profile != termenv.ANSI {
 		t.Errorf("TERM=xterm: got profile %s, want ANSI (16-color)", cap.Profile.Name())
@@ -74,6 +80,7 @@ func TestDetectCapability_Fallback16(t *testing.T) {
 }
 
 func TestDetectCapability_NilGetenv(t *testing.T) {
+	t.Parallel()
 	cap := DetectCapability(nil)
 	if cap.Profile != termenv.Ascii {
 		t.Errorf("nil getenv: got profile %s, want Ascii (empty environment)", cap.Profile.Name())
@@ -84,6 +91,7 @@ func TestDetectCapability_NilGetenv(t *testing.T) {
 }
 
 func TestTermCapability_String(t *testing.T) {
+	t.Parallel()
 	cap := TermCapability{Profile: termenv.ANSI256, AltScreen: true}
 	got := cap.String()
 	if !strings.Contains(got, "ANSI256") || !strings.Contains(got, "true") {
@@ -94,6 +102,7 @@ func TestTermCapability_String(t *testing.T) {
 // TestRunDoctor_IncludesTerminalCapabilityCheck covers acceptance criterion 5
 // (W-E-01): "探测结果可被 -h 或 doctor 显示".
 func TestRunDoctor_IncludesTerminalCapabilityCheck(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := writeTempConfig(t, `
 server:

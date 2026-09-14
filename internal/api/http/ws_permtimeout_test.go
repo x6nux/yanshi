@@ -20,6 +20,7 @@ import (
 // the countdown on the wire disagree with the wait that actually runs, and the
 // user would watch a timer that means nothing.
 func TestPermissionTimeoutPolicyResolve(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name           string
 		in             PermissionTimeoutPolicy
@@ -70,6 +71,7 @@ func TestPermissionTimeoutPolicyResolve(t *testing.T) {
 // authorization bypass that no other test in this package observes: the guard
 // layer takes whatever this callback returns.
 func TestAwaitDecisionTimeoutIsAlwaysDeny(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		latch       bool
@@ -130,6 +132,7 @@ func TestAwaitDecisionTimeoutIsAlwaysDeny(t *testing.T) {
 // leaves the unattended run paying a full timeout per prompt forever. Either
 // half alone passes its own test.
 func TestUnattendedLatchesAfterConsecutiveExpiriesAndResetsOnInteraction(t *testing.T) {
+	t.Parallel()
 	u := newUnattendedState(PermissionTimeoutPolicy{Timeout: time.Second, UnattendedAfter: 3})
 
 	assert.False(t, u.noteExpiry(), "first expiry must not latch")
@@ -156,6 +159,7 @@ func TestUnattendedLatchesAfterConsecutiveExpiriesAndResetsOnInteraction(t *test
 // counting their expiries cumulatively would eventually latch on them and
 // start auto-denying a session someone is actively watching.
 func TestNonConsecutiveExpiriesNeverLatch(t *testing.T) {
+	t.Parallel()
 	u := newUnattendedState(PermissionTimeoutPolicy{Timeout: time.Second, UnattendedAfter: 2})
 	for i := 0; i < 10; i++ {
 		assert.False(t, u.noteExpiry(), "expiry %d", i)
@@ -172,6 +176,7 @@ func TestNonConsecutiveExpiriesNeverLatch(t *testing.T) {
 // connection whose only traffic is permission answers must still unlatch. If
 // only the reader reset existed, this test would fail — which is the point.
 func TestAwaitDecisionAnswerUnlatches(t *testing.T) {
+	t.Parallel()
 	u := newUnattendedState(PermissionTimeoutPolicy{Timeout: time.Second, UnattendedAfter: 2})
 	require.False(t, u.noteExpiry())
 
@@ -194,6 +199,7 @@ func TestAwaitDecisionAnswerUnlatches(t *testing.T) {
 // server configured with a 10s timeout tells the operator to look for a 60s
 // pause that never happened, which is a worse diagnostic than silence.
 func TestPermDenyNoticeExplainsTheDenialAndUsesTheLivePolicy(t *testing.T) {
+	t.Parallel()
 	policy := PermissionTimeoutPolicy{Timeout: 12 * time.Second, UnattendedAfter: 4}
 
 	expired := permDenyNotice(permExpired, "shell_run", policy)
@@ -220,6 +226,7 @@ func TestPermDenyNoticeExplainsTheDenialAndUsesTheLivePolicy(t *testing.T) {
 // the resolved one, but a caller that passes the zero value here must still
 // read real numbers rather than an empty budget and a zero threshold.
 func TestPermDenyNoticeUsesDefaultsForAZeroPolicy(t *testing.T) {
+	t.Parallel()
 	zero := PermissionTimeoutPolicy{}
 	assert.Contains(t, permDenyNotice(permExpired, "fs_write", zero),
 		DefaultPermissionTimeout.String())

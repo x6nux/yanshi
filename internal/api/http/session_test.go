@@ -23,6 +23,7 @@ func doAuthed(t *testing.T, method, url, token string) *http.Request {
 }
 
 func TestSessions_ListAndDetail(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	defer st.Close()
@@ -74,6 +75,7 @@ func TestSessions_ListAndDetail(t *testing.T) {
 }
 
 func TestSessions_Unauthorized(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	defer st.Close()

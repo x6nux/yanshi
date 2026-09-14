@@ -13,6 +13,7 @@ import (
 // for a done that never comes, since workspace_diff is a single-frame reply
 // like seams/seam_restored.
 func TestIsControlReply_WorkspaceDiffFrame(t *testing.T) {
+	t.Parallel()
 	if !isControlReply("workspace_diff") {
 		t.Error("isControlReply(\"workspace_diff\") = false, want true")
 	}
@@ -21,6 +22,7 @@ func TestIsControlReply_WorkspaceDiffFrame(t *testing.T) {
 // TestToStreamEvent_WorkspaceDiffFrame verifies the workspace_diff reply's
 // file list propagates through toStreamEvent unchanged.
 func TestToStreamEvent_WorkspaceDiffFrame(t *testing.T) {
+	t.Parallel()
 	f := proto.NewWorkspaceDiff([]proto.WorkspaceDiffFile{
 		{Path: "a.go", Op: "modified", OldText: "old", NewText: "new"},
 	})

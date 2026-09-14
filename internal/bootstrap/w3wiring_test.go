@@ -55,6 +55,7 @@ func w3ConfigFile(t *testing.T) string {
 // grant. Pinning that here keeps a later "tidy up the allow list" edit from
 // quietly upgrading the highest-capability tool in the registry.
 func TestW3ToolsAreRegisteredAndAuthorized(t *testing.T) {
+	t.Parallel()
 	app, err := Build(Options{ConfigPath: w3ConfigFile(t), FakeModel: true})
 	require.NoError(t, err)
 	defer app.Shutdown(context.Background())
@@ -113,6 +114,7 @@ func TestW3ToolsAreRegisteredAndAuthorized(t *testing.T) {
 
 // ledger: A2/W-A-02#4 真实装配出的 App 其 orchestrator 已绑定 Redactor
 func TestW3RedactorReachesToolResults(t *testing.T) {
+	t.Parallel()
 	app, err := Build(Options{ConfigPath: w3ConfigFile(t), FakeModel: true})
 	require.NoError(t, err)
 	defer app.Shutdown(context.Background())

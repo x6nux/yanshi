@@ -15,6 +15,7 @@ import (
 // removes. A nil return is not an error the caller can see — it just quietly
 // becomes the old bug — so this pins that the capture is actually surfaced.
 func TestRecordedTurnMessagesReturnsTheCapturedConversation(t *testing.T) {
+	t.Parallel()
 	rec := &turnRecorder{}
 	ctx := WithTurnRecorder(context.Background(), rec)
 
@@ -53,6 +54,7 @@ func TestRecordedTurnMessagesReturnsTheCapturedConversation(t *testing.T) {
 // continue from" shapes. Both must be nil rather than an empty non-nil slice,
 // because the caller branches on emptiness to pick its fallback.
 func TestRecordedTurnMessagesIsNilWithoutACapture(t *testing.T) {
+	t.Parallel()
 	assert.Nil(t, RecordedTurnMessages(context.Background()),
 		"no recorder bound at all")
 
@@ -76,6 +78,7 @@ func TestRecordedTurnMessagesIsNilWithoutACapture(t *testing.T) {
 // returns — so a second continuation would resume from a history containing the
 // previous continuation's nudge, compounding once per attempt.
 func TestRecordedTurnMessagesDoesNotAliasTheRecorder(t *testing.T) {
+	t.Parallel()
 	rec := &turnRecorder{}
 	ctx := WithTurnRecorder(context.Background(), rec)
 	rec.store([]*schema.Message{
@@ -95,6 +98,7 @@ func TestRecordedTurnMessagesDoesNotAliasTheRecorder(t *testing.T) {
 // several hooks, and a nil slot would panic on Role in every downstream
 // consumer. Filtering here keeps that from becoming a crash in the turn loop.
 func TestRecordedTurnMessagesSkipsNilEntries(t *testing.T) {
+	t.Parallel()
 	rec := &turnRecorder{}
 	ctx := WithTurnRecorder(context.Background(), rec)
 	rec.store([]*schema.Message{nil, schema.UserMessage("real"), nil})

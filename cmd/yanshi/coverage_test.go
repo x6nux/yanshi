@@ -18,6 +18,7 @@ import (
 	"github.com/x6nux/yanshi/internal/agent/goalloop"
 	"github.com/x6nux/yanshi/internal/bootstrap"
 	"github.com/x6nux/yanshi/internal/store"
+	"github.com/x6nux/yanshi/internal/testutil"
 	"github.com/x6nux/yanshi/internal/tools"
 )
 
@@ -980,7 +981,13 @@ func TestRunAuthSubDeviceFlowError(t *testing.T) {
 	t.Setenv("YANSHI_PASSPHRASE", "pass")
 	cfgPath := filepath.Join(dir, "config.yaml")
 	// Provider has no client_id → registration falls back to device.client_id.
-	// Endpoints point at a closed port so RunDeviceFlow fails fast.
+	//
+	// A genuinely closed port, not the hardcoded 127.0.0.1:9 this used to name.
+	// Port 9 is an ordinary port, and on a box running VS Code something holds
+	// it, so the dial SUCCEEDS and the peer never answers: the flow then sat in
+	// its 5s poll loop instead of failing fast, and this test spent 10s proving
+	// nothing. See testutil.ClosedLoopbackAddr.
+	dead := testutil.ClosedLoopbackAddr(t)
 	cfgBody := `
 storage:
   sqlite_path: "` + strings.ReplaceAll(filepath.Join(dir, "a.db"), "\\", "/") + `"
@@ -994,8 +1001,8 @@ auth:
     client_id: inherited-cid
     providers:
       - id: dead
-        device_url: "https://127.0.0.1:9/device"
-        token_url: "https://127.0.0.1:9/token"
+        device_url: "https://` + dead + `/device"
+        token_url: "https://` + dead + `/token"
 `
 	require.NoError(t, os.WriteFile(cfgPath, []byte(cfgBody), 0o600))
 	var errOut bytes.Buffer

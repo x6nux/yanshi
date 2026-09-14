@@ -21,6 +21,7 @@ import (
 // pre-W-C-10 behavior. This is the mid-turn twin of
 // ws_compaction_test.go::TestCompactionModel_NoFallbackChain_ReturnsUnwrapped.
 func TestWrapCompaction_NoFallbacksLeavesSummarizerNil(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"ok"}, nil)
 	cc := CompactionConfig{Threshold: 0.8, ContextWindow: 128000, KeepRecent: 4}
 
@@ -45,6 +46,7 @@ func TestWrapCompaction_NoFallbacksLeavesSummarizerNil(t *testing.T) {
 // ResilientChatModel fails over on WITHOUT the retry backoff a generic
 // error would trigger, keeping this test fast.
 func TestWrapCompaction_WithFallbacksSetsResilientSummarizer(t *testing.T) {
+	t.Parallel()
 	primary := einollm.NewFakeModel(nil, errors.New("invalid_api_key"))
 	fallback := einollm.NewFakeModel([]string{"fallback answered"}, nil)
 	cc := CompactionConfig{Threshold: 0.8, ContextWindow: 128000, KeepRecent: 4}

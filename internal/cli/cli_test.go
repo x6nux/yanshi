@@ -13,6 +13,7 @@ import (
 // in-process backend (fake model) and runHeadless pumps one query through it.
 // The fake model yields one assistant chunk, then the turn ends with done.
 func TestRun_HeadlessOneTurn(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	opts := Options{FakeModel: true, Root: dir, ConfigPath: writeTestConfig(t, dir)}
 	evs, err := runHeadless(context.Background(), opts, []string{"hello"})

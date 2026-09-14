@@ -136,6 +136,7 @@ func waitForSessionSeams(t *testing.T, st *store.Store, v *vcs.VCS,
 }
 
 func TestWS_PreAndPostTurnSeamsCreated(t *testing.T) {
+	t.Parallel()
 	url, v, repoID, st := setupSeamServerFull(t)
 	c := dial(t, url)
 	defer c.Close()
@@ -150,6 +151,7 @@ func TestWS_PreAndPostTurnSeamsCreated(t *testing.T) {
 }
 
 func TestWS_ListSeamsWhileInTurnRejected(t *testing.T) {
+	t.Parallel()
 	o, blocking := newBlockingOrchestrator(t)
 	defer close(blocking.Block)
 	url, _, _, _ := setupSeamServerWithOrchestrator(t, o)
@@ -181,6 +183,7 @@ func TestWS_ListSeamsWhileInTurnRejected(t *testing.T) {
 }
 
 func TestWS_PostTurnSeamFiresOnCancel(t *testing.T) {
+	t.Parallel()
 	o, blocking := newBlockingOrchestrator(t)
 	t.Cleanup(func() { close(blocking.Block) })
 	url, v, repoID, st := setupSeamServerWithOrchestrator(t, o)
@@ -201,6 +204,7 @@ func TestWS_PostTurnSeamFiresOnCancel(t *testing.T) {
 }
 
 func TestWS_PostTurnSeamFiresOnDisconnect(t *testing.T) {
+	t.Parallel()
 	o, blocking := newBlockingOrchestrator(t)
 	t.Cleanup(func() { close(blocking.Block) })
 	url, v, repoID, st := setupSeamServerWithOrchestrator(t, o)
@@ -220,6 +224,7 @@ func TestWS_PostTurnSeamFiresOnDisconnect(t *testing.T) {
 }
 
 func TestWS_PostTurnSeamFiresOnModelError(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{
 		Model: einollm.NewFakeModel(nil, context.DeadlineExceeded),
 	})
@@ -249,6 +254,7 @@ func TestWS_PostTurnSeamFiresOnModelError(t *testing.T) {
 }
 
 func TestWS_RestoreTurn_HappyPath(t *testing.T) {
+	t.Parallel()
 	url, v, _ := setupSeamServer(t)
 	c := dial(t, url)
 	defer c.Close()
@@ -301,6 +307,7 @@ func TestWS_RestoreTurn_HappyPath(t *testing.T) {
 }
 
 func TestWS_RestoreTurn_EmptyOrMismatchedHeadRejected(t *testing.T) {
+	t.Parallel()
 	url, _, _, _ := setupSeamServerFull(t)
 	c := dial(t, url)
 	defer c.Close()
@@ -335,6 +342,7 @@ func TestWS_RestoreTurn_EmptyOrMismatchedHeadRejected(t *testing.T) {
 }
 
 func TestWS_RestoreTurn_PersistFailureIsFatalBeforeVCS(t *testing.T) {
+	t.Parallel()
 	url, v, repoID, st := setupSeamServerFull(t)
 	c := dial(t, url)
 	defer c.Close()
@@ -404,6 +412,7 @@ func TestWS_RestoreTurn_PersistFailureIsFatalBeforeVCS(t *testing.T) {
 }
 
 func TestWS_RestoreTurn_CrossSessionRejected(t *testing.T) {
+	t.Parallel()
 	url, _, _ := setupSeamServer(t)
 	c1 := dial(t, url)
 	defer c1.Close()
@@ -453,6 +462,7 @@ func TestWS_RestoreTurn_CrossSessionRejected(t *testing.T) {
 // WS mode gate: a Force request is unresolved under every auto-allowing mode,
 // so the callback must fall through to permission_request + explicit response.
 func TestResolvePermissionRequest_ForceNeverAutoResolves(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []guard.PermissionMode{
 		guard.ModeYOLO,
 		guard.ModeAllowEdits,

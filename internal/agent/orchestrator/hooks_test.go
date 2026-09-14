@@ -57,6 +57,7 @@ const (
 // 正常的 `go test ./...` 运行里这个函数在第一行就返回（没有剧本参数），
 // 既不算跳过也不做任何事 —— 它只在被父测试 re-exec 时才活过来。
 func TestHookHelperProcess(t *testing.T) {
+	t.Parallel()
 	mode := hookHelperMode()
 	if mode == "" {
 		return
@@ -331,6 +332,7 @@ func TestPreToolUseRewrittenInputIsReJudgedByGuard(t *testing.T) {
 // 注入器不绑定任何东西，中间件原样放行（endpoint 收到的必须是逐字节相同的
 // 原始入参），行为与引入 hook 总线之前完全一致。
 func TestWithTurnHooksWithoutHooksIsPassthrough(t *testing.T) {
+	t.Parallel()
 	if _, ok := turnHooksFromContext(withTurnHooks(context.Background(), HooksConfig{})); ok {
 		t.Fatal("空的 HooksConfig 不应绑定 hook 总线")
 	}
@@ -405,6 +407,7 @@ func TestPreToolUseHooksRunAsPipeline(t *testing.T) {
 // 的消费端：非拦截 hook 的附加上下文以 hook 名标注追加到工具结果里 —— 它是
 // 数据不是指令，标注（[hook <名>]）是它与工具自身产出的分界线。
 func TestPreToolUseAdditionalContextReachesResultAsData(t *testing.T) {
+	t.Parallel()
 	workRoot := t.TempDir()
 
 	cfg := HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "context")}}
@@ -436,6 +439,7 @@ func TestPreToolUseAdditionalContextReachesResultAsData(t *testing.T) {
 // 「翻案」甚至不可表达 —— hook 输出能影响执行的唯一通道是 updated_input，
 // 而改写后的入参会被 guard 重新判决（验收 2）。
 func TestPreToolUseHookCannotFlipGuardDenial(t *testing.T) {
+	t.Parallel()
 	workRoot := t.TempDir()
 
 	// 与验收 1/2 相同的 profile，唯独 fs 写白名单为空：guard 对任何写路径
@@ -464,6 +468,7 @@ func TestPreToolUseHookCannotFlipGuardDenial(t *testing.T) {
 // guard 也允许时，调用正常执行 —— 翻案测试证明的是「hook 的允许没有额外
 // 权力」，这条证明的是「它也没有副作用」：结果与没有任何 hook 时一致。
 func TestPreToolUseHookAllowDoesNotShortCircuitTool(t *testing.T) {
+	t.Parallel()
 	workRoot := t.TempDir()
 
 	cfg := HooksConfig{PreToolUse: []HookConfig{hookTestProgram(t, "approve")}}
@@ -514,6 +519,7 @@ func TestPreToolUseHookGetsNoCredentials(t *testing.T) {
 // hook 子进程的发射本身就会被 guard 拒绝（fail-closed），而不是绕开授权面
 // 静默发射。拒绝文本必须说明是 hook 失败，turn 不中断。
 func TestPreToolUseHookSpawnIsAuthorizedUnderTheToolName(t *testing.T) {
+	t.Parallel()
 	workRoot := t.TempDir()
 
 	// 工具名维度就拒绝：连 hook 子进程的发射都拿不到授权。
@@ -580,6 +586,7 @@ func TestPreToolUseHookTimeoutRefusesWithoutBreakingTurn(t *testing.T) {
 // 写（静默崩溃），以及死前写了**合法的放行 verdict**（退出码必须仍然构成失败，
 // 崩溃的 hook 不可信，verdict 不采用）。
 func TestPreToolUseHookCrashRefusesWithoutBreakingTurn(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		mode    string
 		denySub string
@@ -611,6 +618,7 @@ func TestPreToolUseHookCrashRefusesWithoutBreakingTurn(t *testing.T) {
 // hook 失败 fail-closed 拒绝该次调用，且都不把坏字节喂给工具或模型。
 // 这张表是 hook 输出「不进提示词、不做安全判定、只做结构化解析」的机器化。
 func TestPreToolUseUntrustedOutputIsRefusedNotTrusted(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		mode    string
 		wantSub string
@@ -789,6 +797,7 @@ func TestSubAgentTurnHooksReachSubAgentTools(t *testing.T) {
 //   - stderr：hookStderrLimit 放大后，保留窗口不再是「最后 4096 字节」，
 //     WINDOWHEAD 标记从尾随里消失 → Contains 断言红。
 func TestPreToolUseUntrustedOutputChannelsAreBounded(t *testing.T) {
+	t.Parallel()
 	t.Run("reason is clipped", func(t *testing.T) {
 		workRoot := t.TempDir()
 

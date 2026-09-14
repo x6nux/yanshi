@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/x6nux/yanshi/internal/mcp"
+	"github.com/x6nux/yanshi/internal/testutil"
 	"github.com/x6nux/yanshi/internal/tools"
 )
 
@@ -45,11 +46,17 @@ func startFakeMCP(t *testing.T, server string, toolNames ...string) (*mcp.Manage
 //
 // ledger: A3/C13#1 展示 server/tool/status/error
 func TestMCPStatusCarriesTheManagersOwnErrorText(t *testing.T) {
+	t.Parallel()
 	mgr, ctx := startFakeMCP(t, "good", "alpha", "beta")
 
 	// A second server that cannot be reached. The URL is what produces the
 	// reason text, so nothing in the render template can have anticipated it.
-	const unreachable = "http://127.0.0.1:1/UNREACHABLE_MARKER"
+	//
+	// The port is a genuinely closed one rather than the hardcoded 127.0.0.1:1
+	// this used to name. Where something listens on port 1 the dial SUCCEEDS and
+	// the peer never answers, so StartAll waited out the MCP client's 30s
+	// timeout instead of taking the refusal path that carries the marker.
+	unreachable := "http://" + testutil.ClosedLoopbackAddr(t) + "/UNREACHABLE_MARKER"
 	broken := mcp.NewManager(map[string]*mcp.ServerConfig{
 		"broken": {Enabled: true, Transport: mcp.TransportHTTP, URL: unreachable},
 	})
@@ -101,6 +108,7 @@ func TestMCPStatusCarriesTheManagersOwnErrorText(t *testing.T) {
 //
 // ledger: A3/C13#2 enable/disable 生效
 func TestMCPDisableRemovesToolsFromTheModelsView(t *testing.T) {
+	t.Parallel()
 	mgr, ctx := startFakeMCP(t, "fsserver", "read_file", "write_file")
 
 	names := func() map[string]bool {
@@ -154,6 +162,7 @@ func TestMCPDisableRemovesToolsFromTheModelsView(t *testing.T) {
 //
 // ledger: A3/C13#3 状态与 client 实际连接一致
 func TestMCPStatusFollowsTheClientNotACachedFlag(t *testing.T) {
+	t.Parallel()
 	mgr, ctx := startFakeMCP(t, "srv", "tool_one")
 
 	first := MCPStatusSnapshot(mgr.Snapshot(ctx))

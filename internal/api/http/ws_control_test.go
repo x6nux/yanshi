@@ -72,6 +72,7 @@ func dialWS(t *testing.T, u string) *websocket.Conn {
 
 // TestChatWS_ListModels verifies list_models returns the provider names sorted.
 func TestChatWS_ListModels(t *testing.T) {
+	t.Parallel()
 	models := map[string]model.BaseChatModel{
 		"beta":  einollm.NewFakeModel([]string{"b"}, nil),
 		"alpha": einollm.NewFakeModel([]string{"a"}, nil),
@@ -96,6 +97,7 @@ func TestChatWS_ListModels(t *testing.T) {
 // model used for later user_message turns: after switching to "alt", the next
 // turn replies from alt (not the default).
 func TestChatWS_SetModel_SwitchesForSubsequentTurns(t *testing.T) {
+	t.Parallel()
 	defaultM := einollm.NewFakeModel([]string{"from-default"}, nil)
 	altM := einollm.NewFakeModel([]string{"from-alt"}, nil)
 	models := map[string]model.BaseChatModel{"alt": altM}
@@ -123,6 +125,7 @@ func TestChatWS_SetModel_SwitchesForSubsequentTurns(t *testing.T) {
 // TestChatWS_SetModel_UnknownIgnored verifies an unknown model name is ignored:
 // the session model stays empty and a status frame is still returned.
 func TestChatWS_SetModel_UnknownIgnored(t *testing.T) {
+	t.Parallel()
 	models := map[string]model.BaseChatModel{"a": einollm.NewFakeModel([]string{"a"}, nil)}
 	o, err := orchestrator.New(orchestrator.Config{Model: models["a"]})
 	require.NoError(t, err)
@@ -144,6 +147,7 @@ func TestChatWS_SetModel_UnknownIgnored(t *testing.T) {
 // TestChatWS_SetModel_NilMapIsSafe verifies set_model against a nil model map
 // (the FakeModel path) is a no-op that still replies status.
 func TestChatWS_SetModel_NilMapIsSafe(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	s := New(Config{Token: "t"})
@@ -163,6 +167,7 @@ func TestChatWS_SetModel_NilMapIsSafe(t *testing.T) {
 // TestChatWS_SetThinking verifies set_thinking stores low/medium/high and that
 // "off" clears it.
 func TestChatWS_SetThinking(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	s := New(Config{Token: "t"})
@@ -189,6 +194,7 @@ func TestChatWS_SetThinking(t *testing.T) {
 // the current context size), while completion tokens ACCUMULATE across turns
 // (each call's output is separate) for a real /cost total.
 func TestChatWS_GetStatus_ReflectsUsage(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModelWithMessages([]*schema.Message{
 		assistantWithUsage("r1", 10, 5),
 		assistantWithUsage("r2", 20, 8),
@@ -224,6 +230,7 @@ func TestChatWS_GetStatus_ReflectsUsage(t *testing.T) {
 // TestChatWS_Clear verifies clear resets history (an echo model's post-clear
 // turn does not contain the pre-clear user message) and zeroes the counters.
 func TestChatWS_Clear(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel(nil, nil)
 	fm.Echo = true
 	o, err := orchestrator.New(orchestrator.Config{Model: fm})
@@ -260,6 +267,7 @@ func TestChatWS_Clear(t *testing.T) {
 // turns + summary) and an echo model (selected after compact) to inspect the
 // compacted history.
 func TestChatWS_Compact(t *testing.T) {
+	t.Parallel()
 	// Long ans1/ans2 so compaction actually shrinks tokens under the new Plan
 	// (user messages are pinned verbatim; only assistant turns are folded
 	// into the summary, so the assistant content must be larger than the

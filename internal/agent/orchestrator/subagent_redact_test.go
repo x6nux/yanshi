@@ -80,6 +80,7 @@ func probeToolCallThenAnswer() []*schema.Message {
 // manager.go's `parentCtx := m.rootCtx`. Before the fix this context reached
 // the tool call with no redactor bound at any point in the chain.
 func TestManagedTurnRunnerBindsRedactor(t *testing.T) {
+	t.Parallel()
 	var sawIt bool
 	var got *secrets.Redactor
 	probe := newRedactorProbeTool(&sawIt, &got)
@@ -146,6 +147,7 @@ func TestManagedTurnRunnerBindsRedactor(t *testing.T) {
 // fix #1 alone is TestManagedTurnRunnerRunSourcePinsTheRedactorBind (the
 // source-pin), which this test does not replace.
 func TestManagedSubAgentTurnEndToEndReachesTheProbe(t *testing.T) {
+	t.Parallel()
 	var sawIt bool
 	var got *secrets.Redactor
 	probe := newRedactorProbeTool(&sawIt, &got)
@@ -191,6 +193,7 @@ func TestManagedSubAgentTurnEndToEndReachesTheProbe(t *testing.T) {
 // this test cannot pass on the strength of that other fix -- only the
 // Redactor field on the inline Config literal can make it pass.
 func TestRunSubAgentTurnInlineFallbackBindsRedactor(t *testing.T) {
+	t.Parallel()
 	var sawIt bool
 	var got *secrets.Redactor
 	probe := newRedactorProbeTool(&sawIt, &got)
@@ -249,6 +252,7 @@ func TestRunSubAgentTurnInlineFallbackBindsRedactor(t *testing.T) {
 // `if false { ... }` guard is walked but its body is marked dead and
 // excluded from the search.
 func TestManagedTurnRunnerRunSourcePinsTheRedactorBind(t *testing.T) {
+	t.Parallel()
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "orchestrator.go", nil, parser.ParseComments)
 	if err != nil {

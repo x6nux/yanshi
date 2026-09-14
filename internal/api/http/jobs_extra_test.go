@@ -12,6 +12,7 @@ import (
 
 // TestUnixOrZeroPtr tests the unixOrZeroPtr helper function.
 func TestUnixOrZeroPtr(t *testing.T) {
+	t.Parallel()
 	// nil pointer -> 0
 	assert.Equal(t, int64(0), unixOrZeroPtr(nil))
 
@@ -28,6 +29,7 @@ func TestUnixOrZeroPtr(t *testing.T) {
 
 // TestJobInfo tests the jobInfo converter function.
 func TestJobInfo(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	job := shell.Job{
 		ID:        "job-1",

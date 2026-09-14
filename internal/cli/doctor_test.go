@@ -45,6 +45,7 @@ func writeTempConfig(t *testing.T, body string) string {
 //
 // ledger: M1/O07#1 检查 config/DB/provider/ACP CLI/端口/lockfile/目录/sandbox
 func TestRunDoctor_HappyPath(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgBody := fmt.Sprintf(`
 server: { http_addr: "127.0.0.1:0" }
@@ -89,6 +90,7 @@ auth:
 }
 
 func TestRunDoctor_ConfigLoadFailsDowngradesDeps(t *testing.T) {
+	t.Parallel()
 	rep := RunDoctor(context.Background(), DoctorOptions{
 		ConfigPath: filepath.Join(t.TempDir(), "does-not-exist.yaml"),
 		Root:       t.TempDir(),
@@ -108,6 +110,7 @@ func TestRunDoctor_ConfigLoadFailsDowngradesDeps(t *testing.T) {
 }
 
 func TestCheckProviders_NoProviders(t *testing.T) {
+	t.Parallel()
 	c := checkProviders(&config.Config{}, nil)
 	if c.Status != StatusWarn {
 		t.Errorf("got %s, want warn", c.Status)
@@ -118,6 +121,7 @@ func TestCheckProviders_NoProviders(t *testing.T) {
 //
 // ledger: C4/O07#3 失败明确指引
 func TestCheckProviders_MissingKeyIsFailAndRedacted(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{LLM: config.LLMConfig{Providers: []config.ProviderConfig{
 		{Name: "openai", Kind: "openai", Model: "gpt-4o", APIKey: "sk-secret-value-xyz"},
 		{Name: "claude", Kind: "anthropic", Model: "claude-opus-4-8"}, // no key
@@ -135,6 +139,7 @@ func TestCheckProviders_MissingKeyIsFailAndRedacted(t *testing.T) {
 }
 
 func TestCheckProviders_UnknownKind(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{LLM: config.LLMConfig{Providers: []config.ProviderConfig{
 		{Name: "x", Kind: "weird", Model: "m", APIKey: "k"},
 	}}}
@@ -151,6 +156,7 @@ func TestCheckProviders_UnknownKind(t *testing.T) {
 //
 // ledger: M1/O07#3 退出码 0/1/2
 func TestExitCodeMapping(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		checks []CheckResult
@@ -177,6 +183,7 @@ func TestExitCodeMapping(t *testing.T) {
 //
 // ledger: M1/O07#2 人类可读 + --json
 func TestRenderText_Format(t *testing.T) {
+	t.Parallel()
 	rep := DoctorReport{Checks: []CheckResult{
 		{Name: "config", Status: StatusOK, Message: "loaded"},
 		{Name: "sandbox", Status: StatusWarn, Message: "deferred"},
@@ -196,6 +203,7 @@ func TestRenderText_Format(t *testing.T) {
 //
 // ledger: C4/O07#2 JSON 可机读
 func TestRenderJSON_Structure(t *testing.T) {
+	t.Parallel()
 	rep := DoctorReport{Checks: []CheckResult{
 		{Name: "config", Status: StatusOK, Message: "loaded"},
 		{Name: "sandbox", Status: StatusWarn, Message: "deferred"},
@@ -224,6 +232,7 @@ func TestRenderJSON_Structure(t *testing.T) {
 }
 
 func TestCheckACP_RunsAndMentionsAgents(t *testing.T) {
+	t.Parallel()
 	c := checkACP()
 	if c.Name != "acp" {
 		t.Fatalf("name = %q", c.Name)
@@ -238,6 +247,7 @@ func TestCheckACP_RunsAndMentionsAgents(t *testing.T) {
 }
 
 func TestCheckLockfile_Absent(t *testing.T) {
+	t.Parallel()
 	c := checkLockfile(t.TempDir())
 	if c.Status != StatusOK {
 		t.Errorf("got %s (%s), want ok", c.Status, c.Message)
@@ -248,6 +258,7 @@ func TestCheckLockfile_Absent(t *testing.T) {
 }
 
 func TestCheckLockfile_Stale(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	// A PID at int32 max is vanishingly unlikely to be alive on any platform.
 	if err := lockfile.Write(root, lockfile.Lockfile{
@@ -265,6 +276,7 @@ func TestCheckLockfile_Stale(t *testing.T) {
 }
 
 func TestCheckPort_FreeAndInUse(t *testing.T) {
+	t.Parallel()
 	// Free: an ephemeral port we can bind.
 	free := checkPort(&config.Config{Server: config.ServerConfig{HTTPAddr: "127.0.0.1:0"}}, nil, false)
 	if free.Status != StatusOK {
@@ -287,6 +299,7 @@ func TestCheckPort_FreeAndInUse(t *testing.T) {
 //
 // ledger: M1/O07#1 检查 config/DB/provider/ACP CLI/端口/lockfile/目录/sandbox
 func TestRunDoctor_IncludesEnvChecks(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgBody := fmt.Sprintf(`
 server: { http_addr: "127.0.0.1:0" }
@@ -305,6 +318,7 @@ vcs:
 }
 
 func TestRunDoctor_IncludesLSPCheck(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	dbPath := strings.ReplaceAll(filepath.Join(dir, "test.db"), "\\", "/")
 	cfgPath := writeTempConfig(t, `
@@ -324,6 +338,7 @@ token: "test-token"
 }
 
 func TestRunDoctor_IncludesObservabilityChecks(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgBody := fmt.Sprintf(`
 server: { http_addr: "127.0.0.1:0" }
@@ -353,6 +368,7 @@ auth:
 }
 
 func TestCheckMCP_ServersListedOrNoneConfigured(t *testing.T) {
+	t.Parallel()
 	c := checkMCP(&config.Config{}, nil)
 	if c.Status != StatusOK || !strings.Contains(c.Message, "no mcp servers") {
 		t.Errorf("default: got %s (%s)", c.Status, c.Message)
@@ -374,6 +390,7 @@ func TestCheckMCP_ServersListedOrNoneConfigured(t *testing.T) {
 //
 // ledger: C4/O07#1 覆盖各子系统
 func TestCheckLSP_ReportsProbes(t *testing.T) {
+	t.Parallel()
 	empty := checkLSP(context.Background(), t.TempDir())
 	if empty.Status != StatusOK && empty.Status != StatusWarn {
 		t.Errorf("got %s (%s)", empty.Status, empty.Message)
@@ -395,6 +412,7 @@ func TestCheckLSP_ReportsProbes(t *testing.T) {
 }
 
 func TestCheckPermissions_ProfilesAndInteractiveMode(t *testing.T) {
+	t.Parallel()
 	c := checkPermissions(&config.Config{
 		Profiles: map[string]guard.PermissionProfile{
 			"coding": {Tools: guard.ToolsPerm{Allow: []string{"fs_read", "fs_write"}}},
@@ -409,6 +427,7 @@ func TestCheckPermissions_ProfilesAndInteractiveMode(t *testing.T) {
 }
 
 func TestCheckPermissions_ConfigLoadSkipped(t *testing.T) {
+	t.Parallel()
 	c := checkPermissions(nil, errors.New("missing"))
 	if c.Status != StatusWarn || !strings.Contains(c.Message, "skipped") {
 		t.Errorf("got %s (%s)", c.Status, c.Message)
@@ -428,6 +447,7 @@ func TestCheckPermissions_ConfigLoadSkipped(t *testing.T) {
 //
 // ledger: C4/O07#1 覆盖各子系统
 func TestCheckSandboxReportsTheRuntimePosture(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 
 	t.Run("disabled is called out specifically", func(t *testing.T) {
@@ -493,6 +513,7 @@ func TestCheckSandboxReportsTheRuntimePosture(t *testing.T) {
 //
 // ledger: C4/O07#1 覆盖各子系统
 func TestCheckMCPReadsTheConfiguration(t *testing.T) {
+	t.Parallel()
 	mk := func(servers map[string]*config.MCPServerConfig) CheckResult {
 		cfg := &config.Config{}
 		cfg.MCP.Servers = servers
@@ -548,6 +569,7 @@ func TestCheckMCPReadsTheConfiguration(t *testing.T) {
 //
 // ledger: M1/O07#4 不打印 secret
 func TestDoctorNeverEchoesACredential(t *testing.T) {
+	t.Parallel()
 	const canary = "sk-CANARY-3f9d1a7c4b2e8065-DO-NOT-LEAK"
 
 	dir := t.TempDir()
@@ -619,6 +641,7 @@ func TestDoctorNeverEchoesACredential(t *testing.T) {
 //
 // ledger: M1/O07#5 不完整环境不 panic
 func TestDoctorSurvivesAnIncompleteEnvironment(t *testing.T) {
+	t.Parallel()
 	for _, path := range []string{
 		filepath.Join(t.TempDir(), "does-not-exist.yaml"),
 		filepath.Join(t.TempDir(), "empty.yaml"),
@@ -665,6 +688,7 @@ func writeCorruptDB(t *testing.T, path string) []byte {
 // would destroy the evidence and then deny the symptom. Both checks that open
 // the store are covered, because they open it independently.
 func TestDoctorChecksNeverQuarantineTheDatabase(t *testing.T) {
+	t.Parallel()
 	for name, check := range map[string]func(*config.Config, error) CheckResult{
 		"database": checkDatabase,
 		"wal":      checkWAL,

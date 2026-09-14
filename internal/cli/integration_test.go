@@ -36,6 +36,7 @@ import (
 // TestSSEBackend_MultiTurn; this test pins the in-process resolver + wsBackend
 // boot path and two-turn streaming.
 func TestIntegration_InProcessWSTwoTurns(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	opts := Options{ConfigPath: writeTestConfig(t, root), FakeModel: true, Root: root}
 
@@ -162,6 +163,7 @@ func findEvent(evs []StreamEvent, kind string) (StreamEvent, bool) {
 // accrual, and the permission_request -> permission_response -> tool_result
 // round-trip — that the TUI depends on.
 func TestIntegration_Parity(t *testing.T) {
+	t.Parallel()
 	wsURL, workdir := newParityServer(t)
 	// context.Background() (never cancelled) matches every wsBackend test in
 	// the package: Send/SendFrame each spawn a cancellation goroutine that only

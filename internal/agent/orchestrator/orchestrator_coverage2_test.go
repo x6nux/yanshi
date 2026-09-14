@@ -21,6 +21,7 @@ import (
 
 // TestNew_NilModelError proves that New returns an error when Model is nil.
 func TestNew_NilModelError(t *testing.T) {
+	t.Parallel()
 	_, err := New(Config{Model: nil})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Model is required")
@@ -28,6 +29,7 @@ func TestNew_NilModelError(t *testing.T) {
 
 // TestNew_EmptyInstructionDefaults proves empty Instruction becomes DefaultInstruction.
 func TestNew_EmptyInstructionDefaults(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"ok"}, nil)
 	o, err := New(Config{Model: fm})
 	require.NoError(t, err)
@@ -46,6 +48,7 @@ func (badInfoTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
 
 // TestCollectToolNames_InfoError proves tools whose Info() errors are silently skipped.
 func TestCollectToolNames_InfoError(t *testing.T) {
+	t.Parallel()
 	bogus := &badInfoTool{}
 	names := collectToolNames([]tool.BaseTool{bogus})
 	assert.Empty(t, names)
@@ -53,6 +56,7 @@ func TestCollectToolNames_InfoError(t *testing.T) {
 
 // TestEnsureTurnIDs_PreservesExistingTags proves existing TraceID/TurnID are preserved.
 func TestEnsureTurnIDs_PreservesExistingTags(t *testing.T) {
+	t.Parallel()
 	ctx := obslog.WithIDs(context.Background(), obslog.IDs{
 		TraceID: "trace-a",
 		TurnID:  "turn-b",
@@ -65,6 +69,7 @@ func TestEnsureTurnIDs_PreservesExistingTags(t *testing.T) {
 
 // TestEnsureTurnIDs_FillsEmptyTags proves missing TraceID/TurnID are filled.
 func TestEnsureTurnIDs_FillsEmptyTags(t *testing.T) {
+	t.Parallel()
 	ctx := ensureTurnIDs(context.Background())
 	ids := obslog.IDsFromContext(ctx)
 	assert.NotEmpty(t, ids.TraceID)
@@ -80,6 +85,7 @@ func TestEnsureTurnIDs_FillsEmptyTags(t *testing.T) {
 // — a request naming a model the registry lacks leaves opts.Model nil and keeps
 // the requested id, landing on o.rawModel under a second name.
 func TestRunnerFor_ModelIDIsPartOfTheCacheKey(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"ok"}, nil)
 	o, err := New(Config{Model: fm})
 	require.NoError(t, err)
@@ -97,6 +103,7 @@ func TestRunnerFor_ModelIDIsPartOfTheCacheKey(t *testing.T) {
 
 // TestRunnerFor_BuildErrorReturnsNil proves that when adk.NewChatModelAgent fails, runnerFor returns nil.
 func TestRunnerFor_BuildErrorReturnsNil(t *testing.T) {
+	t.Parallel()
 	o := &Orchestrator{agentTools: nil, maxIters: 1}
 	got := o.runnerFor(nil, false, "")
 	assert.Nil(t, got)
@@ -104,6 +111,7 @@ func TestRunnerFor_BuildErrorReturnsNil(t *testing.T) {
 
 // TestFilterPlanTools_EmptyList handles empty list.
 func TestFilterPlanTools_EmptyList(t *testing.T) {
+	t.Parallel()
 	got := filterPlanTools(nil)
 	assert.Empty(t, got)
 }
@@ -111,6 +119,7 @@ func TestFilterPlanTools_EmptyList(t *testing.T) {
 // TestFilterPlanTools_NoPlanSafeTool tests plan-safe filtering:
 // fs_read is plan-safe, memory_write is not plan-safe.
 func TestFilterPlanTools_NoPlanSafeTool(t *testing.T) {
+	t.Parallel()
 	fs := tools.NewFSTools(t.TempDir())
 	got := filterPlanTools([]tool.BaseTool{fs.Read})
 	require.Len(t, got, 1, "fs_read is plan-safe")
@@ -123,12 +132,14 @@ func TestFilterPlanTools_NoPlanSafeTool(t *testing.T) {
 
 // TestFilterPlanTools_InfoErrorToolIsDropped tests info-error tools are dropped.
 func TestFilterPlanTools_InfoErrorToolIsDropped(t *testing.T) {
+	t.Parallel()
 	got := filterPlanTools([]tool.BaseTool{&badInfoTool{}})
 	assert.Empty(t, got)
 }
 
 // TestSelectSubAgentTools_EmptyAllowedReturnsAll tests nil/empty allowed returns full set.
 func TestSelectSubAgentTools_EmptyAllowedReturnsAll(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel(nil, nil)
 	fs := tools.NewFSTools(t.TempDir())
 	o, err := New(Config{Model: fm, Tools: []BaseTool{fs.Read, fs.Write}})
@@ -142,6 +153,7 @@ func TestSelectSubAgentTools_EmptyAllowedReturnsAll(t *testing.T) {
 
 // TestSelectSubAgentTools_NoMatch tests no matching tools returns empty slice.
 func TestSelectSubAgentTools_NoMatch(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel(nil, nil)
 	timeTools := tools.NewTimeTools()
 	o, err := New(Config{Model: fm, Tools: []BaseTool{timeTools.Now}})
@@ -153,6 +165,7 @@ func TestSelectSubAgentTools_NoMatch(t *testing.T) {
 
 // TestWithoutOrchestrationTools_DropsByKnownNames tests orchestration tools are removed.
 func TestWithoutOrchestrationTools_DropsByKnownNames(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel(nil, nil)
 	fs := tools.NewFSTools(t.TempDir())
 	o, err := New(Config{Model: fm, Tools: []BaseTool{fs.Read}})
@@ -166,12 +179,14 @@ func TestWithoutOrchestrationTools_DropsByKnownNames(t *testing.T) {
 
 // TestWithoutOrchestrationTools_InfoError tests info-error tools are skipped.
 func TestWithoutOrchestrationTools_InfoError(t *testing.T) {
+	t.Parallel()
 	got := withoutOrchestrationTools([]BaseTool{&badInfoTool{}})
 	assert.Empty(t, got)
 }
 
 // TestContains tests the contains helper function.
 func TestContains(t *testing.T) {
+	t.Parallel()
 	assert.True(t, contains([]string{"a", "b", "c"}, "b"))
 	assert.False(t, contains([]string{"a", "b", "c"}, "z"))
 	assert.False(t, contains(nil, "x"))
@@ -179,18 +194,21 @@ func TestContains(t *testing.T) {
 
 // TestMemorySuffix_Accessor tests MemorySuffix() accessor.
 func TestMemorySuffix_Accessor(t *testing.T) {
+	t.Parallel()
 	o := &Orchestrator{memorySuffix: "remember: tea"}
 	assert.Equal(t, "remember: tea", o.MemorySuffix())
 }
 
 // TestMemorySuffix_Empty tests empty MemorySuffix.
 func TestMemorySuffix_Empty(t *testing.T) {
+	t.Parallel()
 	o := &Orchestrator{}
 	assert.Empty(t, o.MemorySuffix())
 }
 
 // TestBindSubAgentRunner_NilModelIsNoop proves bindSubAgentRunner is noop when model nil.
 func TestBindSubAgentRunner_NilModelIsNoop(t *testing.T) {
+	t.Parallel()
 	o := &Orchestrator{model: nil}
 	ctx := o.bindSubAgentRunner(context.Background())
 	runner := tools.SubAgentRunnerFromContext(ctx)
@@ -199,6 +217,7 @@ func TestBindSubAgentRunner_NilModelIsNoop(t *testing.T) {
 
 // TestBindManagedRunner_NilSubagentMgrDoesNotBindManager proves when subagentMgr is nil, no Manager bound.
 func TestBindManagedRunner_NilSubagentMgrDoesNotBindManager(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"ok"}, nil)
 	o, err := New(Config{Model: fm})
 	require.NoError(t, err)
@@ -211,18 +230,21 @@ func TestBindManagedRunner_NilSubagentMgrDoesNotBindManager(t *testing.T) {
 
 // TestManagedTurnRunner_RoleInjection verifies RoleFromContext behavior.
 func TestManagedTurnRunner_RoleInjection(t *testing.T) {
+	t.Parallel()
 	role := registry.RoleFromContext(context.Background())
 	assert.Empty(t, role)
 }
 
 // TestRoleForSubAgent_UnknownRole tests roleForSubagent with non-existent role.
 func TestRoleForSubAgent_UnknownRole(t *testing.T) {
+	t.Parallel()
 	got := roleForSubagent("nonexistent_role")
 	assert.Nil(t, got)
 }
 
 // TestEventsWithHistory_Basic tests the basic EventsWithHistory path.
 func TestEventsWithHistory_Basic(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"history response"}, nil)
 	o, err := New(Config{Model: fm})
 	require.NoError(t, err)
@@ -235,6 +257,7 @@ func TestEventsWithHistory_Basic(t *testing.T) {
 
 // TestQuery_IteratorError proves iterator error propagates through Query.
 func TestQuery_IteratorError(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel(nil, errors.New("model failure"))
 	o, err := New(Config{Model: fm})
 	require.NoError(t, err)
@@ -246,6 +269,7 @@ func TestQuery_IteratorError(t *testing.T) {
 
 // TestQuery_NoAssistantMessage proves empty content returns error.
 func TestQuery_NoAssistantMessage(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{""}, nil)
 	o, err := New(Config{Model: fm})
 	require.NoError(t, err)
@@ -257,6 +281,7 @@ func TestQuery_NoAssistantMessage(t *testing.T) {
 
 // TestFinalOutputAccumulator_EdgeCases proves observe handles nil and non-assistant.
 func TestFinalOutputAccumulator_EdgeCases(t *testing.T) {
+	t.Parallel()
 	var acc finalOutputAccumulator
 	acc.observe(nil)
 	acc.observe(&schema.Message{Role: schema.User, Content: "hello"})
@@ -265,6 +290,7 @@ func TestFinalOutputAccumulator_EdgeCases(t *testing.T) {
 
 // TestWrapCompaction_ZeroThreshold returns original model unwrapped.
 func TestWrapCompaction_ZeroThreshold(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"ok"}, nil)
 	wrapped := wrapCompaction(fm, CompactionConfig{Threshold: 0}, 0, 0, nil)
 	assert.Equal(t, fm, wrapped)
@@ -272,6 +298,7 @@ func TestWrapCompaction_ZeroThreshold(t *testing.T) {
 
 // TestWrapCompaction_NegativeThreshold returns original model unwrapped.
 func TestWrapCompaction_NegativeThreshold(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"ok"}, nil)
 	wrapped := wrapCompaction(fm, CompactionConfig{Threshold: -1}, 0, 0, nil)
 	assert.Equal(t, fm, wrapped)
@@ -279,6 +306,7 @@ func TestWrapCompaction_NegativeThreshold(t *testing.T) {
 
 // TestWorkEventFrame_NilTaskSafe handles nil task without panic.
 func TestWorkEventFrame_NilTaskSafe(t *testing.T) {
+	t.Parallel()
 	f := workEventFrame(work.Event{Kind: work.EventTaskUpdate, Task: nil})
 	// NewTaskUpdate(nil) returns ServerFrame{} (empty type)
 	assert.Empty(t, f.Type)
@@ -286,6 +314,7 @@ func TestWorkEventFrame_NilTaskSafe(t *testing.T) {
 
 // TestClassifyEvents_NilOutputContinues proves nil Output/MessageOutput are skipped.
 func TestClassifyEvents_NilOutputContinues(t *testing.T) {
+	t.Parallel()
 	iter, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
 	gen.Send(&adk.AgentEvent{Output: nil})
 	gen.Send(&adk.AgentEvent{Output: &adk.AgentOutput{MessageOutput: nil}})
@@ -298,6 +327,7 @@ func TestClassifyEvents_NilOutputContinues(t *testing.T) {
 
 // TestClassifyEvents_NilMessageInNonStreaming proves nil Message in non-streaming is skipped.
 func TestClassifyEvents_NilMessageInNonStreaming(t *testing.T) {
+	t.Parallel()
 	iter, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
 	gen.Send(&adk.AgentEvent{
 		Output: &adk.AgentOutput{
@@ -313,6 +343,7 @@ func TestClassifyEvents_NilMessageInNonStreaming(t *testing.T) {
 
 // TestClassifyStream_NilMsgSkips proves nil delta is skipped.
 func TestClassifyStream_NilMsgSkips(t *testing.T) {
+	t.Parallel()
 	deltas := []*schema.Message{nil, schema.AssistantMessage("hello", nil)}
 	mv := newStreamMessageVariant(t, schema.Assistant, deltas)
 	var frames []proto.ServerFrame
@@ -323,6 +354,7 @@ func TestClassifyStream_NilMsgSkips(t *testing.T) {
 
 // TestClassifyStream_RecvError emits an error frame.
 func TestClassifyStream_RecvError(t *testing.T) {
+	t.Parallel()
 	sr, sw := schema.Pipe[*schema.Message](1)
 	go func() {
 		_ = sw.Send(nil, errors.New("stream failed"))
@@ -340,6 +372,7 @@ func TestClassifyStream_RecvError(t *testing.T) {
 
 // TestClassifyStream_ToolRoleEmitsToolResult proves Tool-role stream emits tool_result.
 func TestClassifyStream_ToolRoleEmitsToolResult(t *testing.T) {
+	t.Parallel()
 	deltas := []*schema.Message{
 		{Role: schema.Tool, ToolCallID: "c1", ToolName: "fs_read", Content: "content"},
 	}
@@ -353,6 +386,7 @@ func TestClassifyStream_ToolRoleEmitsToolResult(t *testing.T) {
 
 // TestToolCallAccumulator_NoIndex tests tool call without Index field.
 func TestToolCallAccumulator_NoIndex(t *testing.T) {
+	t.Parallel()
 	deltas := []*schema.Message{
 		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{
 			{ID: "c1", Function: schema.FunctionCall{Name: "fs_read", Arguments: `{"path":"x"}`}},
@@ -372,6 +406,7 @@ func TestToolCallAccumulator_NoIndex(t *testing.T) {
 
 // TestEmitAssistantContent_BothReasoningAndContent proves thinking precedes agent_chunk.
 func TestEmitAssistantContent_BothReasoningAndContent(t *testing.T) {
+	t.Parallel()
 	var frames []proto.ServerFrame
 	emitAssistantContent(&schema.Message{
 		ReasoningContent: "thinking", Content: "answer",
@@ -383,6 +418,7 @@ func TestEmitAssistantContent_BothReasoningAndContent(t *testing.T) {
 
 // TestEmitToolResult_EmptyContentMarksError tests empty tool result is error.
 func TestEmitToolResult_EmptyContentMarksError(t *testing.T) {
+	t.Parallel()
 	var frames []proto.ServerFrame
 	emitToolResult(&schema.Message{
 		ToolCallID: "c1", ToolName: "t", Content: "",
@@ -393,6 +429,7 @@ func TestEmitToolResult_EmptyContentMarksError(t *testing.T) {
 
 // TestJudgeCompletion_NilRecorderAndGenerateError proves fail-safe paths.
 func TestJudgeCompletion_NilRecorderAndGenerateError(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel(nil, errors.New("judge error"))
 	o, err := New(Config{Model: fm})
 	require.NoError(t, err)
@@ -411,12 +448,14 @@ func TestJudgeCompletion_NilRecorderAndGenerateError(t *testing.T) {
 
 // TestParseJudgeVerdict_OctothorpeOnly proves parseJudgVerdict fails on non-JSON without braces.
 func TestParseJudgeVerdict_OctothorpeOnly(t *testing.T) {
+	t.Parallel()
 	_, err := parseJudgeVerdict("###")
 	require.Error(t, err)
 }
 
 // TestAfterModelRewriteState_NilState proves nil state is handled gracefully.
 func TestAfterModelRewriteState_NilState(t *testing.T) {
+	t.Parallel()
 	r := newMessageRecorder()
 	_, state, err := r.AfterModelRewriteState(context.Background(), nil, nil)
 	require.NoError(t, err)
@@ -425,6 +464,7 @@ func TestAfterModelRewriteState_NilState(t *testing.T) {
 
 // TestAppendImageParts_NoUserMessage proves new user msg created for empty history.
 func TestAppendImageParts_NoUserMessage(t *testing.T) {
+	t.Parallel()
 	result := appendImageParts(nil, []proto.ImageAttach{
 		{Fmt: "png", DataB64: "AAAA"},
 	})
@@ -434,6 +474,7 @@ func TestAppendImageParts_NoUserMessage(t *testing.T) {
 
 // TestAppendPlaceholders_NilStore proves nil store returns history unchanged.
 func TestAppendPlaceholders_NilStore(t *testing.T) {
+	t.Parallel()
 	o := &Orchestrator{imageStore: nil}
 	history := []*schema.Message{schema.UserMessage("hi")}
 	result := o.appendPlaceholders(history, []proto.ImageAttach{
@@ -444,6 +485,7 @@ func TestAppendPlaceholders_NilStore(t *testing.T) {
 
 // TestWorkEventFrame_DefaultNilTask tests default case with nil task.
 func TestWorkEventFrame_DefaultNilTask(t *testing.T) {
+	t.Parallel()
 	f := workEventFrame(work.Event{Kind: "unknown", Task: nil})
 	// NewTaskUpdate(nil) returns ServerFrame{}, so Type is empty
 	assert.Empty(t, f.Type)
@@ -451,6 +493,7 @@ func TestWorkEventFrame_DefaultNilTask(t *testing.T) {
 
 // TestFinalOutputAccumulator_FinalizeEmpty tests finalize error on empty accumulator.
 func TestFinalOutputAccumulator_FinalizeEmpty(t *testing.T) {
+	t.Parallel()
 	var acc finalOutputAccumulator
 	_, err := acc.finalize()
 	require.Error(t, err)

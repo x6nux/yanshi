@@ -33,6 +33,7 @@ import (
 // TheTranscript proved the TUI renders a frame that arrives. Nothing checked
 // that one was ever produced from the other, and the middle hop was nil.
 func TestChatWS_ToolWorkEventReachesTheClient(t *testing.T) {
+	t.Parallel()
 	planCall := schema.AssistantMessage("", []schema.ToolCall{{
 		ID: "plan-1", Type: "function",
 		Function: schema.FunctionCall{Name: "emit_work_event_test", Arguments: `{}`},
@@ -111,6 +112,7 @@ func newWorkEventTestTool(t *testing.T) *tools.GuardedTool {
 // transport and not the other is the asymmetry ADR-0004 exists to prevent, and
 // nothing in the frame vocabulary would have caught it.
 func TestChatSSE_ToolWorkEventReachesTheClient(t *testing.T) {
+	t.Parallel()
 	planCall := schema.AssistantMessage("", []schema.ToolCall{{
 		ID: "plan-1", Type: "function",
 		Function: schema.FunctionCall{Name: "emit_work_event_test", Arguments: `{}`},

@@ -31,6 +31,7 @@ func newImageStore() *imagestore.Store {
 // TestCov_AppendPlaceholders_DecodeError covers the base64-decode-fail branch
 // and the resulting "no valid images → history unchanged" branch.
 func TestCov_AppendPlaceholders_DecodeError(t *testing.T) {
+	t.Parallel()
 	o := &Orchestrator{imageStore: newImageStore()}
 	history := []*schema.Message{schema.UserMessage("hi")}
 	result := o.appendPlaceholders(history, []proto.ImageAttach{
@@ -42,6 +43,7 @@ func TestCov_AppendPlaceholders_DecodeError(t *testing.T) {
 // TestCov_AppendPlaceholders_PutError covers the imageStore.Put-error branch
 // (unsupported format → Put rejects → no placeholder).
 func TestCov_AppendPlaceholders_PutError(t *testing.T) {
+	t.Parallel()
 	o := &Orchestrator{imageStore: newImageStore()}
 	history := []*schema.Message{schema.UserMessage("hi")}
 	// Valid base64 but an unsupported image format → Put fails.
@@ -54,6 +56,7 @@ func TestCov_AppendPlaceholders_PutError(t *testing.T) {
 // TestCov_AppendPlaceholders_AppendToLastUser covers the success path where the
 // placeholder is appended to an existing trailing user message.
 func TestCov_AppendPlaceholders_AppendToLastUser(t *testing.T) {
+	t.Parallel()
 	o := &Orchestrator{imageStore: newImageStore()}
 	history := []*schema.Message{schema.UserMessage("hello")}
 	result := o.appendPlaceholders(history, []proto.ImageAttach{
@@ -68,6 +71,7 @@ func TestCov_AppendPlaceholders_AppendToLastUser(t *testing.T) {
 // no trailing user message, so a new user message carrying the placeholder is
 // appended.
 func TestCov_AppendPlaceholders_NewUserMsg(t *testing.T) {
+	t.Parallel()
 	o := &Orchestrator{imageStore: newImageStore()}
 	result := o.appendPlaceholders(nil, []proto.ImageAttach{
 		{Source: "t", Fmt: "png", DataB64: validPNGb64(t)},

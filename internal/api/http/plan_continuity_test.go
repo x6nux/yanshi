@@ -31,6 +31,7 @@ import (
 //
 // ledger: A2/G05#3 确认后切执行且历史连续
 func TestPlanThenExecuteKeepsTheHistory(t *testing.T) {
+	t.Parallel()
 	const planMarker = "PLAN_TURN_MARKER"
 
 	fm := &einollm.FakeModel{Echo: true}
@@ -87,6 +88,7 @@ func TestPlanThenExecuteKeepsTheHistory(t *testing.T) {
 //
 // ledger: A2/G05#3 确认后切执行且历史连续
 func TestPlanModeSwitchDoesNotReplayAsANewSession(t *testing.T) {
+	t.Parallel()
 	const planMarker = "UNIQUE_PLAN_LINE"
 
 	fm := einollm.NewFakeModelWithMessages([]*schema.Message{

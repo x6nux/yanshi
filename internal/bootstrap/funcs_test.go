@@ -20,6 +20,7 @@ import (
 // --- visionUsageAccumulator.add ---
 
 func TestVisionUsageAccumulator_Add(t *testing.T) {
+	t.Parallel()
 	var v visionUsageAccumulator
 	v.add(1, 2, 3)
 	if v.Prompt != 1 || v.Completion != 2 || v.Total != 3 {
@@ -32,6 +33,7 @@ func TestVisionUsageAccumulator_Add(t *testing.T) {
 }
 
 func TestVisionUsageAccumulator_AddConcurrentSafe(t *testing.T) {
+	t.Parallel()
 	var v visionUsageAccumulator
 	var wg sync.WaitGroup
 	for i := 0; i < 100; i++ {
@@ -50,18 +52,21 @@ func TestVisionUsageAccumulator_AddConcurrentSafe(t *testing.T) {
 // --- parseCooldownDuration ---
 
 func TestParseCooldownDuration_Empty(t *testing.T) {
+	t.Parallel()
 	if got := parseCooldownDuration(""); got != 0 {
 		t.Fatalf("parseCooldownDuration(\"\") = %v, want 0", got)
 	}
 }
 
 func TestParseCooldownDuration_Invalid(t *testing.T) {
+	t.Parallel()
 	if got := parseCooldownDuration("not-a-duration"); got != 0 {
 		t.Fatalf("parseCooldownDuration(\"invalid\") = %v, want 0", got)
 	}
 }
 
 func TestParseCooldownDuration_Valid(t *testing.T) {
+	t.Parallel()
 	if got := parseCooldownDuration("3s"); got != 3*time.Second {
 		t.Fatalf("parseCooldownDuration(\"3s\") = %v, want 3s", got)
 	}
@@ -70,12 +75,14 @@ func TestParseCooldownDuration_Valid(t *testing.T) {
 // --- outputLoggerWriter ---
 
 func TestOutputLoggerWriter_NilOutput(t *testing.T) {
+	t.Parallel()
 	if w := outputLoggerWriter(nil); w != os.Stderr {
 		t.Fatalf("outputLoggerWriter(nil) = %v, want os.Stderr", w)
 	}
 }
 
 func TestOutputLoggerWriter_NilLogger(t *testing.T) {
+	t.Parallel()
 	so := secrets.NewSafeOutput(io.Discard, nil)
 	if w := outputLoggerWriter(so); w != os.Stderr {
 		t.Fatalf("outputLoggerWriter(output with nil Logger) = %v, want os.Stderr", w)
@@ -83,6 +90,7 @@ func TestOutputLoggerWriter_NilLogger(t *testing.T) {
 }
 
 func TestOutputLoggerWriter_WithLogger(t *testing.T) {
+	t.Parallel()
 	red := secrets.NewRedactor()
 	so := secrets.NewSafeOutput(io.Discard, red)
 	if w := outputLoggerWriter(so); w != os.Stderr {
@@ -93,24 +101,28 @@ func TestOutputLoggerWriter_WithLogger(t *testing.T) {
 // --- firstNonEmpty ---
 
 func TestFirstNonEmpty_First(t *testing.T) {
+	t.Parallel()
 	if got := firstNonEmpty("a", "b"); got != "a" {
 		t.Fatalf("firstNonEmpty(\"a\", \"b\") = %q, want \"a\"", got)
 	}
 }
 
 func TestFirstNonEmpty_Second(t *testing.T) {
+	t.Parallel()
 	if got := firstNonEmpty("", "b"); got != "b" {
 		t.Fatalf("firstNonEmpty(\"\", \"b\") = %q, want \"b\"", got)
 	}
 }
 
 func TestFirstNonEmpty_AllEmpty(t *testing.T) {
+	t.Parallel()
 	if got := firstNonEmpty("", ""); got != "skills" {
 		t.Fatalf("firstNonEmpty(\"\", \"\") = %q, want \"skills\"", got)
 	}
 }
 
 func TestFirstNonEmpty_NoArgs(t *testing.T) {
+	t.Parallel()
 	if got := firstNonEmpty(); got != "skills" {
 		t.Fatalf("firstNonEmpty() = %q, want \"skills\"", got)
 	}
@@ -119,6 +131,7 @@ func TestFirstNonEmpty_NoArgs(t *testing.T) {
 // --- resolveMemoryPaths ---
 
 func TestResolveMemoryPaths_UserPathSet(t *testing.T) {
+	t.Parallel()
 	up, pp := resolveMemoryPaths(config.MemoryConfig{UserPath: "/home/user/custom.md"}, "")
 	if up != "/home/user/custom.md" {
 		t.Fatalf("userPath = %q, want \"/home/user/custom.md\"", up)
@@ -129,6 +142,7 @@ func TestResolveMemoryPaths_UserPathSet(t *testing.T) {
 }
 
 func TestResolveMemoryPaths_UserPathExpandsHome(t *testing.T) {
+	t.Parallel()
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("os.UserHomeDir failed:", err)
@@ -141,6 +155,7 @@ func TestResolveMemoryPaths_UserPathExpandsHome(t *testing.T) {
 }
 
 func TestResolveMemoryPaths_UserPathDefaultWithHome(t *testing.T) {
+	t.Parallel()
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("os.UserHomeDir failed:", err)
@@ -153,6 +168,7 @@ func TestResolveMemoryPaths_UserPathDefaultWithHome(t *testing.T) {
 }
 
 func TestResolveMemoryPaths_AbsoluteProjectPath(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	absPath := filepath.Join(dir, "proj.md")
 	_, pp := resolveMemoryPaths(config.MemoryConfig{ProjectPath: absPath}, "/work")
@@ -162,6 +178,7 @@ func TestResolveMemoryPaths_AbsoluteProjectPath(t *testing.T) {
 }
 
 func TestResolveMemoryPaths_RelativeProjectPathWithWorkRoot(t *testing.T) {
+	t.Parallel()
 	_, pp := resolveMemoryPaths(config.MemoryConfig{ProjectPath: "proj.md"}, "/work")
 	want := filepath.Join("/work", "proj.md")
 	if pp != want {
@@ -170,6 +187,7 @@ func TestResolveMemoryPaths_RelativeProjectPathWithWorkRoot(t *testing.T) {
 }
 
 func TestResolveMemoryPaths_RelativeProjectPathNoWorkRoot(t *testing.T) {
+	t.Parallel()
 	_, pp := resolveMemoryPaths(config.MemoryConfig{ProjectPath: "proj.md"}, "")
 	if pp != "proj.md" {
 		t.Fatalf("projectPath = %q, want \"proj.md\"", pp)
@@ -177,6 +195,7 @@ func TestResolveMemoryPaths_RelativeProjectPathNoWorkRoot(t *testing.T) {
 }
 
 func TestResolveMemoryPaths_WorkRootFallback(t *testing.T) {
+	t.Parallel()
 	_, pp := resolveMemoryPaths(config.MemoryConfig{}, "/work")
 	want := filepath.Join("/work", ".yanshi", "memory.md")
 	if pp != want {
@@ -185,6 +204,7 @@ func TestResolveMemoryPaths_WorkRootFallback(t *testing.T) {
 }
 
 func TestResolveMemoryPaths_BothConfigured(t *testing.T) {
+	t.Parallel()
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("os.UserHomeDir failed:", err)
@@ -206,6 +226,7 @@ func TestResolveMemoryPaths_BothConfigured(t *testing.T) {
 // --- homeDirOrDefault ---
 
 func TestHomeDirOrDefault_Success(t *testing.T) {
+	t.Parallel()
 	home := homeDirOrDefault()
 	if home == "" {
 		t.Fatal("homeDirOrDefault() should return non-empty in test environment")
@@ -227,6 +248,7 @@ func TestHomeDirOrDefault_ErrorPath(t *testing.T) {
 // --- buildDeviceProviders uncovered branches ---
 
 func TestBuildDeviceProviders_EmptyClientIDUsesDefault(t *testing.T) {
+	t.Parallel()
 	red := secrets.NewRedactor()
 	bindings, err := buildDeviceProviders(
 		[]config.DeviceProviderConfig{
@@ -248,6 +270,7 @@ func TestBuildDeviceProviders_EmptyClientIDUsesDefault(t *testing.T) {
 }
 
 func TestBuildDeviceProviders_EmptyIDRejected(t *testing.T) {
+	t.Parallel()
 	red := secrets.NewRedactor()
 	_, err := buildDeviceProviders(
 		nil,
@@ -263,6 +286,7 @@ func TestBuildDeviceProviders_EmptyIDRejected(t *testing.T) {
 }
 
 func TestBuildDeviceProviders_NilProviderRejected(t *testing.T) {
+	t.Parallel()
 	red := secrets.NewRedactor()
 	_, err := buildDeviceProviders(
 		nil,
@@ -278,6 +302,7 @@ func TestBuildDeviceProviders_NilProviderRejected(t *testing.T) {
 }
 
 func TestBuildDeviceProviders_DuplicateIDRejected(t *testing.T) {
+	t.Parallel()
 	red := secrets.NewRedactor()
 	_, err := buildDeviceProviders(
 		nil,
@@ -294,6 +319,7 @@ func TestBuildDeviceProviders_DuplicateIDRejected(t *testing.T) {
 }
 
 func TestBuildDeviceProviders_ProviderCreateError(t *testing.T) {
+	t.Parallel()
 	red := secrets.NewRedactor()
 	_, err := buildDeviceProviders(
 		[]config.DeviceProviderConfig{
@@ -311,6 +337,7 @@ func TestBuildDeviceProviders_ProviderCreateError(t *testing.T) {
 // --- buildMCPManager ---
 
 func TestBuildMCPManager_TimeoutParsing(t *testing.T) {
+	t.Parallel()
 	// A nil secrets manager is the shape of every deployment without a
 	// credential backend: bindMCPTokenStore must warn and continue, leaving
 	// bearer/client_credentials servers working, rather than panic.
@@ -332,6 +359,7 @@ func TestBuildMCPManager_TimeoutParsing(t *testing.T) {
 }
 
 func TestBuildMCPManager_EmptyConfig(t *testing.T) {
+	t.Parallel()
 	mgr := buildMCPManager(&config.Config{
 		MCP: config.MCPConfig{Servers: map[string]*config.MCPServerConfig{}},
 	}, nil)
@@ -344,6 +372,7 @@ func TestBuildMCPManager_EmptyConfig(t *testing.T) {
 // --- buildMCPManager valid timeout ---
 
 func TestBuildMCPManager_ValidTimeout(t *testing.T) {
+	t.Parallel()
 	mgr := buildMCPManager(&config.Config{
 		MCP: config.MCPConfig{
 			Servers: map[string]*config.MCPServerConfig{
@@ -371,6 +400,7 @@ func (r *recordingDP) Authorize(_ context.Context, _ auth.Clock, _ auth.Sleeper,
 // --- Shutdown with nil managers ---
 
 func TestBuild_SecretsManagerError(t *testing.T) {
+	t.Parallel()
 	_, err := Build(Options{
 		Cfg: &config.Config{
 			Secrets: config.SecretsConfig{
@@ -387,6 +417,7 @@ func TestBuild_SecretsManagerError(t *testing.T) {
 }
 
 func TestShutdown_AppWithNilManagers(t *testing.T) {
+	t.Parallel()
 	srv := &http.Server{}
 	app := &App{Server: srv}
 	func() {
@@ -400,6 +431,7 @@ func TestShutdown_AppWithNilManagers(t *testing.T) {
 }
 
 func TestShutdown_AppWithCancelOnly(t *testing.T) {
+	t.Parallel()
 	cancel := func() {}
 	srv := &http.Server{}
 	app := &App{Server: srv, cancel: cancel}
@@ -416,6 +448,7 @@ func TestShutdown_AppWithCancelOnly(t *testing.T) {
 // --- Shutdown error accumulation ---
 
 func TestShutdown_ErrorAccumulation(t *testing.T) {
+	t.Parallel()
 	// Build a minimal app and force Shutdown twice to trigger already-closed errors.
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
@@ -437,6 +470,7 @@ func TestShutdown_ErrorAccumulation(t *testing.T) {
 // --- Build load config error ---
 
 func TestBuild_LoadConfigError(t *testing.T) {
+	t.Parallel()
 	_, err := Build(Options{
 		ConfigPath: "/nonexistent/path/config.yaml",
 	})
@@ -448,6 +482,7 @@ func TestBuild_LoadConfigError(t *testing.T) {
 // --- Shutdown error from active server ---
 
 func TestStart_ClosedServerReturnsErrServerClosed(t *testing.T) {
+	t.Parallel()
 	srv := &http.Server{}
 	// Close before Start to ensure ListenAndServe returns immediately.
 	srv.Close()
@@ -461,6 +496,7 @@ func TestStart_ClosedServerReturnsErrServerClosed(t *testing.T) {
 // --- Build with LSP timeout error ---
 
 func TestBuild_WithBadLSPTimeout(t *testing.T) {
+	t.Parallel()
 	// Invalid LSP timeout should fall back to 800ms without error.
 	cfg := &config.Config{
 		Server:  config.ServerConfig{HTTPAddr: "127.0.0.1:0"},
@@ -479,6 +515,7 @@ func TestBuild_WithBadLSPTimeout(t *testing.T) {
 // --- resolveLogWriter ---
 
 func TestResolveLogWriter_EmptyConfig(t *testing.T) {
+	t.Parallel()
 	// No file, no TUI mode -> nil writer, empty path.
 	w, p := resolveLogWriter(config.LogConfig{}, false)
 	if w != nil {
@@ -490,6 +527,7 @@ func TestResolveLogWriter_EmptyConfig(t *testing.T) {
 }
 
 func TestResolveLogWriter_WithFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log")
 	w, p := resolveLogWriter(config.LogConfig{File: logPath}, false)
@@ -508,6 +546,7 @@ func TestResolveLogWriter_WithFile(t *testing.T) {
 }
 
 func TestResolveLogWriter_InvalidFile(t *testing.T) {
+	t.Parallel()
 	// Invalid file path falls back to nil.
 	w, _ := resolveLogWriter(config.LogConfig{File: string([]byte{0})}, false)
 	if w != nil {
@@ -516,6 +555,7 @@ func TestResolveLogWriter_InvalidFile(t *testing.T) {
 }
 
 func TestResolveLogWriter_TUIMode(t *testing.T) {
+	t.Parallel()
 	w, p := resolveLogWriter(config.LogConfig{}, true)
 	// In TUI mode, it tries to open a default log file.
 	// The result depends on whether the default dir is writable.
@@ -527,6 +567,7 @@ func TestResolveLogWriter_TUIMode(t *testing.T) {
 // --- openLogFile ---
 
 func TestOpenLogFile_ValidPath(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "subdir", "test.log")
 	w, err := openLogFile(path, config.LogConfig{})
@@ -552,6 +593,7 @@ func TestOpenLogFile_ValidPath(t *testing.T) {
 }
 
 func TestOpenLogFile_InvalidPath(t *testing.T) {
+	t.Parallel()
 	_, err := openLogFile(string([]byte{0}), config.LogConfig{})
 	if err == nil {
 		t.Fatal("expected error for invalid path")
@@ -561,6 +603,7 @@ func TestOpenLogFile_InvalidPath(t *testing.T) {
 // --- defaultLogDir ---
 
 func TestDefaultLogDir(t *testing.T) {
+	t.Parallel()
 	dir, err := defaultLogDir()
 	if err != nil {
 		t.Skipf("defaultLogDir failed: %v", err)
@@ -573,6 +616,7 @@ func TestDefaultLogDir(t *testing.T) {
 // --- openLogFile error paths ---
 
 func TestOpenLogFile_InvalidAbsPath(t *testing.T) {
+	t.Parallel()
 	// A path with null bytes causes filepath.Abs to fail on some platforms.
 	_, err := openLogFile(string([]byte{0}), config.LogConfig{})
 	if err == nil {
@@ -600,6 +644,7 @@ func TestDefaultLogDir_ErrorPath(t *testing.T) {
 // --- Build with TUIMode ---
 
 func TestBuild_WithTUIMode(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{
 		Server:  config.ServerConfig{HTTPAddr: "127.0.0.1:0"},
 		Storage: config.StorageConfig{SQLitePath: ":memory:"},
@@ -623,6 +668,7 @@ func TestBuild_WithTUIMode(t *testing.T) {
 // harsh, so the value degrades and says so. Without this test the "says so"
 // half can be deleted silently.
 func TestParseCooldownDurationWarnsOnMalformed(t *testing.T) {
+	t.Parallel()
 	old := os.Stderr
 	r, w, err := os.Pipe()
 	if err != nil {

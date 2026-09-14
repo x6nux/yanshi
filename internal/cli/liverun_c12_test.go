@@ -92,6 +92,7 @@ func newEchoRig(t *testing.T) *echoRig {
 // not the memory, and the test says so — which no test of AutoRecall itself
 // can do.
 func TestLiveRun_C12StoredMemoryReachesTheModelWithoutBeingAsked(t *testing.T) {
+	t.Parallel()
 	rig := newEchoRig(t)
 
 	const stored = "The deployment runbook lives in ops/deploy-runbook.md and requires the ACME vpn."
@@ -125,6 +126,7 @@ func TestLiveRun_C12StoredMemoryReachesTheModelWithoutBeingAsked(t *testing.T) {
 // model to skim the injected block — which disarms the turns where the recall
 // was right.
 func TestLiveRun_C12IrrelevantMemoriesAreNotInjected(t *testing.T) {
+	t.Parallel()
 	rig := newEchoRig(t)
 
 	const unrelated = "The user prefers tabs over spaces in Makefiles."

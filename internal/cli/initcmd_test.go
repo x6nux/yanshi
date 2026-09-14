@@ -46,6 +46,7 @@ func envFrom(set map[string]string) func(string) (string, bool) {
 // recoverable from the template, so an init that overwrote silently would be a
 // data-loss command wearing a setup command's name.
 func TestRunInitRefusesToOverwrite(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := writeFile(t, filepath.Join(dir, "config.yaml"), "my: careful config\n")
 	examplePath := writeFile(t, filepath.Join(dir, "config.example.yaml"), initTemplate)
@@ -65,6 +66,7 @@ func TestRunInitRefusesToOverwrite(t *testing.T) {
 // TestRunInitForceBacksUpFirst proves the explicit override still cannot lose
 // the original.
 func TestRunInitForceBacksUpFirst(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	original := "my: careful config\n"
 	cfgPath := writeFile(t, filepath.Join(dir, "config.yaml"), original)
@@ -89,6 +91,7 @@ func TestRunInitForceBacksUpFirst(t *testing.T) {
 // expanding a reference would bake a credential into a file on disk, which is
 // exactly what the template's indirection exists to avoid.
 func TestRunInitCopiesTemplateVerbatim(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	examplePath := writeFile(t, filepath.Join(dir, "config.example.yaml"), initTemplate)
 	cfgPath := filepath.Join(dir, "config.yaml")
@@ -111,6 +114,7 @@ func TestRunInitCopiesTemplateVerbatim(t *testing.T) {
 // operator that copying the template by hand does not: which environment
 // variables are still unset.
 func TestRunInitReportsMissingAndResolvedKeys(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	examplePath := writeFile(t, filepath.Join(dir, "config.example.yaml"), initTemplate)
 
@@ -130,6 +134,7 @@ func TestRunInitReportsMissingAndResolvedKeys(t *testing.T) {
 
 // TestClassifyEnvRefs is the table for the scanner.
 func TestClassifyEnvRefs(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name         string
 		template     string
@@ -202,6 +207,7 @@ func TestClassifyEnvRefs(t *testing.T) {
 // directory that does not exist yet, which is the normal `yanshi init
 // ~/.config/yanshi/config.yaml` case.
 func TestRunInitCreatesParentDirectory(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	examplePath := writeFile(t, filepath.Join(dir, "config.example.yaml"), initTemplate)
 	cfgPath := filepath.Join(dir, "nested", "deeper", "config.yaml")
@@ -219,6 +225,7 @@ func TestRunInitCreatesParentDirectory(t *testing.T) {
 // literal, and doctor's permission repair would otherwise flag a file yanshi
 // itself just created.
 func TestRunInitWritesOwnerOnlyMode(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX mode bits are not meaningful on Windows")
 	}
@@ -240,6 +247,7 @@ func TestRunInitWritesOwnerOnlyMode(t *testing.T) {
 // not an empty config file. Writing a zero-byte config would produce a yanshi
 // that boots with no providers and no profiles and blames the operator.
 func TestRunInitFailsWithoutTemplate(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 
@@ -276,6 +284,7 @@ func TestRunInitDefaultsToConfigYaml(t *testing.T) {
 // operator must learn WHICH variable is unset, and the report must not become
 // another place a credential is printed.
 func TestRenderInitResultNamesMissingVarsNeverValues(t *testing.T) {
+	t.Parallel()
 	var sb strings.Builder
 	RenderInitResult(&sb, InitResult{
 		Path:         "config.yaml",
@@ -301,6 +310,7 @@ func TestRenderInitResultNamesMissingVarsNeverValues(t *testing.T) {
 // actually usable as an init source, rather than the tests only ever exercising
 // a hand-written fixture that happens to match the parser.
 func TestRunInitAgainstTheRealTemplate(t *testing.T) {
+	t.Parallel()
 	real := filepath.Join("..", "..", "config.example.yaml")
 	if _, err := os.Stat(real); err != nil {
 		t.Skipf("repo template not reachable from here: %v", err)

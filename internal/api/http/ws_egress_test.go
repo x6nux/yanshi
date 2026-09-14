@@ -18,6 +18,7 @@ import (
 // clause. It is the posture of every headless run and of every moment before
 // the TUI attaches, so it is the DEFAULT answer rather than an edge case.
 func TestApproveEgressRefusesWithNoConnectedClient(t *testing.T) {
+	t.Parallel()
 	s := New(Config{Token: "t"})
 	if s.ApproveEgress(context.Background(), netpolicy.Request{
 		Protocol: "http", Host: "example.test", Method: "GET",
@@ -83,6 +84,7 @@ func (h *egressHarness) answer(t *testing.T, decision tools.PermissionDecision) 
 // question reaches a connection, the answer comes back, and the request is
 // admitted.
 func TestEgressPromptAllowsWhenTheOperatorSaysYes(t *testing.T) {
+	t.Parallel()
 	h := newEgressHarness(t, 5*time.Second)
 	result := make(chan bool, 1)
 	go func() {
@@ -103,6 +105,7 @@ func TestEgressPromptAllowsWhenTheOperatorSaysYes(t *testing.T) {
 
 // TestEgressPromptDeniesWhenTheOperatorSaysNo is the other direction.
 func TestEgressPromptDeniesWhenTheOperatorSaysNo(t *testing.T) {
+	t.Parallel()
 	h := newEgressHarness(t, 5*time.Second)
 	result := make(chan bool, 1)
 	go func() {
@@ -125,6 +128,7 @@ func TestEgressPromptDeniesWhenTheOperatorSaysNo(t *testing.T) {
 // suppress the next prompt for the same host, or a build fetching forty files
 // raises forty dialogs.
 func TestEgressGrantIsSavedAndReused(t *testing.T) {
+	t.Parallel()
 	h := newEgressHarness(t, 5*time.Second)
 	result := make(chan bool, 1)
 	go func() {
@@ -160,6 +164,7 @@ func TestEgressGrantIsSavedAndReused(t *testing.T) {
 // connection that stops answering must not hold a subprocess's socket open
 // forever, and the direction it fails in is refusal.
 func TestEgressPromptTimesOutDenied(t *testing.T) {
+	t.Parallel()
 	h := newEgressHarness(t, 50*time.Millisecond)
 	start := time.Now()
 	if h.server.ApproveEgress(context.Background(), netpolicy.Request{
@@ -176,6 +181,7 @@ func TestEgressPromptTimesOutDenied(t *testing.T) {
 // up: the proxy's context is canceled and the prompt must stop waiting rather
 // than hold a permTracker entry for a connection nobody is on.
 func TestEgressPromptRespectsTheProxyContext(t *testing.T) {
+	t.Parallel()
 	h := newEgressHarness(t, time.Hour)
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan bool, 1)
@@ -205,6 +211,7 @@ func TestEgressPromptRespectsTheProxyContext(t *testing.T) {
 // wire, because the TUI runs its own auto-approve pass on a mode switch and
 // can only honour flags it can see.
 func TestEgressPromptIsAlwaysForcePrompt(t *testing.T) {
+	t.Parallel()
 	h := newEgressHarness(t, 5*time.Second)
 	var seen []proto.ServerFrame
 	var mu sync.Mutex
@@ -249,6 +256,7 @@ func TestEgressPromptIsAlwaysForcePrompt(t *testing.T) {
 // HTTP GET has no way to learn from the dialog that they just admitted a
 // SOCKS5 connection to an unrelated loopback service on that same host.
 func TestEgressReasonStatesTheGrantIsHostWide(t *testing.T) {
+	t.Parallel()
 	got := egressReason(netpolicy.Request{Protocol: "http", Host: "grant.test", Method: "GET"})
 	for _, want := range []string{"grant.test", "ALL egress", "any protocol", "any port"} {
 		if !strings.Contains(got, want) {
@@ -262,6 +270,7 @@ func TestEgressReasonStatesTheGrantIsHostWide(t *testing.T) {
 // place an operator would see it. A URL path routinely carries a bearer token
 // in a query parameter, and the dialog is the most tempting place to put one.
 func TestEgressArgsCarryNoPathOrHeaders(t *testing.T) {
+	t.Parallel()
 	got := egressArgs(netpolicy.Request{Protocol: "https", Host: "api.test", Method: "POST"})
 	for _, forbidden := range []string{"path", "url", "header", "query", "body"} {
 		if strings.Contains(strings.ToLower(got), forbidden) {

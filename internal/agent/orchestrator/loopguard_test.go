@@ -83,6 +83,7 @@ func allowAll() guard.PermissionProfile {
 // --- L6: framework wiring ---
 
 func TestLoopGuardConfigEnabled(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		cfg  LoopGuardConfig
@@ -103,6 +104,7 @@ func TestLoopGuardConfigEnabled(t *testing.T) {
 }
 
 func TestWithLoopGuardBindsOnlyWhenConfigured(t *testing.T) {
+	t.Parallel()
 	if _, ok := loopGuardFromContext(WithLoopGuard(context.Background(), LoopGuardConfig{})); ok {
 		t.Fatal("zero config must not bind a guard")
 	}
@@ -121,6 +123,7 @@ func TestWithLoopGuardBindsOnlyWhenConfigured(t *testing.T) {
 // duplicate the context_budget tool must not read from (see
 // loopguard.WithTokenBudgetGate's doc comment).
 func TestWithLoopGuard_BindsTheTokenBudgetGateItself(t *testing.T) {
+	t.Parallel()
 	ctx := WithLoopGuard(context.Background(), LoopGuardConfig{MaxTurnTokens: 5000})
 	gate, ok := loopguard.TokenBudgetGateFromContext(ctx)
 	require.True(t, ok, "a configured MaxTurnTokens must bind a retrievable gate")
@@ -133,12 +136,14 @@ func TestWithLoopGuard_BindsTheTokenBudgetGateItself(t *testing.T) {
 // detection alone), WithLoopGuard still binds a turnGuard, but there is no
 // *loopguard.TokenBudgetGate to retrieve.
 func TestWithLoopGuard_NoTokenBudgetMeansNoBoundGate(t *testing.T) {
+	t.Parallel()
 	ctx := WithLoopGuard(context.Background(), LoopGuardConfig{RepetitionEnabled: true})
 	_, ok := loopguard.TokenBudgetGateFromContext(ctx)
 	assert.False(t, ok, "no MaxTurnTokens configured, so no token-budget gate to bind")
 }
 
 func TestBuildHandlerGateSelection(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		cfg  LoopGuardConfig
@@ -172,6 +177,7 @@ func TestBuildHandlerGateSelection(t *testing.T) {
 }
 
 func TestBuildHandlerCustomRepetitionStages(t *testing.T) {
+	t.Parallel()
 	cfg := LoopGuardConfig{RepetitionEnabled: true, RepetitionWarnAfter: 2, RepetitionStopAfter: 3, RepetitionWindow: 2}
 	h, _ := cfg.buildHandler()
 	same := loopguard.ToolCall{Name: "x", ArgsHash: "h"}
@@ -186,6 +192,7 @@ func TestBuildHandlerCustomRepetitionStages(t *testing.T) {
 // runnerFor's memoisation creates: one middleware instance serves every turn,
 // so anything mutable on it would leak across turns and sessions.
 func TestLoopGuardStateIsPerTurn(t *testing.T) {
+	t.Parallel()
 	cfg := LoopGuardConfig{MaxToolCalls: 1}
 	a, okA := loopGuardFromContext(WithLoopGuard(context.Background(), cfg))
 	b, okB := loopGuardFromContext(WithLoopGuard(context.Background(), cfg))
@@ -199,6 +206,7 @@ func TestLoopGuardStateIsPerTurn(t *testing.T) {
 }
 
 func TestCollectToolCalls(t *testing.T) {
+	t.Parallel()
 	msgs := []*schema.Message{
 		schema.UserMessage("go"),
 		toolCallMsg("c1", "fs_read", `{"path":"a"}`),
@@ -223,6 +231,7 @@ func TestCollectToolCalls(t *testing.T) {
 }
 
 func TestLatestUsage(t *testing.T) {
+	t.Parallel()
 	withUsage := func(p, c int) *schema.Message {
 		m := schema.AssistantMessage("x", nil)
 		m.ResponseMeta = &schema.ResponseMeta{Usage: &schema.TokenUsage{PromptTokens: p, CompletionTokens: c}}
@@ -254,6 +263,7 @@ func TestLatestUsage(t *testing.T) {
 }
 
 func TestTurnGuardNudgeCap(t *testing.T) {
+	t.Parallel()
 	// A gate that never stops and always nudges: without maxNudgesPerGate the
 	// conversation fills with identical warnings.
 	g := &turnGuard{
@@ -286,6 +296,7 @@ func (alwaysNudge) Check(loopguard.Observation) loopguard.Result {
 // that emits the same tool call forever. Without the guard the loop runs to
 // MaxIters; with it the turn ends with a named reason.
 func TestLoopGuardE2E_RepetitionStopsRunawayTurn(t *testing.T) {
+	t.Parallel()
 	ct := &countingTool{name: "fs_read"}
 	o, err := New(Config{
 		Model:    repeatToolModel("fs_read", `{"path":"a.go"}`),
@@ -310,6 +321,7 @@ func TestLoopGuardE2E_RepetitionStopsRunawayTurn(t *testing.T) {
 // stops it. Without this pairing a repetition test passes even if the model
 // simply stopped on its own.
 func TestLoopGuardE2E_NoGuardRunsToMaxIters(t *testing.T) {
+	t.Parallel()
 	ct := &countingTool{name: "fs_read"}
 	o, err := New(Config{
 		Model:    repeatToolModel("fs_read", `{"path":"a.go"}`),
@@ -327,6 +339,7 @@ func TestLoopGuardE2E_NoGuardRunsToMaxIters(t *testing.T) {
 // TestLoopGuardE2E_DistinctArgsAreNotRepetition is the false-positive guard:
 // paging through a large file must not be mistaken for a doom loop.
 func TestLoopGuardE2E_DistinctArgsAreNotRepetition(t *testing.T) {
+	t.Parallel()
 	ct := &countingTool{name: "fs_read"}
 	msgs := []*schema.Message{
 		toolCallMsg("c1", "fs_read", `{"path":"big.go","offset":0}`),
@@ -358,6 +371,7 @@ func TestLoopGuardE2E_DistinctArgsAreNotRepetition(t *testing.T) {
 // NodeRunError and which tears down the whole turn). Same rule as
 // UnknownToolsHandler.
 func TestLoopGuardE2E_ToolBudgetReturnsResultNotError(t *testing.T) {
+	t.Parallel()
 	ct := &countingTool{name: "shell_run"}
 	msgs := []*schema.Message{
 		toolCallMsg("c1", "shell_run", `{"q":"1"}`),
@@ -391,6 +405,7 @@ func TestLoopGuardE2E_ToolBudgetReturnsResultNotError(t *testing.T) {
 }
 
 func TestLoopGuardE2E_TotalToolBudget(t *testing.T) {
+	t.Parallel()
 	a := &countingTool{name: "tool_a"}
 	b := &countingTool{name: "tool_b"}
 	msgs := []*schema.Message{
@@ -413,6 +428,7 @@ func TestLoopGuardE2E_TotalToolBudget(t *testing.T) {
 }
 
 func TestLoopGuardE2E_NoBudgetMeansNoLimit(t *testing.T) {
+	t.Parallel()
 	ct := &countingTool{name: "shell_run"}
 	msgs := []*schema.Message{
 		toolCallMsg("c1", "shell_run", `{"q":"1"}`),
@@ -437,6 +453,7 @@ func TestLoopGuardE2E_NoBudgetMeansNoLimit(t *testing.T) {
 // injected clock, because the point of L3 is WHERE the check happens, and a
 // test that sleeps would prove only that time passes.
 func TestLoopGuardDeadlineStopsAtBoundary(t *testing.T) {
+	t.Parallel()
 	start := time.Now()
 	clock := start
 	handler, _ := LoopGuardConfig{TurnTimeout: time.Minute}.buildHandler()
@@ -465,6 +482,7 @@ func TestLoopGuardDeadlineStopsAtBoundary(t *testing.T) {
 // leave an assistant tool_call with no matching tool_result, which every
 // provider rejects on the next request.
 func TestLoopGuardE2E_DeadlineLeavesHistoryPairable(t *testing.T) {
+	t.Parallel()
 	ct := &countingTool{name: "fs_read"}
 	o, err := New(Config{
 		Model:     repeatToolModel("fs_read", `{"path":"a.go"}`),
@@ -528,6 +546,7 @@ func assertToolCallsArePaired(t *testing.T, msgs []*schema.Message) {
 // --- L4: token budget ---
 
 func TestLoopGuardE2E_TokenBudgetStopsTurn(t *testing.T) {
+	t.Parallel()
 	fm := repeatToolModel("fs_read", `{"path":"a.go"}`)
 	// Distinct args each iteration would be needed to avoid the repetition
 	// gate, but it is not installed here — this turn stops on tokens alone.
@@ -554,6 +573,7 @@ func TestLoopGuardE2E_TokenBudgetStopsTurn(t *testing.T) {
 // resend the whole prefix on every call, so summing over-counts a long turn and
 // the budget would fire at a fraction of its nominal value.
 func TestLoopGuardE2E_TokenBudgetNotTrippedByCumulativePrompts(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModelWithMessages([]*schema.Message{
 		toolCallMsg("c1", "fs_read", `{"q":"1"}`),
 		toolCallMsg("c2", "fs_read", `{"q":"2"}`),
@@ -585,6 +605,7 @@ func TestLoopGuardE2E_TokenBudgetNotTrippedByCumulativePrompts(t *testing.T) {
 // puts a message in front of the model. A nudge nobody reads is the repo's
 // most common defect shape.
 func TestLoopGuardE2E_NudgeReachesTheModel(t *testing.T) {
+	t.Parallel()
 	fm := repeatToolModel("fs_read", `{"path":"a.go"}`)
 	fm.RecordMessages = true
 	ct := &countingTool{name: "fs_read"}
@@ -613,6 +634,7 @@ func TestLoopGuardE2E_NudgeReachesTheModel(t *testing.T) {
 // of names that actually exist. Without a live binding the runtime check is
 // dead code and only the compile-time gates (GOV5/GOV7) remain.
 func TestS8_RegisteredSetIsBoundPerTurn(t *testing.T) {
+	t.Parallel()
 	ct := &countingTool{name: "fs_read"}
 	o, err := New(Config{
 		Model:   einollm.NewFakeModel([]string{"hi"}, nil),
@@ -639,6 +661,7 @@ func TestS8_RegisteredSetIsBoundPerTurn(t *testing.T) {
 // run()) is the thing that would silently start reporting failure on every
 // call if this bind were ever dropped or made conditional.
 func TestWithTurnContextBindsNewWindowSignal(t *testing.T) {
+	t.Parallel()
 	o, err := New(Config{
 		Model:   einollm.NewFakeModel([]string{"hi"}, nil),
 		Tools:   []BaseTool{&countingTool{name: "fs_read"}},
@@ -667,6 +690,7 @@ func TestWithTurnContextBindsNewWindowSignal(t *testing.T) {
 // SAME ctx withTurnContext returned, then confirm the snapshot it left behind
 // is readable and matches ctxcompact.RemainingBudget computed independently.
 func TestWithTurnContextBindsContextBudgetSignal(t *testing.T) {
+	t.Parallel()
 	o, err := New(Config{
 		Model:   einollm.NewFakeModel([]string{"hi"}, nil),
 		Tools:   []BaseTool{&countingTool{name: "fs_read"}},
@@ -698,6 +722,7 @@ func TestWithTurnContextBindsContextBudgetSignal(t *testing.T) {
 // TestS8_HeadlessContextAlsoBinds: `yanshi pr` and the goal loop reach tools
 // through BindHeadlessContext, which must carry the same protection as a turn.
 func TestS8_HeadlessContextAlsoBinds(t *testing.T) {
+	t.Parallel()
 	o, err := New(Config{
 		Model:   einollm.NewFakeModel([]string{"hi"}, nil),
 		Tools:   []BaseTool{&countingTool{name: "review"}},
@@ -712,6 +737,7 @@ func TestS8_HeadlessContextAlsoBinds(t *testing.T) {
 // TestS8_SubAgentGetsNarrowerSet: a sub-agent runs with a filtered tool subset
 // and must authorize against THAT, not the parent's wider surface.
 func TestS8_SubAgentGetsNarrowerSet(t *testing.T) {
+	t.Parallel()
 	parent, err := New(Config{
 		Model:   einollm.NewFakeModel([]string{"hi"}, nil),
 		Tools:   []BaseTool{&countingTool{name: "fs_read"}, &countingTool{name: "shell_run"}},
@@ -741,6 +767,7 @@ func TestS8_SubAgentGetsNarrowerSet(t *testing.T) {
 // its own, S8 becomes redundant and this test says so by failing, rather than
 // leaving a second gate nobody remembers the reason for.
 func TestS8_ProfileWouldHavePrompted(t *testing.T) {
+	t.Parallel()
 	prof := guard.PermissionProfile{Tools: guard.ToolsPerm{Allow: []string{"fs_read"}}}
 	dec := guard.New().Check(prof, guard.Action{Tool: "fs_mkdir"})
 	require.Equal(t, guard.Prompt, dec.Verdict,
@@ -766,6 +793,7 @@ func TestS8_ProfileWouldHavePrompted(t *testing.T) {
 // The check is deliberately written as an explicit statement of that split
 // rather than as a behavioural assertion this package cannot honestly make.
 func TestS8_ProducerHalfIsLiveButConsumerIsElsewhere(t *testing.T) {
+	t.Parallel()
 	ct := &countingTool{name: "fs_read"}
 	o, err := New(Config{
 		Model: einollm.NewFakeModelWithMessages([]*schema.Message{
@@ -812,6 +840,7 @@ func TestS8_ProducerHalfIsLiveButConsumerIsElsewhere(t *testing.T) {
 // the assertions are that the turn stopped, said why, and stopped well before
 // MaxIters.
 func TestLoopGuardE2E_DeadlineStopsOnTheRealClock(t *testing.T) {
+	t.Parallel()
 	slow := &sleepingTool{name: "fs_read", each: 60 * time.Millisecond}
 	o, err := New(Config{
 		Model:     repeatToolModel("fs_read", `{"path":"a.go"}`),

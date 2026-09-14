@@ -28,6 +28,7 @@ import (
 //
 // ledger: A3/MCP1#3 命名与模型可见一致
 func TestPaletteNamesMatchTheRegisteredToolNames(t *testing.T) {
+	t.Parallel()
 	srv, _ := mcp.NewFakeHTTPServer([]mcp.ToolDescriptor{
 		{ToolName: "read_file", Description: "read a file"},
 		{ToolName: "write_file", Description: "write a file"},

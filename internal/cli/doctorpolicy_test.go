@@ -90,6 +90,7 @@ func TestCheckPolicyScope_OKWhenConfigOutsideWorkRoot(t *testing.T) {
 // same degradation rule as every other: a config-load failure downgrades it to
 // a skipped warn rather than aborting the run.
 func TestCheckPolicyScope_SkippedOnConfigError(t *testing.T) {
+	t.Parallel()
 	got := checkPolicyScope(nil, assert.AnError, "config.yaml", t.TempDir())
 	assert.Equal(t, StatusWarn, got.Status)
 	assert.Contains(t, got.Message, "skipped")
@@ -137,6 +138,7 @@ func TestCheckPolicyFilePerms_OKWhenOwnerOnly(t *testing.T) {
 // TestCheckAuthCommandScope_OKWhenNoProviderConfiguresAuth is the common case:
 // nothing to protect, so nothing to warn about.
 func TestCheckAuthCommandScope_OKWhenNoProviderConfiguresAuth(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{}
 	got := checkAuthCommandScope(cfg, nil)
 	assert.Equal(t, StatusOK, got.Status)
@@ -148,6 +150,7 @@ func TestCheckAuthCommandScope_OKWhenNoProviderConfiguresAuth(t *testing.T) {
 // trusted policy file governs it, so an fs_write plus a restart could point
 // that command at anything.
 func TestCheckAuthCommandScope_WarnsWhenUngoverned(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{}
 	cfg.LLM.Providers = []config.ProviderConfig{
 		{Name: "primary", Auth: &config.ProviderAuthConfig{Command: []string{"/usr/bin/issuer"}}},
@@ -165,6 +168,7 @@ func TestCheckAuthCommandScope_WarnsWhenUngoverned(t *testing.T) {
 // block, is a legitimate thing to write (ApplyPolicy applies it regardless of
 // whether any profile was named) and must not be reported as unprotected.
 func TestCheckAuthCommandScope_OKWhenPolicyFileGovernsIt(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{PolicyFileActive: true}
 	cfg.LLM.Providers = []config.ProviderConfig{
 		{Name: "primary", Auth: &config.ProviderAuthConfig{Command: []string{"/usr/bin/issuer"}}},
@@ -177,6 +181,7 @@ func TestCheckAuthCommandScope_OKWhenPolicyFileGovernsIt(t *testing.T) {
 // TestCheckAuthCommandScope_SkippedOnConfigError follows the same degradation
 // rule as every other check in this file.
 func TestCheckAuthCommandScope_SkippedOnConfigError(t *testing.T) {
+	t.Parallel()
 	got := checkAuthCommandScope(nil, assert.AnError)
 	assert.Equal(t, StatusWarn, got.Status)
 	assert.Contains(t, got.Message, "skipped")

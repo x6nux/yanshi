@@ -15,6 +15,7 @@ import (
 
 // TestEmitReady_EmptyArgs tests emitReady with no args (not emitted).
 func TestEmitReady_EmptyArgs(t *testing.T) {
+	t.Parallel()
 	acc := newToolCallAccumulator()
 	acc.update([]schema.ToolCall{
 		{ID: "c1", Function: schema.FunctionCall{Name: "noarg_tool"}},
@@ -27,6 +28,7 @@ func TestEmitReady_EmptyArgs(t *testing.T) {
 
 // TestEmitReady_AlreadEmitted tests emitReady skips already-emitted calls.
 func TestEmitReady_AlreadyEmitted(t *testing.T) {
+	t.Parallel()
 	acc := newToolCallAccumulator()
 	acc.update([]schema.ToolCall{
 		{ID: "c1", Index: ptrIndex(0), Function: schema.FunctionCall{Name: "t", Arguments: `{"x":"y"}`}},
@@ -41,6 +43,7 @@ func TestEmitReady_AlreadyEmitted(t *testing.T) {
 
 // TestWorkEventFrame_NonNilTask proves a non-nil task produces task_update.
 func TestWorkEventFrame_NonNilTask(t *testing.T) {
+	t.Parallel()
 	f := workEventFrame(work.Event{
 		Kind: work.EventTaskUpdate,
 		Task: &work.WorkTask{ID: "t1"},
@@ -51,6 +54,7 @@ func TestWorkEventFrame_NonNilTask(t *testing.T) {
 
 // TestAfterModelRewriteState_NoRecorder proves no error when no recorder bound.
 func TestAfterModelRewriteState_NoRecorder(t *testing.T) {
+	t.Parallel()
 	r := newMessageRecorder()
 	ctx := context.Background()
 	// No recorder in context → AfterModelRewriteState is a no-op
@@ -62,6 +66,7 @@ func TestAfterModelRewriteState_NoRecorder(t *testing.T) {
 // TestClassifyEvents_NilMsgOutputInNonStreaming proves nil msg in non-streaming
 // message variant does not crash.
 func TestClassifyEvents_NilMsgOutputInNonStreaming_Detailed(t *testing.T) {
+	t.Parallel()
 	// Test 1: valid message variant with nil Message
 	iter, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
 	gen.Send(&adk.AgentEvent{
@@ -83,6 +88,7 @@ func TestClassifyEvents_NilMsgOutputInNonStreaming_Detailed(t *testing.T) {
 // completion.go:99-101: a non-nil recorder + non-nil state triggers the
 // store, capturing the messages.
 func TestAfterModelRewriteState_StoresMessages(t *testing.T) {
+	t.Parallel()
 	rec := &turnRecorder{}
 	ctx := WithTurnRecorder(context.Background(), rec)
 	msgs := []*schema.Message{{Role: schema.User, Content: "hello"}}

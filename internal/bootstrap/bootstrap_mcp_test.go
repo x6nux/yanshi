@@ -34,6 +34,7 @@ func toYAMLPath(p string) string {
 // TestBuild_MCP_EmptyConfig ensures App.MCP is always non-nil (soft-degrade):
 // an empty mcp.servers map yields a disabled manager whose Enabled()==false.
 func TestBuild_MCP_EmptyConfig(t *testing.T) {
+	t.Parallel()
 	app, cleanup := buildFakeApp(t, "")
 	defer cleanup()
 	if app.MCP == nil {
@@ -50,6 +51,7 @@ func TestBuild_MCP_EmptyConfig(t *testing.T) {
 // TestBuild_MCP_FakeHTTPServer wires a real mcp.NewFakeHTTPServer through
 // Build's config.yaml and asserts StartAll marked the server ready.
 func TestBuild_MCP_FakeHTTPServer(t *testing.T) {
+	t.Parallel()
 	ts, _ := mcp.NewFakeHTTPServer([]mcp.ToolDescriptor{{ToolName: "echo"}})
 	defer ts.Close()
 	extra := "\nmcp:\n  servers:\n    s:\n      enabled: true\n      transport: http\n      url: \"" + ts.URL + "\"\n"

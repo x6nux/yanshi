@@ -33,6 +33,7 @@ func newWSServer(t *testing.T) string {
 // server-side history across Send calls: an Echo model's second reply contains
 // the first user turn.
 func TestWSBackend_MultiTurnMemory(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel(nil, nil)
 	fm.Echo = true // echoes its full input -> proves history reached the model
 	o, _ := orchestrator.New(orchestrator.Config{Model: fm})
@@ -62,6 +63,7 @@ func TestWSBackend_MultiTurnMemory(t *testing.T) {
 }
 
 func TestWSBackend_SendReceivesAgentChunk(t *testing.T) {
+	t.Parallel()
 	b, err := newWSBackend(context.Background(), newWSServer(t))
 	require.NoError(t, err)
 	defer b.Close()
@@ -103,6 +105,7 @@ func newWSServerWithModels(t *testing.T) string {
 // up a reply channel: the server's models reply arrives and the channel closes
 // (controlMode closes cur on the single-frame reply).
 func TestWSBackend_SendFrame_ListModels(t *testing.T) {
+	t.Parallel()
 	b, err := newWSBackend(context.Background(), newWSServerWithModels(t))
 	require.NoError(t, err)
 	defer b.Close()
@@ -125,6 +128,7 @@ func TestWSBackend_SendFrame_ListModels(t *testing.T) {
 // TestWSBackend_SendFrame_GetStatus proves a get_status control frame returns
 // the status reply and closes.
 func TestWSBackend_SendFrame_GetStatus(t *testing.T) {
+	t.Parallel()
 	b, err := newWSBackend(context.Background(), newWSServerWithModels(t))
 	require.NoError(t, err)
 	defer b.Close()
@@ -142,6 +146,7 @@ func TestWSBackend_SendFrame_GetStatus(t *testing.T) {
 // TestWSBackend_SendFrame_ListMCP proves the list_mcp frame returns an mcp_list
 // reply (empty when no MCP is configured) and closes.
 func TestWSBackend_SendFrame_ListMCP(t *testing.T) {
+	t.Parallel()
 	b, err := newWSBackend(context.Background(), newWSServerWithModels(t))
 	require.NoError(t, err)
 	defer b.Close()
@@ -161,6 +166,7 @@ func TestWSBackend_SendFrame_ListMCP(t *testing.T) {
 // out of control mode back into turn mode: after a control reply closes cur, a
 // subsequent Send (user_message) still receives its full turn stream.
 func TestWSBackend_SendFrame_ControlThenTurn(t *testing.T) {
+	t.Parallel()
 	b, err := newWSBackend(context.Background(), newWSServer(t))
 	require.NoError(t, err)
 	defer b.Close()
@@ -187,6 +193,7 @@ func TestWSBackend_SendFrame_ControlThenTurn(t *testing.T) {
 // permission_response is written without setting up a reply channel (returns
 // nil) so it cannot disturb an active turn's cur channel.
 func TestWSBackend_SendFrame_PermissionResponseReturnsNil(t *testing.T) {
+	t.Parallel()
 	b, err := newWSBackend(context.Background(), newWSServer(t))
 	require.NoError(t, err)
 	defer b.Close()
@@ -199,6 +206,7 @@ func TestWSBackend_SendFrame_PermissionResponseReturnsNil(t *testing.T) {
 // TestSSEBackend_SendFrame_Unsupported proves SSE rejects control frames with
 // ErrSSEControlUnsupported (SSE is stateless — no mid-stream control channel).
 func TestSSEBackend_SendFrame_Unsupported(t *testing.T) {
+	t.Parallel()
 	b := newSSEBackend(newSSEServer(t))
 	defer b.Close()
 
@@ -222,6 +230,7 @@ func TestSSEBackend_SendFrame_Unsupported(t *testing.T) {
 // out the whole test process; post-fix it shuts down cleanly. Loop is run
 // internally and should also be run with -count=N to amplify.
 func TestWSBackend_CancelDuringBurstyStream_NoPanic(t *testing.T) {
+	t.Parallel()
 	const rounds = 10
 	const burst = 200
 	for round := 0; round < rounds; round++ {
@@ -308,6 +317,7 @@ func TestWSBackend_CancelDuringBurstyStream_NoPanic(t *testing.T) {
 }
 
 func TestToStreamEvent_SessionAck(t *testing.T) {
+	t.Parallel()
 	ev := toStreamEvent(proto.NewSessionAck("renamed", "s1", "new title"))
 	assert.Equal(t, "session_ack", ev.Kind)
 	assert.Equal(t, "renamed", ev.Action)
@@ -316,6 +326,7 @@ func TestToStreamEvent_SessionAck(t *testing.T) {
 }
 
 func TestIsControlReply_SessionAck(t *testing.T) {
+	t.Parallel()
 	assert.True(t, isControlReply("session_ack"),
 		"session_ack must close the control-mode reply channel (single-frame reply)")
 	// Regression: existing control replies stay recognized.
@@ -328,6 +339,7 @@ func TestIsControlReply_SessionAck(t *testing.T) {
 // control-reply frame kinds (permissions, permission_rule_hit) must close the
 // control-mode channel and map to StreamEvent with Kind/Permissions populated.
 func TestPermissionControlRepliesMapThroughCLI(t *testing.T) {
+	t.Parallel()
 	f := proto.NewPermissions([]proto.PermissionInfo{{ID: "r1", Action: "shell_run"}})
 	ev := toStreamEvent(f)
 	if ev.Kind != "permissions" || len(ev.Permissions) != 1 || ev.Permissions[0].ID != "r1" {
@@ -342,6 +354,7 @@ func TestPermissionControlRepliesMapThroughCLI(t *testing.T) {
 // frame kinds (jobs, job_event) must close the control-mode channel and map
 // to StreamEvent with Kind/Jobs populated.
 func TestJobsControlRepliesMapThroughCLI(t *testing.T) {
+	t.Parallel()
 	f := proto.NewJobs(proto.Jobs{proto.JobInfo{ID: "j-1", State: "running"}})
 	ev := toStreamEvent(f)
 	if ev.Kind != "jobs" || len(ev.Jobs) != 1 || ev.Jobs[0].ID != "j-1" {

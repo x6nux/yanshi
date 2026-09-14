@@ -73,6 +73,7 @@ var clientControlOnlyFields = map[string]string{
 // hop the way TestToStreamEventCarriesEveryServerFrameField pins the response
 // side.
 func TestEveryClientFrameTurnInputFieldReachesEveryTransport(t *testing.T) {
+	t.Parallel()
 	clientFields := structFields(t, "../../proto/frame.go", "ClientFrame")
 	require.NotEmpty(t, clientFields, "ClientFrame not found: the scan is broken, not the code")
 	sseFields := sseRequestFields(t)

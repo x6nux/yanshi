@@ -76,6 +76,7 @@ func newFakeLMStudioServer(t *testing.T, modelID string, loaded, declaredMultimo
 // below would return found=false, not a string that merely LOOKS right in
 // reportLMStudio's return value.
 func TestReportLMStudio_ProbesAndPersistsImageSupportForLoadedModel(t *testing.T) {
+	t.Parallel()
 	var chatCalls int32
 	srv := newFakeLMStudioServer(t, "vision-model", true, false, &chatCalls)
 
@@ -127,6 +128,7 @@ func TestReportLMStudio_ProbesAndPersistsImageSupportForLoadedModel(t *testing.T
 // diagnostic command and doctorlocalruntimes.go's package comment commits
 // to avoiding for this one.
 func TestReportLMStudio_NeverProbesANotLoadedModel(t *testing.T) {
+	t.Parallel()
 	var chatCalls int32
 	srv := newFakeLMStudioServer(t, "cold-model", false, false, &chatCalls)
 
@@ -151,6 +153,7 @@ func TestReportLMStudio_NeverProbesANotLoadedModel(t *testing.T) {
 // back as — see reportLMStudio's doc comment on why "== SourceProbed" would
 // be the wrong gate), a second call must not send a second probe.
 func TestReportLMStudio_SkipsAModelWithAnExistingVerdict(t *testing.T) {
+	t.Parallel()
 	var chatCalls int32
 	srv := newFakeLMStudioServer(t, "known-model", true, false, &chatCalls)
 
@@ -186,6 +189,7 @@ func TestReportLMStudio_SkipsAModelWithAnExistingVerdict(t *testing.T) {
 // that distinction — a plain "skip anything already on disk" gate would
 // permanently strand a transient failure exactly the way M-1 warned about.
 func TestReportLMStudio_RetriesAModelWhoseProbePreviouslyFailed(t *testing.T) {
+	t.Parallel()
 	var chatCalls int32
 	srv := newFakeLMStudioServer(t, "flaky-model", true, false, &chatCalls)
 
@@ -215,6 +219,7 @@ func TestReportLMStudio_RetriesAModelWhoseProbePreviouslyFailed(t *testing.T) {
 // initial /api/v0/models fetch already carried (DeclaredMultimodal), at
 // zero extra request cost — chatCalls stays 0 throughout.
 func TestReportLMStudio_DocumentsImageSupportForANotLoadedModel(t *testing.T) {
+	t.Parallel()
 	var chatCalls int32
 	srv := newFakeLMStudioServer(t, "cold-vlm", false, true, &chatCalls)
 
@@ -271,6 +276,7 @@ func TestReportLMStudio_DocumentsImageSupportForANotLoadedModel(t *testing.T) {
 // — under the offline policy it must be left unmeasured instead, since
 // ProbeImageSupport is itself a live chat-completions round trip.
 func TestReportLMStudio_OfflineNeverProbesALoadedModel(t *testing.T) {
+	t.Parallel()
 	var chatCalls int32
 	srv := newFakeLMStudioServer(t, "vision-model", true, false, &chatCalls)
 
@@ -309,6 +315,7 @@ func TestReportLMStudio_OfflineNeverProbesALoadedModel(t *testing.T) {
 // doctorLocalRuntimeProbeTimeout otherwise bounds — proving RefreshCacheOnly
 // is actually wired through, not merely accepted as an unused parameter.
 func TestCheckLocalRuntimesWith_OfflineNeverContactsAHungPort(t *testing.T) {
+	t.Parallel()
 	ollamaURL := newHangingListener(t)
 	lmstudioURL := newHangingListener(t)
 
@@ -349,6 +356,7 @@ func TestCheckLocalRuntimesWith_OfflineNeverContactsAHungPort(t *testing.T) {
 // the same tolerant assertion TestRunDoctor_IncludesLocalRuntimesCheck
 // makes for the non-offline case.
 func TestRunDoctor_OfflineOptionReachesLocalRuntimesCheck(t *testing.T) {
+	t.Parallel()
 	cfgBody := fmt.Sprintf(`
 server: { http_addr: "127.0.0.1:0" }
 storage: { sqlite_path: %q }
@@ -391,6 +399,7 @@ func newFakeOllamaServer(t *testing.T, modelID string) *httptest.Server {
 // stray attempt would surface as a hard failure below rather than a benign
 // 200.
 func TestReportOllama_NeverProbesImageSupport(t *testing.T) {
+	t.Parallel()
 	srv := newFakeOllamaServer(t, "llama3:latest")
 
 	cache, err := eino.NewCache(t.TempDir(), 0)
@@ -415,6 +424,7 @@ func TestReportOllama_NeverProbesImageSupport(t *testing.T) {
 // string precisely so checkLocalRuntimes can never fail the whole doctor
 // run over an absent local runtime).
 func TestReportOllama_UnreachableIsReportedNotFatal(t *testing.T) {
+	t.Parallel()
 	srv := newFakeOllamaServer(t, "unused")
 	unreachableURL := srv.URL
 	srv.Close() // close immediately: the URL now refuses connections.
@@ -471,6 +481,7 @@ func newHangingListener(t *testing.T) string {
 // would take close to I-2's identified worst case (2 x 10s = 20s) instead
 // of finishing in a few seconds.
 func TestCheckLocalRuntimesWith_DeadlineBoundsAHungPort(t *testing.T) {
+	t.Parallel()
 	ollamaURL := newHangingListener(t)
 	lmstudioURL := newHangingListener(t)
 
@@ -509,6 +520,7 @@ func TestCheckLocalRuntimesWith_DeadlineBoundsAHungPort(t *testing.T) {
 // environment (like the overwhelming majority of CI/dev machines) has no
 // Ollama or LM Studio actually running.
 func TestRunDoctor_IncludesLocalRuntimesCheck(t *testing.T) {
+	t.Parallel()
 	cfgBody := fmt.Sprintf(`
 server: { http_addr: "127.0.0.1:0" }
 storage: { sqlite_path: %q }

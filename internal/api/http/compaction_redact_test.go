@@ -24,6 +24,7 @@ import (
 // to ctxcompact. Un-wiring compactionOptions (returning a zero Options) makes
 // this fail; before this test existed, that un-wiring was the shipped state.
 func TestCompactionOptionsCarriesTheRedactor(t *testing.T) {
+	t.Parallel()
 	red := secrets.NewRedactor()
 	red.Register("sk-live-must-not-leak")
 	s := &Server{redactor: red}
@@ -50,6 +51,7 @@ func TestCompactionOptionsCarriesTheRedactor(t *testing.T) {
 // pre-turn path of every chat request on such a deployment. Calling Redact
 // here is the point of the test: a typed-nil would panic on this line.
 func TestCompactionOptionsWithoutRedactorIsUsable(t *testing.T) {
+	t.Parallel()
 	s := &Server{}
 
 	opts := s.compactionOptions("pre_turn")

@@ -33,6 +33,7 @@ func wfs23ClientTool(t *testing.T, invoke func(ctx context.Context, argsJSON str
 // the model can call it, the call executes through the invoke callback, and
 // the result feeds back — the same guard pipeline as a built-in tool.
 func TestWFS23InjectedToolIsDispatchedAndExecuted(t *testing.T) {
+	t.Parallel()
 	step1 := schema.AssistantMessage("", []schema.ToolCall{
 		{ID: "c1", Type: "function", Function: schema.FunctionCall{
 			Name: "client_ping", Arguments: `{"target":"host1"}`,
@@ -106,6 +107,7 @@ func TestWFS23InjectedToolIsDispatchedAndExecuted(t *testing.T) {
 // never injected is refused by toolreg WITHOUT any callback consult (no
 // dialog). The distinguishable denial text is the observable.
 func TestWFS23ToolregCoversInjectedAndRefusesPhantom(t *testing.T) {
+	t.Parallel()
 	dyn := wfs23ClientTool(t, func(ctx context.Context, argsJSON string) (string, error) {
 		return "pong", nil
 	})
@@ -139,6 +141,7 @@ func TestWFS23ToolregCoversInjectedAndRefusesPhantom(t *testing.T) {
 // runs with its own (empty) dynamic set because withTurnContext's unconditional
 // shadow-bind makes the ctx-inherited value invisible to the sub-agent.
 func TestWFS23DynamicToolsDoNotReachSubAgents(t *testing.T) {
+	t.Parallel()
 	step1 := schema.AssistantMessage("sub done", nil)
 	mdl := einollm.NewFakeModelWithMessages([]*schema.Message{step1}, nil)
 	mdl.RecordTools = true

@@ -14,6 +14,7 @@ import (
 )
 
 func TestRunners_SameModelReturnsSamePointer(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModelWithMessages(nil, nil)
 	o, err := New(Config{
 		Model:   fm,
@@ -42,6 +43,7 @@ func TestRunners_SameModelReturnsSamePointer(t *testing.T) {
 }
 
 func TestRunners_DifferentModelKeys(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModelWithMessages(nil, nil)
 	o, err := New(Config{
 		Model:   fm,
@@ -78,6 +80,7 @@ func TestRunners_DifferentModelKeys(t *testing.T) {
 // runnerCacheKey. Same contention shape, and unlike the flush loop it is a
 // sequence production can actually produce.
 func TestRunners_NewKeysDuringAccess(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModelWithMessages(nil, nil)
 	o, err := New(Config{
 		Model:   fm,

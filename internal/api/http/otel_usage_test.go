@@ -24,6 +24,7 @@ import (
 //
 // ledger: C4/OBS2#2 latency/token/retry/error 可观测
 func TestAddProviderUsageRecordsToOTel(t *testing.T) {
+	t.Parallel()
 	var got []int
 	restore := swapUsageRecorder(func(_ context.Context, _ string, prompt, cached, completion, reasoning int) {
 		got = append(got, prompt, cached, completion, reasoning)

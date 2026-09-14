@@ -53,6 +53,7 @@ storage:
 // the key belongs in the credential backend, and config.yaml gets copied into
 // dotfile repositories and attached to bug reports.
 func TestProviderAddWritesAReferenceNotTheKey(t *testing.T) {
+	t.Parallel()
 	path, mgr := providerFixture(t, baseProviderConfig)
 	const key = "sk-live-abcdef123456"
 
@@ -89,6 +90,7 @@ func TestProviderAddWritesAReferenceNotTheKey(t *testing.T) {
 // TestProviderAddResultNeverCarriesTheKey: the result is printed, logged and
 // returned from a function, and a credential must not be in any of those.
 func TestProviderAddResultNeverCarriesTheKey(t *testing.T) {
+	t.Parallel()
 	path, mgr := providerFixture(t, baseProviderConfig)
 	const key = "sk-live-abcdef123456"
 	res, err := RunProviderAdd(ProviderAddOptions{
@@ -111,6 +113,7 @@ func TestProviderAddResultNeverCarriesTheKey(t *testing.T) {
 // comment in a file that is roughly half comments, turning a four-line addition
 // into a rewrite the operator no longer recognises.
 func TestProviderAddPreservesComments(t *testing.T) {
+	t.Parallel()
 	path, mgr := providerFixture(t, baseProviderConfig)
 	if _, err := RunProviderAdd(ProviderAddOptions{
 		ConfigPath: path, Name: "gw", Kind: "anthropic", Model: "claude", APIKey: "sk-abcdef",
@@ -138,6 +141,7 @@ func TestProviderAddPreservesComments(t *testing.T) {
 // model, base URL and generation parameters, and overwriting because the name
 // matched would discard all of it to change one key.
 func TestProviderAddRefusesToClobber(t *testing.T) {
+	t.Parallel()
 	path, mgr := providerFixture(t, baseProviderConfig)
 	_, err := RunProviderAdd(ProviderAddOptions{
 		ConfigPath: path, Name: "openai", Kind: "openai", Model: "gpt-5", APIKey: "sk-abcdef",
@@ -157,6 +161,7 @@ func TestProviderAddRefusesToClobber(t *testing.T) {
 // model or base_url of a provider the operator explicitly asked to replace,
 // producing a hybrid nobody wrote.
 func TestProviderAddReplaceOverwritesWholly(t *testing.T) {
+	t.Parallel()
 	path, mgr := providerFixture(t, `llm:
   providers:
     - name: "openai"
@@ -198,6 +203,7 @@ func TestProviderAddReplaceOverwritesWholly(t *testing.T) {
 // TestProviderAddValidation covers every refusal. Each names the field, because
 // the alternative is a provider that boots and then fails on its first call.
 func TestProviderAddValidation(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		opts ProviderAddOptions
@@ -234,6 +240,7 @@ func TestProviderAddValidation(t *testing.T) {
 // nowhere to go but the config, which is the one outcome this command exists
 // to prevent. Degrading silently would undo it.
 func TestProviderAddRefusesWithoutASecretsBackend(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	_ = os.WriteFile(path, []byte(baseProviderConfig), 0o600)
@@ -253,6 +260,7 @@ func TestProviderAddRefusesWithoutASecretsBackend(t *testing.T) {
 // TestProviderAddPromptsForMissingValues drives the interactive path, and pins
 // that a blank answer takes the offered default rather than an empty string.
 func TestProviderAddPromptsForMissingValues(t *testing.T) {
+	t.Parallel()
 	path, mgr := providerFixture(t, baseProviderConfig)
 	// name, kind (blank -> default openai), model, base URL (blank), api key.
 	in := strings.NewReader("gateway\n\ngpt-4o-mini\n\nsk-secret-value\n")
@@ -287,6 +295,7 @@ func TestProviderAddPromptsForMissingValues(t *testing.T) {
 // TestProviderAddWithoutATerminalNamesTheFlag: a wizard that just fails is
 // unusable from a provisioning script; naming the flag makes it scriptable.
 func TestProviderAddWithoutATerminalNamesTheFlag(t *testing.T) {
+	t.Parallel()
 	path, mgr := providerFixture(t, baseProviderConfig)
 	_, err := RunProviderAdd(ProviderAddOptions{ConfigPath: path, Secrets: mgr})
 	if err == nil || !strings.Contains(err.Error(), "flag") {
@@ -297,6 +306,7 @@ func TestProviderAddWithoutATerminalNamesTheFlag(t *testing.T) {
 // TestProviderAddCreatesTheProvidersList covers the configs that predate any
 // provider: an absent llm block, and a `providers:` key left with no value.
 func TestProviderAddCreatesTheProvidersList(t *testing.T) {
+	t.Parallel()
 	for _, body := range []string{
 		"storage:\n  sqlite_path: \"./y.db\"\n",
 		"llm:\n  providers:\n",
@@ -325,6 +335,7 @@ func TestProviderAddCreatesTheProvidersList(t *testing.T) {
 // TestProviderAddOmitsTheContextWindowWhenUnset: writing 0 would override the
 // built-in model catalog with a value nobody chose.
 func TestProviderAddOmitsTheContextWindowWhenUnset(t *testing.T) {
+	t.Parallel()
 	path, mgr := providerFixture(t, baseProviderConfig)
 	if _, err := RunProviderAdd(ProviderAddOptions{
 		ConfigPath: path, Name: "gw", Kind: "openai", Model: "m", APIKey: "sk-abcdef",
@@ -353,6 +364,7 @@ func TestProviderAddOmitsTheContextWindowWhenUnset(t *testing.T) {
 // TestProviderAddResultIsLoadableConfig: the whole thing is pointless if the
 // file it produces does not parse back as YAML with the expected shape.
 func TestProviderAddResultIsLoadableConfig(t *testing.T) {
+	t.Parallel()
 	path, mgr := providerFixture(t, baseProviderConfig)
 	if _, err := RunProviderAdd(ProviderAddOptions{
 		ConfigPath: path, Name: "gw", Kind: "openai", Model: "gpt-4o-mini",
@@ -389,6 +401,7 @@ func TestProviderAddResultIsLoadableConfig(t *testing.T) {
 // TestListProvidersSortsAndTolerates covers the read side, including the
 // configs where there is nothing to list.
 func TestListProvidersSortsAndTolerates(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	write := func(name, body string) string {
 		p := filepath.Join(dir, name)
@@ -422,6 +435,7 @@ func TestListProvidersSortsAndTolerates(t *testing.T) {
 // TestProviderSecretRefIsPerProvider: one namespace shared by every provider
 // would make adding a second key delete the first.
 func TestProviderSecretRefIsPerProvider(t *testing.T) {
+	t.Parallel()
 	a, b := ProviderSecretRef("one"), ProviderSecretRef("two")
 	if a == b {
 		t.Fatal("two providers share a secret reference")

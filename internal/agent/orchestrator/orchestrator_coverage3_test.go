@@ -16,6 +16,7 @@ import (
 
 // TestWrapCompaction_WithThreshold wraps the model in CompactingModel.
 func TestWrapCompaction_WithThreshold(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"ok"}, nil)
 	wrapped := wrapCompaction(fm, CompactionConfig{Threshold: 0.8, ContextWindow: 1000, KeepRecent: 4}, 0, 0, nil)
 	cm, ok := wrapped.(*einollm.CompactingModel)
@@ -27,6 +28,7 @@ func TestWrapCompaction_WithThreshold(t *testing.T) {
 // TestBindExecutionContext_WithAllFields proves bindExecutionContext threads all
 // security values when fully configured.
 func TestBindExecutionContext_WithAllFields(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"ok"}, nil)
 	o, err := New(Config{Model: fm})
 	require.NoError(t, err)
@@ -42,6 +44,7 @@ func TestBindExecutionContext_WithAllFields(t *testing.T) {
 // TestClassifyEvents_ExceedMaxIterations proves ErrExceedMaxIterations produces
 // a user-friendly error frame, not the raw error.
 func TestClassifyEvents_ExceedMaxIterations(t *testing.T) {
+	t.Parallel()
 	iter, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
 	gen.Send(&adk.AgentEvent{Err: adk.ErrExceedMaxIterations})
 	gen.Close()
@@ -56,6 +59,7 @@ func TestClassifyEvents_ExceedMaxIterations(t *testing.T) {
 
 // TestTurnUsageSet_NilIsNoop proves TurnUsage.set is a no-op for nil usage.
 func TestTurnUsageSet_NilIsNoop(t *testing.T) {
+	t.Parallel()
 	var u TurnUsage
 	u.set(nil)
 	assert.Equal(t, TurnUsage{}, u)
@@ -63,6 +67,7 @@ func TestTurnUsageSet_NilIsNoop(t *testing.T) {
 
 // TestEmitAssistant_WithToolCalls proves emitAssistant emits tool_call frames.
 func TestEmitAssistant_WithToolCalls(t *testing.T) {
+	t.Parallel()
 	var frames []proto.ServerFrame
 	emitAssistant(&schema.Message{
 		Content: "answer",
@@ -80,6 +85,7 @@ func TestEmitAssistant_WithToolCalls(t *testing.T) {
 // TestAppendImageParts_ExistingUserMessage proves images are appended to existing
 // user message content.
 func TestAppendImageParts_ExistingUserMessage(t *testing.T) {
+	t.Parallel()
 	history := []*schema.Message{schema.UserMessage("describe this")}
 	result := appendImageParts(history, []proto.ImageAttach{
 		{Fmt: "png", DataB64: "AAAA"},

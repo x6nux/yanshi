@@ -36,6 +36,7 @@ func dialWSURL(t *testing.T, ts *httptest.Server) string {
 }
 
 func TestChatWS_RenameSession(t *testing.T) {
+	t.Parallel()
 	st, s := newSessionTestServer(t)
 	sid, err := st.CreateSession("old")
 	require.NoError(t, err)
@@ -59,6 +60,7 @@ func TestChatWS_RenameSession(t *testing.T) {
 }
 
 func TestChatWS_ArchiveThenUnarchive(t *testing.T) {
+	t.Parallel()
 	st, s := newSessionTestServer(t)
 	sid, err := st.CreateSession("hide me")
 	require.NoError(t, err)
@@ -88,6 +90,7 @@ func TestChatWS_ArchiveThenUnarchive(t *testing.T) {
 }
 
 func TestChatWS_DeleteSession_RemovesMessages(t *testing.T) {
+	t.Parallel()
 	st, s := newSessionTestServer(t)
 	sid, err := st.CreateSession("doomed")
 	require.NoError(t, err)
@@ -112,6 +115,7 @@ func TestChatWS_DeleteSession_RemovesMessages(t *testing.T) {
 }
 
 func TestChatWS_SessionListArchived(t *testing.T) {
+	t.Parallel()
 	st, s := newSessionTestServer(t)
 	activeID, _ := st.CreateSession("active")
 	archivedID, _ := st.CreateSession("gone")
@@ -138,6 +142,7 @@ func TestChatWS_SessionListArchived(t *testing.T) {
 }
 
 func TestChatWS_RenameSession_DisabledWhenNoStore(t *testing.T) {
+	t.Parallel()
 	// No Store in Config -> recording disabled.
 	o, _ := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	s := New(Config{Token: "t"})
@@ -161,6 +166,7 @@ func TestChatWS_RenameSession_DisabledWhenNoStore(t *testing.T) {
 // restore_session first so the server-side connSession picks up the sid, then
 // reads the session_restored reply, and only then sends fork_session.
 func TestChatWS_ForkSession_AllMessages(t *testing.T) {
+	t.Parallel()
 	st, s := newSessionTestServer(t)
 	sid, err := st.CreateSession("orig")
 	require.NoError(t, err)
@@ -218,6 +224,7 @@ func TestChatWS_ForkSession_AllMessages(t *testing.T) {
 // TestChatWS_ForkSession_PartialBySeq proves seq>=0 truncates up to that seq
 // inclusive.
 func TestChatWS_ForkSession_PartialBySeq(t *testing.T) {
+	t.Parallel()
 	st, s := newSessionTestServer(t)
 	sid, _ := st.CreateSession("orig")
 	st.AppendMessage(sid, 0, "user", "m0")
@@ -244,6 +251,7 @@ func TestChatWS_ForkSession_PartialBySeq(t *testing.T) {
 // TestChatWS_ForkSession_SeqOutOfBoundsRejected proves an out-of-range seq
 // returns an error frame.
 func TestChatWS_ForkSession_SeqOutOfBoundsRejected(t *testing.T) {
+	t.Parallel()
 	st, s := newSessionTestServer(t)
 	sid, _ := st.CreateSession("orig")
 	st.AppendMessage(sid, 0, "user", "only")
@@ -265,6 +273,7 @@ func TestChatWS_ForkSession_SeqOutOfBoundsRejected(t *testing.T) {
 // TestChatWS_ForkSession_RejectsNegativeOtherThanMinusOne proves seq=-2 and
 // smaller negatives are also rejected by the server (GB5 consistency).
 func TestChatWS_ForkSession_RejectsNegativeOtherThanMinusOne(t *testing.T) {
+	t.Parallel()
 	st, s := newSessionTestServer(t)
 	sid, _ := st.CreateSession("orig")
 	st.AppendMessage(sid, 0, "user", "only")
@@ -301,6 +310,7 @@ func seedRollbackSession(t *testing.T, st *store.Store) string {
 // from the END of the transcript: it targets the LAST user message ("second",
 // seq=2), not the first, resolving to seq-1=1 (fork ends right before it).
 func TestResolveRollbackSeq_TargetsMostRecentUserTurn(t *testing.T) {
+	t.Parallel()
 	st, _ := newSessionTestServer(t)
 	sid := seedRollbackSession(t, st)
 
@@ -316,6 +326,7 @@ func TestResolveRollbackSeq_TargetsMostRecentUserTurn(t *testing.T) {
 // sentinel, or a rollback to the first turn would silently duplicate the
 // whole session instead of producing an empty one.
 func TestResolveRollbackSeq_FirstTurnYieldsEmptyForkSentinel(t *testing.T) {
+	t.Parallel()
 	st, _ := newSessionTestServer(t)
 	sid := seedRollbackSession(t, st)
 
@@ -329,6 +340,7 @@ func TestResolveRollbackSeq_FirstTurnYieldsEmptyForkSentinel(t *testing.T) {
 // asking to roll back further than the session has user turns is an error,
 // not a silent clamp to the empty-fork sentinel.
 func TestResolveRollbackSeq_ExceedsAvailableTurnsErrors(t *testing.T) {
+	t.Parallel()
 	st, _ := newSessionTestServer(t)
 	sid := seedRollbackSession(t, st)
 
@@ -346,6 +358,7 @@ func TestResolveRollbackSeq_ExceedsAvailableTurnsErrors(t *testing.T) {
 // row like any other store.RoleUser row, so the two turnsBack counters
 // disagreed for any session that had ever been compacted.
 func TestResolveRollbackSeq_SkipsCompactionSummaryRow(t *testing.T) {
+	t.Parallel()
 	st, _ := newSessionTestServer(t)
 	sid := seedRollbackSession(t, st) // seq0 user "first", seq1 asst, seq2 user "second", seq3 asst
 
@@ -375,6 +388,7 @@ func TestResolveRollbackSeq_SkipsCompactionSummaryRow(t *testing.T) {
 // fork_session{turns_back:1} reaches resolveRollbackSeq and lands on the same
 // seq a manually-computed fork_session{seq:1} would.
 func TestChatWS_ForkSession_RollbackByTurnsBack(t *testing.T) {
+	t.Parallel()
 	st, s := newSessionTestServer(t)
 	sid := seedRollbackSession(t, st)
 
@@ -402,6 +416,7 @@ func TestChatWS_ForkSession_RollbackByTurnsBack(t *testing.T) {
 // session's very first turn produces a session_forked reply for a session
 // with ZERO messages, not an error and not a full-history duplicate.
 func TestChatWS_ForkSession_RollbackBeforeFirstMessage(t *testing.T) {
+	t.Parallel()
 	st, s := newSessionTestServer(t)
 	sid := seedRollbackSession(t, st)
 
@@ -425,6 +440,7 @@ func TestChatWS_ForkSession_RollbackBeforeFirstMessage(t *testing.T) {
 // TestChatWS_ForkSession_RollbackExceedingTurnsErrors mirrors
 // TestChatWS_ForkSession_SeqOutOfBoundsRejected for the turns_back path.
 func TestChatWS_ForkSession_RollbackExceedingTurnsErrors(t *testing.T) {
+	t.Parallel()
 	st, s := newSessionTestServer(t)
 	sid := seedRollbackSession(t, st)
 
@@ -445,6 +461,7 @@ func TestChatWS_ForkSession_RollbackExceedingTurnsErrors(t *testing.T) {
 // TestChatWS_ForkSession_DisabledWhenNoStore proves store=nil returns an error.
 // No session here, so no restore_session precondition (GB1 does not apply).
 func TestChatWS_ForkSession_DisabledWhenNoStore(t *testing.T) {
+	t.Parallel()
 	o, _ := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	srv := New(Config{Token: "t"})
 	srv.ChatWS(o, nil, nil)
@@ -467,6 +484,7 @@ func TestChatWS_ForkSession_DisabledWhenNoStore(t *testing.T) {
 //
 // This is V11's core promise (review #2): side never writes DB.
 func TestChatWS_SideConversation_DoesNotWriteDB(t *testing.T) {
+	t.Parallel()
 	st, s := newSessionTestServer(t)
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
@@ -528,6 +546,7 @@ func drainUntilDone(t *testing.T, c *websocket.Conn) {
 // TestChatWS_RenameSession_EmptyTitle proves rename with an empty title
 // returns an error frame.
 func TestChatWS_RenameSession_EmptyTitle(t *testing.T) {
+	t.Parallel()
 	st, s := newSessionTestServer(t)
 	sid, err := st.CreateSession("test")
 	require.NoError(t, err)
@@ -546,6 +565,7 @@ func TestChatWS_RenameSession_EmptyTitle(t *testing.T) {
 // TestChatWS_RenameSession_LongTitle proves rename with a very long title
 // truncates it to 200 runes.
 func TestChatWS_RenameSession_LongTitle(t *testing.T) {
+	t.Parallel()
 	st, s := newSessionTestServer(t)
 	sid, err := st.CreateSession("test")
 	require.NoError(t, err)
@@ -566,6 +586,7 @@ func TestChatWS_RenameSession_LongTitle(t *testing.T) {
 // TestChatWS_DeleteSession_DeletesCurrentSession proves deleting the current
 // session resets connSession state.
 func TestChatWS_DeleteSession_DeletesCurrentSession(t *testing.T) {
+	t.Parallel()
 	st, s := newSessionTestServer(t)
 	sid, err := st.CreateSession("doomed")
 	require.NoError(t, err)
@@ -596,6 +617,7 @@ func TestChatWS_DeleteSession_DeletesCurrentSession(t *testing.T) {
 // management handlers. Each handler should return an error frame when store
 // is unavailable.
 func TestChatWS_SessionHandler_StoreNil(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -649,6 +671,7 @@ func TestChatWS_SessionHandler_StoreNil(t *testing.T) {
 // TestChatWS_ArchiveSession_EmptyID proves archive with an empty session id
 // returns an error frame.
 func TestChatWS_ArchiveSession_EmptyID(t *testing.T) {
+	t.Parallel()
 	_, s := newSessionTestServer(t)
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
@@ -663,6 +686,7 @@ func TestChatWS_ArchiveSession_EmptyID(t *testing.T) {
 // TestChatWS_UnarchiveSession_EmptyID proves unarchive with an empty session
 // id returns an error frame.
 func TestChatWS_UnarchiveSession_EmptyID(t *testing.T) {
+	t.Parallel()
 	_, s := newSessionTestServer(t)
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
@@ -677,6 +701,7 @@ func TestChatWS_UnarchiveSession_EmptyID(t *testing.T) {
 // TestChatWS_DeleteSession_EmptyID proves delete with an empty session id
 // returns an error frame.
 func TestChatWS_DeleteSession_EmptyID(t *testing.T) {
+	t.Parallel()
 	_, s := newSessionTestServer(t)
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
@@ -691,6 +716,7 @@ func TestChatWS_DeleteSession_EmptyID(t *testing.T) {
 // TestChatWS_RenameSession_EmptyID proves rename with an empty session id
 // returns an error frame.
 func TestChatWS_RenameSession_EmptyID(t *testing.T) {
+	t.Parallel()
 	o, err := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	require.NoError(t, err)
 	srv := New(Config{Token: "t"})
@@ -719,6 +745,7 @@ func TestChatWS_RenameSession_EmptyID(t *testing.T) {
 // prefix presented as the whole list is how a session that is perfectly safe on
 // disk gets reported as lost.
 func TestChatWS_SessionListIsBoundedAndSaysSo(t *testing.T) {
+	t.Parallel()
 	st, s := newSessionTestServer(t)
 	const extra = 5
 	for i := range store.MaxMessagePageSize + extra {

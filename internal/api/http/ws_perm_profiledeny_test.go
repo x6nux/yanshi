@@ -25,6 +25,7 @@ import (
 // must be honoured; an allow arriving under a mode we never asked in was
 // produced by a rule, and the server owns that rule.
 func TestDeliverRejectsModeSwitchAllowOnProfileDeny(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		hardDeny   bool
@@ -87,6 +88,7 @@ func TestDeliverRejectsModeSwitchAllowOnProfileDeny(t *testing.T) {
 // ever tighten. A client that answers deny gets a deny under every mode,
 // including yolo -- the user said no.
 func TestDeliverNeverUpgradesADeny(t *testing.T) {
+	t.Parallel()
 	pt := newPermTracker()
 	id := pt.newID()
 	ch := make(chan tools.PermissionDecision, 1)

@@ -51,6 +51,7 @@ func newWSPair(t *testing.T) (*wsConn, *websocket.Conn, func()) {
 
 // TestCov_RestoreTurn_VcsNil covers the "VCS disabled" early return branch (98-101).
 func TestCov_RestoreTurn_VcsNil(t *testing.T) {
+	t.Parallel()
 	wc, client, cleanup := newWSPair(t)
 	defer cleanup()
 
@@ -69,6 +70,7 @@ func TestCov_RestoreTurn_VcsNil(t *testing.T) {
 // an error reply (RE-6), not the old NewSeams(nil,"",""), so a VCS-less
 // server tells the user /seams is unavailable rather than "no seams yet".
 func TestCov_ListSeams_VcsNil(t *testing.T) {
+	t.Parallel()
 	wc, client, cleanup := newWSPair(t)
 	defer cleanup()
 
@@ -86,6 +88,7 @@ func TestCov_ListSeams_VcsNil(t *testing.T) {
 // branch (110-116) by creating a real VCS+repo and passing a mismatched
 // confirmedHead.
 func TestCov_RestoreTurn_HeadMismatch(t *testing.T) {
+	t.Parallel()
 	db, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { db.Close() })
@@ -112,6 +115,7 @@ func TestCov_RestoreTurn_HeadMismatch(t *testing.T) {
 // TestCov_RestoreTurn_FindSeamError covers the seam-not-found branch (119-124)
 // by passing a valid VCS+repo (head check passes) but a non-existent seamID.
 func TestCov_RestoreTurn_FindSeamError(t *testing.T) {
+	t.Parallel()
 	db, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { db.Close() })
@@ -141,6 +145,7 @@ func TestCov_RestoreTurn_FindSeamError(t *testing.T) {
 // empty" branch (105-108). A non-nil vcs+repoID+seamID is required to pass the
 // 98 early-exit, but no vcs methods are called before the branch returns.
 func TestCov_RestoreTurn_MissingConfirmedHead(t *testing.T) {
+	t.Parallel()
 	wc, client, cleanup := newWSPair(t)
 	defer cleanup()
 
@@ -155,6 +160,7 @@ func TestCov_RestoreTurn_MissingConfirmedHead(t *testing.T) {
 // TestCov_ListSeams_StoreError covers the ListSeams error branch at
 // ws_seam.go:63-66 by closing the DB before the call.
 func TestCov_ListSeams_StoreError(t *testing.T) {
+	t.Parallel()
 	db, err := store.Open(":memory:")
 	require.NoError(t, err)
 	db.Close()

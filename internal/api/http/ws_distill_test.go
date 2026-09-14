@@ -37,6 +37,7 @@ func newDistillTestRegistry(t *testing.T) *features.Registry {
 //
 // ledger: A2/W-A-05#2 蒸馏请求帧被服务端处理并回复结果帧
 func TestDistillFrameRoundTrips(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { st.Close() })
@@ -68,6 +69,7 @@ func TestDistillFrameRoundTrips(t *testing.T) {
 // with an error frame (not a panic, not a hang) when no DistillModel is
 // configured -- the state every deployment is in until bootstrap wires one.
 func TestDistillMemories_DisabledWithoutModel(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { st.Close() })
@@ -105,6 +107,7 @@ func TestDistillMemories_DisabledWithoutModel(t *testing.T) {
 //
 // ledger: A2/W-A-05#3 蒸馏失败不影响所在 turn 的正常结束
 func TestDistillFailureDoesNotAbortTurn(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { st.Close() })
@@ -154,6 +157,7 @@ func TestDistillFailureDoesNotAbortTurn(t *testing.T) {
 // failed pass leaves the candidate memories exactly as they were (none
 // marked superseded).
 func TestRunDistillPass_SwallowsModelError(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { st.Close() })

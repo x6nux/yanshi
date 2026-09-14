@@ -25,6 +25,7 @@ import (
 // the assignment in wrapCompaction leaves a config field with no reader --
 // compiling, looking wired, and redacting nothing.
 func TestWrapCompactionForwardsTheRedactor(t *testing.T) {
+	t.Parallel()
 	red := secrets.NewRedactor()
 	red.Register("sk-live-must-not-leak")
 
@@ -52,6 +53,7 @@ func TestWrapCompactionForwardsTheRedactor(t *testing.T) {
 // (*secrets.Redactor).Redact locks a field of its receiver, so a typed-nil
 // would panic mid-turn instead of disabling redaction.
 func TestWrapCompactionWithoutRedactorLeavesItNil(t *testing.T) {
+	t.Parallel()
 	cc := CompactionConfig{Threshold: 0.8, ContextWindow: 128000, KeepRecent: 4}
 
 	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 128000, 0, nil)

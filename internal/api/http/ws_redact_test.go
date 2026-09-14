@@ -14,6 +14,7 @@ import (
 )
 
 func TestWS_RedactsOutboundFrames(t *testing.T) {
+	t.Parallel()
 	r := secrets.NewRedactor()
 	secret := `sk-ws-"quoted"-\slash`
 	r.Register(secret)

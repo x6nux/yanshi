@@ -35,6 +35,7 @@ import (
 //
 // ledger: G/VISION-TOOL#4 费用纳入 /cost
 func TestVisionTurnCostReachesTheStatusFrame(t *testing.T) {
+	t.Parallel()
 	const (
 		prompt     = 1000 // the image is folded in here by the provider
 		completion = 20
@@ -117,6 +118,7 @@ func TestVisionTurnCostReachesTheStatusFrame(t *testing.T) {
 //
 // ledger: G/VISION-TOOL#4 费用纳入 /cost
 func TestAuxVisionModelTokensReachTheStatusFrame(t *testing.T) {
+	t.Parallel()
 	const (
 		auxPrompt     = 700
 		auxCompletion = 30

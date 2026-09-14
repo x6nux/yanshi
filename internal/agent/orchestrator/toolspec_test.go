@@ -60,6 +60,7 @@ func wfs11Names(t *testing.T, fake *einollm.FakeModel, call int) map[string]bool
 // toolspec.go 的 BeforeModelRewriteState 过滤体），第一个断言即红 —— 模型
 // 第一次调用就会看到全量 schema。
 func TestWFS11OnDemandGateHidesUntilLoaded(t *testing.T) {
+	t.Parallel()
 	step1 := schema.AssistantMessage("", []schema.ToolCall{
 		{ID: "c1", Type: "function", Function: schema.FunctionCall{
 			Name: "tools_load", Arguments: `{"names":["zeta_file_writer"]}`,
@@ -102,6 +103,7 @@ func TestWFS11OnDemandGateHidesUntilLoaded(t *testing.T) {
 // = no gate = the model sees the full registry on every call, byte-identical
 // to the pre-W-F-11 wiring.
 func TestWFS11DisabledKeepsFullSchema(t *testing.T) {
+	t.Parallel()
 	step1 := schema.AssistantMessage("done", nil)
 	mdl := einollm.NewFakeModelWithMessages([]*schema.Message{step1}, nil)
 	mdl.RecordTools = true
@@ -124,6 +126,7 @@ func TestWFS11DisabledKeepsFullSchema(t *testing.T) {
 // This is the runSubAgentTurn check the W-F escape gate asks for when a new
 // policy layer rides Config.
 func TestWFS11SubAgentDoesNotInheritTheGate(t *testing.T) {
+	t.Parallel()
 	step1 := schema.AssistantMessage("sub done", nil)
 	mdl := einollm.NewFakeModelWithMessages([]*schema.Message{step1}, nil)
 	mdl.RecordTools = true
@@ -153,6 +156,7 @@ func TestWFS11SubAgentDoesNotInheritTheGate(t *testing.T) {
 // visible in turn 2: the load state is bound fresh by withTurnContext, so
 // turn 2's first model call is back to always+retrieval.
 func TestWFS11StateIsPerTurn(t *testing.T) {
+	t.Parallel()
 	load := schema.AssistantMessage("", []schema.ToolCall{
 		{ID: "c1", Type: "function", Function: schema.FunctionCall{
 			Name: "tools_load", Arguments: `{"names":["zeta_file_writer"]}`,

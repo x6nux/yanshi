@@ -37,6 +37,7 @@ func newMemStore(t *testing.T) *store.Store {
 }
 
 func TestNew_IncludesSkillMeta(t *testing.T) {
+	t.Parallel()
 	model := einollm.NewFakeModel([]string{"hello from agent"}, nil)
 	o, err := New(Config{
 		Model:           model,
@@ -47,6 +48,7 @@ func TestNew_IncludesSkillMeta(t *testing.T) {
 }
 
 func TestOrchestrator_AnswerWithoutTools(t *testing.T) {
+	t.Parallel()
 	// Fake model: one assistant message, no tool calls.
 	model := einollm.NewFakeModel([]string{"hello from agent"}, nil)
 	o, err := New(Config{Model: model})
@@ -58,6 +60,7 @@ func TestOrchestrator_AnswerWithoutTools(t *testing.T) {
 }
 
 func TestOrchestrator_UsesToolThenAnswers(t *testing.T) {
+	t.Parallel()
 	// Fake model: first calls memory.write, then answers.
 	tc1 := schema.AssistantMessage("", []schema.ToolCall{
 		{ID: "c1", Type: "function", Function: schema.FunctionCall{
@@ -89,6 +92,7 @@ func TestOrchestrator_UsesToolThenAnswers(t *testing.T) {
 }
 
 func TestOrchestrator_Events(t *testing.T) {
+	t.Parallel()
 	model := einollm.NewFakeModel([]string{"hi there"}, nil)
 	o, err := New(Config{Model: model})
 	require.NoError(t, err)
@@ -102,6 +106,7 @@ func TestOrchestrator_Events(t *testing.T) {
 // but drives through the Events (SSE streaming) path, verifying that the permission
 // profile is injected so tool calls are authorized via GuardedTool.
 func TestOrchestrator_EventsUsesToolThenAnswers(t *testing.T) {
+	t.Parallel()
 	// Fake model: first calls memory.write, then answers.
 	tc1 := schema.AssistantMessage("", []schema.ToolCall{
 		{ID: "c1", Type: "function", Function: schema.FunctionCall{
@@ -136,6 +141,7 @@ func TestOrchestrator_EventsUsesToolThenAnswers(t *testing.T) {
 // VCSScope into every turn's tool-execution context: a model-driven fs_edit
 // must be auto-recorded into the main changeset (chat → main tracking).
 func TestNew_InjectsVCSScope(t *testing.T) {
+	t.Parallel()
 	// In-memory VCS over a temp repo root pre-seeded with a.go (mirrors the
 	// V12 newVCSTestRepo helper in internal/tools/fs_test.go).
 	root := t.TempDir()
@@ -193,6 +199,7 @@ func TestNew_InjectsVCSScope(t *testing.T) {
 // Without the handler, Query would return "tool bash not found in toolsNode
 // indexes" and the turn would die.
 func TestOrchestrator_UnknownToolHandler(t *testing.T) {
+	t.Parallel()
 	// Script: (1) call the UNKNOWN tool "bash", (2) emit a final answer. The
 	// ReAct loop only reaches step 2 if step 1's "tool not found" came back as
 	// a tool result rather than a fatal error.
@@ -219,6 +226,7 @@ func TestOrchestrator_UnknownToolHandler(t *testing.T) {
 // TestUnknownToolHandler_ListsAvailableTools proves the error message returned
 // to the model names the real tools, so it can self-correct in one step.
 func TestUnknownToolHandler_ListsAvailableTools(t *testing.T) {
+	t.Parallel()
 	h := unknownToolHandler([]string{"fs_read", "shell_run", "time_now"})
 	out, err := h(context.Background(), "bash", `{"command":"ls"}`)
 	require.NoError(t, err, "the handler must return a result, not a Go error")
@@ -234,6 +242,7 @@ func TestUnknownToolHandler_ListsAvailableTools(t *testing.T) {
 // fallback. The sub-agent uses the same FakeModel; its single scripted response
 // is returned through the nested orchestrator's Query.
 func TestSubAgentRunner_BoundAndCallable(t *testing.T) {
+	t.Parallel()
 	subResp := schema.AssistantMessage("sub did the work", nil)
 	mdl := einollm.NewFakeModelWithMessages([]*schema.Message{subResp}, nil)
 	timeTools := tools.NewTimeTools()
@@ -252,6 +261,7 @@ func TestSubAgentRunner_BoundAndCallable(t *testing.T) {
 // TestSubAgentRunner_DepthLimit proves nesting past MaxSubAgentDepth is refused
 // (a runaway model calling agent_start in a loop can't recurse without bound).
 func TestSubAgentRunner_DepthLimit(t *testing.T) {
+	t.Parallel()
 	mdl := einollm.NewFakeModelWithMessages([]*schema.Message{schema.AssistantMessage("x", nil)}, nil)
 	o, err := New(Config{Model: mdl})
 	require.NoError(t, err)
@@ -275,6 +285,7 @@ func TestSubAgentRunner_DepthLimit(t *testing.T) {
 // unchanged. The sub-agent calls time_now (a real tool) so the test exercises
 // the full ReAct path: tool_call → tool_result → final agent_chunk.
 func TestSubAgentRunner_ForwardsEventsToEmit(t *testing.T) {
+	t.Parallel()
 	// Scripted sub-agent: (1) call time_now, (2) final answer.
 	step1 := schema.AssistantMessage("", []schema.ToolCall{
 		{ID: "c1", Type: "function", Function: schema.FunctionCall{
@@ -339,6 +350,7 @@ func TestSubAgentRunner_ForwardsEventsToEmit(t *testing.T) {
 // frame), matching the timing the TUI relies on to attribute tokens to the
 // still-running Analysis block.
 func TestSubAgentRunner_EmitsNestedUsage(t *testing.T) {
+	t.Parallel()
 	// Scripted sub-agent: (1) call time_now with usage, (2) final answer with usage.
 	step1 := schema.AssistantMessage("", []schema.ToolCall{
 		{ID: "c1", Type: "function", Function: schema.FunctionCall{
@@ -382,6 +394,7 @@ func TestSubAgentRunner_EmitsNestedUsage(t *testing.T) {
 // runSubAgentTurn still returns the correct final answer and forwards nothing.
 // This is the backward-compat contract: the emit callback is optional.
 func TestSubAgentRunner_NoEmitDegradesGracefully(t *testing.T) {
+	t.Parallel()
 	subResp := schema.AssistantMessage("legacy answer", nil)
 	mdl := einollm.NewFakeModelWithMessages([]*schema.Message{subResp}, nil)
 	timeTools := tools.NewTimeTools()
@@ -402,6 +415,7 @@ func TestSubAgentRunner_NoEmitDegradesGracefully(t *testing.T) {
 // TestSelectSubAgentTools_Filters proves the allowed-tool subset is honored:
 // only named tools are passed to the sub-agent, and nil inherits the full set.
 func TestSelectSubAgentTools_Filters(t *testing.T) {
+	t.Parallel()
 	mdl := einollm.NewFakeModel(nil, nil)
 	fs := tools.NewFSTools(t.TempDir())
 	timeTools := tools.NewTimeTools()
@@ -428,6 +442,7 @@ func TestSelectSubAgentTools_Filters(t *testing.T) {
 }
 
 func TestWithoutOrchestrationTools_RemovesWorkflowRecursion(t *testing.T) {
+	t.Parallel()
 	mdl := einollm.NewFakeModel(nil, nil)
 	fs := tools.NewFSTools(t.TempDir())
 	agentTools := tools.NewAgentTools(mdl)
@@ -449,6 +464,7 @@ func TestWithoutOrchestrationTools_RemovesWorkflowRecursion(t *testing.T) {
 // returns its full input verbatim, so prior-turn text must surface in the
 // assistant output.
 func TestEventsWithHistory_PreservesPriorTurn(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel(nil, nil)
 	fm.Echo = true
 	o, err := New(Config{Model: fm})
@@ -477,6 +493,7 @@ func TestEventsWithHistory_PreservesPriorTurn(t *testing.T) {
 // TestClassifyEvents_EmitsToolFrames proves tool calls/results in events become
 // tool_call / tool_result frames, and assistant text becomes agent_chunk.
 func TestClassifyEvents_EmitsToolFrames(t *testing.T) {
+	t.Parallel()
 	// Build a tiny fake iterator yielding an assistant tool-call message, a tool
 	// message, then a final assistant text message.
 	iter := newFakeEventIter(t, []*schema.Message{
@@ -495,6 +512,7 @@ func TestClassifyEvents_EmitsToolFrames(t *testing.T) {
 // error message as Text — so the TUI renders Read(Error|...) and the model sees
 // a failure it can retry. A plain (non-error) result keeps Status="ok".
 func TestClassifyEvents_ToolErrorResultMarksError(t *testing.T) {
+	t.Parallel()
 	iter := newFakeEventIter(t, []*schema.Message{
 		{Role: schema.Tool, ToolCallID: "1", ToolName: "fs_read", Content: `{"error":"file not found"}`},
 		{Role: schema.Tool, ToolCallID: "2", ToolName: "fs_read", Content: "line1\nline2"},
@@ -515,6 +533,7 @@ func TestClassifyEvents_ToolErrorResultMarksError(t *testing.T) {
 // TestClassifyEvents_EventErrorEmitsErrorFrame proves a non-nil ev.Err short
 // circuits with a single error frame.
 func TestClassifyEvents_EventErrorEmitsErrorFrame(t *testing.T) {
+	t.Parallel()
 	iter, gen := adk.NewAsyncIteratorPair[*adk.AgentEvent]()
 	gen.Send(&adk.AgentEvent{Err: assertAnError})
 	gen.Close()
@@ -534,6 +553,7 @@ func TestClassifyEvents_EventErrorEmitsErrorFrame(t *testing.T) {
 // context), so the last value is the current context size. Empty/nil usage is
 // tolerated (FakeModel produces none).
 func TestClassifyEventsWithUsage_LatestResponseWins(t *testing.T) {
+	t.Parallel()
 	iter := newFakeEventIter(t, []*schema.Message{
 		{Role: schema.Assistant, Content: "hello", ResponseMeta: &schema.ResponseMeta{
 			Usage: &schema.TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}}},
@@ -556,6 +576,7 @@ func TestClassifyEventsWithUsage_LatestResponseWins(t *testing.T) {
 // FakeModel output, or a tool message with no ResponseMeta) doesn't panic and
 // leaves the accumulator at zero.
 func TestClassifyEventsWithUsage_NilUsageIsSafe(t *testing.T) {
+	t.Parallel()
 	iter := newFakeEventIter(t, []*schema.Message{
 		{Role: schema.Assistant, Content: "hi"}, // no ResponseMeta
 	})
@@ -571,6 +592,7 @@ func TestClassifyEventsWithUsage_NilUsageIsSafe(t *testing.T) {
 // per response (the API reports cumulative counts), so each snapshot carries
 // the latest value rather than a running sum.
 func TestClassifyEventsWithUsage_OnUsageFiresPerResponse(t *testing.T) {
+	t.Parallel()
 	iter := newFakeEventIter(t, []*schema.Message{
 		{Role: schema.Assistant, Content: "hello", ResponseMeta: &schema.ResponseMeta{
 			Usage: &schema.TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}}},
@@ -598,6 +620,7 @@ func TestClassifyEventsWithUsage_OnUsageFiresPerResponse(t *testing.T) {
 // arg is truly optional: the legacy 3-arg call still compiles and behaves
 // exactly as before (no callback, usage still accumulates).
 func TestClassifyEventsWithUsage_OnUsageOmittedIsBackwardCompat(t *testing.T) {
+	t.Parallel()
 	iter := newFakeEventIter(t, []*schema.Message{
 		{Role: schema.Assistant, Content: "hi", ResponseMeta: &schema.ResponseMeta{
 			Usage: &schema.TokenUsage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10}}},
@@ -621,6 +644,7 @@ func TestClassifyEventsWithUsage_OnUsageOmittedIsBackwardCompat(t *testing.T) {
 //
 // ledger: C2/UX8#1 思考模型可见流式思考
 func TestClassifyEvents_EmitsThinkingForReasoning(t *testing.T) {
+	t.Parallel()
 	iter := newFakeEventIter(t, []*schema.Message{
 		{Role: schema.Assistant, ReasoningContent: "let me think", Content: "answer"},
 	})
@@ -645,6 +669,7 @@ func TestClassifyEvents_EmitsThinkingForReasoning(t *testing.T) {
 //
 // ledger: C2/UX8#2 正文与思考分离
 func TestClassifyEvents_ReasoningOnlyEmitsOnlyThinking(t *testing.T) {
+	t.Parallel()
 	iter := newFakeEventIter(t, []*schema.Message{
 		{Role: schema.Assistant, ReasoningContent: "pondering"},
 	})
@@ -671,6 +696,7 @@ func TestClassifyEvents_ReasoningOnlyEmitsOnlyThinking(t *testing.T) {
 //
 // ledger: C2/UX8#3 非思考模型无影响
 func TestClassifyEvents_NoReasoningEmitsNoThinking(t *testing.T) {
+	t.Parallel()
 	iter := newFakeEventIter(t, []*schema.Message{
 		{Role: schema.Assistant, Content: "just text"},
 	})
@@ -704,6 +730,7 @@ func TestClassifyEvents_NoReasoningEmitsNoThinking(t *testing.T) {
 //
 // ledger: C2/UX8#1 思考模型可见流式思考
 func TestClassifyEvents_StreamingEmitsThinkingPerReasoningDelta(t *testing.T) {
+	t.Parallel()
 	iter := newFakeStreamEventIter(t, schema.Assistant, []*schema.Message{
 		{Role: schema.Assistant, ReasoningContent: "step one"},
 		{Role: schema.Assistant, ReasoningContent: "step two"},
@@ -798,6 +825,7 @@ func (e *sentinelError) Error() string { return e.msg }
 // the configured default: a turn with model B (built from a registry-style
 // {a,b}) answers from B even though the orchestrator was built with model A.
 func TestEventsWithHistoryOpts_SwitchesModel(t *testing.T) {
+	t.Parallel()
 	modelA := einollm.NewFakeModel([]string{"from-a"}, nil)
 	modelB := einollm.NewFakeModel([]string{"from-b"}, nil)
 	o, err := New(Config{Model: modelA}) // default = A
@@ -819,6 +847,7 @@ func TestEventsWithHistoryOpts_SwitchesModel(t *testing.T) {
 // cached: two calls for the same model return the same *adk.Runner (so we don't
 // rebuild the ADK agent every turn).
 func TestEventsWithHistoryOpts_RunnerForIsMemoized(t *testing.T) {
+	t.Parallel()
 	modelA := einollm.NewFakeModel([]string{"from-a"}, nil)
 	o, err := New(Config{Model: modelA})
 	require.NoError(t, err)
@@ -841,6 +870,7 @@ func TestEventsWithHistoryOpts_RunnerForIsMemoized(t *testing.T) {
 // options whose structs cannot be decoded from outside their own package, so
 // the assertion is a count delta rather than a value.
 func TestEventsWithHistoryOpts_ThinkingEffortPassesOption(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"ok", "ok"}, nil)
 	fm.RecordOpts = true
 	o, err := New(Config{Model: fm})
@@ -873,6 +903,7 @@ func TestEventsWithHistoryOpts_ThinkingEffortPassesOption(t *testing.T) {
 // impl-specific option) makes this an end-to-end-through-orchestrator
 // assertion, not just an option-count delta.
 func TestEventsWithHistoryOpts_OutputSchemaPassesOption(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"ok", "ok"}, nil)
 	fm.RecordOpts = true
 	o, err := New(Config{Model: fm})
@@ -900,6 +931,7 @@ func TestEventsWithHistoryOpts_OutputSchemaPassesOption(t *testing.T) {
 // can produce that combination, and the single-option tests above each miss it
 // because neither sets both.
 func TestEventsWithHistoryOpts_ThinkingAndSchemaCoexist(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"ok", "ok"}, nil)
 	fm.RecordOpts = true
 	o, err := New(Config{Model: fm})
@@ -949,6 +981,7 @@ func drainAgentChunks(t *testing.T, iter *adk.AsyncIterator[*adk.AgentEvent]) st
 // Generate(). FakeModel records each call, so StreamCalls>0 && GenerateCalls==0
 // after a turn proves the streaming runner is in effect.
 func TestNew_RunnerBuiltWithStreaming(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"streamed reply"}, nil)
 	o, err := New(Config{Model: fm})
 	require.NoError(t, err)
@@ -966,6 +999,7 @@ func TestNew_RunnerBuiltWithStreaming(t *testing.T) {
 // switch keeps token-by-token streaming. Same behavioral assertion as above,
 // driven through TurnOpts{Model: ...} which selects the per-model runner.
 func TestNew_PerModelRunnerBuiltWithStreaming(t *testing.T) {
+	t.Parallel()
 	defaultMdl := einollm.NewFakeModel([]string{"from-default"}, nil)
 	perTurnMdl := einollm.NewFakeModel([]string{"from-perview"}, nil)
 	o, err := New(Config{Model: defaultMdl})
@@ -1004,6 +1038,7 @@ func ptrIndex(i int) *int { return &i }
 // the COMPLETE accumulated arguments — not one frame per fragment (the cascade
 // `({) ⡿ (") ⡿ (path) ⡿ …` the TUI previously rendered).
 func TestClassifyStream_CollapsesToolCallDeltas(t *testing.T) {
+	t.Parallel()
 	deltas := []*schema.Message{
 		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{
 			{Index: ptrIndex(0), ID: "c1", Type: "function", Function: schema.FunctionCall{Name: "fs_read"}},
@@ -1042,6 +1077,7 @@ func TestClassifyStream_CollapsesToolCallDeltas(t *testing.T) {
 // an interleaving delta still carries a ToolCall entry, so a mid-fragment call
 // is never flushed early.
 func TestClassifyStream_ParallelToolCallsEachEmitOnce(t *testing.T) {
+	t.Parallel()
 	deltas := []*schema.Message{
 		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{
 			{Index: ptrIndex(0), ID: "a", Type: "function", Function: schema.FunctionCall{Name: "fs_read"}},
@@ -1077,6 +1113,7 @@ func TestClassifyStream_ParallelToolCallsEachEmitOnce(t *testing.T) {
 // moved past tool-call emission" fallback), rather than being held to EOF or
 // dropped.
 func TestClassifyStream_NoArgToolFlushedOnContent(t *testing.T) {
+	t.Parallel()
 	deltas := []*schema.Message{
 		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{
 			{Index: ptrIndex(0), ID: "c1", Type: "function", Function: schema.FunctionCall{Name: "time_now"}},
@@ -1103,6 +1140,7 @@ func TestClassifyStream_NoArgToolFlushedOnContent(t *testing.T) {
 // one tool_call frame per call. (The accumulator only affects the streaming
 // path.)
 func TestClassifyStream_NonStreamingStillOneFramePerCall(t *testing.T) {
+	t.Parallel()
 	iter := newFakeEventIter(t, []*schema.Message{
 		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{
 			{ID: "1", Type: "function", Function: schema.FunctionCall{Name: "fs_read", Arguments: `{"path":"x"}`}},
@@ -1131,6 +1169,7 @@ func TestClassifyStream_NonStreamingStillOneFramePerCall(t *testing.T) {
 // cumulative usage and asserts the accumulator ends with that value (not N×it);
 // it also asserts onUsage fires exactly once (at stream end), not per chunk.
 func TestClassifyStream_UsageTakesLastValueNotSum(t *testing.T) {
+	t.Parallel()
 	// Four assistant deltas, EACH carrying the full cumulative usage (the
 	// gateway style): prompt=100/completion=10/total=110 on every chunk. A
 	// fresh *TokenUsage per chunk mirrors a real provider that allocates one
@@ -1166,6 +1205,7 @@ func TestClassifyStream_UsageTakesLastValueNotSum(t *testing.T) {
 // WorkRootFromContext and writes under <root>/.yanshi/tmp/spillover/. The spill
 // file landing under the configured root is the observable proof.
 func TestOrchestrator_InjectsWorkRoot(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 
 	big := tools.NewGuardedTool("big", "Big", "returns a lot", 10*time.Second, nil,
@@ -1262,6 +1302,7 @@ func TestOrchestrator_SubAgentInheritsWorkRoot(t *testing.T) {
 // sum), because the API reports cumulative counts per call. Two streams
 // reporting 100 then 50 prompt tokens yield 50 (the latest), not 150.
 func TestClassifyStream_UsageLatestStreamWins(t *testing.T) {
+	t.Parallel()
 	mv1 := newStreamMessageVariant(t, schema.Assistant, []*schema.Message{
 		{Role: schema.Assistant, Content: "first", ResponseMeta: &schema.ResponseMeta{
 			Usage: &schema.TokenUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110}}},
@@ -1286,6 +1327,7 @@ func TestClassifyStream_UsageLatestStreamWins(t *testing.T) {
 // profile stays fail-closed; bootstrap is responsible for shipping a concrete
 // coding profile.
 func TestNew_NoMoreWildcardFallbackOnEmptyProfile(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModelWithMessages(nil, nil)
 	o, err := New(Config{Model: fm, Profile: guard.PermissionProfile{}})
 	if err != nil {
@@ -1313,6 +1355,7 @@ func countMemoryMarker(msgs []*schema.Message) int {
 // New() and saved into baseInstruction. Uses FakeModel.RecordMessages to grab
 // the system prompt rather than reading the field directly.
 func TestNew_MemorySuffixAppended(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"ok"}, nil)
 	fm.RecordMessages = true
 	o, err := New(Config{
@@ -1342,6 +1385,7 @@ func TestNew_MemorySuffixAppended(t *testing.T) {
 // the nested model's actual input. The override path must append memorySuffix
 // exactly once (marker count == 1).
 func TestRunSubAgentTurn_PropagatesMemorySuffix_Override(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"sub-output"}, nil)
 	fm.RecordMessages = true
 	o, err := New(Config{
@@ -1372,6 +1416,7 @@ func TestRunSubAgentTurn_PropagatesMemorySuffix_Override(t *testing.T) {
 // (empty override) uses baseInstruction verbatim and does NOT re-append. Catches
 // the FN4 double-injection regression (marker count would be 2).
 func TestRunSubAgentTurn_PropagatesMemorySuffix_Inherit(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"sub-output"}, nil)
 	fm.RecordMessages = true
 	o, err := New(Config{
@@ -1396,6 +1441,7 @@ func TestRunSubAgentTurn_PropagatesMemorySuffix_Inherit(t *testing.T) {
 }
 
 func TestApplyImages_MultimodalDirectEmbedsImagePart(t *testing.T) {
+	t.Parallel()
 	store := imagestore.New(imagestore.Config{MaxItems: 20, MaxBytes: 100 << 20})
 	cfg := Config{
 		Model:         einollm.NewFakeModel([]string{"ok"}, nil),
@@ -1413,6 +1459,7 @@ func TestApplyImages_MultimodalDirectEmbedsImagePart(t *testing.T) {
 }
 
 func TestApplyImages_NonMultimodalInsertsPlaceholderAndStores(t *testing.T) {
+	t.Parallel()
 	store := imagestore.New(imagestore.Config{MaxItems: 20, MaxBytes: 100 << 20})
 	cfg := Config{
 		Model:         einollm.NewFakeModel([]string{"ok"}, nil),
@@ -1437,6 +1484,7 @@ func TestApplyImages_NonMultimodalInsertsPlaceholderAndStores(t *testing.T) {
 }
 
 func TestApplyImages_NoImagesLeavesMessagesUntouched(t *testing.T) {
+	t.Parallel()
 	store := imagestore.New(imagestore.Config{MaxItems: 20, MaxBytes: 100 << 20})
 	cfg := Config{Model: einollm.NewFakeModel([]string{"ok"}, nil), ImageStore: store}
 	o, err := New(cfg)
@@ -1447,6 +1495,7 @@ func TestApplyImages_NoImagesLeavesMessagesUntouched(t *testing.T) {
 }
 
 func TestApplyImages_ModelSwitchReEvaluatesCapability(t *testing.T) {
+	t.Parallel()
 	store := imagestore.New(imagestore.Config{MaxItems: 20, MaxBytes: 100 << 20})
 	cfg := Config{
 		Model:         einollm.NewFakeModel([]string{"ok"}, nil),
@@ -1495,6 +1544,7 @@ func tail(s string, n int) string {
 // "present", because a fan-out that runs twice would silently double the token
 // bill of every attachment.
 func TestEventsWithHistoryOpts_AppliesImagesExactlyOnce(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"ok"}, nil)
 	fm.RecordMessages = true
 	o, err := New(Config{
@@ -1530,6 +1580,7 @@ func TestEventsWithHistoryOpts_AppliesImagesExactlyOnce(t *testing.T) {
 // it asserts the caller's slice is byte-for-byte the state it had before the
 // first call — same element pointers, same content, no image parts.
 func TestEventsWithHistoryOpts_ImagesDoNotMutateCallerHistory(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel([]string{"ok", "ok"}, nil)
 	fm.RecordMessages = true
 	o, err := New(Config{

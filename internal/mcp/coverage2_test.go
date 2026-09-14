@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/x6nux/yanshi/internal/testutil"
 )
 
 // managerWithClient builds a Manager with one server config and an injected
@@ -120,14 +122,14 @@ func TestReconnectBranches(t *testing.T) {
 
 	// exhausted: a server whose startOne always fails (bad URL) with a tiny
 	// attempt budget.
-	m4 := managerWithClient(t, &ServerConfig{Name: "s", Enabled: true, Transport: TransportHTTP, URL: "http://127.0.0.1:1/x", Reconnect: true}, nil)
+	m4 := managerWithClient(t, &ServerConfig{Name: "s", Enabled: true, Transport: TransportHTTP, URL: "http://" + testutil.ClosedLoopbackAddr(t) + "/x", Reconnect: true}, nil)
 	m4.SetHealthConfig(HealthConfig{Enabled: true, StartupTimeout: 100 * time.Millisecond, ReconnectMaxAttempts: 1, ReconnectInitialBackoff: time.Millisecond, ReconnectMaxBackoff: time.Millisecond})
 	if err := m4.reconnect(ctx, "s"); err == nil {
 		t.Fatal("reconnect that always fails must error")
 	}
 
 	// single-flight: two concurrent reconnects on the same server coalesce.
-	m5 := managerWithClient(t, &ServerConfig{Name: "s", Enabled: true, Transport: TransportHTTP, URL: "http://127.0.0.1:1/x", Reconnect: true}, nil)
+	m5 := managerWithClient(t, &ServerConfig{Name: "s", Enabled: true, Transport: TransportHTTP, URL: "http://" + testutil.ClosedLoopbackAddr(t) + "/x", Reconnect: true}, nil)
 	m5.SetHealthConfig(HealthConfig{Enabled: true, StartupTimeout: 100 * time.Millisecond, ReconnectMaxAttempts: 1, ReconnectInitialBackoff: 50 * time.Millisecond, ReconnectMaxBackoff: 50 * time.Millisecond})
 	var firstErr, secondErr error
 	var wg sync.WaitGroup
@@ -153,7 +155,7 @@ func TestCallToolRetryBranches(t *testing.T) {
 
 	// tool found but reconnect fails: inject a tool + a client that errors on
 	// CallTool, with a server that cannot restart.
-	m2 := NewManager(map[string]*ServerConfig{"s": {Name: "s", Enabled: true, Transport: TransportHTTP, URL: "http://127.0.0.1:1/x", Reconnect: true}})
+	m2 := NewManager(map[string]*ServerConfig{"s": {Name: "s", Enabled: true, Transport: TransportHTTP, URL: "http://" + testutil.ClosedLoopbackAddr(t) + "/x", Reconnect: true}})
 	m2.mu.Lock()
 	m2.toolMap["mcp_s_t"] = ToolDescriptor{ServerName: "s", ToolName: "t", Qualified: "mcp_s_t"}
 	m2.clients["s"] = &fakeClient{callErr: errors.New("boom")}
@@ -299,7 +301,13 @@ func TestHTTPClientCloseWithSession(t *testing.T) {
 // TestHTTPClientRequestErrors covers ListTools/ListResources/ReadResource error
 // paths when the endpoint is unreachable.
 func TestHTTPClientRequestErrors(t *testing.T) {
-	c := NewHTTPClient("http://127.0.0.1:1/x", "")
+	// A genuinely closed loopback port, not the hardcoded 127.0.0.1:1 this used
+	// to name. On a host where something listens on port 1 the dial SUCCEEDS and
+	// the peer never answers, so each of the four calls below waited out the
+	// MCP client's 30s timeout instead of taking the connection-refused path
+	// they are here to exercise: 120s for a test whose whole subject is that an
+	// unreachable endpoint errors.
+	c := NewHTTPClient("http://"+testutil.ClosedLoopbackAddr(t)+"/x", "")
 	if _, err := c.ListTools(context.Background()); err == nil {
 		t.Fatal("ListTools unreachable must error")
 	}
@@ -326,7 +334,7 @@ func TestHTTPClientPostErrorBranches(t *testing.T) {
 	}
 
 	// token source error.
-	c2 := NewHTTPClientWithTokenSource("http://127.0.0.1:1/x", &errTokenSource{})
+	c2 := NewHTTPClientWithTokenSource("http://"+testutil.ClosedLoopbackAddr(t)+"/x", &errTokenSource{})
 	if _, err := c2.request(ctx, "ping", nil); err == nil {
 		t.Fatal("request with failing token source must error")
 	}

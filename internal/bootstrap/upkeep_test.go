@@ -25,6 +25,7 @@ import (
 // dead. So this drives the REAL assembled worker against the REAL store and
 // checks that a stale session actually left the messages table.
 func TestUpkeep_RetentionReachesTheAssembledWorker(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "yanshi.db")
 
@@ -62,6 +63,7 @@ func TestUpkeep_RetentionReachesTheAssembledWorker(t *testing.T) {
 // Without it, a BuildUpkeep that hardcoded a retention would pass the test
 // above.
 func TestUpkeep_ZeroRetentionLeavesTheStoreAlone(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "yanshi.db")
 	sid := seedStaleSession(t, dbPath)
@@ -112,6 +114,7 @@ func seedStaleSession(t *testing.T, path string) string {
 // config→worker line the same way the first one is guarded: through the real
 // assembled App and an observable effect, not through the wiring's shape.
 func TestUpkeep_MemoryQuotaReachesTheAssembledWorker(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "yanshi.db")
 	seedMemories(t, dbPath, 20)
@@ -143,6 +146,7 @@ func TestUpkeep_MemoryQuotaReachesTheAssembledWorker(t *testing.T) {
 // branch in BuildUpkeep makes the first half red; hardcoding the model past it
 // makes the second half red.
 func TestUpkeep_MemoryAutoExtractGatesTheModel(t *testing.T) {
+	t.Parallel()
 	leases := func(app *bootstrap.App) int {
 		t.Helper()
 		var n int

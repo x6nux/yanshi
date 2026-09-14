@@ -22,6 +22,7 @@ import (
 // probe answered with 401 reads to every supervisor as "not ready", so a
 // backend that is serving perfectly is taken out of rotation and stays out.
 func TestProbeEndpointsAreUnauthenticatedFromRemote(t *testing.T) {
+	t.Parallel()
 	s := New(Config{Token: "secret"})
 	for _, p := range []string{"/healthz", "/readyz"} {
 		s.HandleFunc("GET "+p, func(w http.ResponseWriter, _ *http.Request) {
@@ -71,6 +72,7 @@ func TestProbeEndpointsAreUnauthenticatedFromRemote(t *testing.T) {
 // edit that made /readyz report which subsystem is still assembling would hand
 // an unauthenticated caller the deployment's component inventory.
 func TestProbeEndpointsDiscloseNothing(t *testing.T) {
+	t.Parallel()
 	s := New(Config{Token: "secret"})
 	for _, p := range []string{"/healthz", "/readyz"} {
 		s.HandleFunc("GET "+p, func(w http.ResponseWriter, _ *http.Request) {
@@ -95,6 +97,7 @@ func TestProbeEndpointsDiscloseNothing(t *testing.T) {
 // from the handler test so a change to the path set fails on the rule rather
 // than on the six HTTP round trips above.
 func TestIsPublicProbePath(t *testing.T) {
+	t.Parallel()
 	cases := map[string]bool{
 		"/healthz":         true,
 		"/readyz":          true,

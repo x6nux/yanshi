@@ -30,6 +30,7 @@ func (r *chunkThenErrReader) Read(p []byte) (int, error) {
 // TestCov_ReadHeadlessInputs_TextReadError covers the text-mode io.ReadAll
 // error branch.
 func TestCov_ReadHeadlessInputs_TextReadError(t *testing.T) {
+	t.Parallel()
 	_, err := ReadHeadlessInputs(alwaysErrReader{}, HeadlessInputText)
 	assert.Error(t, err)
 }
@@ -37,6 +38,7 @@ func TestCov_ReadHeadlessInputs_TextReadError(t *testing.T) {
 // TestCov_ReadHeadlessInputs_LinesScanError covers the lines-mode scanner.Err
 // branch (one good line, then the reader errors).
 func TestCov_ReadHeadlessInputs_LinesScanError(t *testing.T) {
+	t.Parallel()
 	_, err := ReadHeadlessInputs(&chunkThenErrReader{first: "line\n"}, HeadlessInputLines)
 	assert.Error(t, err)
 }
@@ -44,6 +46,7 @@ func TestCov_ReadHeadlessInputs_LinesScanError(t *testing.T) {
 // TestCov_ReadHeadlessInputs_JSONLScanError covers the jsonl-mode scanner.Err
 // branch (one valid JSON line, then the reader errors).
 func TestCov_ReadHeadlessInputs_JSONLScanError(t *testing.T) {
+	t.Parallel()
 	_, err := ReadHeadlessInputs(io.Reader(&chunkThenErrReader{first: `{"prompt":"x"}` + "\n"}), HeadlessInputJSONL)
 	assert.Error(t, err)
 }

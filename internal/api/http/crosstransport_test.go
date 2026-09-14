@@ -150,6 +150,7 @@ func describe(v any) string {
 //
 // ledger: D1/APS1#3 与 HTTP 行为一致
 func TestThreadStartAgreesAcrossTransports(t *testing.T) {
+	t.Parallel()
 	ts, rpc := crossFixture(t)
 	body := `{"title":"cross","model":"fake","thinking":"low"}`
 
@@ -170,6 +171,7 @@ func TestThreadStartAgreesAcrossTransports(t *testing.T) {
 //
 // ledger: D1/APS1#3 与 HTTP 行为一致
 func TestThreadResumeAgreesAcrossTransports(t *testing.T) {
+	t.Parallel()
 	ts, rpc := crossFixture(t)
 	// Both transports must resume a thread the OTHER one created, which is the
 	// stronger claim: it proves they share the service rather than each
@@ -198,6 +200,7 @@ func TestThreadResumeAgreesAcrossTransports(t *testing.T) {
 //
 // ledger: D1/APS1#3 与 HTTP 行为一致
 func TestInterruptAgreesAcrossTransports(t *testing.T) {
+	t.Parallel()
 	ts, rpc := crossFixture(t)
 	started := postJSON(t, ts, "/api/v1/thread/start", `{}`)
 	thread, _ := started["thread"].(map[string]any)
@@ -240,6 +243,7 @@ func postStatus(t *testing.T, ts *httptest.Server, path, body string) int {
 // two vocabularies. What this pins is that both say NO, and that neither
 // silently succeeds.
 func TestErrorsAgreeAcrossTransports(t *testing.T) {
+	t.Parallel()
 	ts, rpc := crossFixtureRaw(t)
 
 	cases := []struct {

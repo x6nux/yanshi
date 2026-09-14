@@ -20,6 +20,7 @@ import (
 )
 
 func TestSubagentRelayDetachWaitsForInflightWrite(t *testing.T) {
+	t.Parallel()
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	relay := newSubagentRelay(func(proto.ServerFrame) {
@@ -49,6 +50,7 @@ func TestSubagentRelayDetachWaitsForInflightWrite(t *testing.T) {
 }
 
 func TestSubagentRelayDetachDoesNotCancelAgentAndTerminalPersists(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "subagents.v1.json")
 	mgr := registry.NewManager(registry.NewManagerOpts{
 		RootContext: context.Background(), Path: path, SessionBootID: "boot", MaxConcurrent: 1,
@@ -86,6 +88,7 @@ func TestSubagentRelayDetachDoesNotCancelAgentAndTerminalPersists(t *testing.T) 
 }
 
 func TestChatWS_ForwardsTypedSubagentEvent(t *testing.T) {
+	t.Parallel()
 	emitCall := schema.AssistantMessage("", []schema.ToolCall{{
 		ID: "emit-1", Type: "function",
 		Function: schema.FunctionCall{Name: "emit_subagent_test", Arguments: `{}`},

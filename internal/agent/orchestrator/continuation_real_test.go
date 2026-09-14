@@ -102,6 +102,7 @@ func lineCount(t *testing.T, path string) int {
 // completed side effect, which for a real shell_run would mean running a
 // deployment, a migration or a destructive command a second time.
 func TestL5Real_ContinuationDoesNotReExecuteTheSideEffect(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "effects.log")
 	appender := &appendingTool{path: logPath}
@@ -184,6 +185,7 @@ func TestL5Real_ContinuationDoesNotReExecuteTheSideEffect(t *testing.T) {
 // this test ever stops showing two lines, the fixture no longer reproduces the
 // hazard and the assertion above has quietly become vacuous.
 func TestL5Real_FullReplayDoesReExecute(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "effects.log")
 	appender := &appendingTool{path: logPath}

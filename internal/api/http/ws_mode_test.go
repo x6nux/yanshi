@@ -17,6 +17,7 @@ import (
 // callback auto-approve a static-denied tool call WITHOUT emitting a
 // permission_request frame: the tool runs and the file is written.
 func TestChatWS_ModeYOLO_NoPrompt(t *testing.T) {
+	t.Parallel()
 	url, workdir := newPermWSServer(t)
 	c := dial(t, url)
 	defer c.Close()
@@ -49,6 +50,7 @@ func TestChatWS_ModeYOLO_NoPrompt(t *testing.T) {
 // TestChatWS_ModeAllowEdits_NoPromptForEditTool proves set_mode("allow-edits")
 // auto-approves an edit tool (fs_write) without prompting.
 func TestChatWS_ModeAllowEdits_NoPromptForEditTool(t *testing.T) {
+	t.Parallel()
 	url, workdir := newPermWSServer(t)
 	c := dial(t, url)
 	defer c.Close()
@@ -76,6 +78,7 @@ func TestChatWS_ModeAllowEdits_NoPromptForEditTool(t *testing.T) {
 // TestChatWS_StatusEchoesMode proves a status frame carries the permission mode
 // back to the client after set_mode, so the TUI footer can mirror it.
 func TestChatWS_StatusEchoesMode(t *testing.T) {
+	t.Parallel()
 	url, _ := newPermWSServer(t)
 	c := dial(t, url)
 	defer c.Close()
@@ -92,6 +95,7 @@ func TestChatWS_StatusEchoesMode(t *testing.T) {
 // no longer bypasses — it delegates to the AI risk assessment (here nil-model,
 // so it returns not-resolved, i.e. it would prompt).
 func TestResolvePermissionMode_ProfileHardDeny(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		mode     guard.PermissionMode
 		wantTool tools.PermissionDecision
@@ -121,6 +125,7 @@ func TestResolvePermissionMode_ProfileHardDeny(t *testing.T) {
 // is blocked under YOLO, and in-workdir deletion is allowed under YOLO. Auto
 // delegates out-of-scope to its AI assessment (nil model here -> prompt).
 func TestResolvePermissionMode_DestructiveGate(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		mode     guard.PermissionMode
@@ -167,6 +172,7 @@ func TestResolvePermissionMode_DestructiveGate(t *testing.T) {
 //
 // ledger: A2/G05#1 plan 模式禁编辑类工具
 func TestChatWS_ModePlan_ProducesReadOnlyTurn(t *testing.T) {
+	t.Parallel()
 	url, workdir := newPermWSServer(t)
 	c := dial(t, url)
 	defer c.Close()

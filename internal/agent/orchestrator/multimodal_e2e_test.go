@@ -43,6 +43,7 @@ func encodePNGBase64ForE2E(t *testing.T) string {
 //
 // ledger: G/VISION#1 主多模态：图直接通过消息内容到达
 func TestE2E_MultimodalMainDirectlyUnderstandsImage(t *testing.T) {
+	t.Parallel()
 	mm := einollm.NewFakeModel([]string{"it is a red square"}, nil)
 	store := imagestore.New(imagestore.Config{MaxItems: 20, MaxBytes: 100 << 20})
 	o, err := New(Config{
@@ -68,6 +69,7 @@ func TestE2E_MultimodalMainDirectlyUnderstandsImage(t *testing.T) {
 //
 // ledger: G/VISION#2 主非多模态+有辅助：占位+image_describe 走通
 func TestE2E_NonMultimodalMainUsesPlaceholderAndStore(t *testing.T) {
+	t.Parallel()
 	store := imagestore.New(imagestore.Config{MaxItems: 20, MaxBytes: 100 << 20})
 	o, err := New(Config{
 		Model:         einollm.NewFakeModel([]string{"ok"}, nil),
@@ -93,6 +95,7 @@ func TestE2E_NonMultimodalMainUsesPlaceholderAndStore(t *testing.T) {
 // as an image part, an escaping reference does not, and neither rewrites the
 // caller's history slice (the WS turn loop reuses it across retries).
 func TestE2E_PathRefTurnWiring(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	root := filepath.Join(parent, "work")
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "shots"), 0o750))
@@ -139,6 +142,7 @@ func TestE2E_PathRefTurnWiring(t *testing.T) {
 // result) reaches the model as a native image part, and reaches it exactly once
 // even though the ReAct loop calls the model again on every iteration.
 func TestE2E_ToolProducedImageReachesTheModel(t *testing.T) {
+	t.Parallel()
 	mm := einollm.NewFakeModel([]string{"ok"}, nil)
 	o, err := New(Config{Model: mm, MultimodalMap: map[string]bool{"mm": true}})
 	require.NoError(t, err)
@@ -182,6 +186,7 @@ func TestE2E_ToolProducedImageReachesTheModel(t *testing.T) {
 // to go, so the sink refuses to collect and fs_read/web_fetch return hint text
 // instead of pushing binary into a text message.
 func TestE2E_NonMultimodalTurnBindsARefusingSink(t *testing.T) {
+	t.Parallel()
 	o, err := New(Config{
 		Model:         einollm.NewFakeModel([]string{"ok"}, nil),
 		MultimodalMap: map[string]bool{"text": false},

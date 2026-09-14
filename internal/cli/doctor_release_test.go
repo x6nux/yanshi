@@ -27,6 +27,7 @@ func writeDoctorCfg(t *testing.T, body string) string {
 // TestDoctorHasNewReleaseChecks asserts the three UPG1 checks are present in the
 // report by name: config-version, wal, keyring.
 func TestDoctorHasNewReleaseChecks(t *testing.T) {
+	t.Parallel()
 	rep := RunDoctor(context.Background(), DoctorOptions{ConfigPath: ""})
 	names := map[string]bool{}
 	for _, c := range rep.Checks {
@@ -40,6 +41,7 @@ func TestDoctorHasNewReleaseChecks(t *testing.T) {
 // TestDoctorReleaseFlagDoesNotChangeCheckSet verifies --release only changes
 // how release-blocking warns are promoted, not which checks run.
 func TestDoctorReleaseFlagDoesNotChangeCheckSet(t *testing.T) {
+	t.Parallel()
 	normal := RunDoctor(context.Background(), DoctorOptions{})
 	release := RunDoctor(context.Background(), DoctorOptions{Release: true})
 	require.Len(t, normal.Checks, len(release.Checks), "--release must not add/remove checks")
@@ -49,6 +51,7 @@ func TestDoctorReleaseFlagDoesNotChangeCheckSet(t *testing.T) {
 // schema_version equals the supported value and asserts the config-version
 // check reports OK.
 func TestCheckConfigVersionOKWhenSupported(t *testing.T) {
+	t.Parallel()
 	p := writeDoctorCfg(t, "schema_version: 1\nllm: {}\n")
 	rep := RunDoctor(context.Background(), DoctorOptions{ConfigPath: p})
 	c := findCheck(t, rep, "config-version")
@@ -60,6 +63,7 @@ func TestCheckConfigVersionOKWhenSupported(t *testing.T) {
 // must surface as fail (not warn), because shipping with a config the running
 // yanshi cannot fully understand is release-blocking.
 func TestDoctorReleasePromotesConfigVersionWarnToFail(t *testing.T) {
+	t.Parallel()
 	p := writeDoctorCfg(t, "schema_version: 999\nllm: {}\n")
 	// Non-release: warn (anomaly but not a boot blocker).
 	normal := RunDoctor(context.Background(), DoctorOptions{ConfigPath: p})
@@ -75,6 +79,7 @@ func TestDoctorReleasePromotesConfigVersionWarnToFail(t *testing.T) {
 // PRAGMA journal_mode, and closes the connection — same pattern as
 // checkDatabase. The check must not leave an open handle or flip the mode.
 func TestCheckWALIsReadOnlyAndCleansUp(t *testing.T) {
+	t.Parallel()
 	p := writeDoctorCfg(t, "schema_version: 1\nstorage:\n  sqlite_path: "+filepath.Join(t.TempDir(), "wal.db")+"\nllm: {}\n")
 	rep := RunDoctor(context.Background(), DoctorOptions{ConfigPath: p})
 	c := findCheck(t, rep, "wal")
@@ -86,6 +91,7 @@ func TestCheckWALIsReadOnlyAndCleansUp(t *testing.T) {
 // reports fail — on a nokeyring build it is a note (OK), on a real build it is
 // OK or warn. nokeyring is the default release variant, so it must not block.
 func TestCheckKeyringAvailabilityNeverFails(t *testing.T) {
+	t.Parallel()
 	rep := RunDoctor(context.Background(), DoctorOptions{ConfigPath: ""})
 	c := findCheck(t, rep, "keyring")
 	assert.NotEqual(t, StatusFail, c.Status, "keyring check must never fail (nokeyring is the default release variant); got %q", c.Message)
@@ -103,6 +109,7 @@ func TestCheckKeyringAvailabilityNeverFails(t *testing.T) {
 // So the assertion is now about the claim: status may be ok ONLY when the
 // report says Enforced. Anything else must warn, whatever words it uses.
 func TestCheckSandboxNeverClaimsEnforcement(t *testing.T) {
+	t.Parallel()
 	rep := RunDoctor(context.Background(), DoctorOptions{ConfigPath: ""})
 	c := findCheck(t, rep, "sandbox")
 	if c.Status == StatusOK {
@@ -124,6 +131,7 @@ func TestCheckSandboxNeverClaimsEnforcement(t *testing.T) {
 //
 // ledger: F1/WAL1#5 WAL 文件有界（roadmap:295）。plan 另有 10 条细化验收：每条池连接 PRAGMA 生效、MaxOpenConns 按配置且 :memory: 强制 1、16×50 零 BUSY、读不阻塞写、双 Open 跨进程 busy_timeout、rollback→WAL 幂等零丢失、Close 执行 wal_checkpoint(TRUNCATE)、work/vcs/auth/bootstrap 现有测试全绿、Windows CI 下并发/升级测试全绿、doctor 报告 journal_mode 与 -wal/-shm 大小
 func TestDoctorWALCheckReportsSidecarSizes(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "yanshi.db")
 	st, err := store.Open(dbPath)

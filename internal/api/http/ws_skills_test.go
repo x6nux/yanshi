@@ -35,6 +35,7 @@ func skillFrameMap(f proto.ServerFrame) map[string]proto.SkillInfo {
 // level regression: bootstrap-equivalent original Loader survives every Reload,
 // while canonical actions and Enabled state cross the real WS protocol.
 func TestChatWS_Skills_AllRootsInstallDisableUninstall(t *testing.T) {
+	t.Parallel()
 	builtinRoot := t.TempDir()
 	userRoot := t.TempDir()
 	pluginRoot := t.TempDir()

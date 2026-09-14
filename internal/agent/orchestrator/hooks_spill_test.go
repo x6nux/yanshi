@@ -56,6 +56,7 @@ func hookSpillFixture(t *testing.T) (context.Context, *work.Manager, string) {
 }
 
 func TestPreToolUseHookOversizeContextSpillsToArtifact(t *testing.T) {
+	t.Parallel()
 	ctx, mgr, workRoot := hookSpillFixture(t)
 	d := &hookToolDouble{workRoot: workRoot}
 
@@ -96,6 +97,7 @@ func TestPreToolUseHookOversizeContextSpillsToArtifact(t *testing.T) {
 }
 
 func TestPreToolUseHookInlineContextStaysBoundedWithSpill(t *testing.T) {
+	t.Parallel()
 	// 内联上限不因落盘而放宽：>2KiB 的行仍然只进截断头部，全文在 artifact。
 	ctx, _, workRoot := hookSpillFixture(t)
 	d := &hookToolDouble{workRoot: workRoot}

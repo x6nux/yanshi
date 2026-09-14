@@ -44,6 +44,7 @@ import (
 // bound on that context it would deny sub-agent tool calls outright rather than
 // confirm them.
 func TestStrictModeDoesNotReachManagedSubAgents(t *testing.T) {
+	t.Parallel()
 	var ran bool
 	var authorizeErr error
 	profile := guard.PermissionProfile{Tools: guard.ToolsPerm{Allow: []string{"probe_confirm"}}}

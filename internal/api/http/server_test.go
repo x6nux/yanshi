@@ -11,6 +11,7 @@ import (
 )
 
 func TestServer_TokenAuth(t *testing.T) {
+	t.Parallel()
 	s := New(Config{Token: "secret"})
 	s.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -50,6 +51,7 @@ func TestServer_TokenAuth(t *testing.T) {
 }
 
 func TestAuth_LoopbackBypassesToken(t *testing.T) {
+	t.Parallel()
 	s := New(Config{Token: "secret"})
 	s.HandleFunc("POST /x", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -65,6 +67,7 @@ func TestAuth_LoopbackBypassesToken(t *testing.T) {
 }
 
 func TestAuth_NonLoopbackRequiresToken(t *testing.T) {
+	t.Parallel()
 	s := New(Config{Token: "secret"})
 	s.HandleFunc("POST /x", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

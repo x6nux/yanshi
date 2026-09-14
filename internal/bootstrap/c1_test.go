@@ -22,6 +22,7 @@ import (
 )
 
 func TestSelectRLMModel_FakeFallback(t *testing.T) {
+	t.Parallel()
 	fake := einollm.NewFakeModel([]string{"ok"}, nil)
 	cfg := config.Config{} // Batch.RLMModel 为空
 	got, err := bootstrap.SelectRLMModel(cfg, nil, fake)
@@ -30,6 +31,7 @@ func TestSelectRLMModel_FakeFallback(t *testing.T) {
 }
 
 func TestSelectRLMModel_RequiresCheapCostClass(t *testing.T) {
+	t.Parallel()
 	cheap := einollm.NewFakeModel([]string{"ok"}, nil)
 	expensive := einollm.NewFakeModel([]string{"big"}, nil)
 	models := map[string]model.BaseChatModel{
@@ -64,6 +66,7 @@ func TestSelectRLMModel_RequiresCheapCostClass(t *testing.T) {
 }
 
 func TestSelectRLMModel_UnknownProviderFails(t *testing.T) {
+	t.Parallel()
 	_, err := bootstrap.SelectRLMModel(
 		config.Config{Batch: config.BatchConfig{RLMModel: "ghost"}},
 		map[string]model.BaseChatModel{}, nil,
@@ -72,11 +75,13 @@ func TestSelectRLMModel_UnknownProviderFails(t *testing.T) {
 }
 
 func TestSelectRLMModel_NoFakeNoProviderFails(t *testing.T) {
+	t.Parallel()
 	_, err := bootstrap.SelectRLMModel(config.Config{}, nil, nil)
 	require.Error(t, err)
 }
 
 func TestBuildRLMMaxConcurrencyClamped(t *testing.T) {
+	t.Parallel()
 	fake := einollm.NewFakeModel([]string{"ok"}, nil)
 	got, err := bootstrap.BuildRLM(config.Config{}, nil, fake)
 	require.NoError(t, err)
@@ -90,6 +95,7 @@ func TestBuildRLMMaxConcurrencyClamped(t *testing.T) {
 }
 
 func TestBuildRLM_MaxConcurrencyClampDown(t *testing.T) {
+	t.Parallel()
 	fake := einollm.NewFakeModel([]string{"ok"}, nil)
 	got, err := bootstrap.BuildRLM(config.Config{
 		Batch: config.BatchConfig{RLMMaxConcurrency: 999},
@@ -103,6 +109,7 @@ func TestBuildRLM_MaxConcurrencyClampDown(t *testing.T) {
 }
 
 func TestBuildAutomationDefaultInterval(t *testing.T) {
+	t.Parallel()
 	s, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
@@ -121,11 +128,13 @@ func TestBuildAutomationDefaultInterval(t *testing.T) {
 }
 
 func TestBuildAutomationRejectsNilStore(t *testing.T) {
+	t.Parallel()
 	_, err := bootstrap.BuildAutomation(context.Background(), config.Config{}, nil, nil)
 	require.Error(t, err)
 }
 
 func TestBuildAutomationConstructsManagerSchedulerAdapter(t *testing.T) {
+	t.Parallel()
 	s, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
@@ -151,6 +160,7 @@ func TestBuildAutomationConstructsManagerSchedulerAdapter(t *testing.T) {
 }
 
 func TestBuildAutomationRejectsNilAdapter(t *testing.T) {
+	t.Parallel()
 	s, err := store.Open(":memory:")
 	require.NoError(t, err)
 	defer s.Close()
@@ -159,6 +169,7 @@ func TestBuildAutomationRejectsNilAdapter(t *testing.T) {
 }
 
 func TestBuildAutomationSchedulerGoroutineExitsOnCancel(t *testing.T) {
+	t.Parallel()
 	s, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
@@ -194,6 +205,7 @@ func TestBuildAutomationSchedulerGoroutineExitsOnCancel(t *testing.T) {
 }
 
 func TestBuildAutomationAllToolsCount(t *testing.T) {
+	t.Parallel()
 	s, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
@@ -222,6 +234,7 @@ func TestBuildAutomationAllToolsCount(t *testing.T) {
 }
 
 func TestBuildC1WiresAllThreeComponents(t *testing.T) {
+	t.Parallel()
 	s, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
@@ -271,6 +284,7 @@ func TestBuildC1WiresAllThreeComponents(t *testing.T) {
 }
 
 func TestBuildC1RejectsNilRegistry(t *testing.T) {
+	t.Parallel()
 	s, _ := store.Open(":memory:")
 	defer s.Close()
 	adapter := bootstrap.NewA2Adapter(newFakeWorkManager(), newFakeBrokerSubmitter(), s)
@@ -279,6 +293,7 @@ func TestBuildC1RejectsNilRegistry(t *testing.T) {
 }
 
 func TestBuildC1RejectsNilAdapter(t *testing.T) {
+	t.Parallel()
 	s, _ := store.Open(":memory:")
 	defer s.Close()
 	reg := registry.NewManager(registry.NewManagerOpts{
@@ -292,6 +307,7 @@ func TestBuildC1RejectsNilAdapter(t *testing.T) {
 }
 
 func TestBuildC1RLMDegradesWithoutModel(t *testing.T) {
+	t.Parallel()
 	// fakeModel 为 nil 且 batch.rlm_model 为空时，BuildRLM 失败 —— 但这不该
 	// 连带废掉 automation 与 agent_batch：BuildC1 记警告、RLM 置 nil、其余照常构造。
 	s, _ := store.Open(":memory:")
@@ -320,6 +336,7 @@ func TestBuildC1RLMDegradesWithoutModel(t *testing.T) {
 }
 
 func TestBuildC1BuildAutomationError(t *testing.T) {
+	t.Parallel()
 	// BuildAutomation error is unreachable inside BuildC1 with valid inputs
 	// (NewManager never errors with non-nil repo/queue).
 	// This test verifies BuildC1 passes valid args to BuildAutomation.

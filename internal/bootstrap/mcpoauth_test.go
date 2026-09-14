@@ -25,6 +25,7 @@ import (
 // that built a config.MCPOAuthConfig in Go would re-create the same blind spot
 // one layer up, since the missing piece was the yaml tag, not the projection.
 func TestMCPOAuthReachesRuntimeFromYAML(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(
@@ -78,6 +79,7 @@ func TestMCPOAuthReachesRuntimeFromYAML(t *testing.T) {
 // itself, so removing the OAuth line from buildMCPManager reddens even though
 // mcpOAuthFromConfig keeps its own unit test passing.
 func TestBuildMCPManagerProjectsOAuth(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{MCP: config.MCPConfig{
 		Servers: map[string]*config.MCPServerConfig{
 			"remote": {

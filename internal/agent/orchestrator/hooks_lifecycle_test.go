@@ -105,6 +105,7 @@ func TestCompactionHookFailureIsFailOpen(t *testing.T) {
 }
 
 func TestNewCompactionHookSinkNilWhenUnconfigured(t *testing.T) {
+	t.Parallel()
 	require.Nil(t, NewCompactionHookSink(HooksConfig{}))
 	// 只配置 PreToolUse 不产生压缩 sink —— 未配置压缩 hook 的部署在传输层
 	// 与 turn 层都保持「没有总线」的直通行为。

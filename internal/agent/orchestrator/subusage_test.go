@@ -23,6 +23,7 @@ import (
 // reddened nothing, so the ordering was an argued property. Checked at the
 // source because reaching the error path needs an Orchestrator and a model.
 func TestUsageIsReportedBeforeTheErrorCheck(t *testing.T) {
+	t.Parallel()
 	src, err := os.ReadFile("orchestrator.go")
 	if err != nil {
 		t.Fatalf("read orchestrator.go: %v", err)
@@ -52,6 +53,7 @@ func TestUsageIsReportedBeforeTheErrorCheck(t *testing.T) {
 // longer than the operator asked for. Measured in W3 review round 5 — zeroing
 // CompletionTokens left the whole suite green.
 func TestSubAgentUsageForSink(t *testing.T) {
+	t.Parallel()
 	t.Run("nothing spent reports nothing", func(t *testing.T) {
 		assert.Nil(t, subAgentUsageForSink(TurnUsage{}),
 			"a zero turn must not push a no-op entry into the sink")
@@ -85,6 +87,7 @@ func TestSubAgentUsageForSink(t *testing.T) {
 // cfg.Model and the whole package stayed green -- the main turn path would
 // then never compact, in production, with every test still passing.
 func TestNewWiresCompactionIntoTheModel(t *testing.T) {
+	t.Parallel()
 	o, err := New(Config{
 		Model:      einollm.NewFakeModel(nil, nil),
 		Compaction: CompactionConfig{Threshold: 0.8, ContextWindow: 1000, KeepRecent: 4},
@@ -114,6 +117,7 @@ func TestNewWiresCompactionIntoTheModel(t *testing.T) {
 // pin adk's plumbing rather than this line -- the same tradeoff
 // TestUsageIsReportedBeforeTheErrorCheck documents above.
 func TestRunnerForWiresCompactionToo(t *testing.T) {
+	t.Parallel()
 	src, err := os.ReadFile("orchestrator.go")
 	if err != nil {
 		t.Fatalf("read orchestrator.go: %v", err)
@@ -133,6 +137,7 @@ func TestRunnerForWiresCompactionToo(t *testing.T) {
 // 1.9x its actual capacity, so the gate never fires at all. That is not a
 // rounding problem: compaction simply stops existing for that provider.
 func TestCompactionGatesUseTheResolvedWindow(t *testing.T) {
+	t.Parallel()
 	cc := CompactionConfig{
 		Threshold:         0.8,
 		ContextWindow:     256000, // global fallback
@@ -160,6 +165,7 @@ func TestCompactionGatesUseTheResolvedWindow(t *testing.T) {
 // or empty model must return 0 and let wrapCompaction fall back rather than
 // silently sizing every gate to zero.
 func TestRunnerForSizesGatesToTheTurnsModel(t *testing.T) {
+	t.Parallel()
 	cc := CompactionConfig{
 		Threshold:       0.8,
 		ContextWindow:   256000,
@@ -183,6 +189,7 @@ func TestRunnerForSizesGatesToTheTurnsModel(t *testing.T) {
 // own resolved threshold, and an unknown or empty model id defers to the
 // caller (0 tells wrapCompaction to keep the global cc.Threshold).
 func TestCompactionConfig_thresholdFor(t *testing.T) {
+	t.Parallel()
 	cc := CompactionConfig{
 		Threshold:          0.8,
 		ProviderThresholds: map[string]float64{"small": 0.55},
@@ -209,6 +216,7 @@ func TestCompactionConfig_thresholdFor(t *testing.T) {
 // operator's global 0.8, exactly the "wrong number, still compiles" failure
 // class the window test above already guards for ContextWindow.
 func TestCompactionThresholdGatesUseTheResolvedThreshold(t *testing.T) {
+	t.Parallel()
 	cc := CompactionConfig{
 		Threshold:          0.8, // global fallback
 		ContextWindow:      256000,
@@ -232,6 +240,7 @@ func TestCompactionThresholdGatesUseTheResolvedThreshold(t *testing.T) {
 // to cc.Threshold exactly like an absent window falls back to
 // cc.ContextWindow.
 func TestWrapCompaction_ZeroResolvedThresholdKeepsTheGlobalOne(t *testing.T) {
+	t.Parallel()
 	cc := CompactionConfig{Threshold: 0.8, ContextWindow: 128000, KeepRecent: 4}
 
 	wrapped := wrapCompaction(einollm.NewFakeModel(nil, nil), cc, 0, cc.thresholdFor("unknown-model"), nil)
@@ -248,6 +257,7 @@ func TestWrapCompaction_ZeroResolvedThresholdKeepsTheGlobalOne(t *testing.T) {
 // CompactionConfig directly, bypassing config.Load's applyDefaults) turned
 // off with Threshold: 0.
 func TestWrapCompaction_GlobalThresholdZeroStaysOffEvenWithACatalogHit(t *testing.T) {
+	t.Parallel()
 	cc := CompactionConfig{Threshold: 0, ProviderThresholds: map[string]float64{"small": 0.6}}
 
 	fm := einollm.NewFakeModel(nil, nil)
@@ -270,6 +280,7 @@ func TestWrapCompaction_GlobalThresholdZeroStaysOffEvenWithACatalogHit(t *testin
 // exactly mirroring ws_compaction.go's thresholdFor sign convention
 // (internal/api/http/compaction_window_test.go::TestThresholdFor_NegativePerModelValueDisablesJustThatProvider).
 func TestWrapCompaction_NegativeResolvedThresholdDisablesJustThisModel(t *testing.T) {
+	t.Parallel()
 	cc := CompactionConfig{Threshold: 0.8, ContextWindow: 128000, KeepRecent: 4}
 
 	fm := einollm.NewFakeModel(nil, nil)
@@ -296,6 +307,7 @@ func TestWrapCompaction_NegativeResolvedThresholdDisablesJustThisModel(t *testin
 // Source-level for the reason given on TestRunnerForWiresCompactionToo: the
 // wrapped model is buried inside adk's agent with no accessor.
 func TestRunnerForPassesTheModelIDThrough(t *testing.T) {
+	t.Parallel()
 	src, err := os.ReadFile("orchestrator.go")
 	if err != nil {
 		t.Fatalf("read orchestrator.go: %v", err)

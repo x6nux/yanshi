@@ -93,13 +93,21 @@ func TestResilientModel_EmptyChain(t *testing.T) {
 
 func TestResilientModel_DefaultMaxRetries(t *testing.T) {
 	// A zero-value config should default to MaxRetries=10, not 0.
+	//
+	// MaxRetries is deliberately left at its zero value — that IS the subject of
+	// this test. BaseDelay/MaxDelay are not: leaving those zero too made the
+	// config default to 200ms/5s, so the 11 attempts below slept the real
+	// exponential backoff (200+400+800+1600+3200+5x5000, about 31s). The retry
+	// COUNT is what this test exercises; how long one retry waits is pinned
+	// separately (TestBackoff_Overflow and the RateLimit* tests).
 	var calls int32
 	fails := make([]bool, 11) // fail across all 1 initial + 10 retries
 	for i := range fails {
 		fails[i] = true
 	}
 	f := newScriptedModel(fails, &calls) // always fails retryable
-	r, err := NewResilientModel([]model.BaseChatModel{f}, ResilientConfig{})
+	r, err := NewResilientModel([]model.BaseChatModel{f},
+		ResilientConfig{BaseDelay: time.Millisecond, MaxDelay: time.Millisecond})
 	require.NoError(t, err)
 	assert.Equal(t, 10, r.cfg.MaxRetries)
 

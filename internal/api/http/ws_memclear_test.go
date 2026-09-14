@@ -40,6 +40,7 @@ func newMemClearServer(t *testing.T, st *store.Store) *websocket.Conn {
 // handleClearMemories' explicit switch. A default branch that fell through to
 // the zero filter would pass every other test in this package.
 func TestClearMemoriesFrame_UnknownScopeDeletesNothing(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { st.Close() })
@@ -64,6 +65,7 @@ func TestClearMemoriesFrame_UnknownScopeDeletesNothing(t *testing.T) {
 // really do go. Without it "nothing was deleted" would also be satisfied by a
 // handler that never deletes at all.
 func TestClearMemoriesFrame_AllWipesTheStore(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { st.Close() })
@@ -88,6 +90,7 @@ func TestClearMemoriesFrame_AllWipesTheStore(t *testing.T) {
 // the empty AgentID would match every row written without one — which is most
 // of them — and report success.
 func TestClearMemoriesFrame_AgentScopeNeedsAnID(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { st.Close() })
@@ -126,6 +129,7 @@ func TestClearMemoriesFrame_AgentScopeNeedsAnID(t *testing.T) {
 // with a checkpoint the reply names it, without one the reply is exactly what it
 // always was.
 func TestClearMemoriesFrame_NamesTheCopiesItDidNotReach(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { st.Close() })

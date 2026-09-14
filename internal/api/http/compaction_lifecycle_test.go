@@ -35,6 +35,7 @@ func (r *recordingCompactionSink) note(_ context.Context, ev ctxcompact.Lifecycl
 }
 
 func TestPreTurnCompactionFiresLifecycleSink(t *testing.T) {
+	t.Parallel()
 	sink := &recordingCompactionSink{}
 	fm := einollm.NewFakeModel([]string{"SUMMARY"}, nil)
 	srv := &Server{
@@ -60,6 +61,7 @@ func TestPreTurnCompactionFiresLifecycleSink(t *testing.T) {
 }
 
 func TestManualCompactFiresLifecycleSinkWithManualTrigger(t *testing.T) {
+	t.Parallel()
 	sink := &recordingCompactionSink{}
 	fm := einollm.NewFakeModel([]string{"SUMMARY"}, nil)
 	srv := &Server{
@@ -83,6 +85,7 @@ func TestManualCompactFiresLifecycleSinkWithManualTrigger(t *testing.T) {
 }
 
 func TestServerBuildsSinkFromConfigHooks(t *testing.T) {
+	t.Parallel()
 	// 无压缩 hook 的 Config 建出 nil sink（直通）；有则建出非 nil。
 	assert.Nil(t, New(Config{}).compactionHooks)
 	srv := New(Config{Hooks: orchestrator.HooksConfig{

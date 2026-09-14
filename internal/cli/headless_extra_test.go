@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/x6nux/yanshi/internal/proto"
+	"github.com/x6nux/yanshi/internal/testutil"
 )
 
 // TestReady_TrueOn200AndFalseOtherwise proves ready returns true for a backend
@@ -20,6 +21,7 @@ import (
 // reply. These servers expose only /healthz, so each case also exercises the
 // 404 fallback path.
 func TestReady_TrueOn200AndFalseOtherwise(t *testing.T) {
+	t.Parallel()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
 	ts := httptest.NewServer(mux)
@@ -34,7 +36,7 @@ func TestReady_TrueOn200AndFalseOtherwise(t *testing.T) {
 	assert.False(t, ready(context.Background(), ts2.URL))
 
 	// Unreachable host (connection refused).
-	assert.False(t, ready(context.Background(), "http://127.0.0.1:1"))
+	assert.False(t, ready(context.Background(), "http://"+testutil.ClosedLoopbackAddr(t)))
 
 	// Malformed URL -> NewRequest error -> false.
 	assert.False(t, ready(context.Background(), "http://[::1"))
@@ -45,6 +47,7 @@ func TestReady_TrueOn200AndFalseOtherwise(t *testing.T) {
 
 // TestReadHeadlessInputs_NilReader proves a nil reader is rejected.
 func TestReadHeadlessInputs_NilReader(t *testing.T) {
+	t.Parallel()
 	_, err := ReadHeadlessInputs(nil, HeadlessInputText)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nil reader")
@@ -53,6 +56,7 @@ func TestReadHeadlessInputs_NilReader(t *testing.T) {
 // TestReadHeadlessInputs_TextEmpty proves text mode rejects a whitespace-only
 // stream.
 func TestReadHeadlessInputs_TextEmpty(t *testing.T) {
+	t.Parallel()
 	_, err := ReadHeadlessInputs(strings.NewReader("   \n  "), HeadlessInputText)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty")
@@ -61,6 +65,7 @@ func TestReadHeadlessInputs_TextEmpty(t *testing.T) {
 // TestReadHeadlessInputs_LinesEmpty proves lines mode rejects a stream with no
 // non-empty lines.
 func TestReadHeadlessInputs_LinesEmpty(t *testing.T) {
+	t.Parallel()
 	_, err := ReadHeadlessInputs(strings.NewReader("\n  \n"), HeadlessInputLines)
 	require.Error(t, err)
 }
@@ -68,6 +73,7 @@ func TestReadHeadlessInputs_LinesEmpty(t *testing.T) {
 // TestReadHeadlessInputs_JSONLErrors proves jsonl mode rejects malformed JSON
 // and an empty input stream.
 func TestReadHeadlessInputs_JSONLErrors(t *testing.T) {
+	t.Parallel()
 	_, err := ReadHeadlessInputs(strings.NewReader("{bad json}\n"), HeadlessInputJSONL)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "jsonl line 1")
@@ -79,6 +85,7 @@ func TestReadHeadlessInputs_JSONLErrors(t *testing.T) {
 // TestReadHeadlessInputs_JSONLEmptyPromptField proves jsonl rejects an object
 // whose prompt field is empty/whitespace.
 func TestReadHeadlessInputs_JSONLEmptyPromptField(t *testing.T) {
+	t.Parallel()
 	_, err := ReadHeadlessInputs(strings.NewReader(`{"prompt":"   "}`+"\n"), HeadlessInputJSONL)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "prompt is empty")
@@ -133,6 +140,7 @@ func (b *frameBackend) Mode() string  { return "ws" }
 // TestRunHeadlessWithFrames_MixedFrames proves a user_message turn and a control
 // frame are both drained, and a permission_response (nil channel) is skipped.
 func TestRunHeadlessWithFrames_MixedFrames(t *testing.T) {
+	t.Parallel()
 	b := &frameBackend{permReturn: true}
 	evs, err := runHeadlessWithFrames(context.Background(), b, []proto.ClientFrame{
 		{Type: "user_message", Text: "hi"},
@@ -148,6 +156,7 @@ func TestRunHeadlessWithFrames_MixedFrames(t *testing.T) {
 // TestRunHeadlessWithFrames_SendError proves a Send error short-circuits with a
 // wrapped error naming the frame type.
 func TestRunHeadlessWithFrames_SendError(t *testing.T) {
+	t.Parallel()
 	b := &frameBackend{sendErr: errors.New("send boom")}
 	_, err := runHeadlessWithFrames(context.Background(), b, []proto.ClientFrame{
 		{Type: "user_message", Text: "hi"},
@@ -159,6 +168,7 @@ func TestRunHeadlessWithFrames_SendError(t *testing.T) {
 
 // TestRunHeadlessWithFrames_FrameError proves a SendFrame error short-circuits.
 func TestRunHeadlessWithFrames_FrameError(t *testing.T) {
+	t.Parallel()
 	b := &frameBackend{frameErr: errors.New("frame boom"), frameErrOn: "get_status"}
 	_, err := runHeadlessWithFrames(context.Background(), b, []proto.ClientFrame{
 		{Type: "get_status"},
@@ -170,6 +180,7 @@ func TestRunHeadlessWithFrames_FrameError(t *testing.T) {
 // TestRunHeadlessWithFrames_EventErrShortCircuits proves an error event with a
 // non-nil Err on the stream aborts the run with a wrapped error.
 func TestRunHeadlessWithFrames_EventErrShortCircuits(t *testing.T) {
+	t.Parallel()
 	b := &errFrameBackend{}
 	_, err := runHeadlessWithFrames(context.Background(), b, []proto.ClientFrame{
 		{Type: "user_message", Text: "hi"},
@@ -199,6 +210,7 @@ func (b *errFrameBackend) Send(_ context.Context, _ string) (<-chan StreamEvent,
 // TestRunHeadless_RootDefaultsToCWD proves runHeadless resolves an empty Root to
 // the working directory (the happy-path Resolve must succeed for the fake model).
 func TestRunHeadless_RootDefaultsToCWD(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	evs, err := runHeadless(context.Background(),
 		Options{Root: "", ConfigPath: writeTestConfig(t, root), FakeModel: true, InProcess: true},
@@ -209,11 +221,15 @@ func TestRunHeadless_RootDefaultsToCWD(t *testing.T) {
 
 // TestRunHeadless_SendError proves a Send failure wraps the query in the error.
 func TestRunHeadless_SendError(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	// forcedRemote to a dead origin: Resolve connects (lazy), then Send fails on
-	// the dead socket.
+	// the dead socket. The origin has to be genuinely closed — the hardcoded
+	// 127.0.0.1:1 this used to name is a normal port, and where something holds
+	// it the dial succeeds and the peer never answers: that hung this test until
+	// the 600s package deadline. See testutil.ClosedLoopbackAddr.
 	_, err := runHeadless(context.Background(),
-		Options{Root: root, ConfigPath: "", Server: "http://127.0.0.1:1"},
+		Options{Root: root, ConfigPath: "", Server: "http://" + testutil.ClosedLoopbackAddr(t)},
 		[]string{"hello"})
 	require.Error(t, err)
 }
@@ -229,6 +245,7 @@ func (b *resumeFrameErrBackend) SendFrame(_ context.Context, _ proto.ClientFrame
 // TestExec_ResumeFrameErrorReturnsError proves a SendFrame failure during resume
 // is wrapped with the resume id.
 func TestExec_ResumeFrameErrorReturnsError(t *testing.T) {
+	t.Parallel()
 	b := &resumeFrameErrBackend{fakeExecBackend: fakeExecBackend{mode: "ws"}}
 	var stdout, stderr bytes.Buffer
 	_, err := execWithBackend(context.Background(), b, ExecOptions{
@@ -253,6 +270,7 @@ func (b *resumeEventErrBackend) SendFrame(_ context.Context, fr proto.ClientFram
 // TestExec_ResumeEventErrorReturnsError proves an error event during the resume
 // reply drain is surfaced as a non-nil error.
 func TestExec_ResumeEventErrorReturnsError(t *testing.T) {
+	t.Parallel()
 	b := &resumeEventErrBackend{fakeExecBackend: fakeExecBackend{mode: "ws"}}
 	var stdout, stderr bytes.Buffer
 	_, err := execWithBackend(context.Background(), b, ExecOptions{
@@ -265,6 +283,7 @@ func TestExec_ResumeEventErrorReturnsError(t *testing.T) {
 // TestExec_ResumeJSONLRendersRestoreEvent proves JSONL mode renders the
 // restore_session reply as a real event line (the resume branch's JSONL render).
 func TestExec_ResumeJSONLRendersRestoreEvent(t *testing.T) {
+	t.Parallel()
 	b := &fakeExecBackend{mode: "ws", sendText: "chunk", statusID: "sess-j"}
 	var stdout, stderr bytes.Buffer
 	_, err := execWithBackend(context.Background(), b, ExecOptions{

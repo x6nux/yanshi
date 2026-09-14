@@ -17,6 +17,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestWorkEventFrame_PlanUpdate(t *testing.T) {
+	t.Parallel()
 	f := workEventFrame(work.Event{
 		Kind:      work.EventPlanUpdate,
 		TaskID:    "t1",
@@ -28,6 +29,7 @@ func TestWorkEventFrame_PlanUpdate(t *testing.T) {
 }
 
 func TestWorkEventFrame_ChecklistUpdate(t *testing.T) {
+	t.Parallel()
 	f := workEventFrame(work.Event{
 		Kind:   work.EventChecklistUpdate,
 		TaskID: "t1",
@@ -40,6 +42,7 @@ func TestWorkEventFrame_ChecklistUpdate(t *testing.T) {
 }
 
 func TestWorkEventFrame_DefaultIsTaskUpdate(t *testing.T) {
+	t.Parallel()
 	f := workEventFrame(work.Event{
 		Kind: work.EventTaskUpdate,
 		Task: &work.WorkTask{ID: "t1"},
@@ -53,6 +56,7 @@ func TestWorkEventFrame_DefaultIsTaskUpdate(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMimeForImage(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "image/png", mimeForImage("png"))
 	assert.Equal(t, "image/png", mimeForImage("PNG"))
 	assert.Equal(t, "image/gif", mimeForImage("gif"))
@@ -62,6 +66,7 @@ func TestMimeForImage(t *testing.T) {
 }
 
 func TestFirstNonEmptyStr(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "a", firstNonEmptyStr("a", "b"))
 	assert.Equal(t, "b", firstNonEmptyStr("", "b"))
 	assert.Equal(t, "", firstNonEmptyStr("", ""))
@@ -72,6 +77,7 @@ func TestFirstNonEmptyStr(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseJudgeVerdict_PlainJSON(t *testing.T) {
+	t.Parallel()
 	v, err := parseJudgeVerdict(`{"complete":true,"reason":"done"}`)
 	require.NoError(t, err)
 	assert.True(t, v.Complete)
@@ -79,6 +85,7 @@ func TestParseJudgeVerdict_PlainJSON(t *testing.T) {
 }
 
 func TestParseJudgeVerdict_MarkdownFence(t *testing.T) {
+	t.Parallel()
 	v, err := parseJudgeVerdict("```json\n{\"complete\":false,\"reason\":\"needs more\"}\n```")
 	require.NoError(t, err)
 	assert.False(t, v.Complete)
@@ -86,27 +93,32 @@ func TestParseJudgeVerdict_MarkdownFence(t *testing.T) {
 }
 
 func TestParseJudgeVerdict_ProseWrapped(t *testing.T) {
+	t.Parallel()
 	v, err := parseJudgeVerdict("Here is my verdict: {\"complete\":true,\"reason\":\"looks good\"}")
 	require.NoError(t, err)
 	assert.True(t, v.Complete)
 }
 
 func TestParseJudgeVerdict_Invalid(t *testing.T) {
+	t.Parallel()
 	_, err := parseJudgeVerdict("no JSON here")
 	require.Error(t, err)
 }
 
 func TestJudgeRetryNudge_Empty(t *testing.T) {
+	t.Parallel()
 	nudge := JudgeRetryNudge("")
 	assert.Equal(t, "Continue and finish addressing the user's request.", nudge)
 }
 
 func TestJudgeRetryNudge_WithReason(t *testing.T) {
+	t.Parallel()
 	nudge := JudgeRetryNudge("test coverage missing")
 	assert.Contains(t, nudge, "test coverage missing")
 }
 
 func TestWithTurnRecorder_Nil(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	got := WithTurnRecorder(ctx, nil)
 	assert.Equal(t, ctx, got, "nil recorder should return ctx unchanged")
@@ -117,6 +129,7 @@ func TestWithTurnRecorder_Nil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestProfile(t *testing.T) {
+	t.Parallel()
 	p := guard.PermissionProfile{
 		Tools: guard.ToolsPerm{Allow: []string{"*"}},
 	}
@@ -130,6 +143,7 @@ func TestProfile(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHostOS_ReturnsPlatform(t *testing.T) {
+	t.Parallel()
 	os := hostOS()
 	// Must be non-empty and start with a known OS prefix.
 	assert.NotEmpty(t, os)
@@ -144,6 +158,7 @@ func TestHostOS_ReturnsPlatform(t *testing.T) {
 }
 
 func TestDetectShell_Windows(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		sh := detectShell()
 		// Should return non-empty on Windows.
@@ -152,6 +167,7 @@ func TestDetectShell_Windows(t *testing.T) {
 }
 
 func TestShellOptions(t *testing.T) {
+	t.Parallel()
 	opts := shellOptions()
 	assert.NotEmpty(t, opts)
 	if runtime.GOOS == "windows" {
@@ -166,16 +182,19 @@ func TestShellOptions(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExtractErrorResult_NotJSON(t *testing.T) {
+	t.Parallel()
 	got := extractErrorResult("some result text")
 	assert.Equal(t, "", got)
 }
 
 func TestExtractErrorResult_NoErrorField(t *testing.T) {
+	t.Parallel()
 	got := extractErrorResult(`{"result":"ok"}`)
 	assert.Equal(t, "", got)
 }
 
 func TestExtractErrorResult_WithErrorField(t *testing.T) {
+	t.Parallel()
 	got := extractErrorResult(`{"error":"something broke"}`)
 	assert.Equal(t, "something broke", got)
 }

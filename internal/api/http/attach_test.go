@@ -26,6 +26,7 @@ import (
 //
 // ledger: C2/UX3#3 越权拒绝
 func TestResolveAttachmentsIsFailClosed(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	inside := filepath.Join(root, "notes.md")
 	if err := os.WriteFile(inside, []byte("hello from inside"), 0o644); err != nil {
@@ -172,6 +173,7 @@ func TestResolveAttachmentsIsFailClosed(t *testing.T) {
 //
 // ledger: C2/UX3#2 附加有界
 func TestWSTurnPrependsAttachmentContent(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "notes.md"), []byte("MARKER-IN-FILE"), 0o644); err != nil {
 		t.Fatal(err)
@@ -231,6 +233,7 @@ func writeTestSkill(t *testing.T, dir, name, desc string) {
 //
 // ledger: C3/E03#3 重名可诊断
 func TestSkillsListCarriesShadowedCopies(t *testing.T) {
+	t.Parallel()
 	winner, loser := t.TempDir(), t.TempDir()
 	writeTestSkill(t, winner, "review", "the winner")
 	writeTestSkill(t, loser, "review", "the shadowed one")
@@ -281,6 +284,7 @@ func TestSkillsListCarriesShadowedCopies(t *testing.T) {
 // but the two differing SILENTLY is the defect, and closing it needs the
 // server to publish the expanded text back (a wire-contract change, W9).
 func TestSSEAttachmentIsNotKeptInClientHistory(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "notes.md"), []byte("MARKER"), 0o644))
 

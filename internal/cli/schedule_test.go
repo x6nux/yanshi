@@ -123,6 +123,7 @@ func postScheduleTo(t *testing.T, h func(http.ResponseWriter, *http.Request), bo
 // be able to see what exists and when it fires next. Before this endpoint the
 // scheduler and its persistence were both present and neither was observable.
 func TestScheduleHandlerListsWithNextFireTime(t *testing.T) {
+	t.Parallel()
 	mgr := newFakeScheduleManager()
 	soon := time.Now().Add(5 * time.Minute)
 	later := time.Now().Add(2 * time.Hour)
@@ -159,6 +160,7 @@ func TestScheduleHandlerListsWithNextFireTime(t *testing.T) {
 // input, the same category the structured logger redacts wholesale, and a
 // listing an operator scans is not the place for it.
 func TestScheduleListOmitsPrompts(t *testing.T) {
+	t.Parallel()
 	mgr := newFakeScheduleManager()
 	mgr.add(automation.Automation{
 		ID: "auto-1", Name: "n", Active: true,
@@ -179,6 +181,7 @@ func TestScheduleListOmitsPrompts(t *testing.T) {
 
 // TestPreviewPromptBounds is the table for the excerpt clamp.
 func TestPreviewPromptBounds(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   string
@@ -204,6 +207,7 @@ func TestPreviewPromptBounds(t *testing.T) {
 // operator forgets. "Pause everything because the id was empty" is not a
 // mistake with an undo.
 func TestScheduleMutationsRequireAnID(t *testing.T) {
+	t.Parallel()
 	for _, op := range []ScheduleOp{SchedulePause, ScheduleResume, ScheduleRunNow, ScheduleDelete} {
 		t.Run(string(op), func(t *testing.T) {
 			mgr := newFakeScheduleManager()
@@ -230,6 +234,7 @@ func TestScheduleMutationsRequireAnID(t *testing.T) {
 // long-paused automation needs to know it is not about to fire for every slot
 // it missed.
 func TestSchedulePauseResumeRoundTrip(t *testing.T) {
+	t.Parallel()
 	mgr := newFakeScheduleManager()
 	next := time.Now().Add(time.Minute)
 	mgr.add(automation.Automation{
@@ -258,6 +263,7 @@ func TestSchedulePauseResumeRoundTrip(t *testing.T) {
 // trigger: it enqueues an extra run, it does not consume or move the next
 // scheduled slot.
 func TestScheduleRunNowLeavesTheScheduleAlone(t *testing.T) {
+	t.Parallel()
 	mgr := newFakeScheduleManager()
 	next := time.Now().Add(time.Hour)
 	mgr.add(automation.Automation{
@@ -278,6 +284,7 @@ func TestScheduleRunNowLeavesTheScheduleAlone(t *testing.T) {
 // TestScheduleDeleteRemovesRunsToo proves the delete is complete: leaving run
 // rows behind for a deleted automation would make the history unjoinable.
 func TestScheduleDeleteRemovesRunsToo(t *testing.T) {
+	t.Parallel()
 	mgr := newFakeScheduleManager()
 	mgr.add(automation.Automation{ID: "auto-1", Active: true})
 	mgr.runs["auto-1"] = []automation.Run{{ID: "run-1", Status: automation.RunCompleted}}
@@ -298,6 +305,7 @@ func TestScheduleDeleteRemovesRunsToo(t *testing.T) {
 // TestScheduleShowReturnsRunsNewestFirst covers the history ordering an
 // operator reads: the run they care about is the last one.
 func TestScheduleShowReturnsRunsNewestFirst(t *testing.T) {
+	t.Parallel()
 	mgr := newFakeScheduleManager()
 	mgr.add(automation.Automation{ID: "auto-1", Name: "n", Active: true, Prompt: "p"})
 	base := time.Now()
@@ -317,6 +325,7 @@ func TestScheduleShowReturnsRunsNewestFirst(t *testing.T) {
 
 // TestScheduleHandlerProtocolErrors covers the non-happy paths of the endpoint.
 func TestScheduleHandlerProtocolErrors(t *testing.T) {
+	t.Parallel()
 	mgr := newFakeScheduleManager()
 	h := NewScheduleHandler(mgr)
 
@@ -342,6 +351,7 @@ func TestScheduleHandlerProtocolErrors(t *testing.T) {
 // TestScheduleRunNowFailureIsReported asserts a queue failure surfaces rather
 // than being reported as a successful enqueue.
 func TestScheduleRunNowFailureIsReported(t *testing.T) {
+	t.Parallel()
 	mgr := newFakeScheduleManager()
 	mgr.add(automation.Automation{ID: "auto-1", Active: true})
 	mgr.failNow = errors.New("broker unreachable")
@@ -357,6 +367,7 @@ func TestScheduleRunNowFailureIsReported(t *testing.T) {
 // caught client-side, so `yanshi schedule paws auto-1` fails with a usage
 // message instead of a dial error.
 func TestRunScheduleRejectsUnknownOpBeforeTouchingTheNetwork(t *testing.T) {
+	t.Parallel()
 	_, err := RunSchedule(context.Background(), t.TempDir(), ScheduleRequest{Op: "paws"})
 	require.ErrorIs(t, err, ErrUnknownScheduleOp)
 	require.Contains(t, err.Error(), "pause", "the error must list the real operations")
@@ -367,6 +378,7 @@ func TestRunScheduleRejectsUnknownOpBeforeTouchingTheNetwork(t *testing.T) {
 // only until the next tick, and an operator has no way to tell a stale answer
 // from a current one.
 func TestRunScheduleRequiresALiveDaemon(t *testing.T) {
+	t.Parallel()
 	t.Run("no lockfile", func(t *testing.T) {
 		_, err := RunSchedule(context.Background(),
 			filepath.Join(t.TempDir(), "nothing"), ScheduleRequest{Op: ScheduleList})
@@ -387,6 +399,7 @@ func TestRunScheduleRequiresALiveDaemon(t *testing.T) {
 // TestRunScheduleAgainstALiveServer drives the full client-to-handler round
 // trip, so the wire format is exercised rather than assumed.
 func TestRunScheduleAgainstALiveServer(t *testing.T) {
+	t.Parallel()
 	mgr := newFakeScheduleManager()
 	next := time.Now().Add(time.Minute)
 	mgr.add(automation.Automation{
@@ -422,6 +435,7 @@ func TestRunScheduleAgainstALiveServer(t *testing.T) {
 // running daemon predates this endpoint and a raw 404 would tell the operator
 // nothing about what to do.
 func TestRunScheduleAgainstAnOldBackend(t *testing.T) {
+	t.Parallel()
 	ts := httptest.NewServer(http.NewServeMux())
 	t.Cleanup(ts.Close)
 
@@ -442,6 +456,7 @@ func TestRunScheduleAgainstAnOldBackend(t *testing.T) {
 // id" tells them they typed the wrong id. Collapsing them sends the operator
 // to restart a perfectly current daemon over a typo.
 func TestMissingRouteIsNotADomainNotFound(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		status      int
@@ -489,6 +504,7 @@ func TestMissingRouteIsNotADomainNotFound(t *testing.T) {
 // distinction above: a bad id against a CURRENT daemon must produce the
 // manager's message, never the "restart your daemon" advice.
 func TestDomainNotFoundReachesTheOperatorAsSuch(t *testing.T) {
+	t.Parallel()
 	mux := http.NewServeMux()
 	mux.HandleFunc(SchedulePath, NewScheduleHandler(newFakeScheduleManager()))
 	ts := httptest.NewServer(mux)
@@ -513,6 +529,7 @@ func TestDomainNotFoundReachesTheOperatorAsSuch(t *testing.T) {
 // overdue case: printing a negative duration is the difference between an
 // operator seeing a scheduler that is behind and one that looks broken.
 func TestFormatNextRun(t *testing.T) {
+	t.Parallel()
 	require.Equal(t, "-", formatNextRun(nil))
 
 	soon := time.Now().Add(90 * time.Second)
@@ -529,6 +546,7 @@ func TestFormatNextRun(t *testing.T) {
 // TestDescribeSchedule covers the recurrence rendering, including the shapes an
 // operator can reach with a hand-edited store.
 func TestDescribeSchedule(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   automation.Schedule
@@ -548,6 +566,7 @@ func TestDescribeSchedule(t *testing.T) {
 
 // TestRenderScheduleResponse covers the console surface an operator reads.
 func TestRenderScheduleResponse(t *testing.T) {
+	t.Parallel()
 	next := time.Now().Add(time.Minute)
 	var sb strings.Builder
 	RenderScheduleResponse(&sb, ScheduleResponse{
@@ -580,6 +599,7 @@ func TestRenderScheduleResponse(t *testing.T) {
 // TestScheduleOpsIsTheCompleteSet guards the CLI usage text and the validator
 // against drifting apart from the handler's switch.
 func TestScheduleOpsIsTheCompleteSet(t *testing.T) {
+	t.Parallel()
 	for _, op := range ScheduleOps() {
 		require.True(t, isKnownScheduleOp(op))
 		mgr := newFakeScheduleManager()

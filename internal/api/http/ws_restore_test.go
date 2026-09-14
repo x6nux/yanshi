@@ -70,6 +70,7 @@ func plainLiveTurn() []*schema.Message {
 
 // ledger: A2/W-A-04#1 恢复后的历史包含 tool 角色的消息
 func TestRestoreMessagesKeepsToolRole(t *testing.T) {
+	t.Parallel()
 	got := restoreMessages(storedTurn())
 
 	require.Len(t, got, 4)
@@ -82,6 +83,7 @@ func TestRestoreMessagesKeepsToolRole(t *testing.T) {
 
 // ledger: A2/W-A-04#2 每条 tool 消息的 ToolCallID 能在同一历史中找到对应的 assistant ToolCalls
 func TestRestoreMessagesPairsToolCallsWithResults(t *testing.T) {
+	t.Parallel()
 	got := restoreMessages(storedTurn())
 
 	calls := map[string]bool{}
@@ -115,6 +117,7 @@ func TestRestoreMessagesPairsToolCallsWithResults(t *testing.T) {
 // merge actually happens: both call_1 and call_2 must resolve from the SAME
 // restored assistant message, not from two different ones.
 func TestRestoreMessagesRegroupsParallelToolCalls(t *testing.T) {
+	t.Parallel()
 	got := restoreMessages(storeMessagesFor(parallelLiveTurn()))
 
 	require.Len(t, got, 5, "two RoleToolCall rows must merge into one assistant message")
@@ -147,6 +150,7 @@ func TestRestoreMessagesRegroupsParallelToolCalls(t *testing.T) {
 // this task guards against), the fixpoint would remove the seeded index as
 // an orphan instead of pulling in its counterpart, and this test would fail.
 func TestRestoreMessagesSurvivesPairEnforcement(t *testing.T) {
+	t.Parallel()
 	toolIdx, assistantCallIdx := -1, -1
 	got := restoreMessages(storedTurn())
 	for i, m := range got {
@@ -181,6 +185,7 @@ func TestRestoreMessagesSurvivesPairEnforcement(t *testing.T) {
 
 // ledger: A2/W-A-04#4 非工具消息的恢复结果与本改动前逐字节一致
 func TestRestoreMessagesPlainTurnIsUnchanged(t *testing.T) {
+	t.Parallel()
 	got := restoreMessages(storeMessagesFor(plainLiveTurn()))
 
 	require.Len(t, got, 2)
@@ -206,6 +211,7 @@ func TestRestoreMessagesPlainTurnIsUnchanged(t *testing.T) {
 // copy of the mapping in ws_seam.go — rather than calling restoreMessages —
 // is caught here even if ws_handlers.go stays correct.
 func TestApplySessionRevertSnapshotKeepsToolTurn(t *testing.T) {
+	t.Parallel()
 	cs := &connSession{}
 	snap := store.SessionRevertSnapshot{
 		Meta:     store.SessionSummary{ID: "sess-1", Turns: 1},

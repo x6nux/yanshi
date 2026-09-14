@@ -8,6 +8,7 @@ import (
 )
 
 func TestValidateStructuredOutput(t *testing.T) {
+	t.Parallel()
 	personSchema := json.RawMessage(`{
 		"type": "object",
 		"properties": {"name": {"type": "string"}, "age": {"type": "integer"}},
@@ -50,6 +51,7 @@ func TestValidateStructuredOutput(t *testing.T) {
 }
 
 func TestExtractJSON(t *testing.T) {
+	t.Parallel()
 	tests := []struct{ in, want string }{
 		{`{"a":1}`, `{"a":1}`},
 		{"```json\n{\"a\":1}\n```", `{"a":1}`},
@@ -65,6 +67,7 @@ func TestExtractJSON(t *testing.T) {
 }
 
 func TestSchemaRetryReminder(t *testing.T) {
+	t.Parallel()
 	r := schemaRetryReminder("prev output", errors.New("missing field name"))
 	if r == "" || !strings.Contains(r, "missing field name") || !strings.Contains(r, "prev output") {
 		t.Fatalf("reminder must include error and prev text: %q", r)

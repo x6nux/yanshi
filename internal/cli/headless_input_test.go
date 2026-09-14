@@ -6,6 +6,7 @@ import (
 )
 
 func TestReadHeadlessInputs_Text(t *testing.T) {
+	t.Parallel()
 	got, err := ReadHeadlessInputs(strings.NewReader("  hello\nworld\n"), HeadlessInputText)
 	if err != nil {
 		t.Fatalf("ReadHeadlessInputs: %v", err)
@@ -17,6 +18,7 @@ func TestReadHeadlessInputs_Text(t *testing.T) {
 
 // ledger: D1/V12#1 stdin/JSONL 可用
 func TestReadHeadlessInputs_LinesSkipsBlankLines(t *testing.T) {
+	t.Parallel()
 	got, err := ReadHeadlessInputs(strings.NewReader("one\n\n two \n"), HeadlessInputLines)
 	if err != nil {
 		t.Fatalf("ReadHeadlessInputs: %v", err)
@@ -28,6 +30,7 @@ func TestReadHeadlessInputs_LinesSkipsBlankLines(t *testing.T) {
 
 // ledger: D1/V12#1 stdin/JSONL 可用
 func TestReadHeadlessInputs_JSONL(t *testing.T) {
+	t.Parallel()
 	input := "{\"prompt\":\"one\"}\n\n{\"prompt\":\"two\",\"resume\":\"sess-2\"}\n"
 	got, err := ReadHeadlessInputs(strings.NewReader(input), HeadlessInputJSONL)
 	if err != nil {
@@ -39,6 +42,7 @@ func TestReadHeadlessInputs_JSONL(t *testing.T) {
 }
 
 func TestReadHeadlessInputs_JSONLRejectsMissingPrompt(t *testing.T) {
+	t.Parallel()
 	_, err := ReadHeadlessInputs(strings.NewReader("{\"resume\":\"sess-2\"}\n"), HeadlessInputJSONL)
 	if err == nil {
 		t.Fatal("missing prompt should fail")
@@ -46,6 +50,7 @@ func TestReadHeadlessInputs_JSONLRejectsMissingPrompt(t *testing.T) {
 }
 
 func TestReadHeadlessInputs_UnknownMode(t *testing.T) {
+	t.Parallel()
 	_, err := ReadHeadlessInputs(strings.NewReader("x"), HeadlessInputMode("yaml"))
 	if err == nil {
 		t.Fatal("unknown input mode should fail")

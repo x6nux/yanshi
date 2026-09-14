@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/x6nux/yanshi/internal/netpolicy"
+	"github.com/x6nux/yanshi/internal/testutil"
 )
 
 // setSearchEndpoint points a WebTools' search backend at an arbitrary endpoint
@@ -120,7 +121,11 @@ func TestWFS27_HTTPErrorIsBackendError(t *testing.T) {
 // never the silent empty success the old code returned.
 func TestWFS27_NetworkFailureIsVisible(t *testing.T) {
 	w := NewWebTools(1<<20, 5*time.Second)
-	setSearchEndpoint(w, "http://127.0.0.1:1/x")
+	// A genuinely closed port: see testutil.ClosedLoopbackAddr for what the
+	// hardcoded 127.0.0.1:1 cost where something listens on port 1 — here it
+	// meant waiting out the 5s timeout above instead of the refusal this test
+	// is about.
+	setSearchEndpoint(w, "http://"+testutil.ClosedLoopbackAddr(t)+"/x")
 	out, err := w.Search.InvokableRun(searchCtx(), `{"query":"go docs"}`)
 	require.NoError(t, err)
 	assert.Contains(t, out, `"status":"backend_error"`)

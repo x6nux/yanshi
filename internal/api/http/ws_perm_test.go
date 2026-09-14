@@ -115,6 +115,7 @@ func drainUntil(t *testing.T, c *websocket.Conn, want string) proto.ServerFrame 
 // TestChatWS_InteractivePermission_Allow runs the tool: the client receives a
 // permission_request, replies allow, and the fs_write side-effect appears.
 func TestChatWS_InteractivePermission_Allow(t *testing.T) {
+	t.Parallel()
 	url, workdir := newPermWSServer(t)
 	c := dial(t, url)
 	defer c.Close()
@@ -162,6 +163,7 @@ func TestChatWS_InteractivePermission_Allow(t *testing.T) {
 // TestChatWS_InteractivePermission_Deny skips the tool: the client denies, no
 // file is written, and the turn still completes (done).
 func TestChatWS_InteractivePermission_Deny(t *testing.T) {
+	t.Parallel()
 	url, workdir := newPermWSServer(t)
 	c := dial(t, url)
 	defer c.Close()
@@ -192,6 +194,7 @@ func TestChatWS_InteractivePermission_Deny(t *testing.T) {
 // identical fs_write in the same connection is approved by the session
 // allowlist without prompting the user again.
 func TestChatWS_InteractivePermission_AlwaysAllow_NoReprompt(t *testing.T) {
+	t.Parallel()
 	workdir := t.TempDir()
 
 	// Model: call fs_write twice, then a final message each round needs its own
@@ -270,6 +273,7 @@ func TestChatWS_InteractivePermission_AlwaysAllow_NoReprompt(t *testing.T) {
 // task_cancel is on tools.forcePromptTools, so Authorize takes the force-prompt
 // branch before consulting the profile — a wildcard profile still prompts.
 func TestPermissionRequestFrameCarriesForcePrompt(t *testing.T) {
+	t.Parallel()
 	step1 := schema.AssistantMessage("", []schema.ToolCall{
 		{ID: "c1", Type: "function", Function: schema.FunctionCall{
 			Name: "task_cancel", Arguments: `{"id":"t1"}`,
@@ -326,6 +330,7 @@ func TestPermissionRequestFrameCarriesForcePrompt(t *testing.T) {
 // The second assertion in each row is the anti-drift one: it re-derives the
 // expectation from the refusal path instead of restating the boolean.
 func TestForcePromptFlagCoversBothServerFlags(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		req  tools.PermissionRequest
@@ -360,6 +365,7 @@ func TestForcePromptFlagCoversBothServerFlags(t *testing.T) {
 // prompt, so a dropped hop produces a perfectly good prompt that is not the
 // operator's.
 func TestGuardianPromptReachesTheModel(t *testing.T) {
+	t.Parallel()
 	var b strings.Builder
 	b.WriteString("SITE POLICY 9911: never touch the release bucket.\n")
 	for _, c := range guard.RequiredRiskCategories() {
@@ -387,6 +393,7 @@ func TestGuardianPromptReachesTheModel(t *testing.T) {
 // against literals, so a future change to default's semantics cannot leave
 // strict quietly LOOSER than the mode it is supposed to be stricter than.
 func TestStrictModeResolvesLikeDefaultAtTheCallback(t *testing.T) {
+	t.Parallel()
 	for _, req := range []tools.PermissionRequest{
 		{Tool: "fs_read"},
 		{Tool: "shell_run", ProfileHardDeny: true},
@@ -416,6 +423,7 @@ func TestStrictModeResolvesLikeDefaultAtTheCallback(t *testing.T) {
 // the most surprising possible wrap. Both directions are checked because
 // guard.CycleMode has a special case for each.
 func TestStrictModeIsNotReachableByAccident(t *testing.T) {
+	t.Parallel()
 	seen := map[guard.PermissionMode]bool{}
 	cur := guard.ModeDefault
 	for i := 0; i < 12; i++ {
@@ -451,6 +459,7 @@ func TestStrictModeIsNotReachableByAccident(t *testing.T) {
 // recorded exactly like any other, so "the model said no and a human said yes"
 // left no trace and could be turned into a standing rule.
 func TestAutoAskIsLabelledAndOverridableOnce(t *testing.T) {
+	t.Parallel()
 	cautious := einollm.NewFakeModel([]string{"ASK"}, nil)
 	models := map[string]model.BaseChatModel{"default": cautious}
 	cs := &connSession{perm: &permModeState{}, defaultModel: "default"}
@@ -505,6 +514,11 @@ func TestAutoAskIsLabelledAndOverridableOnce(t *testing.T) {
 // interactive_once" the fact that a model refused first is gone. The row is
 // therefore written by the transport, and this is the only thing that says it
 // still is.
+//
+// NOT t.Parallel: it installs tools.SetPermissionAuditSink, a package-level
+// hook, and asserts on every record that reaches it. Run concurrently with any
+// other test that drives a permission decision, their records land in this
+// sink and the count is wrong.
 func TestAIOverrideIsAudited(t *testing.T) {
 	var got []tools.PermissionAuditRecord
 	tools.SetPermissionAuditSink(&tools.StoreAuditSink{
@@ -545,6 +559,7 @@ func TestAIOverrideIsAudited(t *testing.T) {
 // have turned the same single yes into a standing shell-command family grant
 // by the other route.
 func TestAIDeclinedApprovalDoesNotWidenSessionRules(t *testing.T) {
+	t.Parallel()
 	rec := &countingRuleRecorder{}
 	req := tools.PermissionRequest{Tool: "shell_run", Shell: "go test ./x", AIDeclined: true}
 	recordSessionApproval(rec, "sess-1", req, tools.PermissionAllow)
@@ -591,6 +606,10 @@ func (c *countingRuleRecorder) DemoteShellForSession(string, string) bool {
 // would record an approval rule, and Authorize's approval-manager short-circuit
 // runs BEFORE the mode gate — so the risk assessment would be skipped for that
 // scope for the rest of the session, silently.
+//
+// NOT t.Parallel for the same reason as TestAIOverrideIsAudited: it installs
+// the package-level permission-audit sink and reads back exactly the records it
+// expects, so a concurrent test's decisions corrupt the assertion.
 func TestAIOverrideRoundTripReachesTheWireAndTheArchive(t *testing.T) {
 	workdir := t.TempDir()
 

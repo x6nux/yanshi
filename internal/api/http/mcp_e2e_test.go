@@ -21,6 +21,7 @@ import (
 // TestMCP_E2E_WaitsForInitialization confirms the ws handler routes
 // mcp_action and returns mcp_status.
 func TestMCP_E2E_WaitsForInitialization(t *testing.T) {
+	t.Parallel()
 	// Start a fake MCP HTTP server.
 	ts, _ := mcp.NewFakeHTTPServer([]mcp.ToolDescriptor{{ToolName: "echo"}})
 	defer ts.Close()

@@ -134,6 +134,7 @@ func TestSystemPrompt_SendsOnlyChangedSections(t *testing.T) {
 // runnerCacheKey turn 1 created and memoised — and turn 1's instruction carried
 // no Model line at all. A prompt baked into the runner would still have none.
 func TestSystemPrompt_ModelSwitchVisibleWithinTurn(t *testing.T) {
+	t.Parallel()
 	fmA := einollm.NewFakeModel([]string{"ok"}, nil)
 	fmA.RecordMessages = true
 	fmA.Repeat = true
@@ -165,6 +166,7 @@ func TestSystemPrompt_ModelSwitchVisibleWithinTurn(t *testing.T) {
 // TestRenderVolatileSections_OmitsModelWhenUnselected pins the rendering rule
 // itself. Every turn gets the date; only a turn that pinned a model gets a name.
 func TestRenderVolatileSections_OmitsModelWhenUnselected(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 8, 28, 13, 45, 0, 0, time.UTC)
 
 	assert.Equal(t, "Date: 2026-08-28", renderVolatileSections(at, ""))
@@ -183,6 +185,7 @@ func TestRenderVolatileSections_OmitsModelWhenUnselected(t *testing.T) {
 // alter it measures exactly that, and doubles as a wiring check — a count of
 // zero means the refresher fell out of the slice.
 func TestSystemPromptRefresherIsTheOnlyInstructionWriter(t *testing.T) {
+	t.Parallel()
 	writers := 0
 	for _, h := range orchestratorMiddlewares() {
 		_, got, err := h.BeforeAgent(context.Background(),
@@ -206,6 +209,7 @@ func TestSystemPromptRefresherIsTheOnlyInstructionWriter(t *testing.T) {
 // buildEnvInfo must therefore NOT carry a date any more, and the volatile block
 // must.
 func TestSystemPrompt_DateIsNotFrozenAtConstruction(t *testing.T) {
+	t.Parallel()
 	assert.NotContains(t, buildEnvInfo(), "Date:",
 		"the date is back in the static snapshot, where it freezes at process start")
 

@@ -44,6 +44,7 @@ const opaqueWorkdir = "/work/project"
 // the callback for an explicit answer" — the same route ForcePrompt takes — and
 // not (deny, resolved), which would be a refusal yolo could not appeal.
 func TestYoloAsksAboutAPayloadNobodyRead(t *testing.T) {
+	t.Parallel()
 	for _, cmd := range opaqueCommands {
 		cmd := cmd
 		t.Run(cmd, func(t *testing.T) {
@@ -69,6 +70,7 @@ func TestYoloAsksAboutAPayloadNobodyRead(t *testing.T) {
 // the assertion above is satisfied by a yolo that resolves nothing at all,
 // which would be a different (and much larger) change than the one made.
 func TestYoloStillAutoApprovesAReadableCommand(t *testing.T) {
+	t.Parallel()
 	for _, cmd := range []string{`echo hi`, `rm -rf ./build`, `go test ./...`} {
 		require.NotEqual(t, guard.DestructionOpaque,
 			guard.ClassifyDestruction(cmd, opaqueWorkdir), "precondition for %q", cmd)
@@ -87,6 +89,7 @@ func TestYoloStillAutoApprovesAReadableCommand(t *testing.T) {
 // strictly stronger on SSE than on WS, and this pins it rather than leaving it
 // to be re-derived from the callback table.
 func TestOpaqueIsFailClosedWithNoCallback(t *testing.T) {
+	t.Parallel()
 	prof := guard.PermissionProfile{
 		Tools: guard.ToolsPerm{Allow: []string{"*"}},
 		FS:    guard.FSPerm{Read: []string{"**"}, Write: []string{"**"}},

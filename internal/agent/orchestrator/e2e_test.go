@@ -24,6 +24,7 @@ import (
 // The only double is the FakeModel; the guard, the tool, and the filesystem
 // are all real. If this test passes, the phase's core contract holds.
 func TestE2E_ModelDrivenFSEditMutatesRealFile(t *testing.T) {
+	t.Parallel()
 	workdir := t.TempDir()
 	readme := filepath.Join(workdir, "readme.txt")
 	require.NoError(t, os.WriteFile(readme, []byte("Helo world"), 0o644))
@@ -72,6 +73,7 @@ func TestE2E_ModelDrivenFSEditMutatesRealFile(t *testing.T) {
 // allowed but the write path outside the profile's FS.Write allowlist, the
 // guard must deny the call so the real file is left untouched.
 func TestE2E_GuardBlocksFSEditOutsideProfile(t *testing.T) {
+	t.Parallel()
 	workdir := t.TempDir()
 	readme := filepath.Join(workdir, "readme.txt")
 	require.NoError(t, os.WriteFile(readme, []byte("Helo world"), 0o644))
@@ -118,6 +120,7 @@ func TestE2E_GuardBlocksFSEditOutsideProfile(t *testing.T) {
 // body is the proof that the real body — not a scripted reply — traveled the
 // full pipeline.
 func TestE2E_SkillUseReturnsBodyThroughOrchestrator(t *testing.T) {
+	t.Parallel()
 	// Build a real skill registry with one skill whose body has a unique marker.
 	skillRoot := t.TempDir()
 	skillDir := filepath.Join(skillRoot, "dev-quick-fix")
@@ -214,6 +217,7 @@ func TestE2E_SkillUseReturnsBodyThroughOrchestrator(t *testing.T) {
 // returned a Go error → NodeRunError → ev.Err aborted the iterator before step 2
 // ever ran. After the fix, both tool calls run and the model gets the error.
 func TestE2E_ToolFailureFeedsBackAndTurnContinues(t *testing.T) {
+	t.Parallel()
 	workdir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(workdir, "real.txt"), []byte("payload"), 0o644))
 

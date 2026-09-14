@@ -31,6 +31,7 @@ import (
 // set_mode to a live, mutex-guarded mode state immediately, so mid-turn
 // callbacks see it.
 func TestChatWS_ModeSwitchMidTurn_SubsequentCallUsesNewMode(t *testing.T) {
+	t.Parallel()
 	workdir := t.TempDir()
 
 	// Shared model consumed across top-level + sub-agent:

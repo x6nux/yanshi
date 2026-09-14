@@ -8,6 +8,7 @@ import (
 )
 
 func TestLoadProjectPrompt_PrefersAGENTSmd(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	// All three present — AGENTS.md must win.
 	os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("# AGENTS.md"), 0o644)
@@ -21,6 +22,7 @@ func TestLoadProjectPrompt_PrefersAGENTSmd(t *testing.T) {
 }
 
 func TestLoadProjectPrompt_PrefersAGENTmd(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	// Write both files with different content.
@@ -43,6 +45,7 @@ func TestLoadProjectPrompt_PrefersAGENTmd(t *testing.T) {
 }
 
 func TestLoadProjectPrompt_FallsBackToCLAUDEmd(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	claudeContent := "# CLAUDE.md instructions"
@@ -55,6 +58,7 @@ func TestLoadProjectPrompt_FallsBackToCLAUDEmd(t *testing.T) {
 }
 
 func TestLoadProjectPrompt_EmptyWhenNoFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	// No AGENT.md, no CLAUDE.md.
 
@@ -65,6 +69,7 @@ func TestLoadProjectPrompt_EmptyWhenNoFile(t *testing.T) {
 }
 
 func TestLoadProjectPrompt_IgnoresSubdirs(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	// File in a subdirectory, not at the project root — must NOT be picked up.
@@ -79,6 +84,7 @@ func TestLoadProjectPrompt_IgnoresSubdirs(t *testing.T) {
 }
 
 func TestLoadProjectPrompt_EmptyDir(t *testing.T) {
+	t.Parallel()
 	got := loadProjectPrompt("")
 	if got != "" {
 		t.Errorf("loadProjectPrompt(\"\") = %q; want empty", got)

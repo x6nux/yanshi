@@ -11,6 +11,7 @@ import (
 // TestBuild_MemorySuffixWired proves that with cfg.Memory.Enabled=true and the
 // memory file present, App.Orch's memorySuffix is populated correctly.
 func TestBuild_MemorySuffixWired(t *testing.T) {
+	t.Parallel()
 	projectDir := t.TempDir()
 	memFile := filepath.Join(projectDir, "mem.md")
 	os.WriteFile(memFile, []byte("prefer concise answers\n"), 0o644)
@@ -44,6 +45,7 @@ func TestBuild_MemorySuffixWired(t *testing.T) {
 // gates MemoryPath and remember registration. This test only observes suffix
 // directly — the other two are guaranteed by the single gate in Step 3a.
 func TestBuild_MemorySuffixDisabled(t *testing.T) {
+	t.Parallel()
 	projectDir := t.TempDir()
 	cfgPath := filepath.Join(projectDir, "config.yaml")
 	os.WriteFile(cfgPath, []byte(
@@ -61,6 +63,7 @@ func TestBuild_MemorySuffixDisabled(t *testing.T) {
 
 // TestBuild_MemoryExpandsUserPath proves ~ is expanded.
 func TestBuild_MemoryExpandsUserPath(t *testing.T) {
+	t.Parallel()
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("os.UserHomeDir failed")

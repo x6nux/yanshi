@@ -29,6 +29,7 @@ func newSSEServer(t *testing.T) string {
 }
 
 func TestSSEBackend_ParsesStructuredEvents(t *testing.T) {
+	t.Parallel()
 	b := newSSEBackend(newSSEServer(t))
 	defer b.Close()
 	assert.Equal(t, "sse", b.Mode())
@@ -52,6 +53,7 @@ func TestSSEBackend_ParsesStructuredEvents(t *testing.T) {
 // TestSSEBackend_MultiTurn proves client-held history: the second Send carries
 // the first turn, so an Echo model's reply contains the first message.
 func TestSSEBackend_MultiTurn(t *testing.T) {
+	t.Parallel()
 	fm := einollm.NewFakeModel(nil, nil)
 	fm.Echo = true
 	o, _ := orchestrator.New(orchestrator.Config{Model: fm})
@@ -85,6 +87,7 @@ func TestSSEBackend_MultiTurn(t *testing.T) {
 // history_replaced frame. sseBackend adopts the compacted slice in place of what
 // it sent, so the NEXT Send carries the compacted history (not the original).
 func TestSSEBackend_AdoptsCompactedHistory(t *testing.T) {
+	t.Parallel()
 	// Long assistant replies so the new Plan (which pins every user message
 	// verbatim) still leaves the assistant turn large enough for compaction
 	// to actually shrink tokens. SUMMARY = compaction summary; a3 = post-
@@ -167,6 +170,7 @@ func TestSSEBackend_AdoptsCompactedHistory(t *testing.T) {
 // data) blocks the scan goroutine, and Cancel() must abort the request context
 // so the goroutine exits and the channel closes promptly.
 func TestSSEBackend_CancelUnblocksStalledSend(t *testing.T) {
+	t.Parallel()
 	stallCh := make(chan struct{})
 	ts := httptest.NewServer(nhttp.HandlerFunc(func(w nhttp.ResponseWriter, r *nhttp.Request) {
 		flusher, ok := w.(nhttp.Flusher)

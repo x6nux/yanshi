@@ -19,6 +19,7 @@ import (
 // TestRB1_EndToEnd_Deterministic covers file/head rollback, durable truncation,
 // full-head confirmation, and D2's history-aware undo seam round trip.
 func TestRB1_EndToEnd_Deterministic(t *testing.T) {
+	t.Parallel()
 	h := newRollbackIntegrationHarness(t)
 
 	// Seed is v0. Turn 1 seals pre/post seams at v0, then external deterministic

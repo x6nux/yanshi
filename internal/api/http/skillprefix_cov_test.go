@@ -12,6 +12,7 @@ import (
 // TestCov_ResolveQuery_SkillNoTask covers the no-task branch: "/skill hi"
 // (no trailing task) loads the body and appends the "await instructions" suffix.
 func TestCov_ResolveQuery_SkillNoTask(t *testing.T) {
+	t.Parallel()
 	reg := writeSkillFile(t, t.TempDir(), "hi",
 		"---\nname: hi\ndescription: greeting skill\n---\n# Hi\nSay hi.")
 	q, errMsg := resolveQuery(reg, "/skill hi")
@@ -23,6 +24,7 @@ func TestCov_ResolveQuery_SkillNoTask(t *testing.T) {
 // TestCov_ResolveQuery_SkillBodyError covers the Body-load-error branch: after
 // the SKILL.md file is removed, reg.Body fails.
 func TestCov_ResolveQuery_SkillBodyError(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	reg := writeSkillFile(t, root, "hi",
 		"---\nname: hi\ndescription: greeting skill\n---\n# Hi\nSay hi.")

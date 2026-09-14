@@ -17,6 +17,7 @@ import (
 // empty Model is a usage error, not a nil-pointer panic or a silent no-op
 // HTTP call to a client built from a blank string.
 func TestRunModelsPull_RequiresModel(t *testing.T) {
+	t.Parallel()
 	if err := RunModelsPull(context.Background(), ModelsPullOptions{}); err == nil {
 		t.Fatal("RunModelsPull with empty Model: err = nil, want a usage error")
 	}
@@ -25,6 +26,7 @@ func TestRunModelsPull_RequiresModel(t *testing.T) {
 // TestRunModelsPreheat_RequiresModel is TestRunModelsPull_RequiresModel's
 // LM Studio counterpart.
 func TestRunModelsPreheat_RequiresModel(t *testing.T) {
+	t.Parallel()
 	if _, err := RunModelsPreheat(context.Background(), ModelsPreheatOptions{}); err == nil {
 		t.Fatal("RunModelsPreheat with empty Model: err = nil, want a usage error")
 	}
@@ -42,6 +44,7 @@ func TestRunModelsPreheat_RequiresModel(t *testing.T) {
 // RefreshAuto (which would have served the fresh seed and skipped the
 // network entirely).
 func TestRunModelsPullWith_StreamsProgressAndForceRefreshes(t *testing.T) {
+	t.Parallel()
 	var tagsHits int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/tags", func(w http.ResponseWriter, r *http.Request) {
@@ -102,6 +105,7 @@ func TestRunModelsPullWith_StreamsProgressAndForceRefreshes(t *testing.T) {
 // RefreshForce step — refreshing the cache after a pull that never
 // happened would misreport the pull as having changed something.
 func TestRunModelsPullWith_PropagatesPullError(t *testing.T) {
+	t.Parallel()
 	var tagsHits int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/tags", func(w http.ResponseWriter, r *http.Request) {
@@ -138,6 +142,7 @@ func TestRunModelsPullWith_PropagatesPullError(t *testing.T) {
 // post-load refresh actually re-fetched (RefreshForce), not served a
 // just-seeded, still-fresh cache entry (RefreshAuto).
 func TestRunModelsPreheatWith_LoadsAndForceRefreshes(t *testing.T) {
+	t.Parallel()
 	var modelsHits int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v0/models", func(w http.ResponseWriter, r *http.Request) {
@@ -182,6 +187,7 @@ func TestRunModelsPreheatWith_LoadsAndForceRefreshes(t *testing.T) {
 // TestRunModelsPreheatWith_PropagatesLoadError mirrors
 // TestRunModelsPullWith_PropagatesPullError for the LM Studio path.
 func TestRunModelsPreheatWith_PropagatesLoadError(t *testing.T) {
+	t.Parallel()
 	var modelsHits int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v0/models", func(w http.ResponseWriter, r *http.Request) {

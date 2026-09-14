@@ -40,6 +40,7 @@ func recordedTurn() []*schema.Message {
 // reissues the call — that is how one fs_write became two. Keeping the result
 // present is what tells the model it is done.
 func TestBuildContinuationHistoryDoesNotRewindPastExecutedTools(t *testing.T) {
+	t.Parallel()
 	base := []*schema.Message{schema.UserMessage("write the config")}
 	recorded := recordedTurn()
 
@@ -71,6 +72,7 @@ func TestBuildContinuationHistoryDoesNotRewindPastExecutedTools(t *testing.T) {
 // anything. If a future change ever made an empty capture possible AFTER tools
 // ran, this test's premise would be the thing to revisit.
 func TestBuildContinuationHistoryFallsBackWhenNothingWasRecorded(t *testing.T) {
+	t.Parallel()
 	base := []*schema.Message{schema.UserMessage("write the config")}
 
 	got := buildContinuationHistory(base, nil, "partial text", "finish it")
@@ -94,6 +96,7 @@ func TestBuildContinuationHistoryFallsBackWhenNothingWasRecorded(t *testing.T) {
 // user's real history — visible forever, and fed to the model on every
 // subsequent turn.
 func TestBuildContinuationHistoryNeverMutatesTheCallersSlice(t *testing.T) {
+	t.Parallel()
 	// Spare capacity is the precondition for the aliasing bug; without it
 	// append allocates and the test would pass for the wrong reason.
 	base := make([]*schema.Message, 1, 8)
@@ -113,6 +116,7 @@ func TestBuildContinuationHistoryNeverMutatesTheCallersSlice(t *testing.T) {
 // produce a usable instruction. A blank user turn would tell the model nothing
 // and the continuation would reproduce the same stop.
 func TestBuildContinuationHistoryDefaultsTheNudge(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		recorded []*schema.Message
@@ -140,6 +144,7 @@ func TestBuildContinuationHistoryDefaultsTheNudge(t *testing.T) {
 // re-derived the turn from cs.history and called the tool again — the counter
 // would read 2. It must read 1.
 func TestPrematureStopContinuationDoesNotReExecuteSideEffectingTools(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	counter := tools.NewGuardedTool(
 		"side_effect", "SideEffect", "Records that it ran.",
@@ -196,6 +201,7 @@ func TestPrematureStopContinuationDoesNotReExecuteSideEffectingTools(t *testing.
 // failure the reminder mechanism exists to prevent, and it is invisible unless
 // someone inspects what the second attempt actually received.
 func TestPrematureStopContinuationCarriesTheJudgesReason(t *testing.T) {
+	t.Parallel()
 	mdl := newJudgeScriptedModel(
 		[]*schema.Message{
 			schema.AssistantMessage("first pass", nil),

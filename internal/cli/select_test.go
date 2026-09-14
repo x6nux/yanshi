@@ -15,6 +15,7 @@ import (
 )
 
 func TestNewBackend_PrefersWS_FallsBackToSSE(t *testing.T) {
+	t.Parallel()
 	// Server with both WS and SSE.
 	o, _ := orchestrator.New(orchestrator.Config{Model: einollm.NewFakeModel([]string{"x"}, nil)})
 	s := http.New(http.Config{Token: "t"})

@@ -64,6 +64,7 @@ func newVisionServer(t *testing.T) (*Server, map[string]model.BaseChatModel, *or
 //
 // ledger: G/VISION-TOOL#1 五入口各自可产生图像附件
 func TestChatWS_UserMessageImagesReachTheModel(t *testing.T) {
+	t.Parallel()
 	s, models, o := newVisionServer(t)
 	s.ChatWS(o, models, nil)
 	ts := httptest.NewServer(s.Handler())
@@ -96,6 +97,7 @@ func TestChatWS_UserMessageImagesReachTheModel(t *testing.T) {
 //
 // ledger: G/VISION-TOOL#1 五入口各自可产生图像附件
 func TestChat_SSE_ImagesReachTheModel(t *testing.T) {
+	t.Parallel()
 	s, models, o := newVisionServer(t)
 	s.Chat(o, models, nil)
 	ts := httptest.NewServer(s.Handler())

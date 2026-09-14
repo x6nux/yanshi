@@ -89,6 +89,7 @@ func newCtlSession(b ChatBackend) *Session {
 // SendFrame return a closed channel (drained as empty), CancelCurrent is a no-op,
 // and Mode is "".
 func TestSession_NilBackendHelpersCloseChannel(t *testing.T) {
+	t.Parallel()
 	s := newSession("/proj", "", false) // backend == nil
 
 	ch := s.Send("hi")
@@ -108,6 +109,7 @@ func TestSession_NilBackendHelpersCloseChannel(t *testing.T) {
 // single error event on a closed channel (the TUI treats it uniformly with a
 // server error frame).
 func TestSession_SendSurfacesBackendError(t *testing.T) {
+	t.Parallel()
 	b := &ctlBackend{sendErr: errors.New("dropped")}
 	s := newCtlSession(b)
 
@@ -126,6 +128,7 @@ func TestSession_SendSurfacesBackendError(t *testing.T) {
 // event channel, and a nil channel (permission_response) is returned as nil so
 // the caller knows no reply is expected.
 func TestSession_SendFrameHappyPathAndErrors(t *testing.T) {
+	t.Parallel()
 	// 1. Reply channel passes through.
 	reply := make(chan StreamEvent, 1)
 	reply <- StreamEvent{Kind: "status"}
@@ -152,6 +155,7 @@ func TestSession_SendFrameHappyPathAndErrors(t *testing.T) {
 // TestSession_CancelCurrentDelegatesToBackend proves CancelCurrent forwards to
 // the backend's Cancel.
 func TestSession_CancelCurrentDelegatesToBackend(t *testing.T) {
+	t.Parallel()
 	b := &ctlBackend{}
 	s := newCtlSession(b)
 	require.NoError(t, s.CancelCurrent())
@@ -162,6 +166,7 @@ func TestSession_CancelCurrentDelegatesToBackend(t *testing.T) {
 // Root to the working directory (not left empty), and setForced records both
 // forced modes.
 func TestSession_NewSessionResolvesEmptyRoot(t *testing.T) {
+	t.Parallel()
 	s := NewSession(Options{Server: "http://x", InProcess: true})
 	assert.NotEmpty(t, s.Root(), "empty Root resolves to the cwd")
 	assert.True(t, s.forcedInProc)
@@ -174,6 +179,7 @@ func TestSession_NewSessionResolvesEmptyRoot(t *testing.T) {
 // TestSession_ReconnectNonOwnerDropsBackend proves the non-owner Reconnect path
 // closes the dead backend and re-resolves (re-connecting to the live remote).
 func TestSession_ReconnectNonOwnerDropsBackend(t *testing.T) {
+	t.Parallel()
 	ts := liveWSServer(t)
 	root := t.TempDir()
 	s := newSession(root, "", true)
@@ -198,6 +204,7 @@ func TestSession_ReconnectNonOwnerDropsBackend(t *testing.T) {
 // TestSession_ReconnectOwnerIsNoop proves an owner's Reconnect is a no-op that
 // keeps the existing backend (its own server should still be up).
 func TestSession_ReconnectOwnerIsNoop(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	s := newSession(root, writeTestConfig(t, t.TempDir()), true)
 	s.setForced("", true)
@@ -214,6 +221,7 @@ func TestSession_ReconnectOwnerIsNoop(t *testing.T) {
 // down and connects to the winner. discovery would normally connect to the live
 // owner first, so this calls bootstrapOwner directly to reach the race path.
 func TestBootstrapOwner_LosesToAliveOwner(t *testing.T) {
+	t.Parallel()
 	ts := liveWSServer(t)
 	root := t.TempDir()
 	// Pre-claim the lockfile with THIS process's (alive) PID pointing at the live
@@ -231,6 +239,7 @@ func TestBootstrapOwner_LosesToAliveOwner(t *testing.T) {
 // TestBootstrapOwner_BadConfigReturnsError proves a config that fails to load
 // surfaces a wrapped "bootstrap:" error from bootstrapOwner.
 func TestBootstrapOwner_BadConfigReturnsError(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	s := newSession(root, filepath.Join(t.TempDir(), "missing-config.yaml"), false)
 	err := s.bootstrapOwner(context.Background())
@@ -241,6 +250,7 @@ func TestBootstrapOwner_BadConfigReturnsError(t *testing.T) {
 // TestRunHeadless_NoInputReturnsError proves RunHeadless rejects an empty input
 // list before resolving a backend.
 func TestRunHeadless_NoInputReturnsError(t *testing.T) {
+	t.Parallel()
 	_, err := RunHeadless(context.Background(), Options{}, HeadlessRunOptions{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no input")
@@ -249,6 +259,7 @@ func TestRunHeadless_NoInputReturnsError(t *testing.T) {
 // TestRunHeadless_NilBackendReturnsError proves runHeadlessWithBackend rejects a
 // nil backend with a clear error.
 func TestRunHeadless_NilBackendReturnsError(t *testing.T) {
+	t.Parallel()
 	_, err := runHeadlessWithBackend(context.Background(), nil, HeadlessRunOptions{
 		Inputs: []HeadlessInput{{Prompt: "hi"}},
 	})
@@ -259,6 +270,7 @@ func TestRunHeadless_NilBackendReturnsError(t *testing.T) {
 // TestProjectHeadlessEvent_MapsErrToString proves projectHeadlessEvent surfaces
 // ev.Err as the Error string and carries through the stable fields.
 func TestProjectHeadlessEvent_MapsErrToString(t *testing.T) {
+	t.Parallel()
 	ev := StreamEvent{Kind: "error", Err: errors.New("conn reset"), Text: "ignored"}
 	out := projectHeadlessEvent(ev)
 	assert.Equal(t, "error", out.Type)
@@ -268,6 +280,7 @@ func TestProjectHeadlessEvent_MapsErrToString(t *testing.T) {
 // TestRenderHeadlessEvent_TextModeDelegates proves text mode renders agent_chunk
 // to stdout and tool activity to stderr (delegating to renderExecEvent).
 func TestRenderHeadlessEvent_TextModeDelegates(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	renderHeadlessEvent(&stdout, &stderr, ExecOutputText, StreamEvent{
 		Kind: "agent_chunk", Text: "hello",
@@ -283,6 +296,7 @@ func TestRenderHeadlessEvent_TextModeDelegates(t *testing.T) {
 
 // TestExecEventText_PrefersErr proves execEventText prefers ev.Err over ev.Text.
 func TestExecEventText_PrefersErr(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "boom",
 		execEventText(StreamEvent{Kind: "error", Err: errors.New("boom"), Text: "ignored"}))
 	assert.Equal(t, "server said",
@@ -295,6 +309,7 @@ func TestExecEventText_PrefersErr(t *testing.T) {
 // resolves an in-process fake-model backend and drives two prompts, surfacing a
 // non-empty session id and Completed==2.
 func TestRunHeadless_FakeModelTwoPrompts(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	res, err := RunHeadless(context.Background(),

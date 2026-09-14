@@ -18,6 +18,7 @@ import (
 // uniformly. The secret contains JSON-meaningful bytes (quote + backslash), so
 // RedactJSON must redact both raw and escaped spellings.
 func TestSSE_RedactsAllFrameTypes(t *testing.T) {
+	t.Parallel()
 	r := secrets.NewRedactor()
 	secret := `sk-sse-"quoted"-\slash`
 	r.Register(secret)

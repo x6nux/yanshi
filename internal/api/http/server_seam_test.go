@@ -12,6 +12,7 @@ import (
 // TestServer_StoresVCSAndRepoID verifies that New wires the VCS + repoID
 // supplied via Config, so downstream handlers (ChatWS / Chat) can use them.
 func TestServer_StoresVCSAndRepoID(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	root := filepath.Join(base, "repo")
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -44,6 +45,7 @@ func TestServer_StoresVCSAndRepoID(t *testing.T) {
 // when VCS is unconfigured (the common test path for handlers built without
 // a real VCS).
 func TestServer_SealTurnBoundary_NoopsWithoutVCS(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{Store: nil, VCS: nil, RepoID: ""})
 	// Must not panic / log.
 	srv.sealTurnBoundary("s1", 0, 0, "pre-turn", "no-vcs")
@@ -51,6 +53,7 @@ func TestServer_SealTurnBoundary_NoopsWithoutVCS(t *testing.T) {
 
 // TestServer_ShortHead_NoVCS verifies shortHead returns "" when VCS is nil.
 func TestServer_ShortHead_NoVCS(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{})
 	if got := srv.shortHead(); got != "" {
 		t.Errorf("shortHead() = %q, want empty", got)
@@ -60,6 +63,7 @@ func TestServer_ShortHead_NoVCS(t *testing.T) {
 // TestServer_ShortHead_WithVCS verifies shortHead returns a non-empty short
 // hash when VCS is configured.
 func TestServer_ShortHead_WithVCS(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	root := filepath.Join(base, "repo")
 	if err := os.MkdirAll(root, 0o755); err != nil {

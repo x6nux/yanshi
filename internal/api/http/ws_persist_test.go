@@ -102,6 +102,7 @@ func toolCall(id, name, args string) schema.ToolCall {
 // compaction then evicted them and they were gone. On that code this test
 // cannot pass, because the tool rows have no path to the database at all.
 func TestPersistMessages_WritesToolCallsAndResults(t *testing.T) {
+	t.Parallel()
 	st := persistStore(t)
 	sid, err := st.CreateSession("s")
 	require.NoError(t, err)
@@ -136,6 +137,7 @@ func TestPersistMessages_WritesToolCallsAndResults(t *testing.T) {
 // window, so without deduplication turn two would re-insert turn one. This is
 // the property that lets flushHistory work without a watermark.
 func TestPersistMessages_AcrossTurnsIsIdempotent(t *testing.T) {
+	t.Parallel()
 	st := persistStore(t)
 	sid, err := st.CreateSession("s")
 	require.NoError(t, err)
@@ -158,6 +160,7 @@ func TestPersistMessages_AcrossTurnsIsIdempotent(t *testing.T) {
 }
 
 func TestStoreMessagesFor(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		hist []*schema.Message
@@ -241,6 +244,7 @@ func TestStoreMessagesFor(t *testing.T) {
 // caller as `false`. If flushHistory swallowed it (as the old best-effort
 // persistMessages did), the eviction gate below could never fire.
 func TestFlushHistory_ReportsFailure(t *testing.T) {
+	t.Parallel()
 	st := brokenStore(t)
 	srv := &Server{store: st}
 	cs := &connSession{perm: &permModeState{}, sessionID: brokenSessionID}
@@ -252,6 +256,7 @@ func TestFlushHistory_ReportsFailure(t *testing.T) {
 // "everything was saved" are the same answer to the caller's question, so the
 // no-recording cases must not block compaction.
 func TestFlushHistory_NothingToPersistIsSuccess(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		srv  *Server
@@ -282,6 +287,7 @@ func TestFlushHistory_NothingToPersistIsSuccess(t *testing.T) {
 // Evicting first and writing after would mean a full disk silently converts a
 // turn's tool output into a paragraph about it, with nothing to recover from.
 func TestMaybeAutoCompact_DoesNotEvictWhenPersistFails(t *testing.T) {
+	t.Parallel()
 	st := brokenStore(t)
 	fm := einollm.NewFakeModel([]string{"SUMMARY"}, nil)
 	srv := &Server{
@@ -311,6 +317,7 @@ func TestMaybeAutoCompact_DoesNotEvictWhenPersistFails(t *testing.T) {
 // what keeps the test above from passing for the wrong reason (a compaction
 // that never fires at all would satisfy it trivially).
 func TestMaybeAutoCompact_EvictsWhenPersistSucceeds(t *testing.T) {
+	t.Parallel()
 	st := persistStore(t)
 	sid, err := st.CreateSession("s")
 	require.NoError(t, err)
@@ -373,6 +380,7 @@ func TestMaybeAutoCompact_EvictsWhenPersistSucceeds(t *testing.T) {
 // test while TestMaybeAutoCompact_EvictsWhenPersistSucceeds — which never
 // exercises ProviderThresholds — kept passing.
 func TestMaybeAutoCompact_UsesPerModelThreshold(t *testing.T) {
+	t.Parallel()
 	st := persistStore(t)
 	sid, err := st.CreateSession("s")
 	require.NoError(t, err)
@@ -423,6 +431,7 @@ func TestMaybeAutoCompact_UsesPerModelThreshold(t *testing.T) {
 // returning cc.ContextWindow) would leave cs.history unchanged and fail this
 // test.
 func TestMaybeAutoCompact_UsesPerModelWindow(t *testing.T) {
+	t.Parallel()
 	st := persistStore(t)
 	sid, err := st.CreateSession("s")
 	require.NoError(t, err)
@@ -460,6 +469,7 @@ func TestMaybeAutoCompact_UsesPerModelWindow(t *testing.T) {
 // of what has not been written down — and it must SAY so, because a bare status
 // frame reads as "nothing needed compacting".
 func TestCompactNow_DoesNotEvictWhenPersistFails(t *testing.T) {
+	t.Parallel()
 	st := brokenStore(t)
 	fm := einollm.NewFakeModel([]string{"SUMMARY"}, nil)
 	srv := &Server{
@@ -496,6 +506,7 @@ func TestCompactNow_DoesNotEvictWhenPersistFails(t *testing.T) {
 // TestCompactNow_EvictsWhenPersistSucceeds is the positive control for the test
 // above.
 func TestCompactNow_EvictsWhenPersistSucceeds(t *testing.T) {
+	t.Parallel()
 	st := persistStore(t)
 	sid, err := st.CreateSession("s")
 	require.NoError(t, err)
@@ -527,6 +538,7 @@ func TestCompactNow_EvictsWhenPersistSucceeds(t *testing.T) {
 // window and still findable in the log. Either half alone proves nothing — a
 // window that never shrank, or a log nobody can query.
 func TestCompaction_EvictedContentIsRecoverableBySearch(t *testing.T) {
+	t.Parallel()
 	st := persistStore(t)
 	sid, err := st.CreateSession("s")
 	require.NoError(t, err)
@@ -646,6 +658,7 @@ func compactedFixture(t *testing.T) (*store.Store, string, []*schema.Message, *S
 // request: the model came back from a restore not knowing what it had been
 // asked to do. pinned_seqs is what closes the hole.
 func TestReconnectPreservesCompaction(t *testing.T) {
+	t.Parallel()
 	_, sid, compacted, srv := compactedFixture(t)
 
 	fresh := &connSession{perm: &permModeState{}}
@@ -658,6 +671,7 @@ func TestReconnectPreservesCompaction(t *testing.T) {
 // the TUI and `yanshi exec --resume` actually reach. loadSession above is the
 // fork path; restore_session is where a user meets this bug.
 func TestRestoreSessionPreservesCompaction(t *testing.T) {
+	t.Parallel()
 	st, sid, compacted, srv := compactedFixture(t)
 
 	wc, client, cleanup := newWSPair(t)
@@ -755,6 +769,7 @@ func labelledHistory(label string, n int) []*schema.Message {
 // event, so an undo has to restore the previous event's pins rather than clear
 // them.
 func TestSecondCompactionAfterRestoreAdvancesTheBoundary(t *testing.T) {
+	t.Parallel()
 	st, sid, _, srv := compactedFixture(t)
 
 	first, err := st.HiddenSeq(sid)
@@ -813,6 +828,7 @@ func TestSecondCompactionAfterRestoreAdvancesTheBoundary(t *testing.T) {
 // because every assertion elsewhere was satisfied by the degenerate
 // "summary only" window it produced.
 func TestWindowBoundary(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		kept        []int
@@ -891,6 +907,7 @@ func TestWindowBoundary(t *testing.T) {
 // request outright rather than degrading it, so the session simply stops working
 // after a restore.
 func TestRestorePreservesOrderWithDuplicateMessages(t *testing.T) {
+	t.Parallel()
 	st := persistStore(t)
 	sid, err := st.CreateSession("s")
 	require.NoError(t, err)
@@ -949,6 +966,7 @@ func TestRestorePreservesOrderWithDuplicateMessages(t *testing.T) {
 // equality first, and an equal window is pair-consistent by construction. This
 // hands it the orphan directly.
 func TestAssertToolPairsIntactCanFail(t *testing.T) {
+	t.Parallel()
 	orphan := []*schema.Message{
 		{Role: schema.Tool, ToolCallID: "c1", ToolName: "shell_run", Content: "result"},
 		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{toolCall("c1", "shell_run", "{}")}},
@@ -976,6 +994,7 @@ func TestAssertToolPairsIntactCanFail(t *testing.T) {
 // result fails the pointer-identity test that decides what survived — its call
 // would be pinned without it, and the window would restore with an orphan call.
 func TestCompleteToolPairs(t *testing.T) {
+	t.Parallel()
 	rows := []store.Message{
 		{Seq: 0, Role: store.RoleUser, Content: "go"},
 		{Seq: 1, Role: store.RoleToolCall, ToolCallID: "c1", ToolName: "shell_run"},
@@ -1025,6 +1044,7 @@ func assertWindowMatchesLog(t *testing.T, st *store.Store, sid string, hist []*s
 // reaches it from. It was previously asserted nowhere, and two of these five
 // were measured broken.
 func TestWindowMatchesLogAcrossShapes(t *testing.T) {
+	t.Parallel()
 	t.Run("fresh compaction", func(t *testing.T) {
 		st, sid, compacted, _ := compactedFixture(t)
 		assertWindowMatchesLog(t, st, sid, compacted, false)
@@ -1119,6 +1139,7 @@ func TestWindowMatchesLogAcrossShapes(t *testing.T) {
 // The required behaviour is to refuse: the context stays oversized but complete,
 // which is the direction C1 already chose for a failed flush.
 func TestCompactionRefusedWhenWindowAndLogDisagree(t *testing.T) {
+	t.Parallel()
 	st, sid, compacted, srv := compactedFixture(t)
 	hidden, err := st.HiddenSeq(sid)
 	require.NoError(t, err)
@@ -1213,6 +1234,7 @@ func TestCompactionRefusedWhenWindowAndLogDisagree(t *testing.T) {
 // catching the same case and the package stays green. That is the right
 // behaviour and the wrong coverage, so each gets a direct test.
 func TestAlignedWithLog(t *testing.T) {
+	t.Parallel()
 	hist := []*schema.Message{
 		schema.UserMessage("go"),
 		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{toolCall("c1", "shell_run", "{}")}},
@@ -1243,6 +1265,7 @@ func TestAlignedWithLog(t *testing.T) {
 }
 
 func TestKeptWindowSeqsRefusesMisalignment(t *testing.T) {
+	t.Parallel()
 	hist := []*schema.Message{
 		schema.UserMessage("go"),
 		schema.AssistantMessage("working", nil),
@@ -1284,6 +1307,7 @@ func TestKeptWindowSeqsRefusesMisalignment(t *testing.T) {
 // grows without bound and the first thing anyone observes is a provider length
 // error, which reads like an unrelated failure.
 func TestRefusedCompactionIsVisibleOnStatus(t *testing.T) {
+	t.Parallel()
 	st, sid, _, srv := compactedFixture(t)
 	hidden, err := st.HiddenSeq(sid)
 	require.NoError(t, err)
@@ -1383,6 +1407,7 @@ func TestRefusedCompactionIsVisibleOnStatus(t *testing.T) {
 // same number also decides which compaction boundaries get compensated, so it
 // popped the wrong boundaries too.
 func TestTruncationSeqCountsRowsNotMessages(t *testing.T) {
+	t.Parallel()
 	st := persistStore(t)
 	sid, err := st.CreateSession("s")
 	require.NoError(t, err)
@@ -1433,6 +1458,7 @@ func TestTruncationSeqCountsRowsNotMessages(t *testing.T) {
 // TestTruncationSeqRefusesAMisalignedWindow: this one deletes rows, so a window
 // that no longer matches the log must refuse rather than guess a position.
 func TestTruncationSeqRefusesAMisalignedWindow(t *testing.T) {
+	t.Parallel()
 	st := persistStore(t)
 	sid, err := st.CreateSession("s")
 	require.NoError(t, err)
@@ -1463,6 +1489,7 @@ func TestTruncationSeqRefusesAMisalignedWindow(t *testing.T) {
 // reject the whole request rather than the one message. This drives that shape
 // straight in — newHist keeps the assistant's call but not the tool message.
 func TestKeptWindowSeqsCompletesToolPairs(t *testing.T) {
+	t.Parallel()
 	call := &schema.Message{Role: schema.Assistant,
 		ToolCalls: []schema.ToolCall{toolCall("c1", "shell_run", `{"cmd":"ls"}`)}}
 	result := &schema.Message{Role: schema.Tool, ToolCallID: "c1",
@@ -1493,6 +1520,7 @@ func TestKeptWindowSeqsCompletesToolPairs(t *testing.T) {
 // is not in the window and never can be, so alignedWithLog fails from then on
 // and this session can never compact again. One trigger, permanent lock.
 func TestRefusedCompactionWritesNoSummaryRow(t *testing.T) {
+	t.Parallel()
 	st, sid, _, srv := compactedFixture(t)
 	hidden, err := st.HiddenSeq(sid)
 	require.NoError(t, err)
@@ -1558,6 +1586,7 @@ func TestRefusedCompactionWritesNoSummaryRow(t *testing.T) {
 // belonging to a message the revert is keeping — and since the round-2 change,
 // the same number also decides which compaction boundaries get compensated.
 func TestRestoreTurnTruncatesAtARowSeq(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	root := filepath.Join(base, "repo")
 	require.NoError(t, os.MkdirAll(root, 0o755))
