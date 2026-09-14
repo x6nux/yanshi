@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/cloudwego/eino/schema"
 
@@ -48,8 +49,47 @@ type sseBackend struct {
 	turns    uint64
 }
 
+// sseResponseHeaderTimeout bounds how long the SSE client waits for the
+// server's response headers before giving up.
+//
+// It is a TRANSPORT-level knob on purpose, and the distinction is load-bearing.
+// http.Client.Timeout would also cover the response BODY, but an SSE body stays
+// open for the whole turn: a turn that outlives the timeout would be killed
+// mid-stream, turning a long-but-healthy answer into a transport error.
+// ResponseHeaderTimeout covers only the window before the first byte, which is
+// exactly the failure it exists for — a peer that completes the TCP handshake
+// and then never answers.
+//
+// Without it that peer hangs the call FOREVER, not merely for a while: SendTurn
+// derives its context with WithCancel (no deadline) so that Cancel can interrupt
+// a stalled turn, and its callers (runHeadless, the TUI) pass a context that
+// carries no deadline either. Measured against a loopback socket that accepts
+// and stays silent, the pre-fix client blocked until the *test* deadline fired
+// 600s later — and in production nothing fires at all.
+//
+// 30s matches the timeout the rest of the repo uses for its own HTTP clients
+// (internal/mcp, internal/agent/worker).
+const sseResponseHeaderTimeout = 30 * time.Second
+
 func newSSEBackend(baseURL string) *sseBackend {
-	return &sseBackend{baseURL: baseURL, client: &http.Client{}, threadID: newClientThreadID()}
+	return &sseBackend{baseURL: baseURL, client: newSSEClient(), threadID: newClientThreadID()}
+}
+
+// newSSEClient builds the SSE client. It clones http.DefaultTransport rather
+// than starting from a zero Transport so it keeps the default dial timeout,
+// proxy handling and HTTP/2 support.
+func newSSEClient() *http.Client {
+	tr, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		// DefaultTransport is documented to be an *http.Transport, so this is
+		// unreachable in practice. A replacement we cannot clone still gets the
+		// guard; what it loses is the default dial/proxy settings we had no way
+		// to copy.
+		return &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: sseResponseHeaderTimeout}}
+	}
+	c := tr.Clone()
+	c.ResponseHeaderTimeout = sseResponseHeaderTimeout
+	return &http.Client{Transport: c}
 }
 
 func (b *sseBackend) Mode() string { return "sse" }
