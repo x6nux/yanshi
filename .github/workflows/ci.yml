@@ -29,12 +29,39 @@ jobs:
       # "no secrets backend is configured" 即该路径的正确输出）。
       # windows/macos 的 keyring 不经过 dbus，此变量对它们无效。
       DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent
-      # The hosted windows runner's service token cannot host a
-      # WRITE_RESTRICTED child (CreateRestrictedToken -> ERROR_INVALID_PARAMETER),
-      # so the confinement behavioural tests cannot run there. This is the
-      # project's own opt-out switch (see restrictedtoken_windows_test.go):
-      # the tests downgrade to skips with the probe's reason attached, and
-      # stay Fatal on any host where the probe merely fails unexpectedly.
+      # ⚠️ This switch does NOT mean "this runner cannot sandbox". It covers two
+      # defects in internal/sandbox/restrictedtoken_windows.go, and the comment
+      # here used to say the opposite.
+      #
+      # 1. CreateRestrictedToken returns ERROR_INVALID_PARAMETER for EVERY
+      #    S-1-15-* capability SID offered in SidsToRestrict -- all four flag
+      #    combinations, with and without the logon SID and Everyone, every
+      #    subauthority tried (S-1-15-2-1, S-1-15-3-1, S-1-15-3-1024-...).
+      #    SetTokenInformation refuses those same SIDs for both
+      #    TokenRestrictedSids and TokenCapabilities. A plain S-1-5-21-* SID
+      #    through the identical call and the identical process token succeeds,
+      #    so this is a property of the SID AUTHORITY and not of the service
+      #    token this comment used to blame.
+      # 2. Independently of the SID, ANY restricted token with a non-empty
+      #    restricting list -- and any token carrying WRITE_RESTRICTED even with
+      #    an EMPTY list -- yields a child that dies at DLL initialisation with
+      #    STATUS_DLL_INIT_FAILED (0xC0000142). {logon, Everyone} alone
+      #    reproduces it. Only a token with no restricting list and no
+      #    WRITE_RESTRICTED launches a child at all, so the probe never reaches
+      #    the write it means to measure. That is not a Session 0 artefact: the
+      #    parent token measured here is an ordinary primary token in
+      #    interactive Session 1, Medium integrity, logon SID present. Nor is it
+      #    the child's stdio: pointing stdout/stderr at a pipe, at a file
+      #    already granted to the restricting SID, at NUL, and at nil all fail
+      #    identically.
+      #
+      # The three SIDs this package confines to are all S-1-15-3, so
+      # createRestrictedToken always fails, probeRestrictedToken always reports
+      # "could not create a restricted token", and the Windows write boundary is
+      # never applied to anything. Measured 2026-09-14. The fix is an AppContainer
+      # token (CreateAppContainerProfile + CreateAppContainerToken) -- a
+      # security-boundary change that belongs to a work package, not a constant
+      # swap.
       YANSHI_RESTRICTEDTOKEN_TESTS_OPTIONAL: "1"
     steps:
       - uses: actions/checkout@v4
@@ -144,12 +171,39 @@ jobs:
       # 与 test job 同因：无 dbus session 时 go-keyring autolaunch 挂死，
       # -race 下更慢，包内 600s 超时必然打爆。见 test job 的注释。
       DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent
-      # The hosted windows runner's service token cannot host a
-      # WRITE_RESTRICTED child (CreateRestrictedToken -> ERROR_INVALID_PARAMETER),
-      # so the confinement behavioural tests cannot run there. This is the
-      # project's own opt-out switch (see restrictedtoken_windows_test.go):
-      # the tests downgrade to skips with the probe's reason attached, and
-      # stay Fatal on any host where the probe merely fails unexpectedly.
+      # ⚠️ This switch does NOT mean "this runner cannot sandbox". It covers two
+      # defects in internal/sandbox/restrictedtoken_windows.go, and the comment
+      # here used to say the opposite.
+      #
+      # 1. CreateRestrictedToken returns ERROR_INVALID_PARAMETER for EVERY
+      #    S-1-15-* capability SID offered in SidsToRestrict -- all four flag
+      #    combinations, with and without the logon SID and Everyone, every
+      #    subauthority tried (S-1-15-2-1, S-1-15-3-1, S-1-15-3-1024-...).
+      #    SetTokenInformation refuses those same SIDs for both
+      #    TokenRestrictedSids and TokenCapabilities. A plain S-1-5-21-* SID
+      #    through the identical call and the identical process token succeeds,
+      #    so this is a property of the SID AUTHORITY and not of the service
+      #    token this comment used to blame.
+      # 2. Independently of the SID, ANY restricted token with a non-empty
+      #    restricting list -- and any token carrying WRITE_RESTRICTED even with
+      #    an EMPTY list -- yields a child that dies at DLL initialisation with
+      #    STATUS_DLL_INIT_FAILED (0xC0000142). {logon, Everyone} alone
+      #    reproduces it. Only a token with no restricting list and no
+      #    WRITE_RESTRICTED launches a child at all, so the probe never reaches
+      #    the write it means to measure. That is not a Session 0 artefact: the
+      #    parent token measured here is an ordinary primary token in
+      #    interactive Session 1, Medium integrity, logon SID present. Nor is it
+      #    the child's stdio: pointing stdout/stderr at a pipe, at a file
+      #    already granted to the restricting SID, at NUL, and at nil all fail
+      #    identically.
+      #
+      # The three SIDs this package confines to are all S-1-15-3, so
+      # createRestrictedToken always fails, probeRestrictedToken always reports
+      # "could not create a restricted token", and the Windows write boundary is
+      # never applied to anything. Measured 2026-09-14. The fix is an AppContainer
+      # token (CreateAppContainerProfile + CreateAppContainerToken) -- a
+      # security-boundary change that belongs to a work package, not a constant
+      # swap.
       YANSHI_RESTRICTEDTOKEN_TESTS_OPTIONAL: "1"
     steps:
       - uses: actions/checkout@v4
@@ -435,12 +489,39 @@ jobs:
       # 与 test job 同因：无 dbus session 时 go-keyring autolaunch 挂死，
       # coverage 插桩更慢，10m 包超时必然打爆。见 test job 的注释。
       DBUS_SESSION_BUS_ADDRESS: unix:path=/nonexistent
-      # The hosted windows runner's service token cannot host a
-      # WRITE_RESTRICTED child (CreateRestrictedToken -> ERROR_INVALID_PARAMETER),
-      # so the confinement behavioural tests cannot run there. This is the
-      # project's own opt-out switch (see restrictedtoken_windows_test.go):
-      # the tests downgrade to skips with the probe's reason attached, and
-      # stay Fatal on any host where the probe merely fails unexpectedly.
+      # ⚠️ This switch does NOT mean "this runner cannot sandbox". It covers two
+      # defects in internal/sandbox/restrictedtoken_windows.go, and the comment
+      # here used to say the opposite.
+      #
+      # 1. CreateRestrictedToken returns ERROR_INVALID_PARAMETER for EVERY
+      #    S-1-15-* capability SID offered in SidsToRestrict -- all four flag
+      #    combinations, with and without the logon SID and Everyone, every
+      #    subauthority tried (S-1-15-2-1, S-1-15-3-1, S-1-15-3-1024-...).
+      #    SetTokenInformation refuses those same SIDs for both
+      #    TokenRestrictedSids and TokenCapabilities. A plain S-1-5-21-* SID
+      #    through the identical call and the identical process token succeeds,
+      #    so this is a property of the SID AUTHORITY and not of the service
+      #    token this comment used to blame.
+      # 2. Independently of the SID, ANY restricted token with a non-empty
+      #    restricting list -- and any token carrying WRITE_RESTRICTED even with
+      #    an EMPTY list -- yields a child that dies at DLL initialisation with
+      #    STATUS_DLL_INIT_FAILED (0xC0000142). {logon, Everyone} alone
+      #    reproduces it. Only a token with no restricting list and no
+      #    WRITE_RESTRICTED launches a child at all, so the probe never reaches
+      #    the write it means to measure. That is not a Session 0 artefact: the
+      #    parent token measured here is an ordinary primary token in
+      #    interactive Session 1, Medium integrity, logon SID present. Nor is it
+      #    the child's stdio: pointing stdout/stderr at a pipe, at a file
+      #    already granted to the restricting SID, at NUL, and at nil all fail
+      #    identically.
+      #
+      # The three SIDs this package confines to are all S-1-15-3, so
+      # createRestrictedToken always fails, probeRestrictedToken always reports
+      # "could not create a restricted token", and the Windows write boundary is
+      # never applied to anything. Measured 2026-09-14. The fix is an AppContainer
+      # token (CreateAppContainerProfile + CreateAppContainerToken) -- a
+      # security-boundary change that belongs to a work package, not a constant
+      # swap.
       YANSHI_RESTRICTEDTOKEN_TESTS_OPTIONAL: "1"
     steps:
       - uses: actions/checkout@v4
