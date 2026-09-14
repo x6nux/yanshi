@@ -520,11 +520,57 @@ func buildDSN(path string, busyMs, autoCkpt int) string {
 		"&_pragma=foreign_keys(ON)"
 }
 
-// applyConnectionPragmas sets the persistent journal_mode=WAL. This runs once
-// per Store (on the first connection) and is idempotent. The per-connection
-// PRAGMAs (synchronous, busy_timeout, wal_autocheckpoint, foreign_keys) are
-// handled by DSN _pragma, not here — with the single :memory: exception below,
-// which the DSN cannot reach.
+// isSetWALContentionErr reports whether a failure from the set-WAL step is one
+// a concurrent-heal storm produces, and so worth retrying.
+//
+// It is a SUPERSET of isTransientOpenErr: it adds the NOTADB (26) family. That
+// widening is safe HERE and only here, and the reason is positional — the
+// retry loop is the ONLY set-WAL consumer and set-WAL only ever runs AFTER
+// openPrepared has already SUCCEEDED (the cold-open gate at the top of
+// OpenWith, and the reopen inside healUnderLock). So the file on disk at this
+// point was just proven healthy by this very process; a NOTADB returned here
+// cannot mean \"this file is garbage\" (that case fails openPrepared and is
+// quarantined first), it means the storm loser's handle got AND lost the race
+// for the inode mid-rename — the same meaning as the READONLY family PR#9
+// folded, just with 26 on Windows/darwin because masking se.Code()&0xff on
+// NOTADB does not land on a code isTransientOpenErr already knows.
+//
+// NOTADB is DELIBERATELY NOT added to the shared isTransientOpenErr, because
+// that predicate is consulted at the openPrepared recheck and the corruption
+// classifier where 26 MUST stay fatal: a genuinely corrupt lone database
+// produces it orientationally (TestOpenWith_RecoversFromCorruptDatabase +
+// isCorruptDB pin that), and routing it through a retry there would let real
+// corruption spin 25× and never quarantine. The discriminator is \"did an
+// openPrepared in this critical section already succeed?\", which is exactly
+// the fact that separates the two meanings, and only set-WAL lives on the
+// success side of it.
+func isSetWALContentionErr(err error) bool {
+	return isTransientOpenErr(err) || isNOTADBOpenErr(err)
+}
+
+// isNOTADBOpenErr reports whether err is a SQLITE_NOTADB-family code, masked
+// to the primary code the way isTransientOpenErr masks READONLY.
+func isNOTADBOpenErr(err error) bool {
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	return se.Code()&0xff == sqliteNotADB
+}
+
+// applyConnectionPragmas sets journal_mode=WAL with contention retries. This
+// is called once per Store (cold open) and idempotently per connection.
+//
+// The retry loop is where the concurrent-heal storm drains, so it has to use
+// isSetWALContentionErr — the set-WAL-local superset — rather than the shared
+// isTransientOpenErr. A storm loser's handle points at an orphaned inode a
+// sibling healer is mid-rewrite on, and SQLite surfaces that as the NOTADB
+// family (26 on windows/darwin; the same fact READONLY carries on darwin) as
+// well as BUSY/READONLY. None of them says anything about the file's health,
+// because the file was proven healthy to reach this line, so all of them
+// deserve the same momentary retry budget. (Cold open reaches here only
+// after openPrepared succeeded, and the rebuild after quarantine only after
+// the reopen succeeded — so a NOTADB here is contention, never corruption.)
 func (s *Store) applyConnectionPragmas() error {
 	if s.inMemory {
 		// WAL is not meaningful for :memory:, but foreign_keys is: buildDSN
