@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/x6nux/yanshi/internal/guard"
 )
 
 // TestParseHeadlessArgs verifies the shared parser accepts the full flag set
@@ -84,5 +86,58 @@ func TestHeadlessExitCode(t *testing.T) {
 				t.Fatalf("got %d want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestParseHeadlessArgsAcceptsEveryGuardMode pins -mode against guard's own
+// catalogue rather than a literal list copied here: a mode added to guard but
+// not accepted by the CLI would be reachable in the TUI and unreachable
+// headlessly, which is the gap -mode exists to close.
+func TestParseHeadlessArgsAcceptsEveryGuardMode(t *testing.T) {
+	for _, m := range guard.Modes() {
+		cfg, err := parseHeadlessArgs([]string{"-mode", string(m)}, "exec")
+		if err != nil {
+			t.Errorf("-mode %s: %v", m, err)
+			continue
+		}
+		if cfg.Mode != string(m) {
+			t.Errorf("-mode %s parsed as %q", m, cfg.Mode)
+		}
+	}
+}
+
+// TestParseHeadlessArgsRejectsUnknownMode proves a typo is a usage error instead
+// of a silent no-op: an unattended run that quietly ignored -mode yoloo would
+// look exactly like one that had set it.
+func TestParseHeadlessArgsRejectsUnknownMode(t *testing.T) {
+	if _, err := parseHeadlessArgs([]string{"-mode", "yoloo"}, "exec"); err == nil {
+		t.Fatal("-mode yoloo should be a usage error")
+	}
+}
+
+// TestParseHeadlessArgsApprovalPolicies pins the -approve vocabulary and the
+// default. The default matters more than the values: a run that was not told to
+// approve anything must deny, and a typo must be a usage error rather than a
+// silent fallback to one of the two useful answers.
+func TestParseHeadlessArgsApprovalPolicies(t *testing.T) {
+	cfg, err := parseHeadlessArgs(nil, "exec")
+	if err != nil {
+		t.Fatalf("defaults: %v", err)
+	}
+	if cfg.Approve != "never" {
+		t.Fatalf("default -approve = %q, want never", cfg.Approve)
+	}
+	for _, policy := range []string{"never", "required", "all"} {
+		cfg, err := parseHeadlessArgs([]string{"-approve", policy}, "exec")
+		if err != nil {
+			t.Errorf("-approve %s: %v", policy, err)
+			continue
+		}
+		if cfg.Approve != policy {
+			t.Errorf("-approve %s parsed as %q", policy, cfg.Approve)
+		}
+	}
+	if _, err := parseHeadlessArgs([]string{"-approve", "always"}, "exec"); err == nil {
+		t.Fatal("-approve always should be a usage error")
 	}
 }

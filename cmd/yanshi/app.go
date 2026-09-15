@@ -54,7 +54,7 @@ func runApp(args []string, in io.Reader, out io.Writer) int {
 		fmt.Fprintf(os.Stderr, "yanshi app: %v\n", err)
 		return exitErr
 	}
-	srv := appserver.New(app.AgentAPI, cfg)
+	srv := appserver.New(app.AgentAPI, cfg).WithCtl(appControlPlane(app))
 	if err := srv.Serve(ctx, in, out); err != nil {
 		fmt.Fprintf(os.Stderr, "yanshi app: %v\n", err)
 		return exitErr

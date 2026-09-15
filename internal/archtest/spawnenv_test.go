@@ -171,6 +171,16 @@ var spawnEnvCensus = map[string]string{
 		"prints is scrubbed downstream instead: Snapshot.Apply layers it into the base that " +
 		"childLaunchPosture.env then runs ScrubCredentials over, so an rc file exporting an " +
 		"API key is stripped on exactly the path that strips yanshi's own.",
+	// The daemon starter. It is the one spawn site whose child is yanshi
+	// ITSELF, which is why the answer is "inherit" rather than a scrub: the
+	// child re-reads the same config and expands the same ${VAR} provider keys
+	// from its environment.
+	"internal/cli/background_exec.go": "spawnDetached: cmd.Env stays nil and the environment is " +
+		"INHERITED, deliberately — the child is yanshi itself (a second `serve`), so it must see " +
+		"the operator's YANSHI_* variables and the ${VAR} API keys its own config expands; " +
+		"scrubbing would start a daemon with no credentials and read as a provider outage. " +
+		"stdout/stderr go to the per-project log file and stdin is /dev/null, so the detached " +
+		"child cannot block on a terminal it no longer owns.",
 	"internal/clipimg/clipimg.go": "commandOutput: netpolicy.ScrubbedEnviron() in that single " +
 		"package-level seam, so all four platform backends are covered at once.",
 	"internal/tools/screenshot.go": "captureCommand sets netpolicy.ScrubbedEnviron(). The " +

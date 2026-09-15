@@ -32,6 +32,19 @@ type ExecOptions struct {
 	Prompt  string // the user turn text (required)
 	Output  ExecOutputFormat
 	Resume  string // optional session id to restore before the turn ("" = fresh)
+	// Mode is the permission mode this run asks the SERVER to use (default /
+	// allow-edits / yolo / auto / strict / plan); "" leaves the connection's
+	// current mode untouched, which is what every pre-existing caller does.
+	//
+	// It is a server-side setting, not a client-side one: yolo's effect is that
+	// the server resolves overridable (profile-policy) denials itself instead of
+	// asking the client, and auto's is that the guardian model decides. A
+	// headless client cannot answer a prompt, so without this the only thing a
+	// denied tool can do is expire — see headlessPermissionDecision.
+	Mode string
+	// Approve is how this run answers the permission requests that reach the
+	// CLIENT (see ApprovalPolicy). "" means ApprovalNever.
+	Approve ApprovalPolicy
 	Stdout  io.Writer
 	Stderr  io.Writer
 }
@@ -105,6 +118,18 @@ func execWithBackend(ctx context.Context, b ChatBackend, opts ExecOptions) (Exec
 		}
 	}
 
+	// Ask the server for this run's permission mode BEFORE the turn. Sent
+	// through the same mid-turn-safe path the TUI uses for set_mode, so a mode
+	// switch cannot orphan the turn's event channel. SSE has no control frames
+	// at all (ErrSSEControlUnsupported), and a run that silently ignored -mode
+	// would look identical to one where the operator never passed it — so the
+	// failure is reported, not swallowed.
+	if opts.Mode != "" {
+		if _, err := b.SendFrame(ctx, proto.NewSetMode(opts.Mode)); err != nil {
+			return result, fmt.Errorf("mode %q: %w", opts.Mode, err)
+		}
+	}
+
 	// Run the turn.
 	ch, err := b.Send(ctx, opts.Prompt)
 	if err != nil {
@@ -115,6 +140,17 @@ func execWithBackend(ctx context.Context, b ChatBackend, opts ExecOptions) (Exec
 		// The turn's status frame carries the (possibly new) session id.
 		if ev.Kind == "status" && ev.SessionID != "" {
 			result.SessionID = ev.SessionID
+		}
+		// A permission_request is the server BLOCKING on a human. Nobody is
+		// watching a headless run, so answer it instead of letting it expire:
+		// the old behaviour was a 60s stall followed by a fatal error that ended
+		// the turn with exit 1 and no output, i.e. an unattended run could not
+		// survive a single denied tool.
+		if ev.Kind == "permission_request" {
+			answer := HeadlessPermissionDecision(ev, opts.Approve)
+			if _, ferr := b.SendFrame(ctx, proto.NewPermissionResponse(ev.ID, answer)); ferr != nil {
+				fmt.Fprintf(stderr, "exec: answering permission request: %v\n", ferr)
+			}
 		}
 		renderExecEvent(stdout, stderr, out, ev)
 		if ev.Kind == "error" {

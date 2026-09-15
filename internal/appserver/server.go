@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/x6nux/yanshi/internal/api/v1"
+	"github.com/x6nux/yanshi/internal/ctl"
 )
 
 // ConfigBackend is the local-supervisor config interface the app-server
@@ -36,6 +37,7 @@ type ConfigBackend interface {
 type Server struct {
 	agent    *v1.Service
 	config   ConfigBackend
+	ctl      *ctl.Service
 	writeMu  sync.Mutex
 	inflight sync.WaitGroup
 }
@@ -193,9 +195,13 @@ func (s *Server) dispatch(ctx context.Context, req RPCRequest) (any, <-chan v1.I
 		return map[string]any{"version": v1.Version, "ok": true, "key": p.Key}, nil, nil
 	case "shutdown":
 		return map[string]any{"version": v1.Version, "ok": true}, nil, nil
-	default:
-		return nil, nil, &RPCError{Code: codeMethodNotFound, Message: "method not found: " + req.Method}
 	}
+	// The operator methods live in ctl.go; the bool tells us whether the method
+	// belongs there at all, so this switch stays about conversations.
+	if result, rpcErr, handled := s.dispatchCtl(ctx, req); handled {
+		return result, nil, rpcErr
+	}
+	return nil, nil, &RPCError{Code: codeMethodNotFound, Message: "method not found: " + req.Method}
 }
 
 // capabilitiesResult returns the v1 Capabilities payload. `initialize`
@@ -211,6 +217,10 @@ func capabilitiesResult(initialize bool) v1.Capabilities {
 	} else {
 		methods = append(methods, "config/read", "config/write")
 	}
+	// The operator methods are advertised on BOTH surfaces: a client that
+	// discovered the protocol through `capabilities` must see the same set it
+	// would get from `initialize`, or it will not try them.
+	methods = append(methods, ctlMethods()...)
 	return v1.Capabilities{
 		Version:       v1.Version,
 		Methods:       methods,

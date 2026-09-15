@@ -21,6 +21,13 @@ type Lockfile struct {
 	Root      string    `json:"root"` // absolute project root, for verification
 	StartedAt time.Time `json:"started_at"`
 	Version   int       `json:"version"`
+	// Socket is the unix domain socket the daemon serves the JSON-RPC IPC on
+	// (internal/ipc), or "" when it has none. Optional and additive: a reader
+	// that does not know the field ignores it, and "" means "this daemon
+	// predates the socket, or the bind failed — use HTTP". Recorded here
+	// rather than derived by clients so the address a client dials is the same
+	// one the daemon bound, including the hashed short-name fallback.
+	Socket string `json:"socket,omitempty"`
 }
 
 // currentVersion is bumped whenever the lockfile schema changes incompatibly.

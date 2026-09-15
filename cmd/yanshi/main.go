@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/x6nux/yanshi/internal/agent/goalloop"
+	"github.com/x6nux/yanshi/internal/appserver"
 	"github.com/x6nux/yanshi/internal/auth"
 	"github.com/x6nux/yanshi/internal/bootstrap"
 	"github.com/x6nux/yanshi/internal/cli"
@@ -32,6 +34,7 @@ import (
 	"github.com/x6nux/yanshi/internal/config"
 	"github.com/x6nux/yanshi/internal/execbroker"
 	"github.com/x6nux/yanshi/internal/harden"
+	"github.com/x6nux/yanshi/internal/ipc"
 	"github.com/x6nux/yanshi/internal/lockfile"
 	"github.com/x6nux/yanshi/internal/sandbox"
 	"github.com/x6nux/yanshi/internal/secrets"
@@ -44,6 +47,8 @@ var usage = `yanshi ` + Version + ` — the CLI for the yanshi agent server.
 
 Usage:
   yanshi                                self-contained TUI (discovers or embeds the backend)
+  yanshi -b [-config FILE] [-fake-model] [-addr ADDR] [-json] [-wait 30s]
+                                        start the backend as a background daemon and return
   yanshi chat    [--no-tui] [-server URL] [-inprocess] [-fake-model] [-config FILE] [-token TOKEN]
   yanshi chat    [--no-tui] [-p "prompt" | stdin] [--input text|lines|jsonl] [-output text|jsonl] [-timeout 1m] [-resume ID]
   yanshi exec    [-p "prompt" | stdin] [--input text|lines|jsonl] [-output text|jsonl] [-timeout 1m] [-resume ID]
@@ -55,7 +60,11 @@ Usage:
   yanshi init    [-config FILE] [-template FILE] [-force]
   yanshi daemon  status|stop|reload [-root DIR] [-json] [-config FILE] [-timeout 20s]
   yanshi schedule list|show|pause|resume|run-now|delete [ID] [-root DIR] [-json]
-  yanshi provider add|list [-config FILE] [-name N] [-kind K] [-model M] [-api-key K] [-replace] [-json]
+    yanshi usage   [<session-id>] [-limit N] [-json]        # 费用汇总（离线）
+  yanshi session list|show|rename|archive|unarchive|fork|delete [...]
+  yanshi ipc     [<method> [-params JSON]] [-root DIR]   # unix socket 上的 JSON-RPC
+  yanshi skills|features|approvals|jobs|mcp|vcs <verb>   # 控制面（经 IPC socket）
+yanshi provider add|list [-config FILE] [-name N] [-kind K] [-model M] [-api-key K] [-replace] [-json]
   yanshi models  pull|preheat -model NAME [-base-url URL]
   yanshi acp     [-config config.yaml] [-fake-model]
   yanshi doctor [-config FILE] [-json] [-release] [-offline] [-fix] [-fix-only LIST] [-fix-dry-run]
@@ -80,6 +89,15 @@ Subcommands:
            once; --fake-model needs no API key.
   serve    Start the HTTP server as a shared daemon (SIGINT/SIGTERM to stop).
            Other yanshi invocations in the same project discover it.
+           -b/--background detaches it instead: the child gets its own session
+           (setsid, or DETACHED_PROCESS on Windows) so closing the terminal
+           cannot take it down, its output goes to a per-project log next to
+           the lockfile, and the command returns only once the daemon answers
+           readiness — not merely once the process exists. Starting twice is
+           idempotent: an already-running daemon is reported and nothing is
+           spawned, because two backends on one SQLite store is the failure
+           the lockfile exists to prevent. -json prints one machine-readable
+           object; yanshi daemon status|stop|reload operate it afterwards.
   app      Run the JSON-RPC 2.0 app-server on stdio. Drives the same shared
            v1 agent service as HTTP; item streams arrive as item/updated
            notifications (one JSON object per line). Diagnostics go to stderr
@@ -140,6 +158,25 @@ Subcommands:
            time that session is resumed by a headless run ("exec -resume" or
            "chat --no-tui -resume"); the interactive TUI has no -resume flag.
            -list shows what is waiting without consuming it.
+  ipc      Talk to the running daemon over its unix socket: with no method,
+           bridge stdio to it as newline-delimited JSON-RPC (the same protocol
+           yanshi app speaks, but against a daemon that is already up, shared
+           with every other client). With a method, send one request and print
+           its result. The socket sits next to the lockfile, is created 0600,
+           and needs no token — the filesystem is the access control.
+  usage    Token/cost roll-up (offline): yanshi usage [<session-id>] [-limit N].
+  skills   list | show <name> | enable|disable|trust|untrust <name> — the loaded
+           skills and their state, read from the running daemon over IPC.
+  features  list | set <key> on|off — runtime feature flags (non-persistent).
+  approvals  list | revoke — remembered permission rules.
+  jobs     list | read <id> | write <id> <data> | cancel <id> — background jobs.
+  mcp      list | enable <name> | disable <name> — MCP servers (bare
+           "yanshi mcp" still runs the stdio server).
+  vcs      log [-limit N] | diff <from> [to] — the autoVCS history.
+  models   pull|preheat (local runtimes) | list (models a session can switch to).
+  session  Manage stored sessions: list, show, rename, archive, unarchive,
+           delete. Offline (no daemon needed) and -json capable, so a script can
+           enumerate sessions, read one session's token ledger, or retire one.
   auth     Manage authenticated sessions: RFC 8628 device flow (status /
            logout / device) and MCP OAuth (mcp-login / mcp-logout, the
            authorization_code + PKCE flow for an enterprise MCP server; the
@@ -239,21 +276,53 @@ func dispatch(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runDefault(nil) // bare `yanshi` -> self-contained TUI
 	}
 
+	// -b/--background turns the backend into a daemon: `yanshi -b`,
+	// `yanshi serve -b` and `yanshi -b serve` are the same request. Handled
+	// before the subcommand switch because bare `yanshi -b` has no subcommand
+	// to dispatch on, and because the flag must be stripped before serve's own
+	// flag set sees it.
+	if rest, background := stripBackgroundFlag(argv[1:]); background {
+		return runBackground(rest, stdout, stderr)
+	}
 	switch argv[1] {
 	case "serve":
 		return serve(argv[2:])
 	case "chat":
 		return chatTUI(argv[2:])
 	case "exec":
-		return runHeadlessCommand(argv[2:], "exec", stdin)
+		return runHeadlessCommandIO(argv[2:], "exec", stdin, stdout, stderr)
 	case "app":
 		return runApp(argv[2:], stdin, stdout)
+	case "session":
+		return runSession(argv[2:], stdout, stderr)
+	case "ipc":
+		return runIPC(argv[2:], stdin, stdout, stderr)
+	case "usage":
+		return runUsage(argv[2:], stdout, stderr)
+	case "skills":
+		return runSkills(argv[2:], stdout, stderr)
+	case "features":
+		return runFeatures(argv[2:], stdout, stderr)
+	case "approvals":
+		return runApprovals(argv[2:], stdout, stderr)
+	case "jobs":
+		return runJobs(argv[2:], stdout, stderr)
+	case "vcs":
+		return runVcs(argv[2:], stdout, stderr)
+	case "mcp":
+		// `yanshi mcp` is the stdio MCP SERVER, and it stays that way: the
+		// management verbs are recognised first and everything else falls
+		// through to the server, so existing scripts that pipe it a config are
+		// untouched. The alternative — a second name for the server — would
+		// break the documented spelling that other agents already invoke.
+		if isMcpManagementVerb(argv[2:]) {
+			return runMcp(argv[2:], stdout, stderr)
+		}
+		return mcpServer(argv[2:])
 	case "goal":
 		return runGoal(argv[2:])
 	case "vcs-mcp":
 		return vcsMcp(argv[2:])
-	case "mcp":
-		return mcpServer(argv[2:])
 	case "init":
 		return runInit(argv[2:], stdout, stderr)
 	case "daemon":
@@ -619,6 +688,81 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) int {
 		Stop:       cancelServe,
 	})
 
+	// Bind BEFORE claiming the lockfile, so the address written into it is the
+	// one that is actually listening.
+	//
+	// ListenAndServe picks the port when the config says :0 (which the shipped
+	// config.example.yaml does) and never tells anyone which one it picked. The
+	// lockfile therefore recorded "127.0.0.1:0" -- an address no client can
+	// dial -- and everything that reads the lockfile (TUI discovery,
+	// `daemon status|stop|reload`, `-b` readiness) saw a daemon that was alive
+	// and never became ready. Measured with `yanshi -b`: the daemon logged
+	// "yanshi serving on 127.0.0.1:0", claimed the lockfile with that string and
+	// was unreachable for the whole 60s readiness window.
+	//
+	// net.Listen + App.Serve is the same path cli.Session.bootstrapOwner already
+	// uses for an in-process backend; ListenAndServe was the only reason the
+	// chosen port stayed private.
+	ln, lerr := net.Listen("tcp", app.Addr)
+	if lerr != nil {
+		fmt.Fprintf(stderr, "yanshi serve: listen %s: %v\n", app.Addr, lerr)
+		return exitErr
+	}
+	app.Addr = ln.Addr().String()
+	app.Server.Addr = app.Addr
+
+	// Start the IPC socket before claiming the lockfile, so the path recorded
+	// in it is the one that is actually bound.
+	//
+	// Failure is NOT fatal, and the reason is the same one bootstrap uses for
+	// every optional subsystem: the HTTP server is the backend's contract, and
+	// refusing to serve because a socket could not be created would turn a
+	// missing convenience into a dead daemon. It is reported loudly instead,
+	// because a client that expects the socket has no other way to find out —
+	// and the lockfile then records Socket="" so the expectation is visible
+	// rather than a dial that fails for unrelated-looking reasons.
+	//
+	// Permission is the socket's own access control: it is created 0600 inside
+	// the per-user cache directory, which is what lets the IPC skip the bearer
+	// token the loopback HTTP port needs.
+	ipcRoot, wdErr := os.Getwd()
+	var ipcSock string
+	if wdErr != nil {
+		fmt.Fprintf(stderr, "yanshi serve: no IPC socket (cannot resolve cwd: %v)\n", wdErr)
+	} else if ipcLn, ipcErr := ipc.Listen(ipcRoot); ipcErr != nil {
+		fmt.Fprintf(stderr, "yanshi serve: no IPC socket (%v); clients must use the HTTP port\n", ipcErr)
+	} else {
+		if p, pathErr := ipc.SocketPath(ipcRoot); pathErr == nil {
+			ipcSock = p
+		}
+		defer func() {
+			_ = ipcLn.Close()
+			_ = ipc.Remove(ipcRoot)
+		}()
+		go func() {
+			// The IPC speaks the SAME protocol as `yanshi app`, over the socket
+			// instead of stdio. One handler per connection (ipc.Serve), each
+			// with its own appserver.Server: they share the v1 agent service,
+			// whose session registry is the shared state that matters.
+			if serr := ipc.Serve(serveCtx, ipcLn, func(ctx context.Context, conn net.Conn) {
+				cfgBackend, cerr := appserver.NewFileConfig(*configPath)
+				if cerr != nil {
+					fmt.Fprintf(stderr, "yanshi ipc: config backend: %v\n", cerr)
+					return
+				}
+				// The operator control plane rides the same server as the
+				// conversation methods, so a client on this socket can do
+				// everything the TUI can (see internal/ctl).
+				srv := appserver.New(app.AgentAPI, cfgBackend).WithCtl(appControlPlane(app))
+				if serr := srv.Serve(ctx, conn, conn); serr != nil {
+					fmt.Fprintf(stderr, "yanshi ipc: %v\n", serr)
+				}
+			}); serr != nil {
+				fmt.Fprintf(stderr, "yanshi serve: ipc: %v\n", serr)
+			}
+		}()
+	}
+
 	// Claim the project lockfile. `yanshi serve` calls itself a SHARED daemon
 	// and its help text promises "other yanshi invocations in the same project
 	// discover it" — but discovery reads the lockfile, and until now only
@@ -636,7 +780,7 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) int {
 	ownsLock := false
 	if root, rerr := os.Getwd(); rerr == nil {
 		won, lerr := lockfile.Acquire(root, lockfile.Lockfile{
-			PID: os.Getpid(), Addr: app.Addr, Auth: "none", Root: root,
+			PID: os.Getpid(), Addr: app.Addr, Auth: "none", Root: root, Socket: ipcSock,
 		})
 		switch {
 		case lerr != nil:
@@ -661,7 +805,7 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) int {
 	errCh := make(chan error, 1)
 	go func() {
 		fmt.Fprintf(stderr, "yanshi serving on %s\n", app.Addr)
-		err := app.Start()
+		err := app.Serve(ln)
 		if err != nil && err != http.ErrServerClosed {
 			errCh <- err
 			return

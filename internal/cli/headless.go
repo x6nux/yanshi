@@ -14,6 +14,12 @@ type HeadlessRunOptions struct {
 	Stdout io.Writer
 	Stderr io.Writer
 	Resume string
+	// Mode is the permission mode every turn of this run asks the server to use
+	// (see ExecOptions.Mode). "" leaves the connection's mode alone.
+	Mode string
+	// Approve is the client-side approval policy for requests the server leaves
+	// to a human (see ApprovalPolicy). "" means ApprovalNever.
+	Approve ApprovalPolicy
 }
 
 // HeadlessResult reports the last known server session id and completed prompts.
@@ -65,11 +71,13 @@ func runHeadlessWithBackend(ctx context.Context, b ChatBackend, opts HeadlessRun
 			resume = input.Resume
 		}
 		one := ExecOptions{
-			Prompt: input.Prompt,
-			Output: output,
-			Resume: resume,
-			Stdout: stdout,
-			Stderr: stderr,
+			Prompt:  input.Prompt,
+			Output:  output,
+			Resume:  resume,
+			Mode:    opts.Mode,
+			Approve: opts.Approve,
+			Stdout:  stdout,
+			Stderr:  stderr,
 		}
 		oneResult, err := execWithBackend(ctx, b, one)
 		if err != nil {

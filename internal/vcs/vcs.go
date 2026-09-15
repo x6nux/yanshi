@@ -1160,6 +1160,28 @@ type FileDiff struct {
 	NewHash string
 }
 
+// CommitInfo resolves a commit id, reporting whether it exists.
+//
+// It exists for the CONTROL PLANE's sake. Diff resolves two trees into a
+// path-level comparison, and an id that resolves to nothing produces an empty
+// tree — so `diff <typo> <head>` answers "every file was added", which reads as
+// a real answer rather than as the typo it is. Measured through `yanshi ipc
+// vcs/diff` with from=deadbeef: exit 0 and three files reported as added.
+// Callers that accept an operator-supplied ref must check it first.
+func (v *VCS) CommitInfo(id string) (Commit, bool, error) {
+	if id == "" {
+		return Commit{}, false, nil
+	}
+	c, err := v.getCommit(id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Commit{}, false, nil
+	}
+	if err != nil {
+		return Commit{}, false, err
+	}
+	return c, true, nil
+}
+
 // Diff returns the path-level changes from refA's tree to refB's tree
 // (path in B not A → added; in A not B → deleted; hash differs → modified).
 // Sorted by path. repoID is accepted for symmetry with other VCS methods and

@@ -28,12 +28,14 @@ func runModels(args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	}
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: yanshi models <pull|preheat> [flags]")
+		fmt.Fprintln(stderr, "usage: yanshi models <pull|preheat> [flags]\n       yanshi models list [-json]   # models a session can switch to (needs a running daemon)")
 		return exitUsage
 	}
 	switch args[0] {
 	case "pull":
 		return modelsPull(args[1:], stdout, stderr)
+	case "list":
+		return runModelsList(args[1:], stdout, stderr)
 	case "preheat":
 		return modelsPreheat(args[1:], stdout, stderr)
 	default:

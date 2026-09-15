@@ -14,6 +14,7 @@ import (
 
 	"github.com/x6nux/yanshi/internal/cli"
 	"github.com/x6nux/yanshi/internal/config"
+	"github.com/x6nux/yanshi/internal/guard"
 	"github.com/x6nux/yanshi/internal/store"
 )
 
@@ -32,6 +33,15 @@ type headlessConfig struct {
 	FakeModel  bool
 	Server     string
 	InProcess  bool
+	// Mode is the permission mode the headless run asks the server to use. It is
+	// the CLI's answer to "an unattended run cannot click Allow": yolo and auto
+	// let the SERVER resolve the decisions it is allowed to resolve, and every
+	// question that still reaches the client is denied (see
+	// cli.headlessPermissionDecision).
+	Mode string
+	// Approve is the client-side approval policy for permission requests the
+	// server leaves to a human: never (default) | required | all.
+	Approve string
 }
 
 // parseHeadlessArgs parses the shared headless flag set for `exec` and `chat`.
@@ -62,11 +72,21 @@ func parseHeadlessArgs(args []string, command string) (headlessConfig, error) {
 	fs.BoolVar(&cfg.FakeModel, "fake-model", false, "use deterministic fake model")
 	fs.StringVar(&cfg.Server, "server", "", "force connect to this server URL")
 	fs.BoolVar(&cfg.InProcess, "inprocess", false, "force in-process backend")
+	fs.StringVar(&cfg.Mode, "mode", "", "permission mode for the run: default | allow-edits | yolo | auto | strict | plan (empty = the connection's current mode)")
+	fs.StringVar(&cfg.Approve, "approve", "never", "answer permission requests the server left to a human: never | required (one-shot allow for irreversible external effects) | all")
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
 	}
 	if fs.NArg() != 0 {
 		return cfg, fmt.Errorf("unexpected positional argument %q", fs.Arg(0))
+	}
+	if cfg.Mode != "" {
+		if _, ok := guard.NormalizeMode(cfg.Mode); !ok {
+			return cfg, fmt.Errorf("invalid --mode %q (want default, allow-edits, yolo, auto, strict, or plan)", cfg.Mode)
+		}
+	}
+	if _, ok := cli.ParseApprovalPolicy(cfg.Approve); !ok {
+		return cfg, fmt.Errorf("invalid --approve %q (want never, required, or all)", cfg.Approve)
 	}
 	if cfg.Output != "text" && cfg.Output != "jsonl" {
 		return cfg, fmt.Errorf("invalid --output %q (want text or jsonl)", cfg.Output)
@@ -189,14 +209,30 @@ func queuedFirst(configPath, sessionID string, inputs []cli.HeadlessInput) []cli
 }
 
 func runHeadlessCommand(args []string, command string, stdin io.Reader) int {
+	return runHeadlessCommandIO(args, command, stdin, os.Stdout, os.Stderr)
+}
+
+// runHeadlessCommandIO is runHeadlessCommand with its output streams injected.
+//
+// It exists because `exec` is the machine-facing command: its whole point is a
+// stream another program consumes (text or one JSON object per line), and an
+// embedder — a test, a supervisor, a parent process wiring pipes — has to be
+// able to capture that stream. Until this split the exec path wrote to os.Stdout
+// and os.Stderr directly, so dispatch's stdout/stderr parameters were honoured
+// by `app` and `doctor` and silently ignored by `exec`, and an in-process test
+// could assert on nothing but the exit code.
+//
+// `chat` keeps the os.Stdout wrapper: its TUI branch owns the terminal, and the
+// headless branch is reachable only through it.
+func runHeadlessCommandIO(args []string, command string, stdin io.Reader, stdout, stderr io.Writer) int {
 	cfg, err := parseHeadlessArgs(args, command)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "yanshi %s: %v\n", command, err)
+		fmt.Fprintf(stderr, "yanshi %s: %v\n", command, err)
 		return exitUsage
 	}
 	inputs, err := headlessInputs(cfg, stdin)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "yanshi %s: %v\n", command, err)
+		fmt.Fprintf(stderr, "yanshi %s: %v\n", command, err)
 		return exitUsage
 	}
 	if cfg.Resume != "" {
@@ -217,16 +253,18 @@ func runHeadlessCommand(args []string, command string, stdin io.Reader) int {
 		Server:     cfg.Server,
 		InProcess:  cfg.InProcess,
 	}, cli.HeadlessRunOptions{
-		Inputs: inputs,
-		Output: cli.ExecOutputFormat(cfg.Output),
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
+		Inputs:  inputs,
+		Output:  cli.ExecOutputFormat(cfg.Output),
+		Stdout:  stdout,
+		Stderr:  stderr,
+		Mode:    cfg.Mode,
+		Approve: cli.ApprovalPolicy(cfg.Approve),
 	})
 	if result.SessionID != "" {
-		fmt.Fprintf(os.Stderr, "session: %s\n", result.SessionID)
+		fmt.Fprintf(stderr, "session: %s\n", result.SessionID)
 	}
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		fmt.Fprintf(os.Stderr, "yanshi %s: %v\n", command, err)
+		fmt.Fprintf(stderr, "yanshi %s: %v\n", command, err)
 	}
 	return mapExecError(err)
 }
