@@ -550,16 +550,70 @@ func (s *Store) applyConnectionPragmas() error {
 	// process has set WAL the pragma stops needing the exclusive lock, so this
 	// converges immediately rather than spinning for the full budget.
 	var err error
+	swapRetries := 0
 	for range 100 {
 		if _, err = s.DB.Exec("PRAGMA journal_mode=WAL"); err == nil {
 			return nil
 		}
 		if !isTransientOpenErr(err) {
-			return fmt.Errorf("store: set WAL: %w", err)
+			// SQLITE_NOTADB is retried HERE and nowhere else, and the asymmetry
+			// with isTransientOpenErr is the whole point rather than an
+			// oversight.
+			//
+			// This statement is the first thing that reads the file at path, so
+			// it is where the rename→create gap of a concurrent repair becomes
+			// visible: a sibling healer renames the corrupt database away and
+			// creates a fresh one, and whoever reads the path inside that gap is
+			// told "file is not a database". That is a statement about the FILE
+			// UNDER US, not about the data — the same claim SQLITE_BUSY makes,
+			// which is why the same race is documented yielding BUSY at this
+			// very call site (see healUnderLock's comment: 13 runs in 60). The
+			// gap is the only window, so a bounded retry closes it.
+			//
+			// It must NOT join isTransientOpenErr, because healUnderLock
+			// classifies its recheck THREE ways and routes every non-transient
+			// error into quarantine+rebuild. NOTADB is the primary evidence of
+			// real corruption (isCorruptDB), so promoting it there would send a
+			// genuinely malformed database down the "still contended, do not
+			// quarantine" branch and the healing path would never fire.
+			// Retrying here leaves the error CLASS untouched — a corrupt file
+			// still returns NOTADB after the budget — so every caller's
+			// classification keeps working.
+			//
+			// The budget is separate from the busy budget on purpose: a lock is
+			// held for as long as its holder needs, while this gap is one
+			// rename plus one create. Measured on the six-way healer storm, the
+			// case that reached "was unreadable ... and could not be rebuilt"
+			// with NOTADB on BOTH the original open and the rebuild.
+			if swapRetries >= walSwapRetries || !isNotADB(err) {
+				return fmt.Errorf("store: set WAL: %w", err)
+			}
+			swapRetries++
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	return fmt.Errorf("store: set WAL: %w", err)
+}
+
+// walSwapRetries bounds the extra attempts granted to SQLITE_NOTADB at the
+// set-WAL probe. Smaller than the 100 the busy/readonly codes get: those wait on
+// a lock its holder decides how long to keep, while this waits out one
+// rename→create gap. It is deliberately not zero — zero is the pre-fix
+// behaviour, where a healer that read the path mid-swap reported the database
+// as unreadable and then failed to rebuild it.
+const walSwapRetries = 25
+
+// isNotADB reports whether err is SQLITE_NOTADB, "the header is not SQLite's".
+//
+// Narrower than isCorruptDB on purpose: that one is the quarantine trigger and
+// deliberately folds CORRUPT in with it, while this is only the code whose
+// meaning flips depending on WHICH statement observed it.
+func isNotADB(err error) bool {
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	return se.Code() == sqliteNotADB
 }
 
 // SQLite result codes that mean "another process got there first, try again".
