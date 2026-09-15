@@ -29,6 +29,7 @@ import (
 // gendocs_test.go enforces that.
 var yanshiSubcommands = []string{
 	"yanshi", "serve", "chat", "exec", "app", "goal", "vcs-mcp", "mcp", "init", "daemon", "schedule", "provider", "models", "acp", "pr", "enqueue", "auth", "doctor",
+	"ipc", "session", "usage", "skills", "features", "approvals", "jobs", "vcs",
 }
 
 // helpCapturer returns the captured help text (combined stdout+stderr) for one

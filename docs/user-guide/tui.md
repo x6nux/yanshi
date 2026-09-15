@@ -68,6 +68,8 @@ yanshi 0.4.0 — the CLI for the yanshi agent server.
 
 Usage:
   yanshi                                self-contained TUI (discovers or embeds the backend)
+  yanshi -b [-config FILE] [-fake-model] [-addr ADDR] [-json] [-wait 30s]
+                                        start the backend as a background daemon and return
   yanshi chat    [--no-tui] [-server URL] [-inprocess] [-fake-model] [-config FILE] [-token TOKEN]
   yanshi chat    [--no-tui] [-p "prompt" | stdin] [--input text|lines|jsonl] [-output text|jsonl] [-timeout 1m] [-resume ID]
   yanshi exec    [-p "prompt" | stdin] [--input text|lines|jsonl] [-output text|jsonl] [-timeout 1m] [-resume ID]
@@ -79,7 +81,11 @@ Usage:
   yanshi init    [-config FILE] [-template FILE] [-force]
   yanshi daemon  status|stop|reload [-root DIR] [-json] [-config FILE] [-timeout 20s]
   yanshi schedule list|show|pause|resume|run-now|delete [ID] [-root DIR] [-json]
-  yanshi provider add|list [-config FILE] [-name N] [-kind K] [-model M] [-api-key K] [-replace] [-json]
+    yanshi usage   [<session-id>] [-limit N] [-json]        # 费用汇总（离线）
+  yanshi session list|show|rename|archive|unarchive|fork|delete [...]
+  yanshi ipc     [<method> [-params JSON]] [-root DIR]   # unix socket 上的 JSON-RPC
+  yanshi skills|features|approvals|jobs|mcp|vcs <verb>   # 控制面（经 IPC socket）
+yanshi provider add|list [-config FILE] [-name N] [-kind K] [-model M] [-api-key K] [-replace] [-json]
   yanshi models  pull|preheat -model NAME [-base-url URL]
   yanshi acp     [-config config.yaml] [-fake-model]
   yanshi doctor [-config FILE] [-json] [-release] [-offline] [-fix] [-fix-only LIST] [-fix-dry-run]
@@ -104,6 +110,15 @@ Subcommands:
            once; --fake-model needs no API key.
   serve    Start the HTTP server as a shared daemon (SIGINT/SIGTERM to stop).
            Other yanshi invocations in the same project discover it.
+           -b/--background detaches it instead: the child gets its own session
+           (setsid, or DETACHED_PROCESS on Windows) so closing the terminal
+           cannot take it down, its output goes to a per-project log next to
+           the lockfile, and the command returns only once the daemon answers
+           readiness — not merely once the process exists. Starting twice is
+           idempotent: an already-running daemon is reported and nothing is
+           spawned, because two backends on one SQLite store is the failure
+           the lockfile exists to prevent. -json prints one machine-readable
+           object; yanshi daemon status|stop|reload operate it afterwards.
   app      Run the JSON-RPC 2.0 app-server on stdio. Drives the same shared
            v1 agent service as HTTP; item streams arrive as item/updated
            notifications (one JSON object per line). Diagnostics go to stderr
@@ -164,6 +179,25 @@ Subcommands:
            time that session is resumed by a headless run ("exec -resume" or
            "chat --no-tui -resume"); the interactive TUI has no -resume flag.
            -list shows what is waiting without consuming it.
+  ipc      Talk to the running daemon over its unix socket: with no method,
+           bridge stdio to it as newline-delimited JSON-RPC (the same protocol
+           yanshi app speaks, but against a daemon that is already up, shared
+           with every other client). With a method, send one request and print
+           its result. The socket sits next to the lockfile, is created 0600,
+           and needs no token — the filesystem is the access control.
+  usage    Token/cost roll-up (offline): yanshi usage [<session-id>] [-limit N].
+  skills   list | show <name> | enable|disable|trust|untrust <name> — the loaded
+           skills and their state, read from the running daemon over IPC.
+  features  list | set <key> on|off — runtime feature flags (non-persistent).
+  approvals  list | revoke — remembered permission rules.
+  jobs     list | read <id> | write <id> <data> | cancel <id> — background jobs.
+  mcp      list | enable <name> | disable <name> — MCP servers (bare
+           "yanshi mcp" still runs the stdio server).
+  vcs      log [-limit N] | diff <from> [to] — the autoVCS history.
+  models   pull|preheat (local runtimes) | list (models a session can switch to).
+  session  Manage stored sessions: list, show, rename, archive, unarchive,
+           delete. Offline (no daemon needed) and -json capable, so a script can
+           enumerate sessions, read one session's token ledger, or retire one.
   auth     Manage authenticated sessions: RFC 8628 device flow (status /
            logout / device) and MCP OAuth (mcp-login / mcp-logout, the
            authorization_code + PKCE flow for an enterprise MCP server; the

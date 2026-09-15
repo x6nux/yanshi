@@ -67,6 +67,8 @@ Usage of chat:
 <!-- BEGIN GENERATED: help:exec -->
 ```text
 Usage of exec:
+  -approve string
+    	answer permission requests the server left to a human: never | required (one-shot allow for irreversible external effects) | all (default "never")
   -config string
     	path to configuration file (default "config.yaml")
   -fake-model
@@ -77,6 +79,8 @@ Usage of exec:
     	force in-process backend
   -input string
     	input mode: text | lines | jsonl (default "text")
+  -mode string
+    	permission mode for the run: default | allow-edits | yolo | auto | strict | plan (empty = the connection's current mode)
   -output string
     	output format: text | jsonl (default "text")
   -p string
@@ -217,6 +221,215 @@ plain "yanshi chat" — has no such flag and does not drain the queue.
 The message may be given as several arguments; they are joined with spaces.
 ```
 <!-- END GENERATED: help:enqueue -->
+
+## -b（后台守护进程）
+
+```sh
+./yanshi -b [-config config.yaml] [-fake-model] [-addr ADDR] [-json] [-wait 30s]
+./yanshi serve -b            # 同一条请求
+```
+
+适用：把后端作为**脱离本终端**的守护进程起起来。它与 `yanshi serve &` 的差别是这个功能存在的理由：子进程进自己的会话（unix `setsid`，Windows `DETACHED_PROCESS`），终端关闭或 SIGHUP 打不到它；输出落到锁文件旁边的 per-project 日志；命令在守护进程**回答 readiness 之后**才返回，脚本的下一条不必和 bootstrap 抢跑。**启动是幂等的**：已有存活的 owner 就报告它并退出 0，不会起第二个（同一个 SQLite 上两个后端正是锁文件要防的状态）；owner 活着但还没 ready 时会等它。`-json` 输出 `{started,alreadyRunning,pid,addr,log,root}`。之后用 `yanshi daemon status|stop|reload` 操作它。
+
+## ipc（本地 IPC：unix socket 上的 JSON-RPC）
+
+```sh
+./yanshi ipc initialize                 # 一次性调用，打印 result
+./yanshi ipc <method> [-params JSON] [-root DIR]
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"capabilities"}' | ./yanshi ipc
+```
+
+适用：**不带 token、不猜端口**地驱动一个已经在跑的守护进程。socket 在锁文件旁边、由文件系统保护（`0600`），协议与 `yanshi app` 逐字相同（线程/回合/条目 + 控制面方法）。无 method 时做 stdio 桥：stdin 的 NDJSON 直接进 socket。`-root` 默认取当前目录，也可用 `YANSHI_ROOT`。
+
+<!-- BEGIN GENERATED: help:ipc -->
+```text
+usage: yanshi ipc [-root DIR] [-config FILE]
+       yanshi ipc <method> [-params JSON] [-root DIR] [-config FILE]
+
+  (no method)   Bridge stdio to the daemon: newline-delimited JSON-RPC in on
+                stdin, responses and item/updated notifications out on stdout.
+                This is the same protocol "yanshi app" speaks on stdio; the
+                only difference is that the server is the project's RUNNING
+                daemon instead of a process you just started.
+  <method>      Send one request and print its result (or the error), then
+                exit. -params takes the JSON params object.
+
+The socket lives in the per-user cache directory next to the daemon's lockfile,
+is created 0600, and needs no token: the filesystem is the access control. Start
+a daemon with "yanshi -b" if nothing is listening.
+```
+<!-- END GENERATED: help:ipc -->
+
+## session（离线会话管理）
+
+```sh
+./yanshi session list [-archived] [-limit N] [-json]
+./yanshi session show <id> [-tail N] [-json]
+./yanshi session rename <id> <title>
+./yanshi session archive <id> | unarchive <id>
+./yanshi session delete <id> yes
+```
+
+适用：TUI 的 `/sessions` `/rename` `/archive` `/delete` 的脚本面。**不需要守护进程**（直接开项目的 SQLite），所以后端卡死时这些命令照样可用。`delete` 要求字面量 `yes`，与 TUI 同一道闸。
+
+<!-- BEGIN GENERATED: help:session -->
+```text
+usage: yanshi session <verb> [args] [-config FILE] [-json]
+
+  list   [-archived] [-limit N]   stored sessions, newest first
+  show   <id> [-tail N]           one session: metadata, token ledger, last turns
+  rename <id> <title>             set the session title
+  fork   <id> [-upto N]           copy a session (N = stop after that seq; default all)
+  archive <id> | unarchive <id>   hide / restore a session
+  delete <id> yes                 delete a session and its messages
+
+Every verb takes -config FILE (default config.yaml) and, where it prints a
+result, -json for one machine-readable object instead of text.
+
+These are the operations the TUI exposes as /sessions, /rename, /archive,
+/unarchive, /archived and /delete. They run OFFLINE against the project's
+SQLite file (no daemon required), which is what makes them usable in a script
+and usable when the backend is wedged — the same reason yanshi doctor never
+needs it either.
+```
+<!-- END GENERATED: help:session -->
+
+## usage 与控制面（skills / features / approvals / jobs / mcp / vcs）
+
+```sh
+./yanshi usage [<session-id>] [-limit N] [-json]     # 离线：读账本
+./yanshi skills list | show <name> | enable|disable|trust|untrust <name>
+./yanshi features list | set <key> on|off
+./yanshi approvals list [-session ID] | revoke <rule-id>
+./yanshi jobs list | read <id> [-max N] | write <id> <data> | cancel <id>
+./yanshi mcp list | enable <name> | disable <name>
+./yanshi vcs log [-limit N] | diff <from> [to]
+./yanshi models list
+```
+
+适用：把只在 TUI 里存在的运维动作搬到脚本里。除 `usage` 外都描述**某个进程的实时状态**，因此走守护进程的 IPC socket：没有守护进程时它们**报错**并提示 `yanshi -b`，而不是返回空列表 —— 「没有作业」和「我看不见持有作业的进程」是两件不同的事。`features set` 是**非持久**覆盖（与 `/features` 一致），要永久生效请改 `config.yaml`。⚠️ 裸 `yanshi mcp` 仍然是 **stdio MCP server**，只有 `list|enable|disable` 开头的才是管理动词。
+
+<!-- BEGIN GENERATED: help:usage -->
+```text
+usage: yanshi <verb> [args] [-root DIR] [-json]
+
+  usage     [<session-id>] [-limit N]     token/cost roll-up (offline)
+  skills    list | show <name>            loaded skills, their state and body
+  features  list | set <key> on|off       runtime feature flags
+  approvals list [-session ID] | revoke <rule-id> [-session ID]
+  jobs      list | read <id> [-max N] | cancel <id> | write <id> <data>
+  mcp       list | enable <name> | disable <name>
+  vcs       log [-limit N] | diff <from> [to]
+  models    list                         models a session can switch to
+
+Everything except usage/session reads state that lives in a RUNNING daemon and
+goes through its IPC socket; start one with "yanshi -b". -json prints the raw
+result object instead of a table.
+```
+<!-- END GENERATED: help:usage -->
+
+<!-- BEGIN GENERATED: help:skills -->
+```text
+usage: yanshi <verb> [args] [-root DIR] [-json]
+
+  usage     [<session-id>] [-limit N]     token/cost roll-up (offline)
+  skills    list | show <name>            loaded skills, their state and body
+  features  list | set <key> on|off       runtime feature flags
+  approvals list [-session ID] | revoke <rule-id> [-session ID]
+  jobs      list | read <id> [-max N] | cancel <id> | write <id> <data>
+  mcp       list | enable <name> | disable <name>
+  vcs       log [-limit N] | diff <from> [to]
+  models    list                         models a session can switch to
+
+Everything except usage/session reads state that lives in a RUNNING daemon and
+goes through its IPC socket; start one with "yanshi -b". -json prints the raw
+result object instead of a table.
+```
+<!-- END GENERATED: help:skills -->
+
+<!-- BEGIN GENERATED: help:features -->
+```text
+usage: yanshi <verb> [args] [-root DIR] [-json]
+
+  usage     [<session-id>] [-limit N]     token/cost roll-up (offline)
+  skills    list | show <name>            loaded skills, their state and body
+  features  list | set <key> on|off       runtime feature flags
+  approvals list [-session ID] | revoke <rule-id> [-session ID]
+  jobs      list | read <id> [-max N] | cancel <id> | write <id> <data>
+  mcp       list | enable <name> | disable <name>
+  vcs       log [-limit N] | diff <from> [to]
+  models    list                         models a session can switch to
+
+Everything except usage/session reads state that lives in a RUNNING daemon and
+goes through its IPC socket; start one with "yanshi -b". -json prints the raw
+result object instead of a table.
+```
+<!-- END GENERATED: help:features -->
+
+<!-- BEGIN GENERATED: help:approvals -->
+```text
+usage: yanshi <verb> [args] [-root DIR] [-json]
+
+  usage     [<session-id>] [-limit N]     token/cost roll-up (offline)
+  skills    list | show <name>            loaded skills, their state and body
+  features  list | set <key> on|off       runtime feature flags
+  approvals list [-session ID] | revoke <rule-id> [-session ID]
+  jobs      list | read <id> [-max N] | cancel <id> | write <id> <data>
+  mcp       list | enable <name> | disable <name>
+  vcs       log [-limit N] | diff <from> [to]
+  models    list                         models a session can switch to
+
+Everything except usage/session reads state that lives in a RUNNING daemon and
+goes through its IPC socket; start one with "yanshi -b". -json prints the raw
+result object instead of a table.
+```
+<!-- END GENERATED: help:approvals -->
+
+<!-- BEGIN GENERATED: help:jobs -->
+```text
+usage: yanshi <verb> [args] [-root DIR] [-json]
+
+  usage     [<session-id>] [-limit N]     token/cost roll-up (offline)
+  skills    list | show <name>            loaded skills, their state and body
+  features  list | set <key> on|off       runtime feature flags
+  approvals list [-session ID] | revoke <rule-id> [-session ID]
+  jobs      list | read <id> [-max N] | cancel <id> | write <id> <data>
+  mcp       list | enable <name> | disable <name>
+  vcs       log [-limit N] | diff <from> [to]
+  models    list                         models a session can switch to
+
+Everything except usage/session reads state that lives in a RUNNING daemon and
+goes through its IPC socket; start one with "yanshi -b". -json prints the raw
+result object instead of a table.
+```
+<!-- END GENERATED: help:jobs -->
+
+<!-- BEGIN GENERATED: help:vcs -->
+```text
+usage: yanshi <verb> [args] [-root DIR] [-json]
+
+  usage     [<session-id>] [-limit N]     token/cost roll-up (offline)
+  skills    list | show <name>            loaded skills, their state and body
+  features  list | set <key> on|off       runtime feature flags
+  approvals list [-session ID] | revoke <rule-id> [-session ID]
+  jobs      list | read <id> [-max N] | cancel <id> | write <id> <data>
+  mcp       list | enable <name> | disable <name>
+  vcs       log [-limit N] | diff <from> [to]
+  models    list                         models a session can switch to
+
+Everything except usage/session reads state that lives in a RUNNING daemon and
+goes through its IPC socket; start one with "yanshi -b". -json prints the raw
+result object instead of a table.
+```
+<!-- END GENERATED: help:vcs -->
+
+## 无人值守的审批（`exec -approve`）
+
+```sh
+./yanshi exec -mode yolo -approve required -p "跑一遍发布检查"
+```
+
+`-mode` 决定**服务端**自己解决什么（`yolo` 放行 profile 策略类拒绝、`auto` 交给 guardian 模型），`-approve` 决定**客户端**如何回答服务端故意留给人的问题：`never`（默认，一律拒绝）、`required`（对不可逆外部效果一次性放行，仍拒 force-prompt 工具）、`all`（连 force-prompt 也一次性放行）。策略**只会发一次性 allow**，不会写永久规则。
 
 ## auth（凭据管理）
 
