@@ -597,8 +597,18 @@ skills:
 // TestBuild_LoadsBuiltinSkills_DefaultDir verifies that when no skills dirs
 // are configured, Build still succeeds (falling back to the "skills" default
 // builtin dir, which simply doesn't exist in the test cwd and loads empty).
+//
+// HOME is redirected into the test's temp dir, and that line is not incidental:
+// Build ALWAYS adds the user root (<home>/.yanshi/skills) whether or not the
+// config names one, so on a developer machine with user skills installed this
+// assertion failed with "Should be empty, but was [2 skills]" — measured on a
+// machine with two. The test's subject is the BUILTIN default dir; run against
+// the operator's real home it was asserting a property of their machine.
+// t.Setenv forbids t.Parallel, which is the trade: a test that reads the
+// environment cannot be parallel with one that mutates it.
 func TestBuild_LoadsBuiltinSkills_DefaultDir(t *testing.T) {
-	t.Parallel()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME")) // Windows' os.UserHomeDir
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 	dbPath := toYAMLPath(filepath.Join(dir, "test.db"))
